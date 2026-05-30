@@ -1,6 +1,7 @@
 mod api;
 mod config;
 mod metrics;
+mod update;
 mod ws;
 
 use std::time::Duration;
@@ -11,7 +12,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use crate::api::ApiClient;
 use crate::config::AgentConfig;
 use crate::metrics::Collector;
-use crate::ws::MetricsStream;
+use crate::ws::{MetricsStream, ServerCommand};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -59,7 +60,25 @@ async fn main() -> Result<()> {
         let mut sent = false;
         if let Some(s) = stream.as_mut() {
             match s.send(&snapshot).await {
-                Ok(()) => sent = true,
+                Ok(commands) => {
+                    sent = true;
+                    // Handle any backend-pushed commands (e.g. self-update).
+                    for cmd in commands {
+                        match cmd {
+                            ServerCommand::Upgrade { download_url } => {
+                                tracing::info!("received upgrade command");
+                                match update::self_replace(&download_url).await {
+                                    Ok(_) => {
+                                        tracing::info!("upgrade complete; exiting for restart");
+                                        // Exit cleanly; systemd relaunches the new binary.
+                                        std::process::exit(0);
+                                    }
+                                    Err(e) => tracing::warn!("upgrade failed: {e}"),
+                                }
+                            }
+                        }
+                    }
+                }
                 Err(e) => {
                     tracing::warn!("websocket send failed ({e}); falling back to HTTP");
                     stream = None;

@@ -46,6 +46,20 @@ backend ack. If the socket can't connect or a send fails, it automatically falls
 back to the HTTP `POST /agent/report` endpoint for that tick and retries the
 socket on the next one. Pairing (register/poll) always uses HTTP.
 
+## Self-update
+
+The backend can push an `upgrade` command over the WebSocket (triggered by the
+owner in the mini program, immediately or via the per-server auto-update
+toggle). On receiving it, the agent:
+
+1. downloads the latest Linux binary from the download/CDN service
+   (`download.agent.dn7.cn`, URL supplied in the command),
+2. atomically replaces its own executable, and
+3. exits cleanly so the service manager restarts it on the new version.
+
+This is why running under **systemd with `Restart=always`** (see below) is
+required for self-update to complete — the new binary is launched by systemd.
+
 ## Metrics collected
 
 - CPU usage (% averaged across cores)

@@ -2,8 +2,10 @@
 //!
 //! Preferred over HTTP `POST /agent/report`. Each report is sent as a JSON
 //! text frame matching the backend's `ReportRequest`; the backend replies with
-//! `{"ok":true}` or `{"ok":false,"error":...}`. If the connection drops or
-//! cannot be established, the caller falls back to HTTP.
+//! `{"ok":true}` or `{"ok":false,"error":...}`. The backend may also push
+//! command frames (e.g. `{"command":"upgrade","download_url":"..."}`), which
+//! `send` surfaces to the caller. If the connection drops or cannot be
+//! established, the caller falls back to HTTP.
 
 use anyhow::{anyhow, Result};
 use futures_util::{SinkExt, StreamExt};
@@ -13,6 +15,13 @@ use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, Web
 use crate::metrics::Metrics;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+/// A command pushed down from the backend over the WebSocket.
+#[derive(Debug, Clone)]
+pub enum ServerCommand {
+    /// Self-update to the latest version available at `download_url`.
+    Upgrade { download_url: String },
+}
 
 /// A live agent->backend metrics stream.
 pub struct MetricsStream {
@@ -30,8 +39,9 @@ impl MetricsStream {
         })
     }
 
-    /// Send one metrics report and wait for the backend ack.
-    pub async fn send(&mut self, m: &Metrics) -> Result<()> {
+    /// Send one metrics report and wait for the backend ack. Returns any
+    /// command frames received while waiting for the ack (e.g. an upgrade).
+    pub async fn send(&mut self, m: &Metrics) -> Result<Vec<ServerCommand>> {
         let payload = serde_json::json!({
             "agent_token": self.token,
             "cpu_usage": m.cpu_usage,
@@ -46,14 +56,30 @@ impl MetricsStream {
             .send(Message::Text(payload.to_string()))
             .await?;
 
-        // Read frames until we get the ack (skipping pings/pongs).
+        let mut commands = Vec::new();
+
+        // Read frames until we get the ack (collecting any commands en route).
         loop {
             match self.socket.next().await {
                 Some(Ok(Message::Text(text))) => {
                     let v: serde_json::Value = serde_json::from_str(&text)
-                        .map_err(|e| anyhow!("invalid ack: {e}"))?;
+                        .map_err(|e| anyhow!("invalid frame: {e}"))?;
+
+                    // Command frame (no "ok" field, has "command").
+                    if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
+                        if cmd == "upgrade" {
+                            if let Some(url) = v.get("download_url").and_then(|u| u.as_str()) {
+                                commands.push(ServerCommand::Upgrade {
+                                    download_url: url.to_string(),
+                                });
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Ack frame.
                     if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
-                        return Ok(());
+                        return Ok(commands);
                     }
                     let err = v
                         .get("error")
