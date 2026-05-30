@@ -1,8 +1,8 @@
 name: Build Linux Release
 
-# Build a Linux release binary on every push. The version is auto-incremented
+# Build Linux release binaries on every push. The version is auto-incremented
 # as 1.0.<run_number> (e.g. 1.0.1, 1.0.2, ...) and published as a GitHub Release
-# with the compiled binary attached.
+# with the compiled binaries (x86_64 + arm64) attached.
 
 on:
   push:
@@ -18,6 +18,14 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
 
     steps:
       - name: Checkout
@@ -35,19 +43,33 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-gnu
+          targets: ${{ matrix.target }}
+
+      - name: Install aarch64 cross toolchain
+        if: matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --target x86_64-unknown-linux-gnu
+        env:
+          # Cross-compilation: tell cargo/cc which linker and C compiler to use
+          # for the aarch64 target (ring/webpki need a C compiler at build time).
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package binary
         id: pkg
         run: |
-          OUT="${BIN_NAME}-linux-x86_64-v${{ steps.ver.outputs.version }}"
-          cp "target/x86_64-unknown-linux-gnu/release/${BIN_NAME}" "${OUT}"
+          OUT="${BIN_NAME}-linux-${{ matrix.arch }}-v${{ steps.ver.outputs.version }}"
+          cp "target/${{ matrix.target }}/release/${BIN_NAME}" "${OUT}"
           chmod +x "${OUT}"
           echo "artifact=${OUT}" >> "$GITHUB_OUTPUT"
 
@@ -57,12 +79,27 @@ jobs:
           name: ${{ steps.pkg.outputs.artifact }}
           path: ${{ steps.pkg.outputs.artifact }}
 
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Compute version (1.0.x)
+        id: ver
+        run: echo "version=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.ver.outputs.version }}
           name: v${{ steps.ver.outputs.version }}
           body: |
-            Automated Linux x86_64 build of ${{ env.BIN_NAME }} v${{ steps.ver.outputs.version }}.
+            Automated Linux build of ${{ env.BIN_NAME }} v${{ steps.ver.outputs.version }} (x86_64 + arm64).
             Commit: ${{ github.sha }}
-          files: ${{ steps.pkg.outputs.artifact }}
+          files: dist/*
