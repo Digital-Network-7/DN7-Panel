@@ -1,0 +1,4 @@
+/target
+.env
+*.token
+.DS_Store

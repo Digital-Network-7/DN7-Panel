@@ -1,0 +1,138 @@
+use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
+
+use crate::config::AgentConfig;
+use crate::metrics::Metrics;
+
+/// Backend's standard success envelope: { ok: bool, data: T }
+#[derive(Debug, Deserialize)]
+struct Envelope<T> {
+    ok: bool,
+    data: Option<T>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RegisterData {
+    pub pairing_code: String,
+    pub register_secret: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PollData {
+    pub claimed: bool,
+    pub agent_token: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RegisterReq {
+    hostname: String,
+    ip: String,
+    os_version: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PollReq {
+    register_secret: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ReportReq {
+    agent_token: String,
+    cpu_usage: f64,
+    memory_usage: f64,
+    disk_usage: f64,
+    uptime: i64,
+    hostname: String,
+    os_version: String,
+    ip: String,
+}
+
+/// HTTP client wrapper around the TeaOps backend API.
+pub struct ApiClient {
+    http: reqwest::Client,
+    base: String,
+}
+
+impl ApiClient {
+    pub fn new(cfg: &AgentConfig) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .expect("failed to build http client");
+        ApiClient {
+            http,
+            base: cfg.backend_url.clone(),
+        }
+    }
+
+    async fn unwrap_envelope<T: for<'de> Deserialize<'de>>(
+        resp: reqwest::Response,
+    ) -> Result<T> {
+        let status = resp.status();
+        let text = resp.text().await?;
+        let env: Envelope<T> = serde_json::from_str(&text)
+            .map_err(|e| anyhow!("invalid response ({status}): {e}; body={text}"))?;
+        if !env.ok {
+            return Err(anyhow!(
+                "backend error ({status}): {}",
+                env.error.unwrap_or_else(|| "unknown".into())
+            ));
+        }
+        env.data.ok_or_else(|| anyhow!("missing data in response"))
+    }
+
+    /// POST /agent/register
+    pub async fn register(&self, m: &Metrics) -> Result<RegisterData> {
+        let req = RegisterReq {
+            hostname: m.hostname.clone(),
+            ip: m.ip.clone(),
+            os_version: m.os_version.clone(),
+        };
+        let resp = self
+            .http
+            .post(format!("{}/agent/register", self.base))
+            .json(&req)
+            .send()
+            .await?;
+        Self::unwrap_envelope(resp).await
+    }
+
+    /// POST /agent/poll
+    pub async fn poll(&self, register_secret: &str) -> Result<PollData> {
+        let req = PollReq {
+            register_secret: register_secret.to_string(),
+        };
+        let resp = self
+            .http
+            .post(format!("{}/agent/poll", self.base))
+            .json(&req)
+            .send()
+            .await?;
+        Self::unwrap_envelope(resp).await
+    }
+
+    /// POST /agent/report
+    pub async fn report(&self, agent_token: &str, m: &Metrics) -> Result<()> {
+        let req = ReportReq {
+            agent_token: agent_token.to_string(),
+            cpu_usage: m.cpu_usage,
+            memory_usage: m.memory_usage,
+            disk_usage: m.disk_usage,
+            uptime: m.uptime,
+            hostname: m.hostname.clone(),
+            os_version: m.os_version.clone(),
+            ip: m.ip.clone(),
+        };
+        let resp = self
+            .http
+            .post(format!("{}/agent/report", self.base))
+            .json(&req)
+            .send()
+            .await?;
+        let _: serde_json::Value = Self::unwrap_envelope(resp).await?;
+        Ok(())
+    }
+}
