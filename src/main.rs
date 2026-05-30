@@ -1,6 +1,7 @@
 mod api;
 mod config;
 mod metrics;
+mod ws;
 
 use std::time::Duration;
 
@@ -10,6 +11,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use crate::api::ApiClient;
 use crate::config::AgentConfig;
 use crate::metrics::Collector;
+use crate::ws::MetricsStream;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -31,24 +33,56 @@ async fn main() -> Result<()> {
     let agent_token = resolve_token(&cfg, &client, &mut collector).await?;
     tracing::info!("agent token acquired, entering report loop");
 
-    // Main metrics loop.
+    // Main metrics loop: prefer the WebSocket stream, fall back to HTTP.
+    let ws_url = cfg.agent_ws_url();
     let mut interval = tokio::time::interval(Duration::from_secs(cfg.interval_secs));
+    let mut stream: Option<MetricsStream> = None;
+
     loop {
         interval.tick().await;
         let snapshot = collector.collect();
-        match client.report(&agent_token, &snapshot).await {
-            Ok(_) => {
-                tracing::info!(
-                    cpu = format!("{:.1}%", snapshot.cpu_usage),
-                    mem = format!("{:.1}%", snapshot.memory_usage),
-                    disk = format!("{:.1}%", snapshot.disk_usage),
-                    uptime = snapshot.uptime,
-                    "metrics reported"
-                );
+
+        // (Re)connect the WebSocket if needed.
+        if stream.is_none() {
+            match MetricsStream::connect(&ws_url, &agent_token).await {
+                Ok(s) => {
+                    tracing::info!(url = %ws_url, "metrics websocket connected");
+                    stream = Some(s);
+                }
+                Err(e) => {
+                    tracing::debug!("websocket connect failed ({e}); using HTTP this tick");
+                }
             }
-            Err(e) => {
-                tracing::warn!("report failed: {e}");
+        }
+
+        // Try the WebSocket first; on any error drop it and fall back to HTTP.
+        let mut sent = false;
+        if let Some(s) = stream.as_mut() {
+            match s.send(&snapshot).await {
+                Ok(()) => sent = true,
+                Err(e) => {
+                    tracing::warn!("websocket send failed ({e}); falling back to HTTP");
+                    stream = None;
+                }
             }
+        }
+
+        if !sent {
+            match client.report(&agent_token, &snapshot).await {
+                Ok(_) => sent = true,
+                Err(e) => tracing::warn!("http report failed: {e}"),
+            }
+        }
+
+        if sent {
+            tracing::info!(
+                via = if stream.is_some() { "ws" } else { "http" },
+                cpu = format!("{:.1}%", snapshot.cpu_usage),
+                mem = format!("{:.1}%", snapshot.memory_usage),
+                disk = format!("{:.1}%", snapshot.disk_usage),
+                uptime = snapshot.uptime,
+                "metrics reported"
+            );
         }
     }
 }

@@ -2,7 +2,7 @@
 
 A small Rust daemon that runs on a Linux server (also works on macOS for dev),
 collects system metrics with `sysinfo`, and pushes them to the TeaOps backend
-every 5 seconds. No SSH is used at runtime.
+every 3 seconds. No SSH is used at runtime.
 
 ## Build & run
 
@@ -33,10 +33,18 @@ starts reporting.
 
 | Var | Default | Notes |
 |-----|---------|-------|
-| `TEAOPS_BACKEND_URL` | `http://127.0.0.1:8080` | backend base URL (use HTTPS in prod) |
-| `TEAOPS_INTERVAL_SECS` | `5` | report interval |
+| `TEAOPS_BACKEND_URL` | `https://wxapi.dn7.cn` | backend base URL (use HTTPS in prod); ws/wss is derived from it |
+| `TEAOPS_INTERVAL_SECS` | `3` | report interval |
 | `TEAOPS_TOKEN_FILE` | `teaops-agent.token` | where the token is persisted |
 | `TEAOPS_AGENT_TOKEN` | — | provide directly to skip pairing |
+
+## Transport
+
+The agent streams metrics over a WebSocket (`wss://<backend>/agent/ws`, derived
+from `TEAOPS_BACKEND_URL`). Each tick it sends one JSON report and waits for the
+backend ack. If the socket can't connect or a send fails, it automatically falls
+back to the HTTP `POST /agent/report` endpoint for that tick and retries the
+socket on the next one. Pairing (register/poll) always uses HTTP.
 
 ## Metrics collected
 
