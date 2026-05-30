@@ -57,8 +57,10 @@ toggle). On receiving it, the agent:
 2. atomically replaces its own executable, and
 3. exits cleanly so the service manager restarts it on the new version.
 
-This is why running under **systemd with `Restart=always`** (see below) is
-required for self-update to complete — the new binary is launched by systemd.
+This is why the agent must be run under a supervisor that restarts it — either
+**systemd with `Restart=always`** or, in Docker / permission-constrained
+environments, the **[teaops-agentd](https://github.com/simonsmithmd/teaops-agentd)**
+supervisor (see "Supervision" below).
 
 ## Metrics collected
 
@@ -93,6 +95,23 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now teaops-agent
 journalctl -u teaops-agent -f   # view the pairing code on first start
 ```
+
+## Supervision (teaops-agentd)
+
+In Docker or environments without systemd, run the
+[teaops-agentd](https://github.com/simonsmithmd/teaops-agentd) supervisor
+instead. It launches and restarts the agent (including after self-updates)
+without root or a service manager. The two can also guard each other:
+
+| Var | Default | Notes |
+|-----|---------|-------|
+| `TEAOPS_RUNTIME_DIR` | `.` | shared pid/heartbeat/lock dir (match agentd) |
+| `TEAOPS_AGENTD_BIN` | `./teaops-agentd` | agentd binary to relaunch if it dies |
+| `TEAOPS_GUARD_AGENTD` | `0` | set `1` to have the agent relaunch agentd |
+| `TEAOPS_HEARTBEAT_TIMEOUT_SECS` | `15` | peer liveness threshold |
+
+Start `teaops-agentd` and it manages the agent — you don't run the agent
+directly in that case.
 
 ## Bootstrap via SSH (optional, V1 compatibility only)
 

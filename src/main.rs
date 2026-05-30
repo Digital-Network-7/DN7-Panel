@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod guardian;
 mod metrics;
 mod update;
 mod ws;
@@ -27,6 +28,10 @@ async fn main() -> Result<()> {
     let cfg = AgentConfig::from_env();
     tracing::info!(backend = %cfg.backend_url, interval = cfg.interval_secs, "TeaOps agent starting");
 
+    // Write our pid/heartbeat and (optionally) start guarding agentd.
+    guardian::write_own_pid(&cfg);
+    guardian::spawn(cfg.clone());
+
     let client = ApiClient::new(&cfg);
     let mut collector = Collector::new();
 
@@ -42,6 +47,9 @@ async fn main() -> Result<()> {
     loop {
         interval.tick().await;
         let snapshot = collector.collect();
+
+        // Keep our heartbeat fresh so agentd knows we're alive.
+        guardian::touch_own_heartbeat(&cfg);
 
         // (Re)connect the WebSocket if needed.
         if stream.is_none() {
