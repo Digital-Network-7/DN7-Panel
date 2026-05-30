@@ -19,12 +19,9 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// A command pushed down from the backend over the WebSocket.
 #[derive(Debug, Clone)]
 pub enum ServerCommand {
-    /// Self-update to the latest version. `download_url` is advisory; the agent
-    /// fetches GitHub-first and only falls back to the download service.
-    Upgrade {
-        #[allow(dead_code)]
-        download_url: String,
-    },
+    /// Self-update to the latest version. The agent resolves the binary source
+    /// itself (GitHub-first, download-service fallback).
+    Upgrade,
 }
 
 /// A live agent->backend metrics stream.
@@ -72,11 +69,7 @@ impl MetricsStream {
                     // Command frame (no "ok" field, has "command").
                     if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
                         if cmd == "upgrade" {
-                            if let Some(url) = v.get("download_url").and_then(|u| u.as_str()) {
-                                commands.push(ServerCommand::Upgrade {
-                                    download_url: url.to_string(),
-                                });
-                            }
+                            commands.push(ServerCommand::Upgrade);
                         }
                         continue;
                     }

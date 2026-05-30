@@ -79,8 +79,9 @@ impl AgentConfig {
     }
 
     /// WebSocket URL for the agent metrics stream, derived from `backend_url`
-    /// (http -> ws, https -> wss).
-    pub fn agent_ws_url(&self) -> String {
+    /// (http -> ws, https -> wss). The agent_token is passed as a query param
+    /// since the backend authenticates the connection at upgrade time.
+    pub fn agent_ws_url(&self, agent_token: &str) -> String {
         let ws_base = if let Some(rest) = self.backend_url.strip_prefix("https://") {
             format!("wss://{rest}")
         } else if let Some(rest) = self.backend_url.strip_prefix("http://") {
@@ -88,6 +89,21 @@ impl AgentConfig {
         } else {
             self.backend_url.clone()
         };
-        format!("{ws_base}/agent/ws")
+        format!("{ws_base}/agent/ws?token={}", urlencode(agent_token))
     }
+}
+
+/// Minimal percent-encoding for a token in a query string (alnum, `-_.~` pass
+/// through; everything else is %XX-encoded).
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }

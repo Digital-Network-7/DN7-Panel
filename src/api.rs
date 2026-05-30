@@ -26,6 +26,11 @@ pub struct PollData {
     pub agent_token: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ShouldUpgradeData {
+    pub auto_update: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct RegisterReq {
     hostname: String,
@@ -36,6 +41,11 @@ struct RegisterReq {
 #[derive(Debug, Serialize)]
 struct PollReq {
     register_secret: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ShouldUpgradeReq {
+    agent_token: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -134,5 +144,20 @@ impl ApiClient {
             .await?;
         let _: serde_json::Value = Self::unwrap_envelope(resp).await?;
         Ok(())
+    }
+
+    /// POST /agent/should-upgrade — ask whether auto-update is enabled for this
+    /// server. Used as the periodic, connection-independent upgrade path.
+    pub async fn should_upgrade(&self, agent_token: &str) -> Result<ShouldUpgradeData> {
+        let req = ShouldUpgradeReq {
+            agent_token: agent_token.to_string(),
+        };
+        let resp = self
+            .http
+            .post(format!("{}/agent/should-upgrade", self.base))
+            .json(&req)
+            .send()
+            .await?;
+        Self::unwrap_envelope(resp).await
     }
 }

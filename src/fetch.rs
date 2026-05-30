@@ -68,6 +68,43 @@ pub async fn fetch_latest(cfg: &crate::config::AgentConfig, component: Component
     Ok(bytes)
 }
 
+/// Resolve the latest available version string (e.g. "1.0.12") for a component,
+/// GitHub-first with the download service as a fallback. Used to decide whether
+/// a self-update is actually needed before fetching the whole binary.
+pub async fn latest_version(
+    cfg: &crate::config::AgentConfig,
+    component: Component,
+) -> Result<String> {
+    // GitHub atom feed first.
+    let repo = repo_for(cfg, component);
+    let atom_url = format!("https://github.com/{repo}/releases.atom");
+    if let Ok(resp) = http().get(&atom_url).send().await {
+        if let Ok(resp) = resp.error_for_status() {
+            if let Ok(body) = resp.text().await {
+                if let Some(v) = highest_version(&body) {
+                    return Ok(v);
+                }
+            }
+        }
+    }
+
+    // Fallback: download service manifest (`GET /latest/<component>`).
+    let url = format!("{}/latest/{}", cfg.download_url, component.url_name());
+    let manifest: serde_json::Value = http()
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    manifest
+        .get("data")
+        .and_then(|d| d.get("version"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow!("no version in download-service manifest"))
+}
+
 /// GitHub path: releases.atom -> highest version -> release asset download.
 async fn fetch_from_github(cfg: &crate::config::AgentConfig, component: Component) -> Result<Vec<u8>> {
     let repo = repo_for(cfg, component);

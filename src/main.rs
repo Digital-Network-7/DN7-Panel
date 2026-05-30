@@ -41,16 +41,35 @@ async fn main() -> Result<()> {
     tracing::info!("agent token acquired, entering report loop");
 
     // Main metrics loop: prefer the WebSocket stream, fall back to HTTP.
-    let ws_url = cfg.agent_ws_url();
+    let ws_url = cfg.agent_ws_url(&agent_token);
     let mut interval = tokio::time::interval(Duration::from_secs(cfg.interval_secs));
     let mut stream: Option<MetricsStream> = None;
 
+    // Periodic auto-update check: every ~5 minutes, ask the backend whether
+    // auto-update is on for this server and, if so, upgrade only when a newer
+    // version actually exists (so we don't restart-loop on the same version).
+    let upgrade_check_every = std::cmp::max(1, 300 / cfg.interval_secs.max(1));
+    let mut tick_count: u64 = 0;
+
     loop {
         interval.tick().await;
+        tick_count = tick_count.wrapping_add(1);
         let snapshot = collector.collect();
 
         // Keep our heartbeat fresh so agentd knows we're alive.
         guardian::touch_own_heartbeat(&cfg);
+
+        // Periodic auto-update poll (connection-independent path).
+        if tick_count % upgrade_check_every == 0 {
+            if let Ok(info) = client.should_upgrade(&agent_token).await {
+                if info.auto_update && upgrade_available(&cfg).await {
+                    tracing::info!("auto-update enabled and newer version available; upgrading");
+                    if let Err(e) = do_self_update(&cfg).await {
+                        tracing::warn!("auto-update failed: {e}");
+                    }
+                }
+            }
+        }
 
         // (Re)connect the WebSocket if needed.
         if stream.is_none() {
@@ -74,18 +93,16 @@ async fn main() -> Result<()> {
                     // Handle any backend-pushed commands (e.g. self-update).
                     for cmd in commands {
                         match cmd {
-                            ServerCommand::Upgrade { download_url: _ } => {
+                            ServerCommand::Upgrade => {
                                 tracing::info!("received upgrade command");
-                                // GitHub-first (falls back to the download
-                                // service); the URL in the command is ignored
-                                // in favor of the configured sources.
-                                match update::self_update(&cfg).await {
-                                    Ok(_) => {
-                                        tracing::info!("upgrade complete; exiting for restart");
-                                        // Exit cleanly; the supervisor relaunches us.
-                                        std::process::exit(0);
+                                // Only upgrade if a newer version exists, to
+                                // avoid a needless replace-and-restart cycle.
+                                if upgrade_available(&cfg).await {
+                                    if let Err(e) = do_self_update(&cfg).await {
+                                        tracing::warn!("upgrade failed: {e}");
                                     }
-                                    Err(e) => tracing::warn!("upgrade failed: {e}"),
+                                } else {
+                                    tracing::info!("already on the latest version; ignoring upgrade");
                                 }
                             }
                         }
@@ -116,6 +133,41 @@ async fn main() -> Result<()> {
             );
         }
     }
+}
+
+/// Compare the agent's running version against the latest available; true if an
+/// upgrade would move to a strictly newer version.
+async fn upgrade_available(cfg: &AgentConfig) -> bool {
+    let current = env!("CARGO_PKG_VERSION");
+    match fetch::latest_version(cfg, fetch::Component::Agent).await {
+        Ok(latest) => match (parse_semver(&latest), parse_semver(current)) {
+            (Some(l), Some(c)) => l > c,
+            // If either side can't be parsed, be conservative and don't upgrade.
+            _ => false,
+        },
+        Err(e) => {
+            tracing::debug!("could not resolve latest version: {e}");
+            false
+        }
+    }
+}
+
+/// Parse a "major.minor.patch" version into a comparable tuple.
+fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
+    let s = s.trim().trim_start_matches('v');
+    let mut it = s.split('.');
+    let a = it.next()?.parse().ok()?;
+    let b = it.next()?.parse().ok()?;
+    let c = it.next().unwrap_or("0").parse().ok()?;
+    Some((a, b, c))
+}
+
+/// Fetch the latest binary, replace our own executable, and exit so the
+/// supervisor relaunches us on the new version.
+async fn do_self_update(cfg: &AgentConfig) -> Result<()> {
+    update::self_update(cfg).await?;
+    tracing::info!("upgrade complete; exiting for restart");
+    std::process::exit(0);
 }
 
 /// Determine the agent token, performing the pairing flow if necessary.
