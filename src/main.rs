@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod fetch;
 mod guardian;
 mod metrics;
 mod update;
@@ -73,12 +74,15 @@ async fn main() -> Result<()> {
                     // Handle any backend-pushed commands (e.g. self-update).
                     for cmd in commands {
                         match cmd {
-                            ServerCommand::Upgrade { download_url } => {
+                            ServerCommand::Upgrade { download_url: _ } => {
                                 tracing::info!("received upgrade command");
-                                match update::self_replace(&download_url).await {
+                                // GitHub-first (falls back to the download
+                                // service); the URL in the command is ignored
+                                // in favor of the configured sources.
+                                match update::self_update(&cfg).await {
                                     Ok(_) => {
                                         tracing::info!("upgrade complete; exiting for restart");
-                                        // Exit cleanly; systemd relaunches the new binary.
+                                        // Exit cleanly; the supervisor relaunches us.
                                         std::process::exit(0);
                                     }
                                     Err(e) => tracing::warn!("upgrade failed: {e}"),

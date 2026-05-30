@@ -52,10 +52,16 @@ The backend can push an `upgrade` command over the WebSocket (triggered by the
 owner in the mini program, immediately or via the per-server auto-update
 toggle). On receiving it, the agent:
 
-1. downloads the latest Linux binary from the download/CDN service
-   (`download.agent.dn7.cn`, URL supplied in the command),
+1. fetches the latest Linux binary **GitHub-first** — it parses the upstream
+   `releases.atom`, picks the highest version, and downloads that release asset;
+   if GitHub is unreachable it falls back to the download/CDN service
+   (`download.agent.dn7.cn`),
 2. atomically replaces its own executable, and
-3. exits cleanly so the service manager restarts it on the new version.
+3. exits cleanly so the supervisor restarts it on the new version.
+
+The same GitHub-first fetch is used to **re-acquire a missing binary**: if the
+agent (or, when guarding, the agentd) binary is absent — never downloaded or
+deleted — it is fetched automatically rather than failing.
 
 This is why the agent must be run under a supervisor that restarts it — either
 **systemd with `Restart=always`** or, in Docker / permission-constrained

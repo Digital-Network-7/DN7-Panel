@@ -11,7 +11,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
 
@@ -88,46 +88,62 @@ fn agentd_alive(cfg: &AgentConfig) -> bool {
 
 /// Spawn the guardian background task: periodically ensure agentd is alive and
 /// relaunch it under a lock if it isn't. No-op unless `guard_agentd` is set.
+/// If the agentd binary is missing, it is fetched first (GitHub-first).
 pub fn spawn(cfg: AgentConfig) {
     if !cfg.guard_agentd {
         return;
     }
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(cfg.heartbeat_timeout_secs.max(3)));
-        if agentd_alive(&cfg) {
-            continue;
-        }
-        // agentd looks dead — try to relaunch it, but only one relauncher wins
-        // the lock, and we re-check liveness after acquiring it (adoption).
-        let lock_path = role_path(&cfg.runtime_dir, "agentd-relaunch", "lock");
-        let lock_file = match OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(&lock_path)
-        {
-            Ok(f) => f,
-            Err(_) => continue,
-        };
-        if lock_file.try_lock_exclusive().is_err() {
-            // Someone else is relaunching; skip.
-            continue;
-        }
-        // Re-check after locking to avoid a race / duplicate spawn.
-        if agentd_alive(&cfg) {
+    tokio::spawn(async move {
+        let interval = cfg.heartbeat_timeout_secs.max(3);
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval));
+        loop {
+            ticker.tick().await;
+            if agentd_alive(&cfg) {
+                continue;
+            }
+            // agentd looks dead — try to relaunch it, but only one relauncher
+            // wins the lock, and we re-check liveness after acquiring it.
+            let lock_path = role_path(&cfg.runtime_dir, "agentd-relaunch", "lock");
+            let lock_file = match OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+            {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            if lock_file.try_lock_exclusive().is_err() {
+                // Someone else is relaunching; skip.
+                continue;
+            }
+            // Re-check after locking to avoid a race / duplicate spawn.
+            if agentd_alive(&cfg) {
+                let _ = fs2::FileExt::unlock(&lock_file);
+                continue;
+            }
+
+            // Ensure the agentd binary exists (re-fetch if deleted/missing).
+            if let Err(e) =
+                crate::update::ensure_binary(&cfg, crate::fetch::Component::Agentd, &cfg.agentd_bin)
+                    .await
+            {
+                tracing::warn!("cannot relaunch agentd, binary unavailable: {e}");
+                let _ = fs2::FileExt::unlock(&lock_file);
+                continue;
+            }
+
+            tracing::warn!("agentd appears dead; relaunching it");
+            match Command::new(&cfg.agentd_bin)
+                .stdin(Stdio::null())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .spawn()
+            {
+                Ok(_) => tracing::info!("agentd relaunched"),
+                Err(e) => tracing::warn!("failed to relaunch agentd: {e}"),
+            }
             let _ = fs2::FileExt::unlock(&lock_file);
-            continue;
         }
-        tracing::warn!("agentd appears dead; relaunching it");
-        match Command::new(&cfg.agentd_bin)
-            .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()
-        {
-            Ok(_) => tracing::info!("agentd relaunched"),
-            Err(e) => tracing::warn!("failed to relaunch agentd: {e}"),
-        }
-        let _ = fs2::FileExt::unlock(&lock_file);
     });
 }

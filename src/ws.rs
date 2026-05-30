@@ -19,8 +19,12 @@ type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// A command pushed down from the backend over the WebSocket.
 #[derive(Debug, Clone)]
 pub enum ServerCommand {
-    /// Self-update to the latest version available at `download_url`.
-    Upgrade { download_url: String },
+    /// Self-update to the latest version. `download_url` is advisory; the agent
+    /// fetches GitHub-first and only falls back to the download service.
+    Upgrade {
+        #[allow(dead_code)]
+        download_url: String,
+    },
 }
 
 /// A live agent->backend metrics stream.

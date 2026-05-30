@@ -20,6 +20,12 @@ pub struct AgentConfig {
     pub heartbeat_timeout_secs: u64,
     /// Whether the agent should (re)launch agentd if it dies.
     pub guard_agentd: bool,
+    /// Download/CDN service base URL (fallback binary source).
+    pub download_url: String,
+    /// Upstream agent repo (`owner/name`) for GitHub-first downloads.
+    pub agent_repo: String,
+    /// Upstream agentd repo (`owner/name`) for GitHub-first downloads.
+    pub agentd_repo: String,
 }
 
 impl AgentConfig {
@@ -48,6 +54,14 @@ impl AgentConfig {
         let guard_agentd = env::var("TEAOPS_GUARD_AGENTD")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
+        let download_url = env::var("TEAOPS_DOWNLOAD_URL")
+            .unwrap_or_else(|_| "https://download.agent.dn7.cn".to_string())
+            .trim_end_matches('/')
+            .to_string();
+        let agent_repo =
+            env::var("TEAOPS_AGENT_REPO").unwrap_or_else(|_| "simonsmithmd/Teaops-agent".to_string());
+        let agentd_repo = env::var("TEAOPS_AGENTD_REPO")
+            .unwrap_or_else(|_| "simonsmithmd/teaops-agentd".to_string());
 
         AgentConfig {
             backend_url: backend_url.trim_end_matches('/').to_string(),
@@ -58,6 +72,9 @@ impl AgentConfig {
             agentd_bin,
             heartbeat_timeout_secs,
             guard_agentd,
+            download_url,
+            agent_repo,
+            agentd_repo,
         }
     }
 

@@ -1,52 +1,67 @@
-//! Agent self-update.
+//! Agent self-update and binary installation.
 //!
-//! On an upgrade command, the agent downloads the latest binary from the
-//! download/CDN service, atomically replaces its own executable, and exits so
-//! the service manager (systemd, `Restart=always`) relaunches it on the new
-//! version.
+//! Self-update: fetch the latest agent binary (GitHub-first, see `fetch`),
+//! atomically replace the running executable, and exit so the supervisor
+//! (teaops-agentd or systemd) relaunches it on the new version.
+//!
+//! Also exposes `install_bytes` so a missing/deleted binary (agent or agentd)
+//! can be re-fetched and written to a target path without exiting.
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 
-/// Download the binary at `url` and replace the currently-running executable
-/// with it. Returns the path that was replaced. The caller should then exit.
-pub async fn self_replace(url: &str) -> Result<PathBuf> {
-    let exe = std::env::current_exe().context("resolve current exe path")?;
-    tracing::info!(%url, target = ?exe, "downloading update");
+use crate::config::AgentConfig;
+use crate::fetch::{self, Component};
 
-    let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()?;
-    let resp = http.get(url).send().await?.error_for_status()?;
-    let bytes = resp.bytes().await?;
+/// Write `bytes` to `target` atomically with executable permissions.
+pub async fn install_bytes(bytes: &[u8], target: &Path) -> Result<()> {
     if bytes.is_empty() {
-        return Err(anyhow!("downloaded binary is empty"));
+        return Err(anyhow!("refusing to install empty binary"));
     }
-
-    // Write to a temp file alongside the target, set +x, then atomically rename
-    // over the current executable. Rename over a running binary is safe on
-    // Linux: the running process keeps the old inode until it exits.
-    let dir = exe
+    let dir = target
         .parent()
-        .ok_or_else(|| anyhow!("exe has no parent dir"))?;
+        .ok_or_else(|| anyhow!("target has no parent dir"))?;
+    tokio::fs::create_dir_all(dir).await.ok();
     let tmp = dir.join(format!(
-        ".{}.update",
-        exe.file_name().and_then(|n| n.to_str()).unwrap_or("agent")
+        ".{}.dl",
+        target.file_name().and_then(|n| n.to_str()).unwrap_or("bin")
     ));
+    tokio::fs::write(&tmp, bytes)
+        .await
+        .context("write temp binary")?;
+    tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
+        .await
+        .context("chmod temp binary")?;
+    // Rename over the target. Safe on Linux even if the target is running:
+    // the running process keeps the old inode until it exits.
+    tokio::fs::rename(&tmp, target)
+        .await
+        .context("install (rename) binary")?;
+    Ok(())
+}
 
-    tokio::fs::write(&tmp, &bytes)
-        .await
-        .context("write update temp file")?;
-    let perms = std::fs::Permissions::from_mode(0o755);
-    tokio::fs::set_permissions(&tmp, perms)
-        .await
-        .context("chmod update temp file")?;
-    tokio::fs::rename(&tmp, &exe)
-        .await
-        .context("replace current executable")?;
-
-    tracing::info!(bytes = bytes.len(), "update installed; exiting for service manager restart");
+/// Self-update the agent: fetch latest (GitHub-first) and replace own exe.
+/// Returns the replaced path; the caller should then exit.
+pub async fn self_update(cfg: &AgentConfig) -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("resolve current exe path")?;
+    tracing::info!(target = ?exe, "self-update: fetching latest agent binary");
+    let bytes = fetch::fetch_latest(cfg, Component::Agent).await?;
+    install_bytes(&bytes, &exe).await?;
+    tracing::info!(bytes = bytes.len(), "self-update installed; exiting for restart");
     Ok(exe)
+}
+
+/// Ensure a component's binary exists at `path`; if missing, fetch and install
+/// it (GitHub-first). No-op if the file is already present.
+pub async fn ensure_binary(cfg: &AgentConfig, component: Component, path: &Path) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    tracing::warn!(?path, "binary missing; fetching");
+    let bytes = fetch::fetch_latest(cfg, component).await?;
+    install_bytes(&bytes, path).await?;
+    tracing::info!(?path, bytes = bytes.len(), "fetched missing binary");
+    Ok(())
 }
