@@ -35,6 +35,20 @@ downloaded binary from anywhere — no need to create directories by hand. All
 runtime state (token, pid/heartbeat/lock, log) lives under `/var/ops`. If
 `/var/ops` isn't writable (e.g. an unprivileged run) it just runs in place.
 
+When it migrates from an old location it **stops any old instance running there,
+moves the valuable files** (token, key, version) **into `/var/ops`, folds the
+old log into the canonical one, deletes the old transient state** (pid /
+heartbeat / lock files — so no stale `teaops-supervisor.heartbeat` is left
+behind) **and removes the original downloaded binary**. From then on everything
+is anchored at `/var/ops`.
+
+It also installs **redundant boot autostart** so the agent comes back after a
+reboot, using whatever the host supports (all best-effort + idempotent, root
+only): a **systemd unit** (`/etc/systemd/system/teaops-agent.service`,
+`enable`d), a **cron `@reboot`** entry (`/etc/cron.d/teaops-agent` or the root
+crontab), and an **`/etc/rc.local`** line. Because the agent is single-instance,
+if more than one fires at boot only one supervisor actually runs.
+
 It then prints its pairing QR + 8-digit code in the foreground (so you can
 scan/copy it), then **detaches and keeps running in the background**, appending
 logs to `/var/ops/teaops-agent.log`. Pass `--foreground` / `-f` (or set
@@ -81,7 +95,7 @@ read and are re-encrypted on the next write.
 
 | Var | Default | Notes |
 |-----|---------|-------|
-| `TEAOPS_BACKEND_URL` | `https://wxapi.dn7.cn` | backend base URL (use HTTPS in prod); ws/wss is derived from it |
+| `TEAOPS_BACKEND_URL` | `https://api.teaops.dn7.cn` | backend base URL (use HTTPS in prod); ws/wss is derived from it |
 | `TEAOPS_INTERVAL_SECS` | `3` | report interval |
 | `TEAOPS_TOKEN_FILE` | `/var/ops/teaops-agent.token` | where the token is persisted |
 | `TEAOPS_AGENT_TOKEN` | — | provide directly to skip pairing |

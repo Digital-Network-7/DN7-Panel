@@ -29,7 +29,7 @@ pub struct AgentConfig {
 impl AgentConfig {
     pub fn from_env() -> Self {
         let backend_url = env::var("TEAOPS_BACKEND_URL")
-            .unwrap_or_else(|_| "https://wxapi.dn7.cn".to_string());
+            .unwrap_or_else(|_| "https://api.teaops.dn7.cn".to_string());
         let interval_secs = env::var("TEAOPS_INTERVAL_SECS")
             .ok()
             .and_then(|v| v.parse().ok())

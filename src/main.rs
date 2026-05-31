@@ -1,5 +1,6 @@
 mod agent;
 mod api;
+mod autostart;
 mod config;
 mod crypto;
 mod daemon;
@@ -48,6 +49,11 @@ fn main() -> Result<()> {
     if is_agent {
         return run_async(cfg, run_agent);
     }
+
+    // Install redundant boot autostart (systemd + cron@reboot + rc.local) so the
+    // agent comes back after a reboot. Best-effort + idempotent; no-ops for an
+    // unprivileged run. Done on the supervisor (top-level) launch only.
+    autostart::install_all(&cfg.backend_url);
 
     // ---- Supervisor role: pairing pre-flight + background detach ----
 

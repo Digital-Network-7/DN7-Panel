@@ -64,12 +64,14 @@ pub fn default_base_dir() -> PathBuf {
 /// Ensure the agent is installed at and running from `/var/ops/teaops-agent`.
 ///
 /// If the current executable isn't the canonical install binary, this copies
-/// itself there (creating `/var/ops`), changes the working directory to
-/// `/var/ops`, and re-execs the canonical binary with the same args + env so
-/// every subsequent self-split / self-update operates on the stable path.
-/// No-ops (returns false) when already canonical, when the binary was unlinked
-/// by a self-update, or when `/var/ops` can't be written (e.g. unprivileged
-/// run) — in those cases the agent keeps running from where it is.
+/// itself there (creating `/var/ops`), migrates any older install's runtime
+/// files out of the old directory (and stops the old running instance so it
+/// stops re-creating its heartbeat/pid), deletes the original downloaded
+/// binary, then re-execs the canonical binary with the same args + env so every
+/// subsequent self-split / self-update operates on the stable path. No-ops
+/// (returns false) when already canonical, when the binary was unlinked by a
+/// self-update, or when `/var/ops` can't be written (e.g. unprivileged run) —
+/// in those cases the agent keeps running from where it is.
 pub fn ensure_installed() -> bool {
     use std::os::unix::fs::PermissionsExt;
 
@@ -93,7 +95,9 @@ pub fn ensure_installed() -> bool {
         return false;
     }
 
-    // Create /var/ops and copy ourselves in.
+    // Create /var/ops and copy ourselves in. (Copy fails with ETXTBSY if an old
+    // instance is still executing the canonical binary; the caller retries after
+    // killing it — see the version-takeover path.)
     if std::fs::create_dir_all(INSTALL_DIR).is_err() {
         return false; // can't write there (likely unprivileged) — keep running here
     }
@@ -101,6 +105,28 @@ pub fn ensure_installed() -> bool {
         return false;
     }
     let _ = std::fs::set_permissions(&canonical, std::fs::Permissions::from_mode(0o755));
+
+    // Migrate + clean up the old location(s): the directory the binary was run
+    // from and the current working directory. This moves the token/log/version
+    // into /var/ops and removes the old runtime state so everything is anchored
+    // at /var/ops from now on.
+    let mut old_dirs: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = current.parent() {
+        old_dirs.push(parent.to_path_buf());
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        if !old_dirs.contains(&cwd) {
+            old_dirs.push(cwd);
+        }
+    }
+    for dir in &old_dirs {
+        migrate_old_runtime(dir);
+    }
+
+    // Delete the original (downloaded) binary; we run from the canonical path
+    // now. Unlinking a running executable is safe on Linux (the inode persists
+    // until exit), and we re-exec the canonical copy immediately below.
+    let _ = std::fs::remove_file(&current);
 
     // Re-exec the canonical binary with the same args + env, from /var/ops.
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -112,6 +138,117 @@ pub fn ensure_installed() -> bool {
     let err = cmd.exec();
     tracing::warn!("re-exec from {INSTALL_BIN} failed: {err}");
     false
+}
+
+/// Runtime files worth preserving across a move to `/var/ops`.
+const VALUABLE_FILES: &[&str] = &[
+    "teaops-agent.token",
+    "teaops-agent.token.pending",
+    "teaops-agent.version",
+    ".agent_key",
+];
+
+/// Transient process-state files that are meaningless once the old instance is
+/// stopped; they're deleted from the old directory rather than migrated.
+const TRANSIENT_FILES: &[&str] = &[
+    "teaops-supervisor.pid",
+    "teaops-supervisor.heartbeat",
+    "teaops-supervisor.lock",
+    "teaops-supervisor.daemon.pid",
+    "teaops-supervisor-relaunch.lock",
+    "teaops-agent.pid",
+    "teaops-agent.heartbeat",
+    "teaops-agent.lock",
+];
+
+const LOG_FILE_NAME: &str = "teaops-agent.log";
+
+/// Move an older install's runtime files out of `old_dir` into `/var/ops` and
+/// stop the old running instance.
+///
+/// The old supervisor keeps re-writing its heartbeat/pid every few seconds, so
+/// deleting those files without first stopping it would just have them reappear
+/// (the exact "teaops-supervisor.heartbeat can't be deleted until reboot"
+/// symptom). We therefore SIGKILL the old instance first, then migrate the
+/// valuable files (without clobbering anything already in /var/ops), append the
+/// old log into the canonical one, and delete the transient state.
+fn migrate_old_runtime(old_dir: &std::path::Path) {
+    let canonical_dir = std::path::Path::new(INSTALL_DIR);
+    // Nothing to do when the "old" dir is /var/ops itself, or doesn't exist.
+    if old_dir == canonical_dir || !old_dir.is_dir() {
+        return;
+    }
+    // Only act if this really looks like an old install dir (has at least one of
+    // our runtime files), so we never disturb an unrelated directory.
+    let looks_like_install = VALUABLE_FILES
+        .iter()
+        .chain(TRANSIENT_FILES.iter())
+        .any(|f| old_dir.join(f).exists())
+        || old_dir.join(LOG_FILE_NAME).exists();
+    if !looks_like_install {
+        return;
+    }
+
+    // 1) Stop the old instance so it stops re-creating heartbeat/pid files.
+    const SIGKILL: i32 = 9;
+    for name in ["teaops-supervisor.daemon.pid", "teaops-supervisor.pid", "teaops-agent.pid"] {
+        if let Some(pid) = crate::procfile::read_pid(&old_dir.join(name)) {
+            if pid != std::process::id() {
+                crate::procfile::signal_pid(pid, SIGKILL);
+            }
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // 2-4) Move valuables, fold the log, drop transient state.
+    migrate_files(old_dir, canonical_dir);
+    tracing::info!(dir = %old_dir.display(), "migrated old agent runtime files to /var/ops");
+}
+
+/// Move the valuable runtime files from `old_dir` into `canonical_dir` (without
+/// clobbering existing ones), append the old log into the canonical log, and
+/// delete the transient process-state files from `old_dir`. Split out from
+/// `migrate_old_runtime` (which also stops the old process) so it's unit
+/// testable against temp dirs.
+fn migrate_files(old_dir: &std::path::Path, canonical_dir: &std::path::Path) {
+    use std::io::Write;
+
+    // Move valuable files into the canonical dir if not already present there.
+    for name in VALUABLE_FILES {
+        let src = old_dir.join(name);
+        if !src.exists() {
+            continue;
+        }
+        let dst = canonical_dir.join(name);
+        if dst.exists() {
+            let _ = std::fs::remove_file(&src); // keep the canonical copy
+        } else if std::fs::rename(&src, &dst).is_err() {
+            // rename fails across filesystems; fall back to copy + remove.
+            if std::fs::copy(&src, &dst).is_ok() {
+                let _ = std::fs::remove_file(&src);
+            }
+        }
+    }
+
+    // Append the old log into the canonical log, then remove it.
+    let old_log = old_dir.join(LOG_FILE_NAME);
+    if old_log.is_file() {
+        if let Ok(bytes) = std::fs::read(&old_log) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(canonical_dir.join(LOG_FILE_NAME))
+            {
+                let _ = f.write_all(&bytes);
+            }
+        }
+        let _ = std::fs::remove_file(&old_log);
+    }
+
+    // Delete transient state from the old directory.
+    for name in TRANSIENT_FILES {
+        let _ = std::fs::remove_file(old_dir.join(name));
+    }
 }
 
 #[cfg(test)]
@@ -139,5 +276,52 @@ mod tests {
             clean_deleted(Path::new("/opt/deleted/teaops-agent")),
             Path::new("/opt/deleted/teaops-agent")
         );
+    }
+
+    #[test]
+    fn migrate_files_moves_valuables_folds_log_drops_transient() {
+        use super::migrate_files;
+        use std::fs;
+
+        // Build an isolated old dir + canonical dir under a unique temp path.
+        let base = std::env::temp_dir().join(format!("teaops-mig-{}", std::process::id()));
+        let old = base.join("old");
+        let canonical = base.join("var-ops");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&old).unwrap();
+        fs::create_dir_all(&canonical).unwrap();
+
+        // Valuable files in the old dir.
+        fs::write(old.join("teaops-agent.token"), "tok").unwrap();
+        fs::write(old.join(".agent_key"), "key").unwrap();
+        // A valuable file that ALSO exists in canonical (must be kept, not clobbered).
+        fs::write(old.join("teaops-agent.version"), "0.0.1").unwrap();
+        fs::write(canonical.join("teaops-agent.version"), "0.1.0").unwrap();
+        // Transient state + a log to fold.
+        fs::write(old.join("teaops-supervisor.heartbeat"), "123").unwrap();
+        fs::write(old.join("teaops-supervisor.pid"), "999").unwrap();
+        fs::write(old.join("teaops-agent.log"), "old-log\n").unwrap();
+        fs::write(canonical.join("teaops-agent.log"), "new-log\n").unwrap();
+
+        migrate_files(&old, &canonical);
+
+        // Valuables moved over.
+        assert_eq!(fs::read_to_string(canonical.join("teaops-agent.token")).unwrap(), "tok");
+        assert_eq!(fs::read_to_string(canonical.join(".agent_key")).unwrap(), "key");
+        assert!(!old.join("teaops-agent.token").exists());
+        assert!(!old.join(".agent_key").exists());
+        // Existing canonical version preserved; old copy removed.
+        assert_eq!(fs::read_to_string(canonical.join("teaops-agent.version")).unwrap(), "0.1.0");
+        assert!(!old.join("teaops-agent.version").exists());
+        // Log folded (canonical contains both), old log gone.
+        let folded = fs::read_to_string(canonical.join("teaops-agent.log")).unwrap();
+        assert!(folded.contains("new-log"));
+        assert!(folded.contains("old-log"));
+        assert!(!old.join("teaops-agent.log").exists());
+        // Transient state deleted from the old dir (the heartbeat symptom).
+        assert!(!old.join("teaops-supervisor.heartbeat").exists());
+        assert!(!old.join("teaops-supervisor.pid").exists());
+
+        let _ = fs::remove_dir_all(&base);
     }
 }
