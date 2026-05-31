@@ -77,9 +77,37 @@ pub fn pid_alive(pid: u32) -> bool {
     unsafe { libc_kill(pid as i32, 0) == 0 }
 }
 
+/// Send a signal to a pid (best-effort; errors such as ESRCH are ignored).
+pub fn signal_pid(pid: u32, sig: i32) {
+    // SAFETY: a plain kill(2); failure (e.g. the pid already exited) is fine.
+    unsafe {
+        libc_kill(pid as i32, sig);
+    }
+}
+
 extern "C" {
     #[link_name = "kill"]
     fn libc_kill(pid: i32, sig: i32) -> i32;
+}
+
+/// Path of the file recording the version of the currently-running agent. The
+/// supervisor writes it on startup; a fresh foreground launch reads it to decide
+/// whether to replace the running instance with a newer binary.
+pub fn version_path(runtime_dir: &Path) -> PathBuf {
+    runtime_dir.join("teaops-agent.version")
+}
+
+/// Record this binary's version as the running version (best-effort).
+pub fn write_version(runtime_dir: &Path) {
+    let _ = std::fs::write(version_path(runtime_dir), env!("CARGO_PKG_VERSION"));
+}
+
+/// Read the recorded running version, if present.
+pub fn read_version(runtime_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(version_path(runtime_dir))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// A held flock guard. Dropping it releases the lock.

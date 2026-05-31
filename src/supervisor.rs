@@ -34,6 +34,7 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
     };
     write_pid(&me.pid)?;
     write_heartbeat(&me.heartbeat)?;
+    crate::procfile::write_version(&cfg.runtime_dir);
     tracing::info!(pid = std::process::id(), "supervisor started");
 
     // Heartbeat task: keep our heartbeat fresh so the agent's guardian sees us.
@@ -130,6 +131,50 @@ async fn wait_until_agent_dead(agent: &RolePaths, cfg: &AgentConfig) {
             return;
         }
     }
+}
+
+/// Forcefully stop a running agent+supervisor pair so a newer binary can take
+/// over. Called synchronously from the foreground pre-flight (before any tokio
+/// runtime) when a launch detects an already-running instance of an *older*
+/// version.
+///
+/// Order matters because the two roles mutually resurrect each other:
+///   1. SIGKILL the agent first. SIGKILL can't be caught, so its guardian can't
+///      relaunch the supervisor. (SIGTERM would let it clean up / fight back.)
+///   2. SIGKILL the supervisor. On agent exit it only restarts after a seconds-
+///      long backoff, so killing it immediately wins the race.
+///   3. Remove the pid/heartbeat files so the *new* supervisor doesn't "adopt"
+///      the just-killed agent as if it were still alive.
+///
+/// Best-effort: each step ignores "already gone" errors.
+pub fn stop_running_instance(cfg: &AgentConfig) {
+    use crate::procfile::{read_pid, signal_pid, RolePaths};
+
+    const SIGKILL: i32 = 9;
+
+    let agent = RolePaths::new(&cfg.runtime_dir, "agent");
+    let supervisor = RolePaths::new(&cfg.runtime_dir, "supervisor");
+
+    if let Some(pid) = read_pid(&agent.pid) {
+        signal_pid(pid, SIGKILL);
+    }
+    if let Some(pid) = read_pid(&supervisor.pid) {
+        signal_pid(pid, SIGKILL);
+    }
+    // Also kill the daemonized parent recorded by the daemonizer, in case it
+    // differs from the supervisor role pid.
+    let daemon_pid = cfg.runtime_dir.join(crate::daemon::PID_FILE);
+    if let Some(pid) = read_pid(&daemon_pid) {
+        signal_pid(pid, SIGKILL);
+    }
+
+    // Give the kernel a moment to reap them, then clear stale liveness markers
+    // so the replacement supervisor starts a fresh agent instead of adopting.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    for p in [&agent.pid, &agent.heartbeat, &supervisor.pid, &supervisor.heartbeat] {
+        let _ = std::fs::remove_file(p);
+    }
+    let _ = std::fs::remove_file(&daemon_pid);
 }
 
 /// Combined SIGTERM/SIGINT receiver.
