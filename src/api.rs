@@ -57,10 +57,13 @@ struct ReportReq {
     cpu_usage: f64,
     memory_usage: f64,
     disk_usage: f64,
+    net_rx: f64,
+    net_tx: f64,
     uptime: i64,
     hostname: String,
     os_version: String,
     ip: String,
+    agent_version: String,
 }
 
 /// HTTP client wrapper around the TeaOps backend API.
@@ -134,10 +137,13 @@ impl ApiClient {
             cpu_usage: m.cpu_usage,
             memory_usage: m.memory_usage,
             disk_usage: m.disk_usage,
+            net_rx: m.net_rx,
+            net_tx: m.net_tx,
             uptime: m.uptime,
             hostname: m.hostname.clone(),
             os_version: m.os_version.clone(),
             ip: m.ip.clone(),
+            agent_version: env!("CARGO_PKG_VERSION").to_string(),
         };
         let resp = self
             .http

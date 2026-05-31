@@ -1,5 +1,7 @@
+use std::time::Instant;
+
 use serde::Serialize;
-use sysinfo::{Disks, System};
+use sysinfo::{Disks, Networks, System};
 
 /// A single metrics snapshot collected from the local machine.
 #[derive(Debug, Clone, Serialize)]
@@ -7,6 +9,9 @@ pub struct Metrics {
     pub cpu_usage: f64,
     pub memory_usage: f64,
     pub disk_usage: f64,
+    /// Network throughput since the previous sample, in bytes/sec.
+    pub net_rx: f64,
+    pub net_tx: f64,
     pub uptime: i64,
     pub hostname: String,
     pub os_version: String,
@@ -17,13 +22,21 @@ pub struct Metrics {
 /// computed correctly (CPU usage needs two samples).
 pub struct Collector {
     sys: System,
+    networks: Networks,
+    /// Timestamp of the previous collect, to convert byte deltas to per-second.
+    last_sample: Option<Instant>,
 }
 
 impl Collector {
     pub fn new() -> Self {
         let mut sys = System::new_all();
         sys.refresh_all();
-        Collector { sys }
+        let networks = Networks::new_with_refreshed_list();
+        Collector {
+            sys,
+            networks,
+            last_sample: None,
+        }
     }
 
     /// Refresh and produce a metrics snapshot.
@@ -52,6 +65,29 @@ impl Collector {
 
         let disk_usage = compute_disk_usage();
 
+        // Network throughput: sum per-interface received/transmitted bytes since
+        // the last refresh, divided by the elapsed wall-clock seconds.
+        self.networks.refresh();
+        let mut rx_bytes: u64 = 0;
+        let mut tx_bytes: u64 = 0;
+        for (_iface, data) in self.networks.iter() {
+            rx_bytes += data.received();
+            tx_bytes += data.transmitted();
+        }
+        let now = Instant::now();
+        let elapsed = self
+            .last_sample
+            .map(|t| now.duration_since(t).as_secs_f64())
+            .filter(|s| *s > 0.0)
+            .unwrap_or(0.0);
+        self.last_sample = Some(now);
+        let (net_rx, net_tx) = if elapsed > 0.0 {
+            (rx_bytes as f64 / elapsed, tx_bytes as f64 / elapsed)
+        } else {
+            // First sample has no baseline; report 0 to avoid a huge spike.
+            (0.0, 0.0)
+        };
+
         let uptime = System::uptime() as i64;
         let hostname = System::host_name().unwrap_or_default();
         let os_version = os_label();
@@ -61,6 +97,8 @@ impl Collector {
             cpu_usage: clamp_pct(cpu_usage),
             memory_usage: clamp_pct(memory_usage),
             disk_usage: clamp_pct(disk_usage),
+            net_rx: net_rx.max(0.0),
+            net_tx: net_tx.max(0.0),
             uptime,
             hostname,
             os_version,
