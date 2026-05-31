@@ -36,11 +36,11 @@ impl AgentConfig {
             .unwrap_or(1);
         let token_file = env::var("TEAOPS_TOKEN_FILE")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("teaops-agent.token"));
+            .unwrap_or_else(|_| crate::paths::default_base_dir().join("teaops-agent.token"));
         let agent_token = env::var("TEAOPS_AGENT_TOKEN").ok().filter(|s| !s.is_empty());
         let runtime_dir = env::var("TEAOPS_RUNTIME_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("."));
+            .unwrap_or_else(|_| crate::paths::default_base_dir());
         let heartbeat_timeout_secs = env::var("TEAOPS_HEARTBEAT_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse().ok())

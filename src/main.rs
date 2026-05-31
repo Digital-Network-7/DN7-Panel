@@ -7,6 +7,7 @@ mod file;
 mod guardian;
 mod metrics;
 mod pairing;
+mod paths;
 mod procfile;
 mod supervisor;
 mod terminal;
@@ -29,6 +30,15 @@ use crate::procfile::RolePaths;
 fn main() -> Result<()> {
     let role = std::env::args().nth(1);
     let is_agent = role.as_deref() == Some("agent");
+
+    // Migrate to the canonical install location (/var/ops/teaops-agent) on the
+    // top-level (supervisor) launch, so the operator never has to create dirs
+    // and every respawn/self-update uses a stable path. The agent role is an
+    // internal child already launched from the canonical path, so skip it
+    // there. On success this re-execs and never returns.
+    if !is_agent {
+        paths::ensure_installed();
+    }
 
     let cfg = AgentConfig::from_env();
 
@@ -80,7 +90,8 @@ fn main() -> Result<()> {
     if daemon::wants_foreground() {
         eprintln!("running in foreground");
     } else {
-        println!("Agent 正在后台运行，日志见 {}", daemon::LOG_FILE);
+        let log = paths::default_base_dir().join(daemon::LOG_FILE);
+        println!("Agent 正在后台运行，日志见 {}", log.display());
         daemon::daemonize()?;
     }
 

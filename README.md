@@ -29,10 +29,16 @@ cargo build --release
 TEAOPS_BACKEND_URL=https://your-backend.example.com ./target/release/teaops-agent
 ```
 
-On a normal launch the agent prints its pairing QR + 8-digit code in the
-foreground (so you can scan/copy it), then **detaches and keeps running in the
-background**, appending logs to `teaops-agent.log`. Pass `--foreground` / `-f`
-(or set `TEAOPS_FOREGROUND=1`) to stay attached for debugging.
+On a normal launch the agent first **installs itself to `/var/ops/teaops-agent`**
+(creating `/var/ops` if needed) and re-execs from there, so you can run the
+downloaded binary from anywhere — no need to create directories by hand. All
+runtime state (token, pid/heartbeat/lock, log) lives under `/var/ops`. If
+`/var/ops` isn't writable (e.g. an unprivileged run) it just runs in place.
+
+It then prints its pairing QR + 8-digit code in the foreground (so you can
+scan/copy it), then **detaches and keeps running in the background**, appending
+logs to `/var/ops/teaops-agent.log`. Pass `--foreground` / `-f` (or set
+`TEAOPS_FOREGROUND=1`) to stay attached for debugging.
 
 If you run the binary again **while an instance is already running**, it does
 not start a duplicate. Instead it reads the current server's token, asks the
@@ -71,9 +77,9 @@ the backend installs and starts the agent for you.
 |-----|---------|-------|
 | `TEAOPS_BACKEND_URL` | `https://wxapi.dn7.cn` | backend base URL (use HTTPS in prod); ws/wss is derived from it |
 | `TEAOPS_INTERVAL_SECS` | `3` | report interval |
-| `TEAOPS_TOKEN_FILE` | `teaops-agent.token` | where the token is persisted |
+| `TEAOPS_TOKEN_FILE` | `/var/ops/teaops-agent.token` | where the token is persisted |
 | `TEAOPS_AGENT_TOKEN` | — | provide directly to skip pairing |
-| `TEAOPS_RUNTIME_DIR` | `.` | shared pid/heartbeat/lock dir for the two roles |
+| `TEAOPS_RUNTIME_DIR` | `/var/ops` | shared pid/heartbeat/lock dir for the two roles |
 | `TEAOPS_HEARTBEAT_TIMEOUT_SECS` | `15` | peer liveness threshold |
 | `TEAOPS_SUPERVISE_INTERVAL_SECS` | `3` | supervisor child-check interval |
 | `TEAOPS_RESTART_BACKOFF_SECS` | `2` | delay between agent restarts |

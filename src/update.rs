@@ -40,13 +40,17 @@ pub async fn install_bytes(bytes: &[u8], target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Self-update: fetch latest (GitHub-first) and replace own exe.
+/// Self-update: fetch latest (GitHub-first) and replace the binary at the stable
+/// install path (`/var/ops/teaops-agent`, falling back to a cleaned current
+/// exe). Writing to the stable path — not the raw `current_exe()` — means a
+/// post-update "(deleted)" path never breaks the next update, and the canonical
+/// binary the supervisor respawns is the one that gets upgraded.
 /// Returns the replaced path; the caller should then exit.
 pub async fn self_update(cfg: &AgentConfig) -> Result<PathBuf> {
-    let exe = std::env::current_exe().context("resolve current exe path")?;
-    tracing::info!(target = ?exe, "self-update: fetching latest binary");
+    let target = crate::paths::stable_bin();
+    tracing::info!(?target, "self-update: fetching latest binary");
     let bytes = fetch::fetch_latest(cfg).await?;
-    install_bytes(&bytes, &exe).await?;
+    install_bytes(&bytes, &target).await?;
     tracing::info!(bytes = bytes.len(), "self-update installed; exiting for restart");
-    Ok(exe)
+    Ok(target)
 }

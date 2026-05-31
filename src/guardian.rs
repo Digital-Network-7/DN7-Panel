@@ -68,9 +68,11 @@ pub fn spawn(cfg: AgentConfig) {
     });
 }
 
-/// Re-execute this binary with no args to bring the supervisor role back.
+/// Re-execute the stable binary with no args to bring the supervisor role back.
+/// Uses `paths::stable_bin()` so a post-self-update "(deleted)" `current_exe()`
+/// never produces a non-existent path.
 fn relaunch_supervisor() -> std::io::Result<std::process::Child> {
-    let exe = std::env::current_exe()?;
+    let exe = crate::paths::stable_bin();
     Command::new(exe)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())

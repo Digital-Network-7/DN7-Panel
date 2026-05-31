@@ -102,10 +102,14 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
     Ok(())
 }
 
-/// Spawn the agent role by re-executing *this* binary with the `agent`
-/// subcommand (the "self-split"). Stdio is inherited so the agent's logs show.
+/// Spawn the agent role by re-executing the stable agent binary with the
+/// `agent` subcommand (the "self-split"). Uses `paths::stable_bin()` rather
+/// than `current_exe()` because, after a self-update, the running file is
+/// unlinked and `current_exe()` resolves to a non-existent "(deleted)" path —
+/// which is exactly what caused "failed to spawn agent: No such file".
+/// Stdio is inherited so the agent's logs show.
 fn spawn_agent() -> Result<Child> {
-    let exe = std::env::current_exe()?;
+    let exe = crate::paths::stable_bin();
     let child = Command::new(exe)
         .arg("agent")
         .stdin(Stdio::null())

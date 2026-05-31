@@ -23,19 +23,23 @@ pub fn wants_foreground() -> bool {
     )
 }
 
-/// Detach from the terminal and run in the background. The working directory is
-/// left unchanged so relative paths (token file, runtime dir, log) resolve the
-/// same as in the foreground.
+/// Detach from the terminal and run in the background. Logs/PID and the working
+/// directory are anchored at the base dir (`/var/ops`, falling back to cwd) so
+/// they're consistent regardless of where the agent was launched from.
 #[cfg(unix)]
 pub fn daemonize() -> anyhow::Result<()> {
     use std::fs::OpenOptions;
 
-    let log = OpenOptions::new().create(true).append(true).open(LOG_FILE)?;
+    let base = crate::paths::default_base_dir();
+    let log_path = base.join(LOG_FILE);
+    let pid_path = base.join(PID_FILE);
+
+    let log = OpenOptions::new().create(true).append(true).open(&log_path)?;
     let log_err = log.try_clone()?;
 
     daemonize::Daemonize::new()
-        .pid_file(PID_FILE)
-        .working_directory(".")
+        .pid_file(pid_path)
+        .working_directory(&base)
         .stdout(log)
         .stderr(log_err)
         .start()?;
