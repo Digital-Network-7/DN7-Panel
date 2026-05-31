@@ -22,6 +22,9 @@ pub enum ServerCommand {
     /// Self-update to the latest version. The agent resolves the binary source
     /// itself (GitHub-first, download-service fallback).
     Upgrade,
+    /// Open a local PTY shell and relay it back to the backend for the given
+    /// terminal session id (dial `/agent/terminal?session=...`).
+    OpenTerminal(String),
 }
 
 /// A live agent->backend metrics stream.
@@ -73,6 +76,10 @@ impl MetricsStream {
                     if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
                         if cmd == "upgrade" {
                             commands.push(ServerCommand::Upgrade);
+                        } else if cmd == "open-terminal" {
+                            if let Some(session) = v.get("session").and_then(|s| s.as_str()) {
+                                commands.push(ServerCommand::OpenTerminal(session.to_string()));
+                            }
                         }
                         continue;
                     }

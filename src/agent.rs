@@ -83,6 +83,20 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                                     tracing::info!("already on the latest version; ignoring upgrade");
                                 }
                             }
+                            ServerCommand::OpenTerminal(session) => {
+                                tracing::info!(%session, "received open-terminal command");
+                                // Relay a local PTY shell back to the backend in
+                                // its own task so the metrics loop keeps running.
+                                let cfg_t = cfg.clone();
+                                let token_t = agent_token.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) =
+                                        crate::terminal::run_terminal(&cfg_t, &token_t, &session).await
+                                    {
+                                        tracing::warn!(%session, "terminal relay ended: {e}");
+                                    }
+                                });
+                            }
                         }
                     }
                 }

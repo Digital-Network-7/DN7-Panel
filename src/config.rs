@@ -87,6 +87,23 @@ impl AgentConfig {
         };
         format!("{ws_base}/agent/ws?token={}", urlencode(agent_token))
     }
+
+    /// WebSocket URL the agent dials to relay a PTY terminal back to the backend
+    /// for a given session (in response to an `open-terminal` command).
+    pub fn agent_terminal_ws_url(&self, agent_token: &str, session: &str) -> String {
+        let ws_base = if let Some(rest) = self.backend_url.strip_prefix("https://") {
+            format!("wss://{rest}")
+        } else if let Some(rest) = self.backend_url.strip_prefix("http://") {
+            format!("ws://{rest}")
+        } else {
+            self.backend_url.clone()
+        };
+        format!(
+            "{ws_base}/agent/terminal?token={}&session={}",
+            urlencode(agent_token),
+            urlencode(session)
+        )
+    }
 }
 
 /// Minimal percent-encoding for a token in a query string (alnum, `-_.~` pass

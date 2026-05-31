@@ -91,6 +91,16 @@ upgrade, the agent role:
 2. atomically replaces its own executable, and
 3. exits cleanly so the supervisor role restarts it on the new version.
 
+## Terminal relay (intranet-friendly SSH)
+
+The backend can also push an `open-terminal` command. The agent then dials back
+`GET /agent/terminal?token=&session=`, opens a **local PTY shell** (the user's
+login shell), and relays it to the backend byte-for-byte. Because the agent
+connects *outbound*, this gives the web/mini-program terminal full access to
+**intranet / NAT'd servers** the backend can't reach directly — no inbound SSH
+or public IP required. The PTY honors window-resize frames so full-screen apps
+(vim/top) render correctly.
+
 ## Metrics collected
 
 - CPU usage (% averaged across cores)

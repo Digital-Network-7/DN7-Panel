@@ -6,6 +6,7 @@ mod guardian;
 mod metrics;
 mod procfile;
 mod supervisor;
+mod terminal;
 mod update;
 mod ws;
 
