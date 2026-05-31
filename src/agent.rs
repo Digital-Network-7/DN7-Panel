@@ -166,16 +166,11 @@ async fn resolve_token(
         }
     }
 
-    // 3. Pairing flow: register -> print 6-digit code -> poll until claimed.
+    // 3. Pairing flow: register -> show QR (token) + 8-digit code -> poll.
     let snapshot = collector.collect();
     let reg = client.register(&snapshot).await?;
 
-    println!("\n========================================");
-    println!("  TeaOps Agent Pairing");
-    println!("  Enter this code in the Mini Program:");
-    println!("\n        >>>  {}  <<<\n", reg.pairing_code);
-    println!("  (valid until {})", reg.expires_at);
-    println!("========================================\n");
+    print_pairing(&reg.agent_token, &reg.pairing_code, &reg.expires_at);
     tracing::info!(code = %reg.pairing_code, "waiting for pairing in mini program");
 
     loop {
@@ -183,13 +178,14 @@ async fn resolve_token(
         match client.poll(&reg.register_secret).await {
             Ok(poll) => {
                 if poll.claimed {
-                    if let Some(token) = poll.agent_token {
-                        if let Err(e) = std::fs::write(&cfg.token_file, &token) {
-                            tracing::warn!("failed to persist token file: {e}");
-                        }
-                        tracing::info!("pairing claimed successfully");
-                        return Ok(token);
+                    // The backend reuses the pre-generated token, so prefer the
+                    // polled token but fall back to the one we already have.
+                    let token = poll.agent_token.unwrap_or_else(|| reg.agent_token.clone());
+                    if let Err(e) = std::fs::write(&cfg.token_file, &token) {
+                        tracing::warn!("failed to persist token file: {e}");
                     }
+                    tracing::info!("pairing claimed successfully");
+                    return Ok(token);
                 } else {
                     tracing::debug!("not claimed yet, still waiting...");
                 }
@@ -199,4 +195,65 @@ async fn resolve_token(
             }
         }
     }
+}
+
+/// Render the pairing instructions: a QR encoding the 128-char server token
+/// (scan to add directly) plus the 8-digit quick-add code (type it instead).
+fn print_pairing(agent_token: &str, pairing_code: &str, expires_at: &str) {
+    println!("\n========================================");
+    println!("  TeaOps Agent 配对");
+    println!("  用小程序扫描下方二维码即可添加本服务器：\n");
+    match render_qr(agent_token) {
+        Some(qr) => println!("{qr}"),
+        None => println!("  (二维码渲染失败，请改用下方快速添加码)\n"),
+    }
+    println!("  或在小程序中输入 8 位快速添加码：");
+    println!("\n        >>>  {pairing_code}  <<<\n");
+    println!("  (有效期至 {expires_at})");
+    println!("========================================\n");
+}
+
+/// Render a QR code into the terminal using unicode upper-half blocks with
+/// explicit ANSI colors (black modules on a white background). Setting both the
+/// foreground and background per cell makes the code scannable regardless of
+/// the terminal's own color theme, while the half-block trick maps two QR rows
+/// to one text line so the symbol stays roughly square. Returns None if
+/// encoding fails.
+fn render_qr(data: &str) -> Option<String> {
+    use qrcode::types::Color;
+    use qrcode::{EcLevel, QrCode};
+
+    // Uppercase hex stays in the QR alphanumeric charset, which is denser than
+    // byte mode and yields a smaller, easier-to-scan symbol.
+    let payload = data.to_ascii_uppercase();
+    let code = QrCode::with_error_correction_level(payload.as_bytes(), EcLevel::L).ok()?;
+    let width = code.width();
+    let modules = code.to_colors();
+
+    let quiet = 2isize; // light quiet zone around the symbol
+    let total = width as isize + quiet * 2;
+    // True = dark module; outside the symbol (quiet zone) is light.
+    let dark = |x: isize, y: isize| -> bool {
+        let mx = x - quiet;
+        let my = y - quiet;
+        if mx < 0 || my < 0 || mx >= width as isize || my >= width as isize {
+            return false;
+        }
+        modules[(my as usize) * width + (mx as usize)] == Color::Dark
+    };
+    // 256-color codes: 0 = black (dark module), 15 = white (light module).
+    let ansi = |is_dark: bool| if is_dark { 0 } else { 15 };
+
+    let mut out = String::new();
+    let mut y = 0isize;
+    while y < total {
+        for x in 0..total {
+            let fg = ansi(dark(x, y)); // top half = this row
+            let bg = ansi(dark(x, y + 1)); // bottom half = next row
+            out.push_str(&format!("\x1b[38;5;{fg};48;5;{bg}m\u{2580}"));
+        }
+        out.push_str("\x1b[0m\n");
+        y += 2;
+    }
+    Some(out)
 }

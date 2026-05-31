@@ -15,6 +15,9 @@ struct Envelope<T> {
 
 #[derive(Debug, Deserialize)]
 pub struct RegisterData {
+    /// 128-char server token (shown as a QR for direct add).
+    pub agent_token: String,
+    /// 8-digit quick-add code (valid 30 min); exchangeable for the token.
     pub pairing_code: String,
     pub register_secret: String,
     pub expires_at: String,
