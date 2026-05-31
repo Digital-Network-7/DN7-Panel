@@ -177,9 +177,12 @@ pub fn print_pairing(agent_token: &str, pairing_code: &str, expires_at: &str) {
     println!("========================================\n");
 }
 
-/// Render a QR code into the terminal using unicode upper-half blocks with
-/// explicit ANSI colors (black modules on a white background), so it scans
-/// regardless of the terminal theme. Returns None if encoding fails.
+/// Render a QR code into the terminal as colored blocks. Each module is drawn
+/// as TWO space characters with an ANSI background color (white for light,
+/// black for dark), because a terminal cell is about twice as tall as it is
+/// wide — two spaces per module keeps the symbol square and scannable. Explicit
+/// per-cell background colors make it readable regardless of the terminal's own
+/// theme. Returns None if encoding fails.
 pub fn render_qr(data: &str) -> Option<String> {
     use qrcode::types::Color;
     use qrcode::{EcLevel, QrCode};
@@ -189,7 +192,7 @@ pub fn render_qr(data: &str) -> Option<String> {
     let width = code.width();
     let modules = code.to_colors();
 
-    let quiet = 2isize;
+    let quiet = 2isize; // light quiet zone around the symbol
     let total = width as isize + quiet * 2;
     let dark = |x: isize, y: isize| -> bool {
         let mx = x - quiet;
@@ -199,18 +202,56 @@ pub fn render_qr(data: &str) -> Option<String> {
         }
         modules[(my as usize) * width + (mx as usize)] == Color::Dark
     };
-    let ansi = |is_dark: bool| if is_dark { 0 } else { 15 };
 
+    // 256-color background codes: 0 = black (dark module), 15 = white (light).
     let mut out = String::new();
-    let mut y = 0isize;
-    while y < total {
+    for y in 0..total {
         for x in 0..total {
-            let fg = ansi(dark(x, y));
-            let bg = ansi(dark(x, y + 1));
-            out.push_str(&format!("\x1b[38;5;{fg};48;5;{bg}m\u{2580}"));
+            let bg = if dark(x, y) { 0 } else { 15 };
+            // Two spaces per module => ~square aspect in a typical terminal.
+            out.push_str(&format!("\x1b[48;5;{bg}m  "));
         }
         out.push_str("\x1b[0m\n");
-        y += 2;
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_qr;
+
+    /// Strip ANSI escape sequences so we can measure the visible grid.
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for n in chars.by_ref() {
+                    if n == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn qr_is_square() {
+        let qr = render_qr(&"a".repeat(128)).expect("render");
+        let lines: Vec<&str> = qr.lines().collect();
+        let rows = lines.len();
+        // Each module is 2 visible chars wide, so module columns = visible / 2.
+        let visible_cols = strip_ansi(lines[0]).chars().count();
+        let module_cols = visible_cols / 2;
+        // The rendered grid must be square (rows == module columns); the old
+        // half-block renderer made it ~2:1 and looked like vertical bars.
+        assert_eq!(rows, module_cols, "QR must be square, got {rows}x{module_cols}");
+        // Every row must have the same visible width.
+        for l in &lines {
+            assert_eq!(strip_ansi(l).chars().count(), visible_cols);
+        }
+    }
 }
