@@ -29,23 +29,30 @@ cargo build --release
 TEAOPS_BACKEND_URL=https://your-backend.example.com ./target/release/teaops-agent
 ```
 
-On first run with no token, the agent role registers and prints a 6-digit
-pairing code:
+On first run with no token, the agent role registers and displays a QR code
+(encoding the server's 128-char token) plus an 8-digit quick-add code:
 
 ```
 ========================================
-  TeaOps Agent Pairing
-  Enter this code in the Mini Program:
+  TeaOps Agent 配对
+  用小程序扫描下方二维码即可添加本服务器：
 
-        >>>  123456  <<<
+   █▀▀▀▀▀█ ▀ ▄ █▀▀▀▀▀█
+   █ ███ █ ▀▄▀ █ ███ █   (terminal QR, black-on-white)
+   ...
 
-  (valid until ...)
+  或在小程序中输入 8 位快速添加码：
+
+        >>>  35054398  <<<
+
+  (有效期至 ...)
 ========================================
 ```
 
-Enter the code in the mini program ("服务器" → 添加 → 配对码添加). Once claimed,
-the agent receives its `agent_token`, persists it to `teaops-agent.token`, and
-starts reporting.
+Add it in the mini program ("服务器" → 添加 → 手动添加): scan the QR or type the
+8-digit code. Once claimed, the agent receives its `agent_token`, persists it to
+`teaops-agent.token`, and starts reporting. The 自动添加 (SSH) flow skips this —
+the backend installs and starts the agent for you.
 
 ## Configuration (env)
 
@@ -89,9 +96,11 @@ upgrade, the agent role:
 - CPU usage (% averaged across cores)
 - Memory usage (% used / total)
 - Disk usage (% used across all mounted disks)
+- Network throughput (bytes/sec received & transmitted, summed across interfaces)
 - Uptime (seconds)
 - Hostname, OS name + version
 - Local IP (best-effort)
+- Agent version (so the backend can prompt an upgrade)
 
 ## Running as a service (systemd)
 
