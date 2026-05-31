@@ -97,6 +97,19 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                                     }
                                 });
                             }
+                            ServerCommand::OpenFile(session) => {
+                                tracing::info!(%session, "received open-file command");
+                                // Relay a file-transfer channel in its own task.
+                                let cfg_t = cfg.clone();
+                                let token_t = agent_token.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) =
+                                        crate::file::run_file_channel(&cfg_t, &token_t, &session).await
+                                    {
+                                        tracing::warn!(%session, "file relay ended: {e}");
+                                    }
+                                });
+                            }
                         }
                     }
                 }

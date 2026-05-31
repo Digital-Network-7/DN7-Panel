@@ -104,6 +104,23 @@ impl AgentConfig {
             urlencode(session)
         )
     }
+
+    /// WebSocket URL the agent dials to relay a file-transfer channel back to
+    /// the backend for a given session (in response to an `open-file` command).
+    pub fn agent_file_ws_url(&self, agent_token: &str, session: &str) -> String {
+        let ws_base = if let Some(rest) = self.backend_url.strip_prefix("https://") {
+            format!("wss://{rest}")
+        } else if let Some(rest) = self.backend_url.strip_prefix("http://") {
+            format!("ws://{rest}")
+        } else {
+            self.backend_url.clone()
+        };
+        format!(
+            "{ws_base}/agent/file?token={}&session={}",
+            urlencode(agent_token),
+            urlencode(session)
+        )
+    }
 }
 
 /// Minimal percent-encoding for a token in a query string (alnum, `-_.~` pass

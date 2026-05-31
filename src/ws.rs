@@ -25,6 +25,9 @@ pub enum ServerCommand {
     /// Open a local PTY shell and relay it back to the backend for the given
     /// terminal session id (dial `/agent/terminal?session=...`).
     OpenTerminal(String),
+    /// Open a file-transfer channel and relay it back for the given session id
+    /// (dial `/agent/file?session=...`).
+    OpenFile(String),
 }
 
 /// A live agent->backend metrics stream.
@@ -58,6 +61,7 @@ impl MetricsStream {
             "os_version": m.os_version,
             "ip": m.ip,
             "agent_version": env!("CARGO_PKG_VERSION"),
+            "is_container": m.is_container,
         });
         self.socket
             .send(Message::Text(payload.to_string()))
@@ -79,6 +83,10 @@ impl MetricsStream {
                         } else if cmd == "open-terminal" {
                             if let Some(session) = v.get("session").and_then(|s| s.as_str()) {
                                 commands.push(ServerCommand::OpenTerminal(session.to_string()));
+                            }
+                        } else if cmd == "open-file" {
+                            if let Some(session) = v.get("session").and_then(|s| s.as_str()) {
+                                commands.push(ServerCommand::OpenFile(session.to_string()));
                             }
                         }
                         continue;

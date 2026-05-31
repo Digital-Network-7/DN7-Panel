@@ -68,6 +68,7 @@ struct ReportReq {
     os_version: String,
     ip: String,
     agent_version: String,
+    is_container: bool,
 }
 
 /// HTTP client wrapper around the TeaOps backend API.
@@ -148,6 +149,7 @@ impl ApiClient {
             os_version: m.os_version.clone(),
             ip: m.ip.clone(),
             agent_version: env!("CARGO_PKG_VERSION").to_string(),
+            is_container: m.is_container,
         };
         let resp = self
             .http

@@ -3,6 +3,7 @@ mod api;
 mod config;
 mod daemon;
 mod fetch;
+mod file;
 mod guardian;
 mod metrics;
 mod pairing;

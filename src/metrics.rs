@@ -16,6 +16,8 @@ pub struct Metrics {
     pub hostname: String,
     pub os_version: String,
     pub ip: String,
+    /// Whether this agent is running inside a Docker/container environment.
+    pub is_container: bool,
 }
 
 /// Collector that maintains a System handle across refreshes so CPU usage is
@@ -35,6 +37,8 @@ pub struct Collector {
     /// opening a UDP socket every tick is wasteful).
     ip: String,
     ip_checked_at: Option<Instant>,
+    /// Whether we're inside a container — detected once at startup.
+    is_container: bool,
 }
 
 impl Collector {
@@ -52,6 +56,7 @@ impl Collector {
             os_version: os_label(),
             ip: local_ip().unwrap_or_default(),
             ip_checked_at: Some(Instant::now()),
+            is_container: detect_container(),
         }
     }
 
@@ -130,6 +135,7 @@ impl Collector {
             hostname: self.hostname.clone(),
             os_version: self.os_version.clone(),
             ip: self.ip.clone(),
+            is_container: self.is_container,
         }
     }
 }
@@ -182,4 +188,24 @@ fn local_ip() -> Option<String> {
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
     socket.local_addr().ok().map(|addr| addr.ip().to_string())
+}
+
+/// Detect whether we're running inside a Docker/container environment. Uses the
+/// common signals: the `/.dockerenv` marker file, a `container` env var, or
+/// container/docker/kubepods references in `/proc/1/cgroup`. Best-effort and
+/// Linux-focused; returns false on non-Linux or when nothing matches.
+fn detect_container() -> bool {
+    if std::path::Path::new("/.dockerenv").exists() {
+        return true;
+    }
+    if std::env::var("container").map(|v| !v.is_empty()).unwrap_or(false) {
+        return true;
+    }
+    if let Ok(cgroup) = std::fs::read_to_string("/proc/1/cgroup") {
+        let c = cgroup.to_ascii_lowercase();
+        if c.contains("docker") || c.contains("kubepods") || c.contains("containerd") || c.contains("/lxc/") {
+            return true;
+        }
+    }
+    false
 }
