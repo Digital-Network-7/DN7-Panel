@@ -23,15 +23,14 @@ fn client() -> reqwest::blocking::Client {
         .expect("failed to build blocking http client")
 }
 
-/// Read the persisted token, if any.
+/// Read the persisted token, if any. Decrypts at-rest ciphertext; a legacy
+/// plaintext token (written before at-rest encryption) is read as-is.
 pub fn saved_token(cfg: &AgentConfig) -> Option<String> {
     if let Some(token) = &cfg.agent_token {
         return Some(token.clone());
     }
-    std::fs::read_to_string(&cfg.token_file)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    let raw = std::fs::read_to_string(&cfg.token_file).ok()?;
+    crate::crypto::maybe_decrypt(&raw).filter(|s| !s.is_empty())
 }
 
 /// Path of the "pending pairing" file (token + register_secret) written by the
@@ -49,8 +48,10 @@ pub struct Pending {
 }
 
 /// Read a pending pairing written by the pre-flight (token\nsecret), if present.
+/// The on-disk body is encrypted at rest; a legacy plaintext body is read as-is.
 pub fn read_pending(cfg: &AgentConfig) -> Option<Pending> {
-    let body = std::fs::read_to_string(pending_path(cfg)).ok()?;
+    let raw = std::fs::read_to_string(pending_path(cfg)).ok()?;
+    let body = crate::crypto::maybe_decrypt(&raw)?;
     let mut lines = body.lines();
     let agent_token = lines.next()?.trim().to_string();
     let register_secret = lines.next()?.trim().to_string();
@@ -63,6 +64,37 @@ pub fn read_pending(cfg: &AgentConfig) -> Option<Pending> {
 /// Remove the pending pairing file (after a successful claim).
 pub fn clear_pending(cfg: &AgentConfig) {
     let _ = std::fs::remove_file(pending_path(cfg));
+}
+
+/// Persist the final (claimed) agent token, encrypted at rest with 0600 perms.
+pub fn persist_token(cfg: &AgentConfig, token: &str) -> std::io::Result<()> {
+    let out = crate::crypto::encrypt(token);
+    std::fs::write(&cfg.token_file, out)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(
+            &cfg.token_file,
+            std::fs::Permissions::from_mode(0o600),
+        );
+    }
+    Ok(())
+}
+
+/// Persist a pending pairing (token + register_secret), encrypted at rest.
+fn write_pending(cfg: &AgentConfig, token: &str, secret: &str) -> std::io::Result<()> {
+    let body = format!("{token}\n{secret}\n");
+    let out = crate::crypto::encrypt(&body);
+    std::fs::write(pending_path(cfg), out)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(
+            pending_path(cfg),
+            std::fs::Permissions::from_mode(0o600),
+        );
+    }
+    Ok(())
 }
 
 /// First-launch registration: register, print pairing, and stage a pending
@@ -103,7 +135,7 @@ pub fn register_and_print(cfg: &AgentConfig) -> Result<()> {
     print_pairing(token, code, &expiry);
 
     // Stage the pending pairing so the background agent can poll until claimed.
-    if let Err(e) = std::fs::write(pending_path(cfg), format!("{token}\n{secret}\n")) {
+    if let Err(e) = write_pending(cfg, token, secret) {
         tracing::warn!("failed to persist pending pairing: {e}");
     }
     Ok(())
@@ -147,7 +179,7 @@ pub fn repair_and_print(cfg: &AgentConfig, token: &str) -> Result<()> {
     // old one was just invalidated server-side). Only do this when a pending
     // file already exists (i.e. not yet claimed).
     if !secret.is_empty() && std::fs::metadata(pending_path(cfg)).is_ok() {
-        let _ = std::fs::write(pending_path(cfg), format!("{token}\n{secret}\n"));
+        let _ = write_pending(cfg, token, secret);
     }
 
     println!("\n  检测到 Agent 已在后台运行，已为当前服务器重新生成配对信息：");

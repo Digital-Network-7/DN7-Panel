@@ -1,6 +1,7 @@
 mod agent;
 mod api;
 mod config;
+mod crypto;
 mod daemon;
 mod fetch;
 mod file;

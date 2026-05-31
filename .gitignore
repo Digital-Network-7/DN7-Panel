@@ -2,6 +2,7 @@
 .env
 *.token
 *.token.pending
+.agent_key
 *.log
 *.pid
 *.heartbeat

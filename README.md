@@ -71,6 +71,12 @@ Add it in the mini program ("服务器" → 添加 → 手动添加): scan the Q
 `teaops-agent.token`, and starts reporting. The 自动添加 (SSH) flow skips this —
 the backend installs and starts the agent for you.
 
+The token is **encrypted at rest** (AES-256-GCM, stored as `nonce_hex:cipher_hex`)
+with a key derived from a stable machine fingerprint (`/etc/machine-id`, falling
+back to a persisted random key or the hostname). A token file copied to another
+host therefore can't be decrypted there. Legacy plaintext token files are still
+read and are re-encrypted on the next write.
+
 ## Configuration (env)
 
 | Var | Default | Notes |

@@ -184,10 +184,10 @@ async fn resolve_token(
         return Ok(token.clone());
     }
 
-    // 2. Token persisted from a previous (completed) pairing.
-    if let Ok(token) = std::fs::read_to_string(&cfg.token_file) {
-        let token = token.trim().to_string();
-        if !token.is_empty() {
+    // 2. Token persisted from a previous (completed) pairing. Decrypt the
+    // at-rest ciphertext; a legacy plaintext token is read as-is.
+    if let Ok(raw) = std::fs::read_to_string(&cfg.token_file) {
+        if let Some(token) = crate::crypto::maybe_decrypt(&raw).filter(|s| !s.is_empty()) {
             tracing::info!(file = ?cfg.token_file, "loaded agent token from file");
             return Ok(token);
         }
@@ -247,7 +247,7 @@ async fn poll_until_claimed(
             Ok(poll) => {
                 if poll.claimed {
                     let token = poll.agent_token.unwrap_or_else(|| token.clone());
-                    if let Err(e) = std::fs::write(&cfg.token_file, &token) {
+                    if let Err(e) = crate::pairing::persist_token(cfg, &token) {
                         tracing::warn!("failed to persist token file: {e}");
                     }
                     crate::pairing::clear_pending(cfg);
