@@ -3,6 +3,15 @@ use std::time::Instant;
 use serde::Serialize;
 use sysinfo::{Disks, Networks, System};
 
+/// One mounted filesystem's capacity (bytes), reported for the disk breakdown.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiskMount {
+    /// Mount point, e.g. "/" or "/data".
+    pub mount: String,
+    pub total: u64,
+    pub used: u64,
+}
+
 /// A single metrics snapshot collected from the local machine.
 #[derive(Debug, Clone, Serialize)]
 pub struct Metrics {
@@ -18,6 +27,16 @@ pub struct Metrics {
     pub ip: String,
     /// Whether this agent is running inside a Docker/container environment.
     pub is_container: bool,
+    /// Logical CPU core count.
+    pub cpu_cores: i64,
+    /// Total / used physical memory, in bytes.
+    pub mem_total: u64,
+    pub mem_used: u64,
+    /// Aggregate total / used disk space across mounts, in bytes.
+    pub disk_total: u64,
+    pub disk_used: u64,
+    /// Per-mount disk breakdown (deduped by device).
+    pub disk_mounts: Vec<DiskMount>,
 }
 
 /// Collector that maintains a System handle across refreshes so CPU usage is
@@ -75,6 +94,7 @@ impl Collector {
                 (total / cpus.len() as f32) as f64
             }
         };
+        let cpu_cores = self.sys.cpus().len() as i64;
 
         let total_mem = self.sys.total_memory();
         let used_mem = self.sys.used_memory();
@@ -84,9 +104,14 @@ impl Collector {
             (used_mem as f64 / total_mem as f64) * 100.0
         };
 
-        // Refresh disks in place (cheap) and aggregate used/total.
+        // Refresh disks in place (cheap) and aggregate used/total + per-mount.
         self.disks.refresh();
-        let disk_usage = aggregate_disk_usage(&self.disks);
+        let (disk_total, disk_used, disk_mounts) = aggregate_disks(&self.disks);
+        let disk_usage = if disk_total == 0 {
+            0.0
+        } else {
+            (disk_used as f64 / disk_total as f64) * 100.0
+        };
 
         // Network throughput: sum per-interface received/transmitted bytes since
         // the last refresh, divided by the elapsed wall-clock seconds.
@@ -136,6 +161,12 @@ impl Collector {
             os_version: self.os_version.clone(),
             ip: self.ip.clone(),
             is_container: self.is_container,
+            cpu_cores,
+            mem_total: total_mem,
+            mem_used: used_mem,
+            disk_total,
+            disk_used,
+            disk_mounts,
         }
     }
 }
@@ -148,27 +179,37 @@ fn clamp_pct(v: f64) -> f64 {
     }
 }
 
-/// Aggregate disk usage across mounted disks (used / total), de-duplicating by
-/// underlying device so the same physical disk mounted twice (bind mounts,
-/// etc.) isn't double-counted.
-fn aggregate_disk_usage(disks: &Disks) -> f64 {
+/// Aggregate disk usage across mounted disks, de-duplicating by underlying
+/// device so the same physical disk mounted twice (bind mounts, etc.) isn't
+/// double-counted. Returns (total_bytes, used_bytes, per-mount breakdown).
+fn aggregate_disks(disks: &Disks) -> (u64, u64, Vec<DiskMount>) {
     use std::collections::HashSet;
     let mut seen: HashSet<String> = HashSet::new();
     let mut total: u64 = 0;
-    let mut available: u64 = 0;
+    let mut used: u64 = 0;
+    let mut mounts: Vec<DiskMount> = Vec::new();
     for disk in disks.list() {
         let key = disk.name().to_string_lossy().to_string();
         if !key.is_empty() && !seen.insert(key) {
             continue; // already counted this device
         }
-        total += disk.total_space();
-        available += disk.available_space();
+        let dt = disk.total_space();
+        if dt == 0 {
+            continue; // skip pseudo/zero-sized filesystems
+        }
+        let avail = disk.available_space();
+        let du = dt.saturating_sub(avail);
+        total += dt;
+        used += du;
+        mounts.push(DiskMount {
+            mount: disk.mount_point().to_string_lossy().to_string(),
+            total: dt,
+            used: du,
+        });
     }
-    if total == 0 {
-        return 0.0;
-    }
-    let used = total.saturating_sub(available);
-    (used as f64 / total as f64) * 100.0
+    // Largest filesystems first so the UI shows the most relevant mounts on top.
+    mounts.sort_by(|a, b| b.total.cmp(&a.total));
+    (total, used, mounts)
 }
 
 fn os_label() -> String {

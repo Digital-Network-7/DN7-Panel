@@ -69,6 +69,12 @@ struct ReportReq {
     ip: String,
     agent_version: String,
     is_container: bool,
+    cpu_cores: i64,
+    mem_total: u64,
+    mem_used: u64,
+    disk_total: u64,
+    disk_used: u64,
+    disk_mounts: Vec<crate::metrics::DiskMount>,
 }
 
 /// HTTP client wrapper around the TeaOps backend API.
@@ -150,6 +156,12 @@ impl ApiClient {
             ip: m.ip.clone(),
             agent_version: env!("CARGO_PKG_VERSION").to_string(),
             is_container: m.is_container,
+            cpu_cores: m.cpu_cores,
+            mem_total: m.mem_total,
+            mem_used: m.mem_used,
+            disk_total: m.disk_total,
+            disk_used: m.disk_used,
+            disk_mounts: m.disk_mounts.clone(),
         };
         let resp = self
             .http

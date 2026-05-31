@@ -62,6 +62,12 @@ impl MetricsStream {
             "ip": m.ip,
             "agent_version": env!("CARGO_PKG_VERSION"),
             "is_container": m.is_container,
+            "cpu_cores": m.cpu_cores,
+            "mem_total": m.mem_total,
+            "mem_used": m.mem_used,
+            "disk_total": m.disk_total,
+            "disk_used": m.disk_used,
+            "disk_mounts": m.disk_mounts,
         });
         self.socket
             .send(Message::Text(payload.to_string()))
