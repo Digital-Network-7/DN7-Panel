@@ -33,7 +33,7 @@ impl AgentConfig {
         let interval_secs = env::var("TEAOPS_INTERVAL_SECS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(3);
+            .unwrap_or(1);
         let token_file = env::var("TEAOPS_TOKEN_FILE")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("teaops-agent.token"));
