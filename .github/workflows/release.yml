@@ -3,6 +3,11 @@ name: Build Linux Release
 # Build Linux release binaries on every push. The version is auto-incremented
 # as 1.0.<run_number> (e.g. 1.0.1, 1.0.2, ...) and published as a GitHub Release
 # with the compiled binaries (x86_64 + arm64) attached.
+#
+# Binaries are built for the *musl* targets and statically linked, so they run
+# on any Linux distro/version regardless of its glibc (no more
+# "GLIBC_2.xx not found"). The agent uses rustls (not OpenSSL), so a fully
+# static musl build needs no system libraries at runtime.
 
 on:
   push:
@@ -22,9 +27,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-musl
             arch: x86_64
-          - target: aarch64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-musl
             arch: arm64
 
     steps:
@@ -45,25 +50,21 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install aarch64 cross toolchain
-        if: matrix.arch == 'arm64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
-      - name: Build release binary
-        env:
-          # Cross-compilation: tell cargo/cc which linker and C compiler to use
-          # for the aarch64 target (ring/webpki need a C compiler at build time).
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
-          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
-        run: cargo build --release --target ${{ matrix.target }}
+      # `cross` runs the build inside a target-matched Docker image that already
+      # has the musl cross toolchain + C compiler (needed by ring), so both the
+      # x86_64 and aarch64 musl builds are fully static and portable.
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build static musl binary
+        run: cross build --release --target ${{ matrix.target }}
 
       - name: Package binary
         id: pkg
@@ -100,6 +101,7 @@ jobs:
           tag_name: v${{ steps.ver.outputs.version }}
           name: v${{ steps.ver.outputs.version }}
           body: |
-            Automated Linux build of ${{ env.BIN_NAME }} v${{ steps.ver.outputs.version }} (x86_64 + arm64).
+            Automated static (musl) Linux build of ${{ env.BIN_NAME }} v${{ steps.ver.outputs.version }} (x86_64 + arm64).
+            Runs on any Linux regardless of glibc version.
             Commit: ${{ github.sha }}
           files: dist/*
