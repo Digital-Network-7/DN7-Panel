@@ -1,7 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
-/// Agent runtime configuration.
+/// Runtime configuration shared by both roles (supervisor + agent).
 #[derive(Clone, Debug)]
 pub struct AgentConfig {
     /// Backend base URL, e.g. https://api.teaops.example.com
@@ -14,18 +14,16 @@ pub struct AgentConfig {
     pub agent_token: Option<String>,
     /// Shared runtime directory for pid/heartbeat/lock files.
     pub runtime_dir: PathBuf,
-    /// Path to the teaops-agentd supervisor binary (for mutual guarding).
-    pub agentd_bin: PathBuf,
-    /// Seconds without a heartbeat before agentd is considered dead.
+    /// Seconds without a heartbeat before a peer role is considered dead.
     pub heartbeat_timeout_secs: u64,
-    /// Whether the agent should (re)launch agentd if it dies.
-    pub guard_agentd: bool,
+    /// Supervisor: how often to check the agent child (seconds).
+    pub supervise_interval_secs: u64,
+    /// Supervisor: minimum delay between agent restarts (seconds).
+    pub restart_backoff_secs: u64,
     /// Download/CDN service base URL (fallback binary source).
     pub download_url: String,
-    /// Upstream agent repo (`owner/name`) for GitHub-first downloads.
-    pub agent_repo: String,
-    /// Upstream agentd repo (`owner/name`) for GitHub-first downloads.
-    pub agentd_repo: String,
+    /// Upstream repo (`owner/name`) for GitHub-first downloads/self-update.
+    pub repo: String,
 }
 
 impl AgentConfig {
@@ -43,25 +41,24 @@ impl AgentConfig {
         let runtime_dir = env::var("TEAOPS_RUNTIME_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("."));
-        let agentd_bin = env::var("TEAOPS_AGENTD_BIN")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("./teaops-agentd"));
         let heartbeat_timeout_secs = env::var("TEAOPS_HEARTBEAT_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(15);
-        // Guarding agentd is opt-in: only meaningful when run under agentd.
-        let guard_agentd = env::var("TEAOPS_GUARD_AGENTD")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let supervise_interval_secs = env::var("TEAOPS_SUPERVISE_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
+        let restart_backoff_secs = env::var("TEAOPS_RESTART_BACKOFF_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2);
         let download_url = env::var("TEAOPS_DOWNLOAD_URL")
             .unwrap_or_else(|_| "https://download.agent.dn7.cn".to_string())
             .trim_end_matches('/')
             .to_string();
-        let agent_repo =
-            env::var("TEAOPS_AGENT_REPO").unwrap_or_else(|_| "simonsmithmd/Teaops-agent".to_string());
-        let agentd_repo = env::var("TEAOPS_AGENTD_REPO")
-            .unwrap_or_else(|_| "simonsmithmd/teaops-agentd".to_string());
+        let repo =
+            env::var("TEAOPS_REPO").unwrap_or_else(|_| "simonsmithmd/Teaops-agent".to_string());
 
         AgentConfig {
             backend_url: backend_url.trim_end_matches('/').to_string(),
@@ -69,12 +66,11 @@ impl AgentConfig {
             token_file,
             agent_token,
             runtime_dir,
-            agentd_bin,
             heartbeat_timeout_secs,
-            guard_agentd,
+            supervise_interval_secs,
+            restart_backoff_secs,
             download_url,
-            agent_repo,
-            agentd_repo,
+            repo,
         }
     }
 

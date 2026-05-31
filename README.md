@@ -1,8 +1,25 @@
 # TeaOps Agent
 
-A small Rust daemon that runs on a Linux server (also works on macOS for dev),
+A small Rust binary that runs on a Linux server (also works on macOS for dev),
 collects system metrics with `sysinfo`, and pushes them to the TeaOps backend
 every 3 seconds. No SSH is used at runtime.
+
+## One binary, two roles (self-splitting supervisor)
+
+The binary runs as one of two roles, chosen by argv:
+
+- `teaops-agent` (no args) — **supervisor**: keeps the agent role alive by
+  spawning *itself* with the `agent` subcommand and restarting it on exit.
+- `teaops-agent agent` — **agent role**: collects and reports metrics.
+
+The two halves guard each other (pid + heartbeat files in `TEAOPS_RUNTIME_DIR`):
+the supervisor restarts the agent if it exits, and the agent relaunches the
+supervisor if it dies. Because it's a single binary, a self-update replaces one
+file and both halves come back upgraded.
+
+In normal use you only ever run the no-arg form (the supervisor); it splits off
+the agent itself. The previous separate `teaops-agentd` supervisor is no longer
+needed — this binary is its own supervisor.
 
 ## Build & run
 
@@ -12,7 +29,8 @@ cargo build --release
 TEAOPS_BACKEND_URL=https://your-backend.example.com ./target/release/teaops-agent
 ```
 
-On first run with no token, it registers and prints a 6-digit pairing code:
+On first run with no token, the agent role registers and prints a 6-digit
+pairing code:
 
 ```
 ========================================
@@ -37,6 +55,12 @@ starts reporting.
 | `TEAOPS_INTERVAL_SECS` | `3` | report interval |
 | `TEAOPS_TOKEN_FILE` | `teaops-agent.token` | where the token is persisted |
 | `TEAOPS_AGENT_TOKEN` | — | provide directly to skip pairing |
+| `TEAOPS_RUNTIME_DIR` | `.` | shared pid/heartbeat/lock dir for the two roles |
+| `TEAOPS_HEARTBEAT_TIMEOUT_SECS` | `15` | peer liveness threshold |
+| `TEAOPS_SUPERVISE_INTERVAL_SECS` | `3` | supervisor child-check interval |
+| `TEAOPS_RESTART_BACKOFF_SECS` | `2` | delay between agent restarts |
+| `TEAOPS_REPO` | `simonsmithmd/Teaops-agent` | upstream repo for self-update |
+| `TEAOPS_DOWNLOAD_URL` | `https://download.agent.dn7.cn` | fallback binary source |
 
 ## Transport
 
@@ -50,23 +74,15 @@ socket on the next one. Pairing (register/poll) always uses HTTP.
 
 The backend can push an `upgrade` command over the WebSocket (triggered by the
 owner in the mini program, immediately or via the per-server auto-update
-toggle). On receiving it, the agent:
+toggle), and the agent also polls `/agent/should-upgrade` periodically. On
+upgrade, the agent role:
 
 1. fetches the latest Linux binary **GitHub-first** — it parses the upstream
    `releases.atom`, picks the highest version, and downloads that release asset;
    if GitHub is unreachable it falls back to the download/CDN service
    (`download.agent.dn7.cn`),
 2. atomically replaces its own executable, and
-3. exits cleanly so the supervisor restarts it on the new version.
-
-The same GitHub-first fetch is used to **re-acquire a missing binary**: if the
-agent (or, when guarding, the agentd) binary is absent — never downloaded or
-deleted — it is fetched automatically rather than failing.
-
-This is why the agent must be run under a supervisor that restarts it — either
-**systemd with `Restart=always`** or, in Docker / permission-constrained
-environments, the **[teaops-agentd](https://github.com/simonsmithmd/teaops-agentd)**
-supervisor (see "Supervision" below).
+3. exits cleanly so the supervisor role restarts it on the new version.
 
 ## Metrics collected
 
@@ -79,6 +95,9 @@ supervisor (see "Supervision" below).
 
 ## Running as a service (systemd)
 
+systemd can supervise it too; just run the no-arg form (it still self-splits the
+agent role, and systemd restarts the whole thing if the supervisor ever dies):
+
 ```ini
 # /etc/systemd/system/teaops-agent.service
 [Unit]
@@ -88,6 +107,7 @@ After=network-online.target
 [Service]
 Environment=TEAOPS_BACKEND_URL=https://your-backend.example.com
 Environment=TEAOPS_TOKEN_FILE=/var/lib/teaops/agent.token
+Environment=TEAOPS_RUNTIME_DIR=/var/lib/teaops
 ExecStart=/usr/local/bin/teaops-agent
 Restart=always
 RestartSec=5
@@ -102,22 +122,9 @@ sudo systemctl enable --now teaops-agent
 journalctl -u teaops-agent -f   # view the pairing code on first start
 ```
 
-## Supervision (teaops-agentd)
-
-In Docker or environments without systemd, run the
-[teaops-agentd](https://github.com/simonsmithmd/teaops-agentd) supervisor
-instead. It launches and restarts the agent (including after self-updates)
-without root or a service manager. The two can also guard each other:
-
-| Var | Default | Notes |
-|-----|---------|-------|
-| `TEAOPS_RUNTIME_DIR` | `.` | shared pid/heartbeat/lock dir (match agentd) |
-| `TEAOPS_AGENTD_BIN` | `./teaops-agentd` | agentd binary to relaunch if it dies |
-| `TEAOPS_GUARD_AGENTD` | `0` | set `1` to have the agent relaunch agentd |
-| `TEAOPS_HEARTBEAT_TIMEOUT_SECS` | `15` | peer liveness threshold |
-
-Start `teaops-agentd` and it manages the agent — you don't run the agent
-directly in that case.
+In Docker or environments without systemd, just run the no-arg binary directly —
+its supervisor role keeps the agent alive across crashes and self-updates, so no
+external process manager is required.
 
 ## Bootstrap via SSH (optional, V1 compatibility only)
 

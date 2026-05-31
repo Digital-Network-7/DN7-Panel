@@ -1,44 +1,18 @@
 //! Binary acquisition with a GitHub-first strategy.
 //!
-//! For a component (agent/agentd), download its latest Linux x86_64 release
-//! binary. Order:
+//! There is a single binary (it runs as either the supervisor or the agent
+//! role depending on argv). Download order:
 //!   1. GitHub: parse `releases.atom` for the highest version, then fetch the
 //!      release asset directly from GitHub.
-//!   2. Fallback: the download/CDN service (`/download/<component>/latest`).
+//!   2. Fallback: the download/CDN service (`/download/agent/latest`).
 //!
 //! Used both for self-update and for re-fetching a missing/deleted binary.
 
 use anyhow::{anyhow, Result};
 
-/// Which component to fetch.
-#[derive(Clone, Copy, Debug)]
-pub enum Component {
-    Agent,
-    Agentd,
-}
-
-impl Component {
-    fn bin(&self) -> &'static str {
-        match self {
-            Component::Agent => "teaops-agent",
-            Component::Agentd => "teaops-agentd",
-        }
-    }
-    fn url_name(&self) -> &'static str {
-        match self {
-            Component::Agent => "agent",
-            Component::Agentd => "agentd",
-        }
-    }
-}
-
-/// Resolve a repo (`owner/name`) for a component from config.
-fn repo_for(cfg: &crate::config::AgentConfig, c: Component) -> &str {
-    match c {
-        Component::Agent => &cfg.agent_repo,
-        Component::Agentd => &cfg.agentd_repo,
-    }
-}
+const BIN_NAME: &str = "teaops-agent";
+/// Component name used in download-service URLs.
+const URL_NAME: &str = "agent";
 
 fn http() -> reqwest::Client {
     reqwest::Client::builder()
@@ -48,36 +22,27 @@ fn http() -> reqwest::Client {
         .expect("http client")
 }
 
-/// Download the latest binary for `component` into memory, GitHub-first.
-pub async fn fetch_latest(cfg: &crate::config::AgentConfig, component: Component) -> Result<Vec<u8>> {
-    // 1. GitHub first.
-    match fetch_from_github(cfg, component).await {
+/// Download the latest binary into memory, GitHub-first.
+pub async fn fetch_latest(cfg: &crate::config::AgentConfig) -> Result<Vec<u8>> {
+    match fetch_from_github(cfg).await {
         Ok(bytes) => {
-            tracing::info!(component = component.url_name(), "fetched binary from GitHub");
+            tracing::info!("fetched binary from GitHub");
             return Ok(bytes);
         }
-        Err(e) => tracing::warn!(
-            component = component.url_name(),
-            "GitHub fetch failed ({e}); falling back to download service"
-        ),
+        Err(e) => {
+            tracing::warn!("GitHub fetch failed ({e}); falling back to download service")
+        }
     }
-
-    // 2. Download service fallback.
-    let bytes = fetch_from_download_service(cfg, component).await?;
-    tracing::info!(component = component.url_name(), "fetched binary from download service");
+    let bytes = fetch_from_download_service(cfg).await?;
+    tracing::info!("fetched binary from download service");
     Ok(bytes)
 }
 
-/// Resolve the latest available version string (e.g. "1.0.12") for a component,
-/// GitHub-first with the download service as a fallback. Used to decide whether
-/// a self-update is actually needed before fetching the whole binary.
-pub async fn latest_version(
-    cfg: &crate::config::AgentConfig,
-    component: Component,
-) -> Result<String> {
-    // GitHub atom feed first.
-    let repo = repo_for(cfg, component);
-    let atom_url = format!("https://github.com/{repo}/releases.atom");
+/// Resolve the latest available version string (e.g. "1.0.12"), GitHub-first
+/// with the download service as a fallback. Used to decide whether a self-update
+/// is actually needed before fetching the whole binary.
+pub async fn latest_version(cfg: &crate::config::AgentConfig) -> Result<String> {
+    let atom_url = format!("https://github.com/{}/releases.atom", cfg.repo);
     if let Ok(resp) = http().get(&atom_url).send().await {
         if let Ok(resp) = resp.error_for_status() {
             if let Ok(body) = resp.text().await {
@@ -88,8 +53,7 @@ pub async fn latest_version(
         }
     }
 
-    // Fallback: download service manifest (`GET /latest/<component>`).
-    let url = format!("{}/latest/{}", cfg.download_url, component.url_name());
+    let url = format!("{}/latest/{}", cfg.download_url, URL_NAME);
     let manifest: serde_json::Value = http()
         .get(&url)
         .send()
@@ -106,11 +70,9 @@ pub async fn latest_version(
 }
 
 /// GitHub path: releases.atom -> highest version -> release asset download.
-async fn fetch_from_github(cfg: &crate::config::AgentConfig, component: Component) -> Result<Vec<u8>> {
-    let repo = repo_for(cfg, component);
-    let atom_url = format!("https://github.com/{repo}/releases.atom");
+async fn fetch_from_github(cfg: &crate::config::AgentConfig) -> Result<Vec<u8>> {
     let client = http();
-
+    let atom_url = format!("https://github.com/{}/releases.atom", cfg.repo);
     let body = client
         .get(&atom_url)
         .send()
@@ -118,11 +80,13 @@ async fn fetch_from_github(cfg: &crate::config::AgentConfig, component: Componen
         .error_for_status()?
         .text()
         .await?;
-    let version = highest_version(&body)
-        .ok_or_else(|| anyhow!("no version found in releases.atom"))?;
+    let version = highest_version(&body).ok_or_else(|| anyhow!("no version found in releases.atom"))?;
 
-    let asset = format!("{}-linux-x86_64-v{}", component.bin(), version);
-    let asset_url = format!("https://github.com/{repo}/releases/download/v{version}/{asset}");
+    let asset = format!("{BIN_NAME}-linux-x86_64-v{version}");
+    let asset_url = format!(
+        "https://github.com/{}/releases/download/v{version}/{asset}",
+        cfg.repo
+    );
     let bytes = client
         .get(&asset_url)
         .send()
@@ -136,12 +100,9 @@ async fn fetch_from_github(cfg: &crate::config::AgentConfig, component: Componen
     Ok(bytes.to_vec())
 }
 
-/// Download-service path: GET /download/<component>/latest.
-async fn fetch_from_download_service(
-    cfg: &crate::config::AgentConfig,
-    component: Component,
-) -> Result<Vec<u8>> {
-    let url = format!("{}/download/{}/latest", cfg.download_url, component.url_name());
+/// Download-service path: GET /download/agent/latest.
+async fn fetch_from_download_service(cfg: &crate::config::AgentConfig) -> Result<Vec<u8>> {
+    let url = format!("{}/download/{}/latest", cfg.download_url, URL_NAME);
     let bytes = http()
         .get(&url)
         .send()
@@ -158,7 +119,6 @@ async fn fetch_from_download_service(
 /// Find the highest `1.0.x`-style version in a releases Atom feed.
 fn highest_version(xml: &str) -> Option<String> {
     let mut best: Option<((u64, u64, u64), String)> = None;
-    // Cheap scan: tokenize and look for "vX.Y.Z" tokens.
     for raw in xml.split(|c: char| !(c.is_ascii_alphanumeric() || c == '.')) {
         if !raw.starts_with('v') {
             continue;
