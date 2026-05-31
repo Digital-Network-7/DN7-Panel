@@ -7,6 +7,7 @@ mod daemon;
 mod fetch;
 mod file;
 mod guardian;
+mod logrotate;
 mod metrics;
 mod pairing;
 mod paths;

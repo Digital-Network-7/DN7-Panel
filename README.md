@@ -52,7 +52,9 @@ if more than one fires at boot only one supervisor actually runs.
 It then prints its pairing QR + 8-digit code in the foreground (so you can
 scan/copy it), then **detaches and keeps running in the background**, appending
 logs to `/var/ops/teaops-agent.log`. Pass `--foreground` / `-f` (or set
-`TEAOPS_FOREGROUND=1`) to stay attached for debugging.
+`TEAOPS_FOREGROUND=1`) to stay attached for debugging. The log is **trimmed in
+place** by a background janitor (keeps the recent tail once it passes ~5 MiB) so
+it can't grow without bound.
 
 If you run the binary again **while an instance is already running**, it does
 not start a duplicate. Instead it reads the current server's token, asks the

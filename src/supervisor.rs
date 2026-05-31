@@ -50,6 +50,9 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
         });
     }
 
+    // Janitor task: trim the daemon log so it can't grow without bound.
+    crate::logrotate::spawn(cfg.clone());
+
     let mut child: Option<Child> = None;
     let mut shutdown = signal_stream()?;
 
