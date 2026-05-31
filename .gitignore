@@ -1,4 +1,9 @@
 /target
 .env
 *.token
+*.token.pending
+*.log
+*.pid
+*.heartbeat
+*.lock
 .DS_Store

@@ -29,7 +29,18 @@ cargo build --release
 TEAOPS_BACKEND_URL=https://your-backend.example.com ./target/release/teaops-agent
 ```
 
-On first run with no token, the agent role registers and displays a QR code
+On a normal launch the agent prints its pairing QR + 8-digit code in the
+foreground (so you can scan/copy it), then **detaches and keeps running in the
+background**, appending logs to `teaops-agent.log`. Pass `--foreground` / `-f`
+(or set `TEAOPS_FOREGROUND=1`) to stay attached for debugging.
+
+If you run the binary again **while an instance is already running**, it does
+not start a duplicate. Instead it reads the current server's token, asks the
+backend for a fresh quick-add code (any old code is invalidated), re-prints the
+QR + the new code, and exits. This is the easy way to re-display pairing info or
+rotate the code.
+
+On first run with no token, the agent registers and displays a QR code
 (encoding the server's 128-char token) plus an 8-digit quick-add code:
 
 ```
@@ -45,7 +56,7 @@ On first run with no token, the agent role registers and displays a QR code
 
         >>>  35054398  <<<
 
-  (有效期至 ...)
+  (有效期至 ... 北京时间)
 ========================================
 ```
 
@@ -114,8 +125,10 @@ or public IP required. The PTY honors window-resize frames so full-screen apps
 
 ## Running as a service (systemd)
 
-systemd can supervise it too; just run the no-arg form (it still self-splits the
-agent role, and systemd restarts the whole thing if the supervisor ever dies):
+systemd can supervise it too. Run it with `--foreground` so it stays attached
+(systemd does the backgrounding); the no-arg form's self-daemonize would make a
+`Type=simple` unit think the process exited. It still self-splits the agent role,
+and systemd restarts the whole thing if the supervisor ever dies:
 
 ```ini
 # /etc/systemd/system/teaops-agent.service
@@ -127,7 +140,7 @@ After=network-online.target
 Environment=TEAOPS_BACKEND_URL=https://your-backend.example.com
 Environment=TEAOPS_TOKEN_FILE=/var/lib/teaops/agent.token
 Environment=TEAOPS_RUNTIME_DIR=/var/lib/teaops
-ExecStart=/usr/local/bin/teaops-agent
+ExecStart=/usr/local/bin/teaops-agent --foreground
 Restart=always
 RestartSec=5
 

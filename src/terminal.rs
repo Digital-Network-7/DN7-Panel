@@ -27,6 +27,9 @@ use crate::config::AgentConfig;
 enum ClientFrame {
     Resize { cols: u16, rows: u16 },
     Data { data: String },
+    /// Latency probe from the client; echoed straight back as a pong carrying
+    /// the same timestamp so the client can compute the full round-trip delay.
+    Ping { t: i64 },
 }
 
 /// Open a PTY shell and relay it to the backend for `session`. Runs until either
@@ -104,6 +107,12 @@ pub async fn run_terminal(cfg: &AgentConfig, agent_token: &str, session: &str) -
                                 if writer.write_all(&bytes).is_err() { break; }
                                 let _ = writer.flush();
                             }
+                            Frame::Ping(t) => {
+                                // Echo a pong (same timestamp) so the client can
+                                // measure the miniapp↔backend↔agent round-trip.
+                                let pong = format!("{{\"type\":\"pong\",\"t\":{t}}}");
+                                if ws_tx.send(Message::Text(pong)).await.is_err() { break; }
+                            }
                         }
                     }
                     Some(Ok(Message::Binary(b))) => {
@@ -128,6 +137,7 @@ pub async fn run_terminal(cfg: &AgentConfig, agent_token: &str, session: &str) -
 enum Frame {
     Resize { cols: u16, rows: u16 },
     Data(Vec<u8>),
+    Ping(i64),
 }
 
 fn parse_frame(text: &str) -> Frame {
@@ -140,6 +150,7 @@ fn parse_frame(text: &str) -> Frame {
                     rows: rows.clamp(1, 1000),
                 },
                 ClientFrame::Data { data } => Frame::Data(data.into_bytes()),
+                ClientFrame::Ping { t } => Frame::Ping(t),
             };
         }
     }

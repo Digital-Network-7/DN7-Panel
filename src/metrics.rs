@@ -23,8 +23,18 @@ pub struct Metrics {
 pub struct Collector {
     sys: System,
     networks: Networks,
+    /// Reused across ticks; refreshed in place rather than re-enumerated each
+    /// time (enumerating disks every second is needlessly expensive).
+    disks: Disks,
     /// Timestamp of the previous collect, to convert byte deltas to per-second.
     last_sample: Option<Instant>,
+    /// Cached identity fields that don't change at runtime, resolved once.
+    hostname: String,
+    os_version: String,
+    /// Cached local IP, refreshed only periodically (it rarely changes, and
+    /// opening a UDP socket every tick is wasteful).
+    ip: String,
+    ip_checked_at: Option<Instant>,
 }
 
 impl Collector {
@@ -32,10 +42,16 @@ impl Collector {
         let mut sys = System::new_all();
         sys.refresh_all();
         let networks = Networks::new_with_refreshed_list();
+        let disks = Disks::new_with_refreshed_list();
         Collector {
             sys,
             networks,
+            disks,
             last_sample: None,
+            hostname: System::host_name().unwrap_or_default(),
+            os_version: os_label(),
+            ip: local_ip().unwrap_or_default(),
+            ip_checked_at: Some(Instant::now()),
         }
     }
 
@@ -63,7 +79,9 @@ impl Collector {
             (used_mem as f64 / total_mem as f64) * 100.0
         };
 
-        let disk_usage = compute_disk_usage();
+        // Refresh disks in place (cheap) and aggregate used/total.
+        self.disks.refresh();
+        let disk_usage = aggregate_disk_usage(&self.disks);
 
         // Network throughput: sum per-interface received/transmitted bytes since
         // the last refresh, divided by the elapsed wall-clock seconds.
@@ -89,9 +107,18 @@ impl Collector {
         };
 
         let uptime = System::uptime() as i64;
-        let hostname = System::host_name().unwrap_or_default();
-        let os_version = os_label();
-        let ip = local_ip().unwrap_or_default();
+
+        // Re-resolve the local IP at most once a minute (it almost never moves).
+        let refresh_ip = self
+            .ip_checked_at
+            .map(|t| now.duration_since(t).as_secs() >= 60)
+            .unwrap_or(true);
+        if refresh_ip {
+            if let Some(ip) = local_ip() {
+                self.ip = ip;
+            }
+            self.ip_checked_at = Some(now);
+        }
 
         Metrics {
             cpu_usage: clamp_pct(cpu_usage),
@@ -100,9 +127,9 @@ impl Collector {
             net_rx: net_rx.max(0.0),
             net_tx: net_tx.max(0.0),
             uptime,
-            hostname,
-            os_version,
-            ip,
+            hostname: self.hostname.clone(),
+            os_version: self.os_version.clone(),
+            ip: self.ip.clone(),
         }
     }
 }
@@ -115,12 +142,19 @@ fn clamp_pct(v: f64) -> f64 {
     }
 }
 
-/// Aggregate disk usage across all mounted disks (used / total).
-fn compute_disk_usage() -> f64 {
-    let disks = Disks::new_with_refreshed_list();
+/// Aggregate disk usage across mounted disks (used / total), de-duplicating by
+/// underlying device so the same physical disk mounted twice (bind mounts,
+/// etc.) isn't double-counted.
+fn aggregate_disk_usage(disks: &Disks) -> f64 {
+    use std::collections::HashSet;
+    let mut seen: HashSet<String> = HashSet::new();
     let mut total: u64 = 0;
     let mut available: u64 = 0;
     for disk in disks.list() {
+        let key = disk.name().to_string_lossy().to_string();
+        if !key.is_empty() && !seen.insert(key) {
+            continue; // already counted this device
+        }
         total += disk.total_space();
         available += disk.available_space();
     }

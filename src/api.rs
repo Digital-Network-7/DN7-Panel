@@ -21,6 +21,10 @@ pub struct RegisterData {
     pub pairing_code: String,
     pub register_secret: String,
     pub expires_at: String,
+    /// Human-friendly expiry in China Standard Time (UTC+8). Older backends may
+    /// omit it, so it defaults to empty and the agent falls back to expires_at.
+    #[serde(default)]
+    pub expires_at_display: String,
 }
 
 #[derive(Debug, Deserialize)]
