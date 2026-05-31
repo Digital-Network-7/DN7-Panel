@@ -54,7 +54,7 @@ impl AgentConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(2);
         let download_url = env::var("TEAOPS_DOWNLOAD_URL")
-            .unwrap_or_else(|_| "https://download.agent.dn7.cn".to_string())
+            .unwrap_or_else(|_| "https://downloader.teaops.dn7.cn".to_string())
             .trim_end_matches('/')
             .to_string();
         let repo =

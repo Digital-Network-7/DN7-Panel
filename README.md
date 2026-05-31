@@ -67,7 +67,7 @@ the backend installs and starts the agent for you.
 | `TEAOPS_SUPERVISE_INTERVAL_SECS` | `3` | supervisor child-check interval |
 | `TEAOPS_RESTART_BACKOFF_SECS` | `2` | delay between agent restarts |
 | `TEAOPS_REPO` | `simonsmithmd/Teaops-agent` | upstream repo for self-update |
-| `TEAOPS_DOWNLOAD_URL` | `https://download.agent.dn7.cn` | fallback binary source |
+| `TEAOPS_DOWNLOAD_URL` | `https://downloader.teaops.dn7.cn` | fallback binary source |
 
 ## Transport
 
@@ -87,7 +87,7 @@ upgrade, the agent role:
 1. fetches the latest Linux binary **GitHub-first** — it parses the upstream
    `releases.atom`, picks the highest version, and downloads that release asset;
    if GitHub is unreachable it falls back to the download/CDN service
-   (`download.agent.dn7.cn`),
+   (`downloader.teaops.dn7.cn`),
 2. atomically replaces its own executable, and
 3. exits cleanly so the supervisor role restarts it on the new version.
 
