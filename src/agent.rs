@@ -100,6 +100,20 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                                     }
                                 });
                             }
+                            ServerCommand::OpenContainerExec { session, container } => {
+                                tracing::info!(%session, %container, "received open-container-exec command");
+                                let cfg_t = cfg.clone();
+                                let token_t = agent_token.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = crate::terminal::run_container_exec(
+                                        &cfg_t, &token_t, &session, &container,
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(%session, "container exec relay ended: {e}");
+                                    }
+                                });
+                            }
                             ServerCommand::OpenFile(session) => {
                                 tracing::info!(%session, "received open-file command");
                                 // Relay a file-transfer channel in its own task.
@@ -110,6 +124,20 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                                         crate::file::run_file_channel(&cfg_t, &token_t, &session).await
                                     {
                                         tracing::warn!(%session, "file relay ended: {e}");
+                                    }
+                                });
+                            }
+                            ServerCommand::OpenContainerFile { session, container } => {
+                                tracing::info!(%session, %container, "received open-container-file command");
+                                let cfg_t = cfg.clone();
+                                let token_t = agent_token.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = crate::file::run_container_file_channel(
+                                        &cfg_t, &token_t, &session, &container,
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(%session, "container file relay ended: {e}");
                                     }
                                 });
                             }

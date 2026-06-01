@@ -29,9 +29,15 @@ pub enum ServerCommand {
     /// Open a local PTY shell and relay it back to the backend for the given
     /// terminal session id (dial `/agent/terminal?session=...`).
     OpenTerminal(String),
+    /// Open a PTY running `docker exec` into a container and relay it back for
+    /// the given session id (dial `/agent/terminal?session=...`).
+    OpenContainerExec { session: String, container: String },
     /// Open a file-transfer channel and relay it back for the given session id
     /// (dial `/agent/file?session=...`).
     OpenFile(String),
+    /// Open a file-transfer channel scoped to a container's filesystem (via
+    /// `docker exec`/`docker cp`) and relay it back (dial `/agent/file?...`).
+    OpenContainerFile { session: String, container: String },
     /// Open a Docker management channel and relay it back for the given session
     /// id (dial `/agent/docker?session=...`).
     OpenDocker(String),
@@ -108,9 +114,29 @@ impl MetricsStream {
                             if let Some(session) = v.get("session").and_then(|s| s.as_str()) {
                                 commands.push(ServerCommand::OpenTerminal(session.to_string()));
                             }
+                        } else if cmd == "open-container-exec" {
+                            if let (Some(session), Some(container)) = (
+                                v.get("session").and_then(|s| s.as_str()),
+                                v.get("container").and_then(|s| s.as_str()),
+                            ) {
+                                commands.push(ServerCommand::OpenContainerExec {
+                                    session: session.to_string(),
+                                    container: container.to_string(),
+                                });
+                            }
                         } else if cmd == "open-file" {
                             if let Some(session) = v.get("session").and_then(|s| s.as_str()) {
                                 commands.push(ServerCommand::OpenFile(session.to_string()));
+                            }
+                        } else if cmd == "open-container-file" {
+                            if let (Some(session), Some(container)) = (
+                                v.get("session").and_then(|s| s.as_str()),
+                                v.get("container").and_then(|s| s.as_str()),
+                            ) {
+                                commands.push(ServerCommand::OpenContainerFile {
+                                    session: session.to_string(),
+                                    container: container.to_string(),
+                                });
                             }
                         } else if cmd == "open-docker" {
                             if let Some(session) = v.get("session").and_then(|s| s.as_str()) {

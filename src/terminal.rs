@@ -39,6 +39,55 @@ enum ClientFrame {
 /// Open a PTY shell and relay it to the backend for `session`. Runs until either
 /// side closes; errors are logged by the caller.
 pub async fn run_terminal(cfg: &AgentConfig, agent_token: &str, session: &str) -> Result<()> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    let mut cmd = CommandBuilder::new(&shell);
+    cmd.arg("-i");
+    cmd.env("TERM", "xterm-256color");
+    run_pty(cfg, agent_token, session, cmd).await
+}
+
+/// Open a PTY running `docker exec -it <container> <shell>` and relay it. Tries
+/// bash first and falls back to sh via a small `-c` wrapper, so it works on
+/// minimal images (alpine, distroless-ish) too.
+pub async fn run_container_exec(
+    cfg: &AgentConfig,
+    agent_token: &str,
+    session: &str,
+    container: &str,
+) -> Result<()> {
+    if !valid_container_ref(container) {
+        return Err(anyhow!("invalid container reference"));
+    }
+    let mut cmd = CommandBuilder::new("docker");
+    cmd.arg("exec");
+    cmd.arg("-it");
+    cmd.arg(container);
+    // Pick an available shell at runtime: prefer bash, else fall back to sh.
+    cmd.arg("sh");
+    cmd.arg("-c");
+    cmd.arg("if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi");
+    cmd.env("TERM", "xterm-256color");
+    run_pty(cfg, agent_token, session, cmd).await
+}
+
+/// Reject container refs that could smuggle extra docker flags / shell tokens.
+fn valid_container_ref(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 256
+        && !s.starts_with('-')
+        && s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':'))
+}
+
+/// Shared PTY relay: spawn `cmd` in a PTY and bridge it to the backend WS for
+/// `session`. Used by both the host shell and `docker exec` terminals.
+async fn run_pty(
+    cfg: &AgentConfig,
+    agent_token: &str,
+    session: &str,
+    cmd: CommandBuilder,
+) -> Result<()> {
     let url = cfg.agent_terminal_ws_url(session);
     let mut req = url
         .into_client_request()
@@ -52,20 +101,16 @@ pub async fn run_terminal(cfg: &AgentConfig, agent_token: &str, session: &str) -
     let (ws, _resp) = connect_async(req).await?;
     let (mut ws_tx, mut ws_rx) = ws.split();
 
-    // Spin up a PTY with a login shell.
+    // Spin up a PTY with the requested command.
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| anyhow!("openpty: {e}"))?;
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    let mut cmd = CommandBuilder::new(&shell);
-    cmd.arg("-i");
-    cmd.env("TERM", "xterm-256color");
     let mut child = pair
         .slave
         .spawn_command(cmd)
-        .map_err(|e| anyhow!("spawn shell: {e}"))?;
+        .map_err(|e| anyhow!("spawn command: {e}"))?;
     // The slave is held by the child; drop our handle so EOF propagates on exit.
     drop(pair.slave);
 
@@ -168,4 +213,20 @@ fn parse_frame(text: &str) -> Frame {
         }
     }
     Frame::Data(text.as_bytes().to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_container_ref;
+
+    #[test]
+    fn container_ref_validation() {
+        assert!(valid_container_ref("my-container"));
+        assert!(valid_container_ref("a1b2c3d4e5f6"));
+        assert!(valid_container_ref("registry.io/app:tag"));
+        assert!(!valid_container_ref(""));
+        assert!(!valid_container_ref("-rm"));
+        assert!(!valid_container_ref("a b"));
+        assert!(!valid_container_ref("a;ls"));
+    }
 }

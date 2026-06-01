@@ -28,7 +28,11 @@
 //!   {"id","op":"start_container"|"stop_container"|"restart_container"|"remove_container","ref"}
 //!   {"id","op":"logs","ref","tail"?}
 //!   {"id","op":"list_networks"}
+//!   {"id","op":"create_network","name"}
 //!   {"id","op":"remove_network","ref"}
+//!   {"id","op":"inspect_container_networks","ref"}      -> {attached,available}
+//!   {"id","op":"connect_network","ref","network"}
+//!   {"id","op":"disconnect_network","ref","network"}
 //!   {"id","op":"list_ops"}                       -> running/finished operations
 //!   {"id","op":"op_log","op_id"}                 -> a single op's progress lines
 //!   {"id","op":"dismiss_op","op_id"}             -> forget a finished op
@@ -78,6 +82,8 @@ struct Req {
     restart: Option<String>,
     #[serde(default)]
     start: Option<bool>,
+    #[serde(default)]
+    network: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -309,10 +315,34 @@ async fn handle(req: &Req) -> Result<Value> {
         }
         "logs" => container_logs(req).await,
         "list_networks" => list_networks().await,
+        "create_network" => {
+            let name = req
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| anyhow!("缺少网络名"))?;
+            validate_name(name)?;
+            run_ok(&["network", "create", name]).await?;
+            Ok(json!({ "created": name }))
+        }
         "remove_network" => {
             let r = need_ref(req)?;
             run_ok(&["network", "rm", &r]).await?;
             Ok(json!({ "removed": r }))
+        }
+        "inspect_container_networks" => inspect_container_networks(req).await,
+        "connect_network" => {
+            let r = need_ref(req)?;
+            let net = need_network(req)?;
+            run_ok(&["network", "connect", &net, &r]).await?;
+            Ok(json!({ "connected": net }))
+        }
+        "disconnect_network" => {
+            let r = need_ref(req)?;
+            let net = need_network(req)?;
+            run_ok(&["network", "disconnect", &net, &r]).await?;
+            Ok(json!({ "disconnected": net }))
         }
         other => Err(anyhow!("unsupported op: {other}")),
     }
@@ -327,6 +357,18 @@ fn need_ref(req: &Req) -> Result<String> {
         .ok_or_else(|| anyhow!("missing ref"))?;
     validate_token(r)?;
     Ok(r.to_string())
+}
+
+/// Resolve + validate the `network` field (used by connect/disconnect).
+fn need_network(req: &Req) -> Result<String> {
+    let n = req
+        .network
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("缺少网络名"))?;
+    validate_token(n)?;
+    Ok(n.to_string())
 }
 
 /// Reject values that don't look like a plausible docker id / name / ref so a
@@ -516,6 +558,43 @@ async fn list_networks() -> Result<Value> {
         }));
     }
     Ok(json!({ "networks": items }))
+}
+
+/// For one container, report the networks it's attached to and the networks it
+/// could still be connected to (so the UI can offer connect/disconnect).
+/// Predefined networks (`host`, `none`) aren't offered as attach targets and
+/// the predefined ones can't be disconnected when they're the only one — the
+/// UI surfaces the agent's docker error in that case rather than guessing.
+async fn inspect_container_networks(req: &Req) -> Result<Value> {
+    let r = need_ref(req)?;
+    // Networks the container is currently on.
+    let fmt = "{{range $k, $v := .NetworkSettings.Networks}}{{$k}}\n{{end}}";
+    let stdout = run_ok(&["inspect", "-f", fmt, &r]).await?;
+    let attached: Vec<String> = stdout
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // All networks (to compute the "available to connect" set).
+    let all = list_networks().await?;
+    let mut available = Vec::new();
+    if let Some(arr) = all.get("networks").and_then(Value::as_array) {
+        for n in arr {
+            let name = n.get("name").and_then(Value::as_str).unwrap_or("");
+            // Skip ones it's already on and the special "none"/"host" drivers
+            // (you don't hot-attach those at runtime).
+            if name.is_empty() || attached.iter().any(|a| a == name) {
+                continue;
+            }
+            if name == "none" || name == "host" {
+                continue;
+            }
+            available.push(json!({ "name": name }));
+        }
+    }
+
+    Ok(json!({ "attached": attached, "available": available }))
 }
 
 // ---------------------------------------------------------------------------
@@ -746,6 +825,13 @@ fn build_run_args(req: &Req) -> Result<(Vec<String>, String)> {
     }
     args.push("--restart".into());
     args.push(restart.to_string());
+
+    // Network (optional; must be an existing network). Empty => default bridge.
+    if let Some(net) = req.network.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        validate_token(net)?;
+        args.push("--network".into());
+        args.push(net.to_string());
+    }
 
     // Port mappings.
     if let Some(ports) = &req.ports {
@@ -1041,6 +1127,7 @@ mod tests {
             volumes: None,
             restart: None,
             start: None,
+            network: None,
         }
     }
 
@@ -1116,6 +1203,21 @@ mod tests {
     fn build_run_args_rejects_bad_restart() {
         let mut req = mk_req("nginx");
         req.restart = Some("on-failure".into());
+        assert!(build_run_args(&req).is_err());
+    }
+
+    #[test]
+    fn build_run_args_includes_network() {
+        let mut req = mk_req("nginx");
+        req.network = Some("my-net".into());
+        let (args, _) = build_run_args(&req).unwrap();
+        assert!(args.windows(2).any(|w| w[0] == "--network" && w[1] == "my-net"));
+    }
+
+    #[test]
+    fn build_run_args_rejects_bad_network() {
+        let mut req = mk_req("nginx");
+        req.network = Some("bad net".into());
         assert!(build_run_args(&req).is_err());
     }
 }
