@@ -115,6 +115,16 @@ pub struct LockGuard {
     _file: File,
 }
 
+impl LockGuard {
+    /// Explicitly release the flock now (rather than waiting for drop). Needed
+    /// before a re-exec: the locked fd is inherited across exec (no CLOEXEC),
+    /// so the replacement process would otherwise fail to re-acquire its own
+    /// role lock and exit as "already running".
+    pub fn release(&self) {
+        let _ = fs2::FileExt::unlock(&self._file);
+    }
+}
+
 /// Try to acquire an exclusive, non-blocking lock for a role. Returns None if
 /// another instance already holds it (i.e. that role is already running).
 pub fn try_lock(path: &Path) -> Result<Option<LockGuard>> {

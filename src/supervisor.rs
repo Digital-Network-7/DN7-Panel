@@ -56,6 +56,15 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
     let mut child: Option<Child> = None;
     let mut shutdown = signal_stream()?;
 
+    // Periodically check whether a self-update replaced the on-disk binary with
+    // a newer version than this (long-lived) supervisor is running. If so,
+    // re-exec ourselves so the supervisor — not just the agent child — runs the
+    // new code (including any new cleanup/migration logic). Without this the
+    // supervisor could run stale code indefinitely after an auto-update.
+    let mut version_check =
+        tokio::time::interval(Duration::from_secs(cfg.supervise_interval_secs.max(1) * 20));
+    version_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     // If an agent is already alive (e.g. started by hand or by a previous
     // supervisor), adopt it: monitor until it dies instead of spawning a dup.
     if role_alive(&agent, cfg.heartbeat_timeout_secs) {
@@ -94,6 +103,21 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                 child = None;
                 tokio::time::sleep(Duration::from_secs(cfg.restart_backoff_secs)).await;
             }
+            _ = version_check.tick() => {
+                if on_disk_is_newer() {
+                    tracing::info!("on-disk binary is newer than this supervisor; re-exec'ing");
+                    // Stop the current agent child cleanly first, then re-exec
+                    // the (new) supervisor binary in our place. Release our role
+                    // lock first — the locked fd is inherited across exec, so
+                    // the replacement would otherwise see the lock still held.
+                    let _ = c.start_kill();
+                    let _ = c.wait().await;
+                    _lock.release();
+                    reexec_supervisor();
+                    // reexec only returns on failure; keep going if so.
+                    child = None;
+                }
+            }
             _ = shutdown.recv() => {
                 tracing::info!("shutdown signal received; terminating agent");
                 let _ = c.start_kill();
@@ -104,6 +128,47 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Whether the on-disk canonical binary reports a strictly newer version than
+/// this running supervisor. Runs `<stable_bin> version` (cheap, no side
+/// effects). False on any error so we never re-exec on a flaky read.
+fn on_disk_is_newer() -> bool {
+    let exe = crate::paths::stable_bin();
+    let out = match std::process::Command::new(&exe).arg("version").output() {
+        Ok(o) if o.status.success() => o,
+        _ => return false,
+    };
+    let disk = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    crate::supervisor::version_gt(&disk, env!("CARGO_PKG_VERSION"))
+}
+
+/// Parse-and-compare semver; true if `a` > `b`. Local copy to avoid a cross-
+/// module dependency (mirrors the backend's util::version_gt).
+pub fn version_gt(a: &str, b: &str) -> bool {
+    fn parse(s: &str) -> Option<(u64, u64, u64)> {
+        let s = s.trim().trim_start_matches('v');
+        let mut it = s.split('.');
+        let x = it.next()?.parse().ok()?;
+        let y = it.next().unwrap_or("0").parse().ok()?;
+        let z = it.next().unwrap_or("0").parse().ok()?;
+        Some((x, y, z))
+    }
+    match (parse(a), parse(b)) {
+        (Some(x), Some(y)) => x > y,
+        _ => false,
+    }
+}
+
+/// Re-exec the canonical supervisor binary in this process's place (no args, so
+/// it comes back as the supervisor role). On success this never returns.
+fn reexec_supervisor() {
+    use std::os::unix::process::CommandExt;
+    let exe = crate::paths::stable_bin();
+    let err = std::process::Command::new(&exe)
+        .current_dir(crate::paths::INSTALL_DIR)
+        .exec();
+    tracing::warn!("supervisor re-exec failed: {err}");
 }
 
 /// Spawn the agent role by re-executing the stable agent binary with the
@@ -198,4 +263,25 @@ fn signal_stream() -> Result<tokio::sync::mpsc::Receiver<()>> {
         }
     });
     Ok(rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_gt;
+
+    #[test]
+    fn newer_than_running_triggers() {
+        assert!(version_gt("1.0.22", "1.0.21"));
+        assert!(version_gt("1.1.0", "1.0.99"));
+        assert!(version_gt("v1.0.22", "1.0.21"));
+    }
+
+    #[test]
+    fn equal_or_older_does_not() {
+        assert!(!version_gt("1.0.21", "1.0.21"));
+        assert!(!version_gt("1.0.20", "1.0.21"));
+        // Unparseable => never re-exec.
+        assert!(!version_gt("", "1.0.21"));
+        assert!(!version_gt("oops", "1.0.21"));
+    }
 }

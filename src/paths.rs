@@ -190,15 +190,27 @@ fn migrate_old_runtime(old_dir: &std::path::Path) {
     }
 
     // 1) Stop the old instance so it stops re-creating heartbeat/pid files.
+    //    Kill the AGENT first: its guardian would otherwise relaunch the
+    //    supervisor the moment we kill it. SIGKILL can't be caught, so the
+    //    guardian can't fight back. Then kill the supervisor (and its
+    //    daemonized parent). Repeat once after a short pause to mop up anything
+    //    a race brought back.
     const SIGKILL: i32 = 9;
-    for name in ["teaops-supervisor.daemon.pid", "teaops-supervisor.pid", "teaops-agent.pid"] {
-        if let Some(pid) = crate::procfile::read_pid(&old_dir.join(name)) {
-            if pid != std::process::id() {
-                crate::procfile::signal_pid(pid, SIGKILL);
+    let kill_order = [
+        "teaops-agent.pid",
+        "teaops-supervisor.pid",
+        "teaops-supervisor.daemon.pid",
+    ];
+    for _ in 0..2 {
+        for name in kill_order {
+            if let Some(pid) = crate::procfile::read_pid(&old_dir.join(name)) {
+                if pid != std::process::id() {
+                    crate::procfile::signal_pid(pid, SIGKILL);
+                }
             }
         }
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    std::thread::sleep(std::time::Duration::from_millis(200));
 
     // 2-4) Move valuables, fold the log, drop transient state.
     migrate_files(old_dir, canonical_dir);
@@ -248,6 +260,53 @@ fn migrate_files(old_dir: &std::path::Path, canonical_dir: &std::path::Path) {
     // Delete transient state from the old directory.
     for name in TRANSIENT_FILES {
         let _ = std::fs::remove_file(old_dir.join(name));
+    }
+}
+
+/// Candidate directories an older agent may have left runtime files in. These
+/// are the places the agent could have been started from before it adopted
+/// `/var/ops` (home, `/`, `/root`, and the current working directory).
+fn legacy_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut push = |p: PathBuf| {
+        if p != PathBuf::from(INSTALL_DIR) && !dirs.contains(&p) {
+            dirs.push(p);
+        }
+    };
+    push(PathBuf::from("/root"));
+    push(PathBuf::from("/"));
+    if let Some(home) = std::env::var_os("HOME") {
+        push(PathBuf::from(home));
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        push(cwd);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            push(parent.to_path_buf());
+        }
+    }
+    dirs
+}
+
+/// Scan well-known legacy locations on *every* launch and clean up any agent
+/// runtime files left there (stopping a stale old instance first, migrating the
+/// token, deleting heartbeat/pid/lock/log residue).
+///
+/// This is needed in addition to the install-time migration because a host that
+/// already moved to `/var/ops` runs `ensure_installed()` as a no-op, yet an
+/// *old supervisor* may still be alive in `/root` (or `~`) — written there
+/// before the binary learned to relocate — re-creating its heartbeat every few
+/// seconds. That's the "heartbeat won't delete" symptom: a different runtime
+/// dir means a different lock, so the single-instance guard never caught it.
+/// Runs only when `/var/ops` is usable (the canonical home for everything).
+pub fn cleanup_legacy_locations() {
+    let canonical = std::path::Path::new(INSTALL_DIR);
+    if !canonical.is_dir() {
+        return; // not installed canonically yet; nothing to anchor cleanup to
+    }
+    for dir in legacy_dirs() {
+        migrate_old_runtime(&dir);
     }
 }
 

@@ -34,6 +34,15 @@ fn main() -> Result<()> {
     let role = std::env::args().nth(1);
     let is_agent = role.as_deref() == Some("agent");
 
+    // `version` subcommand: print the compiled version and exit. Used by the
+    // running supervisor to read the on-disk binary's version, so it can notice
+    // a self-update replaced the binary with a newer build and re-exec itself
+    // (otherwise the long-lived supervisor keeps running old code forever).
+    if role.as_deref() == Some("version") {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     // Migrate to the canonical install location (/var/ops/teaops-agent) on the
     // top-level (supervisor) launch, so the operator never has to create dirs
     // and every respawn/self-update uses a stable path. The agent role is an
@@ -50,6 +59,13 @@ fn main() -> Result<()> {
     if is_agent {
         return run_async(cfg, run_agent);
     }
+
+    // Clean up any agent residue left in legacy locations (~, /, /root, cwd):
+    // stop a stale old supervisor still running there (the usual cause of a
+    // "heartbeat that won't delete") and remove its pid/heartbeat/lock/log,
+    // migrating the token into /var/ops. Runs every launch, not just on the
+    // first relocation.
+    paths::cleanup_legacy_locations();
 
     // Install redundant boot autostart (systemd + cron@reboot + rc.local) so the
     // agent comes back after a reboot. Best-effort + idempotent; no-ops for an

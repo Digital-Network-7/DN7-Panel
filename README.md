@@ -42,6 +42,14 @@ heartbeat / lock files — so no stale `teaops-supervisor.heartbeat` is left
 behind) **and removes the original downloaded binary**. From then on everything
 is anchored at `/var/ops`.
 
+On **every** launch it also sweeps the well-known legacy locations (`~`, `/`,
+`/root`, the cwd) for leftover agent runtime files and applies the same cleanup
+there — stopping a stale old supervisor (a common cause of a heartbeat file that
+"won't delete") even after the host already adopted `/var/ops`. And the
+long-lived supervisor periodically checks whether a self-update replaced the
+on-disk binary with a newer version; if so it re-execs itself, so the supervisor
+(not just the agent child) always ends up running the new code.
+
 It also installs **redundant boot autostart** so the agent comes back after a
 reboot, using whatever the host supports (all best-effort + idempotent, root
 only): a **systemd unit** (`/etc/systemd/system/teaops-agent.service`,
