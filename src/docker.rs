@@ -22,6 +22,7 @@
 //!   {"id","op":"install"}                       -> {op_id} (detached)
 //!   {"id","op":"list_images"}
 //!   {"id","op":"pull_image","image","mirror"?}  -> {op_id} (detached)
+//!   {"id","op":"create_container", ...}          -> {op_id} (detached)
 //!   {"id","op":"remove_image","ref"}
 //!   {"id","op":"list_containers"}
 //!   {"id","op":"start_container"|"stop_container"|"restart_container"|"remove_container","ref"}
@@ -64,6 +65,35 @@ struct Req {
     tail: Option<i64>,
     #[serde(default)]
     op_id: Option<String>,
+    // create_container fields
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    ports: Option<Vec<PortMap>>,
+    #[serde(default)]
+    env: Option<Vec<String>>,
+    #[serde(default)]
+    volumes: Option<Vec<VolumeMap>>,
+    #[serde(default)]
+    restart: Option<String>,
+    #[serde(default)]
+    start: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct PortMap {
+    host: i64,
+    container: i64,
+    #[serde(default)]
+    proto: Option<String>, // "tcp" | "udp", default tcp
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct VolumeMap {
+    host: String,
+    container: String,
+    #[serde(default)]
+    readonly: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -73,8 +103,8 @@ struct Req {
 
 #[derive(Clone)]
 struct OpState {
-    kind: String,         // "pull" | "install"
-    target: String,       // image name (pull) or "docker" (install)
+    kind: String,         // "pull" | "install" | "create"
+    target: String,       // image name (pull) or "docker" (install) or container name (create)
     status: String,       // "running" | "done" | "error"
     error: String,        // populated when status == "error"
     result_image: String, // final clean image name on a successful pull
@@ -238,6 +268,7 @@ async fn handle(req: &Req) -> Result<Value> {
         "info" => docker_info().await,
         "list_images" => list_images().await,
         "pull_image" => start_pull(req),
+        "create_container" => start_create(req),
         "install" => start_install(),
         "list_ops" => Ok(ops_snapshot()),
         "op_log" => {
@@ -621,6 +652,205 @@ async fn run_pull_detached(op_id: &str, pull_ref: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Detached create container
+// ---------------------------------------------------------------------------
+
+/// Whitelisted restart policies.
+fn restart_allowed(p: &str) -> bool {
+    matches!(p, "no" | "unless-stopped" | "always")
+}
+
+/// Validate a container name: docker allows [a-zA-Z0-9][a-zA-Z0-9_.-]+.
+fn validate_name(s: &str) -> Result<()> {
+    if s.len() > 128 {
+        return Err(anyhow!("容器名过长"));
+    }
+    let ok = s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+    if !ok || s.starts_with('-') {
+        return Err(anyhow!("容器名只能包含字母、数字、_ . -"));
+    }
+    Ok(())
+}
+
+/// Validate a host filesystem path (no shell metacharacters; must be absolute).
+fn validate_path(s: &str) -> Result<()> {
+    if s.is_empty() || s.len() > 1024 || !s.starts_with('/') {
+        return Err(anyhow!("路径必须为绝对路径"));
+    }
+    // Disallow characters that could break out of a single argv entry or look
+    // like injection; container/host paths in practice don't need them.
+    let bad = s.chars().any(|c| matches!(c, ';' | '|' | '&' | '$' | '`' | '\n' | '\r' | '"' | '\'' | '\\' | '<' | '>' | '*'));
+    if bad {
+        return Err(anyhow!("路径包含非法字符"));
+    }
+    Ok(())
+}
+
+/// Validate an env var entry "KEY=VALUE". KEY must be a valid identifier; VALUE
+/// is taken verbatim (it's a separate argv entry, so no shell interpretation),
+/// but we still reject newlines.
+fn validate_env(s: &str) -> Result<()> {
+    if s.len() > 4096 {
+        return Err(anyhow!("环境变量过长"));
+    }
+    let (k, _v) = s.split_once('=').ok_or_else(|| anyhow!("环境变量需为 KEY=VALUE 格式"))?;
+    if k.is_empty() {
+        return Err(anyhow!("环境变量名不能为空"));
+    }
+    let key_ok = k.chars().enumerate().all(|(i, c)| {
+        c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())
+    });
+    if !key_ok {
+        return Err(anyhow!("环境变量名只能包含字母、数字、下划线，且不以数字开头"));
+    }
+    if s.contains('\n') || s.contains('\r') {
+        return Err(anyhow!("环境变量包含非法字符"));
+    }
+    Ok(())
+}
+
+/// Build the `docker run` argv from a validated request. Returns the args plus
+/// the resolved (or empty) container name for display.
+fn build_run_args(req: &Req) -> Result<(Vec<String>, String)> {
+    let image = req
+        .image
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("missing image"))?
+        .to_string();
+    validate_token(&image)?;
+
+    let mut args: Vec<String> = vec!["run".into(), "-d".into()];
+
+    // Name (optional).
+    let mut display_name = String::new();
+    if let Some(n) = req.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        validate_name(n)?;
+        args.push("--name".into());
+        args.push(n.to_string());
+        display_name = n.to_string();
+    }
+
+    // Restart policy (whitelisted; default unless-stopped).
+    let restart = req
+        .restart
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("unless-stopped");
+    if !restart_allowed(restart) {
+        return Err(anyhow!("不支持的重启策略"));
+    }
+    args.push("--restart".into());
+    args.push(restart.to_string());
+
+    // Port mappings.
+    if let Some(ports) = &req.ports {
+        if ports.len() > 50 {
+            return Err(anyhow!("端口映射过多"));
+        }
+        for p in ports {
+            if p.host < 1 || p.host > 65535 || p.container < 1 || p.container > 65535 {
+                return Err(anyhow!("端口需为 1-65535"));
+            }
+            let proto = p.proto.as_deref().unwrap_or("tcp");
+            if proto != "tcp" && proto != "udp" {
+                return Err(anyhow!("协议只能是 tcp 或 udp"));
+            }
+            args.push("-p".into());
+            args.push(format!("{}:{}/{}", p.host, p.container, proto));
+        }
+    }
+
+    // Environment variables.
+    if let Some(envs) = &req.env {
+        if envs.len() > 100 {
+            return Err(anyhow!("环境变量过多"));
+        }
+        for e in envs {
+            let e = e.trim();
+            if e.is_empty() {
+                continue;
+            }
+            validate_env(e)?;
+            args.push("-e".into());
+            args.push(e.to_string());
+        }
+    }
+
+    // Volume mounts.
+    if let Some(vols) = &req.volumes {
+        if vols.len() > 50 {
+            return Err(anyhow!("挂载过多"));
+        }
+        for v in vols {
+            let host = v.host.trim();
+            let container = v.container.trim();
+            validate_path(host)?;
+            validate_path(container)?;
+            let spec = if v.readonly {
+                format!("{host}:{container}:ro")
+            } else {
+                format!("{host}:{container}")
+            };
+            args.push("-v".into());
+            args.push(spec);
+        }
+    }
+
+    args.push(image);
+    Ok((args, display_name))
+}
+
+/// Validate the request, register a detached op, run `docker run -d`, and (if
+/// not starting) immediately stop the container. Returns an op_id.
+fn start_create(req: &Req) -> Result<Value> {
+    let (args, display_name) = build_run_args(req)?;
+    let start = req.start.unwrap_or(true);
+    let target = if display_name.is_empty() {
+        req.image.clone().unwrap_or_default()
+    } else {
+        display_name.clone()
+    };
+
+    let op_id = new_op_id();
+    op_create(&op_id, "create", &target);
+
+    let op_id_t = op_id.clone();
+    let target_t = target.clone();
+    tokio::spawn(async move {
+        op_push(&op_id_t, "正在创建容器 …");
+        // `docker run -d` creates and starts. If the user opted not to start,
+        // create with `create` instead so it lands in a stopped state.
+        let run_args: Vec<&str> = if start {
+            args.iter().map(String::as_str).collect()
+        } else {
+            // swap the leading "run" for "create" (drop the -d, harmless on create)
+            let mut a: Vec<&str> = args.iter().map(String::as_str).collect();
+            a[0] = "create";
+            a
+        };
+        match run(&run_args).await {
+            Ok((true, stdout, _)) => {
+                let cid = stdout.trim();
+                let short = cid.chars().take(12).collect::<String>();
+                op_push(&op_id_t, &format!("容器已{}：{}", if start { "创建并启动" } else { "创建" }, short));
+                op_finish(&op_id_t, "done", "", &target_t);
+            }
+            Ok((false, _, stderr)) => {
+                op_finish(&op_id_t, "error", &trim_msg(&stderr).unwrap_or_else(|| "创建失败".into()), "");
+            }
+            Err(e) => op_finish(&op_id_t, "error", &e.to_string(), ""),
+        }
+    });
+
+    Ok(json!({ "op_id": op_id, "target": target }))
+}
+
+// ---------------------------------------------------------------------------
 // Detached install
 // ---------------------------------------------------------------------------
 
@@ -794,5 +1024,98 @@ mod tests {
         assert_eq!(log["result_image"], "nginx:latest");
         op_dismiss(id);
         assert_eq!(op_log(id)["status"], "gone");
+    }
+
+    fn mk_req(image: &str) -> Req {
+        Req {
+            id: 0,
+            op: "create_container".into(),
+            image: Some(image.into()),
+            mirror: None,
+            reference: None,
+            tail: None,
+            op_id: None,
+            name: None,
+            ports: None,
+            env: None,
+            volumes: None,
+            restart: None,
+            start: None,
+        }
+    }
+
+    #[test]
+    fn restart_whitelist() {
+        assert!(restart_allowed("no"));
+        assert!(restart_allowed("unless-stopped"));
+        assert!(restart_allowed("always"));
+        assert!(!restart_allowed("on-failure"));
+        assert!(!restart_allowed("; rm -rf /"));
+    }
+
+    #[test]
+    fn name_validation() {
+        assert!(validate_name("my-app_1.0").is_ok());
+        assert!(validate_name("-leading").is_err());
+        assert!(validate_name("bad name").is_err());
+        assert!(validate_name("a; ls").is_err());
+    }
+
+    #[test]
+    fn path_validation() {
+        assert!(validate_path("/data/app").is_ok());
+        assert!(validate_path("relative/path").is_err());
+        assert!(validate_path("/data;rm").is_err());
+        assert!(validate_path("/data$(x)").is_err());
+        assert!(validate_path("").is_err());
+    }
+
+    #[test]
+    fn env_validation() {
+        assert!(validate_env("KEY=value").is_ok());
+        assert!(validate_env("MY_VAR=a b c").is_ok());
+        assert!(validate_env("_X=1").is_ok());
+        assert!(validate_env("noequals").is_err());
+        assert!(validate_env("=novalue").is_err());
+        assert!(validate_env("1BAD=x").is_err());
+        assert!(validate_env("bad key=x").is_err());
+    }
+
+    #[test]
+    fn build_run_args_basic() {
+        let mut req = mk_req("nginx:latest");
+        req.name = Some("web".into());
+        req.ports = Some(vec![PortMap { host: 8080, container: 80, proto: None }]);
+        req.env = Some(vec!["FOO=bar".into()]);
+        req.volumes = Some(vec![VolumeMap {
+            host: "/srv/html".into(),
+            container: "/usr/share/nginx/html".into(),
+            readonly: true,
+        }]);
+        let (args, name) = build_run_args(&req).unwrap();
+        assert_eq!(name, "web");
+        // default restart policy applied
+        assert!(args.windows(2).any(|w| w[0] == "--restart" && w[1] == "unless-stopped"));
+        assert!(args.windows(2).any(|w| w[0] == "-p" && w[1] == "8080:80/tcp"));
+        assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == "FOO=bar"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "-v" && w[1] == "/srv/html:/usr/share/nginx/html:ro"));
+        // image is the last argument
+        assert_eq!(args.last().unwrap(), "nginx:latest");
+    }
+
+    #[test]
+    fn build_run_args_rejects_bad_port() {
+        let mut req = mk_req("nginx");
+        req.ports = Some(vec![PortMap { host: 0, container: 80, proto: None }]);
+        assert!(build_run_args(&req).is_err());
+    }
+
+    #[test]
+    fn build_run_args_rejects_bad_restart() {
+        let mut req = mk_req("nginx");
+        req.restart = Some("on-failure".into());
+        assert!(build_run_args(&req).is_err());
     }
 }
