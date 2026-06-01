@@ -37,6 +37,11 @@ pub struct Metrics {
     pub disk_used: u64,
     /// Per-mount disk breakdown (deduped by device).
     pub disk_mounts: Vec<DiskMount>,
+    /// Self-update phase ("idle"|"checking"|"downloading"|"installing"|"error")
+    /// and download progress percent (0..100), so the UI can show live update
+    /// status instead of the agent appearing to hang during a slow download.
+    pub update_phase: String,
+    pub update_progress: u64,
 }
 
 /// Collector that maintains a System handle across refreshes so CPU usage is
@@ -167,6 +172,8 @@ impl Collector {
             disk_total,
             disk_used,
             disk_mounts,
+            update_phase: crate::update::phase_str().to_string(),
+            update_progress: crate::update::progress(),
         }
     }
 }

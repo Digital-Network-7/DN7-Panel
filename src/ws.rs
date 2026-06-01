@@ -95,6 +95,8 @@ impl MetricsStream {
             "disk_total": m.disk_total,
             "disk_used": m.disk_used,
             "disk_mounts": m.disk_mounts,
+            "update_phase": m.update_phase,
+            "update_progress": m.update_progress,
         });
         self.socket
             .send(Message::Text(payload.to_string()))

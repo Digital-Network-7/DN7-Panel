@@ -22,9 +22,15 @@ fn http() -> reqwest::Client {
         .expect("http client")
 }
 
-/// Download the latest binary into memory, GitHub-first.
-pub async fn fetch_latest(cfg: &crate::config::AgentConfig) -> Result<Vec<u8>> {
-    match fetch_from_github(cfg).await {
+/// Download the latest binary into memory, GitHub-first. Invokes
+/// `on_progress(percent)` as bytes arrive (0..100). Percent is based on
+/// Content-Length; if the server doesn't send it, progress jumps 0 -> 100 on
+/// completion. GitHub-first with CDN fallback.
+pub async fn fetch_latest_with_progress<F: Fn(u64) + Copy>(
+    cfg: &crate::config::AgentConfig,
+    on_progress: F,
+) -> Result<Vec<u8>> {
+    match fetch_from_github(cfg, on_progress).await {
         Ok(bytes) => {
             tracing::info!("fetched binary from GitHub");
             return Ok(bytes);
@@ -33,8 +39,36 @@ pub async fn fetch_latest(cfg: &crate::config::AgentConfig) -> Result<Vec<u8>> {
             tracing::warn!("GitHub fetch failed ({e}); falling back to download service")
         }
     }
-    let bytes = fetch_from_download_service(cfg).await?;
+    let bytes = fetch_from_download_service(cfg, on_progress).await?;
     tracing::info!("fetched binary from download service");
+    Ok(bytes)
+}
+
+/// Stream a response body into a Vec, reporting download percent via callback.
+async fn download_streaming<F: Fn(u64)>(
+    resp: reqwest::Response,
+    on_progress: F,
+) -> Result<Vec<u8>> {
+    use futures_util::StreamExt;
+    let total = resp.content_length();
+    let mut bytes: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
+    let mut got: u64 = 0;
+    let mut last_pct: u64 = 0;
+    on_progress(0);
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| anyhow!("download stream error: {e}"))?;
+        bytes.extend_from_slice(&chunk);
+        got += chunk.len() as u64;
+        if let Some(total) = total.filter(|t| *t > 0) {
+            let pct = (got * 100 / total).min(100);
+            if pct != last_pct {
+                last_pct = pct;
+                on_progress(pct);
+            }
+        }
+    }
+    on_progress(100);
     Ok(bytes)
 }
 
@@ -70,7 +104,10 @@ pub async fn latest_version(cfg: &crate::config::AgentConfig) -> Result<String> 
 }
 
 /// GitHub path: releases.atom -> highest version -> release asset download.
-async fn fetch_from_github(cfg: &crate::config::AgentConfig) -> Result<Vec<u8>> {
+async fn fetch_from_github<F: Fn(u64)>(
+    cfg: &crate::config::AgentConfig,
+    on_progress: F,
+) -> Result<Vec<u8>> {
     let client = http();
     let atom_url = format!("https://github.com/{}/releases.atom", cfg.repo);
     let body = client
@@ -87,33 +124,26 @@ async fn fetch_from_github(cfg: &crate::config::AgentConfig) -> Result<Vec<u8>> 
         "https://github.com/{}/releases/download/v{version}/{asset}",
         cfg.repo
     );
-    let bytes = client
-        .get(&asset_url)
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
+    let resp = client.get(&asset_url).send().await?.error_for_status()?;
+    let bytes = download_streaming(resp, on_progress).await?;
     if bytes.is_empty() {
         return Err(anyhow!("downloaded asset is empty"));
     }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 /// Download-service path: GET /download/agent/latest.
-async fn fetch_from_download_service(cfg: &crate::config::AgentConfig) -> Result<Vec<u8>> {
+async fn fetch_from_download_service<F: Fn(u64)>(
+    cfg: &crate::config::AgentConfig,
+    on_progress: F,
+) -> Result<Vec<u8>> {
     let url = format!("{}/download/{}/latest", cfg.download_url, URL_NAME);
-    let bytes = http()
-        .get(&url)
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
+    let resp = http().get(&url).send().await?.error_for_status()?;
+    let bytes = download_streaming(resp, on_progress).await?;
     if bytes.is_empty() {
         return Err(anyhow!("download service returned empty body"));
     }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 /// Find the highest `1.0.x`-style version in a releases Atom feed.

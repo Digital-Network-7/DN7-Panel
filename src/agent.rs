@@ -50,9 +50,7 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
             if let Ok(info) = client.should_upgrade(&agent_token).await {
                 if info.auto_update && upgrade_available(&cfg).await {
                     tracing::info!("auto-update enabled and newer version available; upgrading");
-                    if let Err(e) = do_self_update(&cfg).await {
-                        tracing::warn!("auto-update failed: {e}");
-                    }
+                    spawn_self_update(&cfg);
                 }
             }
         }
@@ -79,9 +77,7 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                             ServerCommand::Upgrade => {
                                 tracing::info!("received upgrade command");
                                 if upgrade_available(&cfg).await {
-                                    if let Err(e) = do_self_update(&cfg).await {
-                                        tracing::warn!("upgrade failed: {e}");
-                                    }
+                                    spawn_self_update(&cfg);
                                 } else {
                                     tracing::info!("already on the latest version; ignoring upgrade");
                                 }
@@ -222,11 +218,15 @@ fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
 }
 
 /// Fetch the latest binary, replace our own executable, and exit so the
-/// supervisor relaunches us on the new version.
-async fn do_self_update(cfg: &AgentConfig) -> Result<()> {
-    update::self_update(cfg).await?;
-    tracing::info!("upgrade complete; exiting for restart");
-    std::process::exit(0);
+/// supervisor relaunches us on the new version. Runs in a background task so the
+/// metrics loop keeps reporting (and showing update progress) during a slow
+/// download; the binary is fully downloaded BEFORE we exit, so a flaky network
+/// never leaves the host without a running agent.
+fn spawn_self_update(cfg: &AgentConfig) {
+    let cfg = cfg.clone();
+    tokio::spawn(async move {
+        update::run_self_update(&cfg).await;
+    });
 }
 
 /// Determine the agent token, performing the pairing flow if necessary.
