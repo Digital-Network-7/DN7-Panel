@@ -158,10 +158,13 @@ versions, auto-install (official get.docker.com script with the Aliyun mirror,
 then national registry mirrors in `daemon.json`), list/pull/remove images,
 list/start/stop/restart/remove containers + tail logs, and list/remove networks.
 Pulls can go through an accelerated mirror (e.g. `m.daocloud.io`): the agent
-pulls `<mirror>/docker.io/<image>` then re-tags it to the clean image name. The
-operations are a fixed whitelist — there is no arbitrary command pass-through,
-and user-supplied references are validated and passed as separate argv entries
-(never interpolated into a shell).
+pulls `<mirror>/docker.io/<image>` then re-tags it to the clean image name. Image
+pulls and the Docker install run as **detached operations** in a process-global
+registry, so they keep running even if the client leaves the page; the client
+polls `list_ops`/`op_log` to watch progress and pick up the result on reconnect.
+The operations are a fixed whitelist — there is no arbitrary command
+pass-through, and user-supplied references are validated and passed as separate
+argv entries (never interpolated into a shell).
 
 ## Metrics collected
 

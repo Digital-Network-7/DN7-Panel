@@ -11,21 +11,31 @@
 //! (image names, container ids, ...) are passed as separate argv entries to
 //! `docker`, never interpolated into a shell, so there's no injection surface.
 //!
+//! Long-running operations (image pulls, Docker install) run **detached** in a
+//! process-global registry, so they keep running even if the client leaves the
+//! page and the WebSocket drops. The client starts one (`pull_image`/`install`,
+//! which return an `op_id` immediately) and then polls `list_ops` / `op_log` to
+//! watch progress and pick up the result when it reconnects.
+//!
 //! Requests (client -> agent):
 //!   {"id","op":"info"}
-//!   {"id","op":"install"}
+//!   {"id","op":"install"}                       -> {op_id} (detached)
 //!   {"id","op":"list_images"}
-//!   {"id","op":"pull_image","image":"nginx:latest","mirror":"m.daocloud.io"?}
-//!   {"id","op":"remove_image","ref":"<id|repo:tag>"}
+//!   {"id","op":"pull_image","image","mirror"?}  -> {op_id} (detached)
+//!   {"id","op":"remove_image","ref"}
 //!   {"id","op":"list_containers"}
-//!   {"id","op":"start_container"|"stop_container"|"restart_container"|"remove_container","ref":"<cid>"}
-//!   {"id","op":"logs","ref":"<cid>","tail":200?}
+//!   {"id","op":"start_container"|"stop_container"|"restart_container"|"remove_container","ref"}
+//!   {"id","op":"logs","ref","tail"?}
 //!   {"id","op":"list_networks"}
-//!   {"id","op":"remove_network","ref":"<nid>"}
-//! Responses (agent -> client):
-//!   {"id","ok":true,"data":<json>}
-//!   {"id","ok":false,"error":"..."}
-//!   {"event":"progress","id":<id>,"line":"..."}   (during pull/install)
+//!   {"id","op":"remove_network","ref"}
+//!   {"id","op":"list_ops"}                       -> running/finished operations
+//!   {"id","op":"op_log","op_id"}                 -> a single op's progress lines
+//!   {"id","op":"dismiss_op","op_id"}             -> forget a finished op
+//! Responses (agent -> client): {"id","ok":true,"data":<json>} / {"id","ok":false,"error":".."}
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
 use futures_util::{SinkExt, StreamExt};
@@ -52,12 +62,129 @@ struct Req {
     reference: Option<String>,
     #[serde(default)]
     tail: Option<i64>,
+    #[serde(default)]
+    op_id: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Detached operation registry (pulls + install). Process-global so an op keeps
+// running across client reconnects.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct OpState {
+    kind: String,         // "pull" | "install"
+    target: String,       // image name (pull) or "docker" (install)
+    status: String,       // "running" | "done" | "error"
+    error: String,        // populated when status == "error"
+    result_image: String, // final clean image name on a successful pull
+    lines: Vec<String>,   // progress tail (bounded)
+}
+
+fn ops() -> &'static Mutex<HashMap<String, OpState>> {
+    static OPS: OnceLock<Mutex<HashMap<String, OpState>>> = OnceLock::new();
+    OPS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn new_op_id() -> String {
+    static N: AtomicU64 = AtomicU64::new(1);
+    format!("op{}", N.fetch_add(1, Ordering::Relaxed))
+}
+
+fn op_create(op_id: &str, kind: &str, target: &str) {
+    if let Ok(mut m) = ops().lock() {
+        m.insert(
+            op_id.to_string(),
+            OpState {
+                kind: kind.to_string(),
+                target: target.to_string(),
+                status: "running".to_string(),
+                error: String::new(),
+                result_image: String::new(),
+                lines: Vec::new(),
+            },
+        );
+    }
+}
+
+fn op_push(op_id: &str, line: &str) {
+    if line.is_empty() {
+        return;
+    }
+    if let Ok(mut m) = ops().lock() {
+        if let Some(o) = m.get_mut(op_id) {
+            o.lines.push(line.to_string());
+            // Keep only the recent tail so a long pull can't grow unbounded.
+            let len = o.lines.len();
+            if len > 400 {
+                o.lines.drain(0..len - 400);
+            }
+        }
+    }
+}
+
+fn op_finish(op_id: &str, status: &str, error: &str, result_image: &str) {
+    if let Ok(mut m) = ops().lock() {
+        if let Some(o) = m.get_mut(op_id) {
+            o.status = status.to_string();
+            o.error = error.to_string();
+            o.result_image = result_image.to_string();
+        }
+    }
+}
+
+/// Snapshot of all operations (without the full log) for `list_ops`.
+fn ops_snapshot() -> Value {
+    let m = match ops().lock() {
+        Ok(m) => m,
+        Err(_) => return json!({ "ops": [] }),
+    };
+    let list: Vec<Value> = m
+        .iter()
+        .map(|(id, o)| {
+            json!({
+                "op_id": id,
+                "kind": o.kind,
+                "target": o.target,
+                "status": o.status,
+                "error": o.error,
+                "result_image": o.result_image,
+                // The latest line gives the list a one-line progress hint.
+                "last_line": o.lines.last().cloned().unwrap_or_default(),
+            })
+        })
+        .collect();
+    json!({ "ops": list })
+}
+
+fn op_log(op_id: &str) -> Value {
+    let m = match ops().lock() {
+        Ok(m) => m,
+        Err(_) => return json!({ "lines": [], "status": "error", "error": "lock" }),
+    };
+    match m.get(op_id) {
+        Some(o) => json!({
+            "lines": o.lines,
+            "status": o.status,
+            "error": o.error,
+            "result_image": o.result_image,
+            "kind": o.kind,
+            "target": o.target,
+        }),
+        None => json!({ "lines": [], "status": "gone", "error": "" }),
+    }
+}
+
+fn op_dismiss(op_id: &str) {
+    if let Ok(mut m) = ops().lock() {
+        m.remove(op_id);
+    }
 }
 
 /// Connect to the backend docker relay and serve the protocol until either side
-/// closes.
-pub async fn run_docker_channel(cfg: &AgentConfig, agent_token: &str, session: &str) -> Result<()> {
-    let url = cfg.agent_docker_ws_url(session);
+/// closes. The connection is stateless: long ops live in the global registry.
+pub async fn run_docker_channel(_cfg: &AgentConfig, agent_token: &str, session: &str) -> Result<()> {
+    let url = _cfg.agent_docker_ws_url(session);
     let mut request = url
         .into_client_request()
         .map_err(|e| anyhow!("bad ws url: {e}"))?;
@@ -85,23 +212,6 @@ pub async fn run_docker_channel(cfg: &AgentConfig, agent_token: &str, session: &
                     }
                 };
                 let id = req.id;
-                // Ops that stream progress need the sink during execution.
-                if req.op == "pull_image" || req.op == "install" {
-                    let res = if req.op == "install" {
-                        install_docker(&mut ws_tx, id).await
-                    } else {
-                        pull_image(&mut ws_tx, id, &req).await
-                    };
-                    let frame = match res {
-                        Ok(data) => json!({ "id": id, "ok": true, "data": data }),
-                        Err(e) => json!({ "id": id, "ok": false, "error": e.to_string() }),
-                    };
-                    if ws_tx.send(Message::Text(frame.to_string())).await.is_err() {
-                        break;
-                    }
-                    continue;
-                }
-                // Simple request/response ops.
                 let frame = match handle(&req).await {
                     Ok(data) => json!({ "id": id, "ok": true, "data": data }),
                     Err(e) => json!({ "id": id, "ok": false, "error": e.to_string() }),
@@ -121,11 +231,25 @@ pub async fn run_docker_channel(cfg: &AgentConfig, agent_token: &str, session: &
     Ok(())
 }
 
-/// Dispatch a non-streaming op.
+/// Dispatch one request. Long ops (`pull_image`, `install`) start a detached
+/// task and return an `op_id` immediately.
 async fn handle(req: &Req) -> Result<Value> {
     match req.op.as_str() {
         "info" => docker_info().await,
         "list_images" => list_images().await,
+        "pull_image" => start_pull(req),
+        "install" => start_install(),
+        "list_ops" => Ok(ops_snapshot()),
+        "op_log" => {
+            let op_id = req.op_id.as_deref().unwrap_or("");
+            Ok(op_log(op_id))
+        }
+        "dismiss_op" => {
+            if let Some(op_id) = req.op_id.as_deref() {
+                op_dismiss(op_id);
+            }
+            Ok(json!({ "dismissed": true }))
+        }
         "remove_image" => {
             let r = need_ref(req)?;
             run_ok(&["rmi", "-f", &r]).await?;
@@ -233,7 +357,6 @@ fn trim_msg(s: &str) -> Option<String> {
 /// Detect docker (and compose) presence + versions. Never errors: a missing
 /// docker is reported as `installed:false` so the UI can offer to install it.
 async fn docker_info() -> Result<Value> {
-    // Server + client version via a stable format. Falls back gracefully.
     let (ok, stdout, _) = run(&[
         "version",
         "--format",
@@ -243,7 +366,6 @@ async fn docker_info() -> Result<Value> {
     .unwrap_or((false, String::new(), String::new()));
 
     if !ok {
-        // `docker` may exist but the daemon isn't running, or it's absent.
         let present = Command::new("docker").arg("--version").output().await.is_ok();
         return Ok(json!({
             "installed": false,
@@ -257,7 +379,6 @@ async fn docker_info() -> Result<Value> {
     let server_version = parts.next().unwrap_or("").trim().to_string();
     let client_version = parts.next().unwrap_or("").trim().to_string();
 
-    // Compose plugin version (optional).
     let compose_version = run(&["compose", "version", "--short"])
         .await
         .ok()
@@ -332,7 +453,6 @@ async fn list_containers() -> Result<Value> {
 async fn container_logs(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
     let tail = req.tail.unwrap_or(200).clamp(1, 2000).to_string();
-    // Merge stdout+stderr; logs go to stderr for many images.
     let (ok, stdout, stderr) = run(&["logs", "--tail", &tail, &r]).await?;
     if !ok {
         return Err(anyhow!(trim_msg(&stderr).unwrap_or_else(|| "无法获取日志".into())));
@@ -368,26 +488,9 @@ async fn list_networks() -> Result<Value> {
 }
 
 // ---------------------------------------------------------------------------
-// streaming ops: pull (with optional mirror + rename) and install
+// Detached pull
 // ---------------------------------------------------------------------------
 
-type Sink = futures_util::stream::SplitSink<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    Message,
->;
-
-/// Send a progress line to the client (best-effort).
-async fn progress(tx: &mut Sink, id: i64, line: &str) {
-    let _ = tx
-        .send(Message::Text(
-            json!({ "event": "progress", "id": id, "line": line }).to_string(),
-        ))
-        .await;
-}
-
-/// Allowed mirror hosts for accelerated pulls. The image is pulled as
-/// `<mirror>/docker.io/<image>` then re-tagged to the clean `<image>` so the
-/// user only ever sees standard names. An empty/None mirror pulls directly.
 fn mirror_allowed(host: &str) -> bool {
     const ALLOWED: &[&str] = &[
         "m.daocloud.io",
@@ -402,14 +505,7 @@ fn mirror_allowed(host: &str) -> bool {
 }
 
 /// Normalize a user image ref to its docker.io form for mirror prefixing.
-/// `nginx` -> `docker.io/library/nginx:latest`, `user/app:1` ->
-/// `docker.io/user/app:1`. Refs already carrying a registry host are returned
-/// unchanged (we can't safely mirror those through docker.io).
 fn docker_io_path(image: &str) -> Option<String> {
-    // A leading registry host is only present when there's a '/' and the first
-    // segment looks like a host: it contains a '.' or a ':' (host:port), or is
-    // "localhost". Without a '/', the whole thing is a bare repo (any ':' is a
-    // tag, e.g. "nginx:1.25"), so it's NOT qualified.
     let has_slash = image.contains('/');
     let first = image.split('/').next().unwrap_or("");
     let qualified = has_slash
@@ -427,11 +523,9 @@ fn docker_io_path(image: &str) -> Option<String> {
 
 /// Ensure the final ref has a tag (defaults to :latest), for the rename step.
 fn with_default_tag(image: &str) -> String {
-    // Don't add a tag if a digest is pinned.
     if image.contains('@') {
         return image.to_string();
     }
-    // A ':' after the last '/' is a tag; otherwise append :latest.
     let last_seg = image.rsplit('/').next().unwrap_or(image);
     if last_seg.contains(':') {
         image.to_string()
@@ -440,15 +534,16 @@ fn with_default_tag(image: &str) -> String {
     }
 }
 
-/// Pull an image, optionally via an accelerated mirror, streaming progress.
-async fn pull_image(tx: &mut Sink, id: i64, req: &Req) -> Result<Value> {
+/// Validate + resolve the pull, register a detached op, spawn it, return op_id.
+fn start_pull(req: &Req) -> Result<Value> {
     let image = req
         .image
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("missing image"))?;
-    validate_token(image)?;
+        .ok_or_else(|| anyhow!("missing image"))?
+        .to_string();
+    validate_token(&image)?;
 
     let mirror = req.mirror.as_deref().map(str::trim).filter(|s| !s.is_empty());
 
@@ -458,36 +553,48 @@ async fn pull_image(tx: &mut Sink, id: i64, req: &Req) -> Result<Value> {
             if !mirror_allowed(host) {
                 return Err(anyhow!("不支持的加速镜像源"));
             }
-            match docker_io_path(image) {
-                Some(path) => (format!("{host}/{path}"), Some(with_default_tag(image))),
-                // Already a fully-qualified ref: pull as-is, no rename.
-                None => (image.to_string(), None),
+            match docker_io_path(&image) {
+                Some(path) => (format!("{host}/{path}"), Some(with_default_tag(&image))),
+                None => (image.clone(), None),
             }
         }
-        None => (image.to_string(), None),
+        None => (image.clone(), None),
     };
 
-    progress(tx, id, &format!("正在拉取 {pull_ref} …")).await;
-    stream_pull(tx, id, &pull_ref).await?;
+    let shown = final_ref.clone().unwrap_or_else(|| with_default_tag(&image));
+    let op_id = new_op_id();
+    op_create(&op_id, "pull", &shown);
 
-    // Re-tag to the clean name and drop the mirror-prefixed tag.
-    if let Some(final_ref) = final_ref.as_deref() {
-        if final_ref != pull_ref {
-            progress(tx, id, &format!("重命名为 {final_ref}")).await;
-            run_ok(&["tag", &pull_ref, final_ref]).await?;
-            let _ = run(&["rmi", &pull_ref]).await; // best-effort cleanup
+    let op_id_t = op_id.clone();
+    let shown_t = shown.clone();
+    tokio::spawn(async move {
+        op_push(&op_id_t, &format!("正在拉取 {pull_ref} …"));
+        match run_pull_detached(&op_id_t, &pull_ref).await {
+            Ok(()) => {
+                if let Some(final_ref) = final_ref.as_deref() {
+                    if final_ref != pull_ref {
+                        op_push(&op_id_t, &format!("重命名为 {final_ref}"));
+                        if let Err(e) = run_ok(&["tag", &pull_ref, final_ref]).await {
+                            op_finish(&op_id_t, "error", &e.to_string(), "");
+                            return;
+                        }
+                        let _ = run(&["rmi", &pull_ref]).await; // best-effort
+                    }
+                }
+                op_push(&op_id_t, "完成");
+                op_finish(&op_id_t, "done", "", &shown_t);
+            }
+            Err(e) => op_finish(&op_id_t, "error", &e.to_string(), ""),
         }
-    }
+    });
 
-    let shown = final_ref.unwrap_or(pull_ref);
-    progress(tx, id, "完成").await;
-    Ok(json!({ "image": shown }))
+    Ok(json!({ "op_id": op_id, "target": shown }))
 }
 
-/// Run `docker pull <ref>` streaming stdout lines as progress events.
-async fn stream_pull(tx: &mut Sink, id: i64, pull_ref: &str) -> Result<()> {
-    use tokio::io::{AsyncBufReadExt, BufReader};
+/// Run `docker pull <ref>`, pushing each output line into the op registry.
+async fn run_pull_detached(op_id: &str, pull_ref: &str) -> Result<()> {
     use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
     let mut child = Command::new("docker")
         .args(["pull", pull_ref])
@@ -499,18 +606,13 @@ async fn stream_pull(tx: &mut Sink, id: i64, pull_ref: &str) -> Result<()> {
     if let Some(out) = child.stdout.take() {
         let mut lines = BufReader::new(out).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let l = line.trim();
-            if !l.is_empty() {
-                progress(tx, id, l).await;
-            }
+            op_push(op_id, line.trim());
         }
     }
     let status = child.wait().await.map_err(|e| anyhow!("docker pull 失败：{e}"))?;
     if !status.success() {
-        // Surface stderr tail for diagnosis.
         let mut err = String::new();
         if let Some(mut e) = child.stderr.take() {
-            use tokio::io::AsyncReadExt;
             let _ = e.read_to_string(&mut err).await;
         }
         return Err(anyhow!(trim_msg(&err).unwrap_or_else(|| "拉取失败".into())));
@@ -518,14 +620,20 @@ async fn stream_pull(tx: &mut Sink, id: i64, pull_ref: &str) -> Result<()> {
     Ok(())
 }
 
-/// Auto-install Docker using the official convenience script with the Aliyun
-/// mirror (fast in mainland China), then configure registry mirrors in
-/// daemon.json and restart the daemon. Streams progress. Requires root.
-async fn install_docker(tx: &mut Sink, id: i64) -> Result<Value> {
-    // Already installed? Then this is a no-op success.
-    if let Ok(info) = docker_info().await {
-        if info.get("installed").and_then(Value::as_bool) == Some(true) {
-            return Ok(json!({ "already_installed": true }));
+// ---------------------------------------------------------------------------
+// Detached install
+// ---------------------------------------------------------------------------
+
+/// Start (or resume watching) a detached Docker install. Uses a fixed op id so
+/// re-entering the page finds the in-progress install and its full log.
+fn start_install() -> Result<Value> {
+    const INSTALL_OP: &str = "install";
+    // If an install is already running, just hand back its op id.
+    if let Ok(m) = ops().lock() {
+        if let Some(o) = m.get(INSTALL_OP) {
+            if o.status == "running" {
+                return Ok(json!({ "op_id": INSTALL_OP, "target": "docker", "already_running": true }));
+            }
         }
     }
 
@@ -533,9 +641,25 @@ async fn install_docker(tx: &mut Sink, id: i64) -> Result<Value> {
         return Err(anyhow!("安装 Docker 需要 root 权限，请用 root 运行 Agent 后重试"));
     }
 
-    progress(tx, id, "下载 Docker 安装脚本（get.docker.com，阿里云镜像）…").await;
-    // Pipe the official script and run with --mirror Aliyun. We fetch then pipe
-    // to sh so the mirror flag applies to the package download too.
+    op_create(INSTALL_OP, "install", "docker");
+    tokio::spawn(async move {
+        match run_install_detached(INSTALL_OP).await {
+            Ok(()) => op_finish(INSTALL_OP, "done", "", ""),
+            Err(e) => op_finish(INSTALL_OP, "error", &e.to_string(), ""),
+        }
+    });
+    Ok(json!({ "op_id": INSTALL_OP, "target": "docker" }))
+}
+
+async fn run_install_detached(op_id: &str) -> Result<()> {
+    if let Ok(info) = docker_info().await {
+        if info.get("installed").and_then(Value::as_bool) == Some(true) {
+            op_push(op_id, "Docker 已安装");
+            return Ok(());
+        }
+    }
+
+    op_push(op_id, "下载 Docker 安装脚本（get.docker.com，阿里云镜像）…");
     let script = "set -e; \
         if command -v curl >/dev/null 2>&1; then \
           curl -fsSL https://get.docker.com -o /tmp/teaops-get-docker.sh; \
@@ -544,11 +668,9 @@ async fn install_docker(tx: &mut Sink, id: i64) -> Result<Value> {
         else echo 'no curl/wget' >&2; exit 1; fi; \
         sh /tmp/teaops-get-docker.sh --mirror Aliyun; \
         rm -f /tmp/teaops-get-docker.sh";
-    stream_shell(tx, id, script).await?;
+    stream_shell_to_op(op_id, script).await?;
 
-    // Configure registry mirrors (Aliyun/DaoCloud/Tencent public) in daemon.json
-    // for fast pulls, then restart docker. Best-effort.
-    progress(tx, id, "配置国内镜像加速并重启 Docker …").await;
+    op_push(op_id, "配置国内镜像加速并重启 Docker …");
     let conf = r#"set -e; mkdir -p /etc/docker; cat > /etc/docker/daemon.json <<'JSON'
 {
   "registry-mirrors": [
@@ -560,22 +682,22 @@ JSON
 systemctl daemon-reload 2>/dev/null || true
 systemctl enable docker 2>/dev/null || true
 systemctl restart docker 2>/dev/null || service docker restart 2>/dev/null || true"#;
-    let _ = stream_shell(tx, id, conf).await;
+    let _ = stream_shell_to_op(op_id, conf).await;
 
-    progress(tx, id, "校验安装结果 …").await;
+    op_push(op_id, "校验安装结果 …");
     let info = docker_info().await?;
     if info.get("installed").and_then(Value::as_bool) == Some(true) {
-        Ok(info)
+        op_push(op_id, "安装完成");
+        Ok(())
     } else {
         Err(anyhow!("安装完成但 Docker 守护进程未就绪，请检查系统日志"))
     }
 }
 
-/// Run a shell script streaming its combined output as progress lines. Used by
-/// install only (the script itself is a fixed constant — no user input).
-async fn stream_shell(tx: &mut Sink, id: i64, script: &str) -> Result<()> {
-    use tokio::io::{AsyncBufReadExt, BufReader};
+/// Run a shell script, pushing combined output lines into the op registry.
+async fn stream_shell_to_op(op_id: &str, script: &str) -> Result<()> {
     use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
     let mut child = Command::new("sh")
         .arg("-c")
@@ -585,27 +707,18 @@ async fn stream_shell(tx: &mut Sink, id: i64, script: &str) -> Result<()> {
         .spawn()
         .map_err(|e| anyhow!("无法执行安装脚本：{e}"))?;
 
-    // Stream stdout.
     if let Some(out) = child.stdout.take() {
         let mut lines = BufReader::new(out).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let l = line.trim();
-            if !l.is_empty() {
-                progress(tx, id, l).await;
-            }
+            op_push(op_id, line.trim());
         }
     }
     let status = child.wait().await.map_err(|e| anyhow!("安装脚本失败：{e}"))?;
-    // Drain stderr tail for diagnostics regardless of status.
     if let Some(mut e) = child.stderr.take() {
-        use tokio::io::AsyncReadExt;
         let mut err = String::new();
         let _ = e.read_to_string(&mut err).await;
         for line in err.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev() {
-            let l = line.trim();
-            if !l.is_empty() {
-                progress(tx, id, l).await;
-            }
+            op_push(op_id, line.trim());
         }
     }
     if !status.success() {
@@ -641,7 +754,6 @@ mod tests {
         assert!(validate_token("user/app:1.2.3").is_ok());
         assert!(validate_token("m.daocloud.io/docker.io/nginx").is_ok());
         assert!(validate_token("sha256:abc123").is_ok());
-        // injection-ish inputs are rejected
         assert!(validate_token("-v").is_err());
         assert!(validate_token("a; rm -rf /").is_err());
         assert!(validate_token("a b").is_err());
@@ -653,7 +765,6 @@ mod tests {
         assert_eq!(docker_io_path("nginx"), Some("docker.io/library/nginx:latest".into()));
         assert_eq!(docker_io_path("nginx:1.25"), Some("docker.io/library/nginx:1.25".into()));
         assert_eq!(docker_io_path("user/app"), Some("docker.io/user/app:latest".into()));
-        // already-qualified registry refs are left alone (not mirrored)
         assert_eq!(docker_io_path("gcr.io/foo/bar"), None);
         assert_eq!(docker_io_path("localhost:5000/x"), None);
     }
@@ -670,5 +781,18 @@ mod tests {
     fn mirror_whitelist() {
         assert!(mirror_allowed("m.daocloud.io"));
         assert!(!mirror_allowed("evil.example.com"));
+    }
+
+    #[test]
+    fn op_registry_lifecycle() {
+        let id = "test-op-1";
+        op_create(id, "pull", "nginx:latest");
+        op_push(id, "layer 1");
+        op_finish(id, "done", "", "nginx:latest");
+        let log = op_log(id);
+        assert_eq!(log["status"], "done");
+        assert_eq!(log["result_image"], "nginx:latest");
+        op_dismiss(id);
+        assert_eq!(op_log(id)["status"], "gone");
     }
 }
