@@ -1,8 +1,8 @@
 //! Agent-side file-transfer relay.
 //!
 //! When the backend pushes an `open-file` command, the agent dials back
-//! `/agent/file?token=&session=` and serves a small file protocol against the
-//! local filesystem:
+//! `/agent/file?session=` (token in the `Authorization` header) and serves a
+//! small file protocol against the local filesystem:
 //!
 //!   backend WS  <->  agent  <->  local filesystem
 //!
@@ -25,7 +25,10 @@ use anyhow::{anyhow, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{client::IntoClientRequest, http::header::AUTHORIZATION, Message},
+};
 
 use crate::config::AgentConfig;
 
@@ -59,8 +62,17 @@ struct UploadState {
 /// Connect to the backend file relay and serve the protocol until either side
 /// closes.
 pub async fn run_file_channel(cfg: &AgentConfig, agent_token: &str, session: &str) -> Result<()> {
-    let url = cfg.agent_file_ws_url(agent_token, session);
-    let (ws, _resp) = connect_async(&url).await?;
+    let url = cfg.agent_file_ws_url(session);
+    let mut req = url
+        .into_client_request()
+        .map_err(|e| anyhow!("bad ws url: {e}"))?;
+    req.headers_mut().insert(
+        AUTHORIZATION,
+        format!("Bearer {agent_token}")
+            .parse()
+            .map_err(|e| anyhow!("bad auth header: {e}"))?,
+    );
+    let (ws, _resp) = connect_async(req).await?;
     let (mut ws_tx, mut ws_rx) = ws.split();
 
     let mut upload: Option<UploadState> = None;

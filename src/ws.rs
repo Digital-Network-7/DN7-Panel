@@ -10,7 +10,11 @@
 use anyhow::{anyhow, Result};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{client::IntoClientRequest, http::header::AUTHORIZATION, Message},
+    MaybeTlsStream, WebSocketStream,
+};
 
 use crate::metrics::Metrics;
 
@@ -37,9 +41,20 @@ pub struct MetricsStream {
 }
 
 impl MetricsStream {
-    /// Establish the WebSocket connection.
+    /// Establish the WebSocket connection. The agent token is sent in the
+    /// `Authorization: Bearer` header (kept out of the URL/proxy logs); the
+    /// backend still accepts a legacy `?token=` query for older agents.
     pub async fn connect(ws_url: &str, agent_token: &str) -> Result<Self> {
-        let (socket, _resp) = connect_async(ws_url).await?;
+        let mut req = ws_url
+            .into_client_request()
+            .map_err(|e| anyhow!("bad ws url: {e}"))?;
+        req.headers_mut().insert(
+            AUTHORIZATION,
+            format!("Bearer {agent_token}")
+                .parse()
+                .map_err(|e| anyhow!("bad auth header: {e}"))?,
+        );
+        let (socket, _resp) = connect_async(req).await?;
         Ok(MetricsStream {
             socket,
             token: agent_token.to_string(),

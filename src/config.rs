@@ -75,51 +75,36 @@ impl AgentConfig {
     }
 
     /// WebSocket URL for the agent metrics stream, derived from `backend_url`
-    /// (http -> ws, https -> wss). The agent_token is passed as a query param
-    /// since the backend authenticates the connection at upgrade time.
-    pub fn agent_ws_url(&self, agent_token: &str) -> String {
-        let ws_base = if let Some(rest) = self.backend_url.strip_prefix("https://") {
-            format!("wss://{rest}")
-        } else if let Some(rest) = self.backend_url.strip_prefix("http://") {
-            format!("ws://{rest}")
-        } else {
-            self.backend_url.clone()
-        };
-        format!("{ws_base}/agent/ws?token={}", urlencode(agent_token))
+    /// (http -> ws, https -> wss). The agent_token is sent in the
+    /// `Authorization` header (see `ws::MetricsStream::connect`), not the URL,
+    /// so it never lands in proxy access logs.
+    pub fn agent_ws_url(&self) -> String {
+        format!("{}/agent/ws", self.ws_base())
     }
 
     /// WebSocket URL the agent dials to relay a PTY terminal back to the backend
-    /// for a given session (in response to an `open-terminal` command).
-    pub fn agent_terminal_ws_url(&self, agent_token: &str, session: &str) -> String {
-        let ws_base = if let Some(rest) = self.backend_url.strip_prefix("https://") {
-            format!("wss://{rest}")
-        } else if let Some(rest) = self.backend_url.strip_prefix("http://") {
-            format!("ws://{rest}")
-        } else {
-            self.backend_url.clone()
-        };
-        format!(
-            "{ws_base}/agent/terminal?token={}&session={}",
-            urlencode(agent_token),
-            urlencode(session)
-        )
+    /// for a given session (in response to an `open-terminal` command). The
+    /// token travels in the `Authorization` header; only the (non-secret,
+    /// single-use, server-bound) session id is in the URL.
+    pub fn agent_terminal_ws_url(&self, session: &str) -> String {
+        format!("{}/agent/terminal?session={}", self.ws_base(), urlencode(session))
     }
 
     /// WebSocket URL the agent dials to relay a file-transfer channel back to
     /// the backend for a given session (in response to an `open-file` command).
-    pub fn agent_file_ws_url(&self, agent_token: &str, session: &str) -> String {
-        let ws_base = if let Some(rest) = self.backend_url.strip_prefix("https://") {
+    pub fn agent_file_ws_url(&self, session: &str) -> String {
+        format!("{}/agent/file?session={}", self.ws_base(), urlencode(session))
+    }
+
+    /// Derive the ws/wss base from `backend_url`.
+    fn ws_base(&self) -> String {
+        if let Some(rest) = self.backend_url.strip_prefix("https://") {
             format!("wss://{rest}")
         } else if let Some(rest) = self.backend_url.strip_prefix("http://") {
             format!("ws://{rest}")
         } else {
             self.backend_url.clone()
-        };
-        format!(
-            "{ws_base}/agent/file?token={}&session={}",
-            urlencode(agent_token),
-            urlencode(session)
-        )
+        }
     }
 }
 

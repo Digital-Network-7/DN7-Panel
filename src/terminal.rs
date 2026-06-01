@@ -1,8 +1,9 @@
 //! Agent-side terminal relay.
 //!
 //! When the backend pushes an `open-terminal` command, the agent dials back
-//! `/agent/terminal?token=&session=`, opens a local PTY running the user's
-//! login shell, and bridges it to the backend WebSocket:
+//! `/agent/terminal?session=` (token in the `Authorization` header), opens a
+//! local PTY running the user's login shell, and bridges it to the backend
+//! WebSocket:
 //!
 //!   backend WS  <->  agent  <->  local PTY shell
 //!
@@ -18,7 +19,10 @@ use futures_util::{SinkExt, StreamExt};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{client::IntoClientRequest, http::header::AUTHORIZATION, Message},
+};
 
 use crate::config::AgentConfig;
 
@@ -35,8 +39,17 @@ enum ClientFrame {
 /// Open a PTY shell and relay it to the backend for `session`. Runs until either
 /// side closes; errors are logged by the caller.
 pub async fn run_terminal(cfg: &AgentConfig, agent_token: &str, session: &str) -> Result<()> {
-    let url = cfg.agent_terminal_ws_url(agent_token, session);
-    let (ws, _resp) = connect_async(&url).await?;
+    let url = cfg.agent_terminal_ws_url(session);
+    let mut req = url
+        .into_client_request()
+        .map_err(|e| anyhow!("bad ws url: {e}"))?;
+    req.headers_mut().insert(
+        AUTHORIZATION,
+        format!("Bearer {agent_token}")
+            .parse()
+            .map_err(|e| anyhow!("bad auth header: {e}"))?,
+    );
+    let (ws, _resp) = connect_async(req).await?;
     let (mut ws_tx, mut ws_rx) = ws.split();
 
     // Spin up a PTY with a login shell.

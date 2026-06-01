@@ -141,7 +141,8 @@ upgrade, the agent role:
 ## Terminal relay (intranet-friendly SSH)
 
 The backend can also push an `open-terminal` command. The agent then dials back
-`GET /agent/terminal?token=&session=`, opens a **local PTY shell** (the user's
+`GET /agent/terminal?session=` (its token travels in the `Authorization: Bearer`
+header, not the URL), opens a **local PTY shell** (the user's
 login shell), and relays it to the backend byte-for-byte. Because the agent
 connects *outbound*, this gives the web/mini-program terminal full access to
 **intranet / NAT'd servers** the backend can't reach directly — no inbound SSH

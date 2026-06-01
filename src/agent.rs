@@ -29,7 +29,7 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
     let agent_token = resolve_token(&cfg, &client, &mut collector).await?;
     tracing::info!("agent token acquired, entering report loop");
 
-    let ws_url = cfg.agent_ws_url(&agent_token);
+    let ws_url = cfg.agent_ws_url();
     let mut interval = tokio::time::interval(Duration::from_secs(cfg.interval_secs));
     let mut stream: Option<MetricsStream> = None;
 
