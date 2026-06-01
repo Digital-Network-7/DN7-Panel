@@ -84,6 +84,17 @@ struct Req {
     start: Option<bool>,
     #[serde(default)]
     network: Option<String>,
+    // optional command override (argv, whitespace-split client-side or here)
+    #[serde(default)]
+    command: Option<String>,
+    // allocate a pseudo-TTY (-t); keeps shells like `ubuntu`/`bash` alive
+    #[serde(default)]
+    tty: Option<bool>,
+    // resource limits (cgroup v2 only): cpus like "0.5"/"2"; memory like "512m"/"1g"
+    #[serde(default)]
+    cpus: Option<String>,
+    #[serde(default)]
+    memory: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -466,7 +477,15 @@ async fn docker_info() -> Result<Value> {
         "server_version": server_version,
         "client_version": client_version,
         "compose_version": compose_version,
+        "cgroup_v2": cgroup_v2(),
     }))
+}
+
+/// Whether the host is on cgroup v2 (unified hierarchy). Resource limits in the
+/// UI are only offered when this is true, per the product spec.
+fn cgroup_v2() -> bool {
+    // cgroup v2 mounts a single unified hierarchy with this controllers file.
+    std::path::Path::new("/sys/fs/cgroup/cgroup.controllers").exists()
 }
 
 /// List images: id, repo:tag, size, created.
@@ -536,6 +555,36 @@ async fn container_logs(req: &Req) -> Result<Value> {
             text.push('\n');
         }
         text.push_str(&stderr);
+    }
+    // If there's no output, a constantly-restarting container is the usual
+    // cause. Surface its state + last exit code so the user understands why.
+    if text.trim().is_empty() {
+        if let Ok((true, info, _)) = run(&[
+            "inspect",
+            "-f",
+            "{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}|{{.RestartCount}}",
+            &r,
+        ])
+        .await
+        {
+            let f: Vec<&str> = info.trim().split('|').collect();
+            let status = f.first().copied().unwrap_or("");
+            let exit = f.get(1).copied().unwrap_or("");
+            let err = f.get(2).copied().unwrap_or("");
+            let restarts = f.get(3).copied().unwrap_or("0");
+            let mut hint = format!(
+                "（容器暂无日志输出）\n状态：{status} · 退出码：{exit} · 重启次数：{restarts}"
+            );
+            if !err.trim().is_empty() {
+                hint.push_str(&format!("\n错误：{}", err.trim()));
+            }
+            if restarts != "0" || status == "restarting" {
+                hint.push_str(
+                    "\n\n提示：容器可能因默认命令立即退出而不断重启。请在创建时开启「分配终端」或填写常驻启动命令（如 sleep infinity），或将重启策略设为 no。",
+                );
+            }
+            text = hint;
+        }
     }
     Ok(json!({ "logs": text }))
 }
@@ -887,8 +936,115 @@ fn build_run_args(req: &Req) -> Result<(Vec<String>, String)> {
         }
     }
 
+    // Resource limits (cgroup v2). Validated formats only.
+    if let Some(cpus) = req.cpus.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        validate_cpus(cpus)?;
+        args.push("--cpus".into());
+        args.push(cpus.to_string());
+    }
+    if let Some(mem) = req.memory.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        validate_memory(mem)?;
+        args.push("--memory".into());
+        args.push(mem.to_string());
+    }
+
+    // Pseudo-TTY (+ keep stdin open): without this, images whose default
+    // command is an interactive shell (ubuntu/debian/alpine -> bash/sh) exit
+    // immediately, and combined with a restart policy they loop forever.
+    if req.tty.unwrap_or(false) {
+        args.push("-it".into());
+    }
+
     args.push(image);
+
+    // Optional command override (appended after the image, like `docker run`).
+    if let Some(cmd) = req.command.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let parts = split_command(cmd)?;
+        for p in parts {
+            args.push(p);
+        }
+    }
+
     Ok((args, display_name))
+}
+
+/// Validate a `--cpus` value: a positive decimal like "0.5", "1", "2.5".
+fn validate_cpus(s: &str) -> Result<()> {
+    let v: f64 = s.parse().map_err(|_| anyhow!("CPU 限制格式不正确（如 0.5、1、2）"))?;
+    if v <= 0.0 || v > 1024.0 {
+        return Err(anyhow!("CPU 限制超出范围"));
+    }
+    // Restrict the charset too (parse alone would accept "inf"/"NaN").
+    if !s.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return Err(anyhow!("CPU 限制格式不正确"));
+    }
+    Ok(())
+}
+
+/// Validate a `--memory` value: a positive integer with an optional b/k/m/g
+/// suffix, e.g. "512m", "1g", "268435456".
+fn validate_memory(s: &str) -> Result<()> {
+    let lower = s.to_ascii_lowercase();
+    let (num, _suffix) = match lower.chars().last() {
+        Some(c) if matches!(c, 'b' | 'k' | 'm' | 'g') => (&lower[..lower.len() - 1], Some(c)),
+        _ => (lower.as_str(), None),
+    };
+    if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
+        return Err(anyhow!("内存限制格式不正确（如 512m、1g）"));
+    }
+    let n: u64 = num.parse().map_err(|_| anyhow!("内存限制格式不正确"))?;
+    if n == 0 {
+        return Err(anyhow!("内存限制需大于 0"));
+    }
+    Ok(())
+}
+
+/// Split a command string into argv. Supports simple single/double quoting; no
+/// shell features (no globbing, pipes, substitution). Each token is a separate
+/// argv entry passed to `docker run`, so there's no shell-injection surface.
+fn split_command(s: &str) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut has_token = false;
+    for c in s.chars() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                } else {
+                    cur.push(c);
+                }
+            }
+            None => match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    has_token = true;
+                }
+                ' ' | '\t' => {
+                    if has_token {
+                        out.push(std::mem::take(&mut cur));
+                        has_token = false;
+                    }
+                }
+                '\n' | '\r' => return Err(anyhow!("命令不能包含换行")),
+                _ => {
+                    cur.push(c);
+                    has_token = true;
+                }
+            },
+        }
+    }
+    if quote.is_some() {
+        return Err(anyhow!("命令引号未闭合"));
+    }
+    if has_token {
+        out.push(cur);
+    }
+    if out.len() > 100 {
+        return Err(anyhow!("命令参数过多"));
+    }
+    Ok(out)
 }
 
 /// Validate the request, register a detached op, run `docker run -d`, and (if
@@ -1128,6 +1284,10 @@ mod tests {
             restart: None,
             start: None,
             network: None,
+            command: None,
+            tty: None,
+            cpus: None,
+            memory: None,
         }
     }
 
@@ -1219,5 +1379,50 @@ mod tests {
         let mut req = mk_req("nginx");
         req.network = Some("bad net".into());
         assert!(build_run_args(&req).is_err());
+    }
+
+    #[test]
+    fn build_run_args_tty_and_command() {
+        let mut req = mk_req("ubuntu");
+        req.tty = Some(true);
+        req.command = Some("sleep infinity".into());
+        let (args, _) = build_run_args(&req).unwrap();
+        assert!(args.iter().any(|a| a == "-it"));
+        // image then command tokens at the tail
+        let pos = args.iter().position(|a| a == "ubuntu").unwrap();
+        assert_eq!(&args[pos + 1..], &["sleep", "infinity"]);
+    }
+
+    #[test]
+    fn build_run_args_resource_limits() {
+        let mut req = mk_req("nginx");
+        req.cpus = Some("0.5".into());
+        req.memory = Some("512m".into());
+        let (args, _) = build_run_args(&req).unwrap();
+        assert!(args.windows(2).any(|w| w[0] == "--cpus" && w[1] == "0.5"));
+        assert!(args.windows(2).any(|w| w[0] == "--memory" && w[1] == "512m"));
+    }
+
+    #[test]
+    fn validates_limits() {
+        assert!(validate_cpus("0.5").is_ok());
+        assert!(validate_cpus("2").is_ok());
+        assert!(validate_cpus("0").is_err());
+        assert!(validate_cpus("abc").is_err());
+        assert!(validate_memory("512m").is_ok());
+        assert!(validate_memory("1g").is_ok());
+        assert!(validate_memory("268435456").is_ok());
+        assert!(validate_memory("0").is_err());
+        assert!(validate_memory("12x").is_err());
+    }
+
+    #[test]
+    fn splits_command() {
+        assert_eq!(split_command("sleep infinity").unwrap(), vec!["sleep", "infinity"]);
+        assert_eq!(
+            split_command("sh -c \"echo hi there\"").unwrap(),
+            vec!["sh", "-c", "echo hi there"]
+        );
+        assert!(split_command("bad 'quote").is_err());
     }
 }
