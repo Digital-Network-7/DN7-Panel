@@ -103,6 +103,13 @@ impl AgentConfig {
         format!("{}/agent/docker?session={}", self.ws_base(), urlencode(session))
     }
 
+    /// WebSocket URL the agent dials to relay an Nginx management channel back
+    /// to the backend for a given session (in response to an `open-nginx`
+    /// command).
+    pub fn agent_nginx_ws_url(&self, session: &str) -> String {
+        format!("{}/agent/nginx?session={}", self.ws_base(), urlencode(session))
+    }
+
     /// Derive the ws/wss base from `backend_url`.
     fn ws_base(&self) -> String {
         if let Some(rest) = self.backend_url.strip_prefix("https://") {
