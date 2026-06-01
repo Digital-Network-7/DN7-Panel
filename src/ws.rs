@@ -32,6 +32,9 @@ pub enum ServerCommand {
     /// Open a file-transfer channel and relay it back for the given session id
     /// (dial `/agent/file?session=...`).
     OpenFile(String),
+    /// Open a Docker management channel and relay it back for the given session
+    /// id (dial `/agent/docker?session=...`).
+    OpenDocker(String),
 }
 
 /// A live agent->backend metrics stream.
@@ -108,6 +111,10 @@ impl MetricsStream {
                         } else if cmd == "open-file" {
                             if let Some(session) = v.get("session").and_then(|s| s.as_str()) {
                                 commands.push(ServerCommand::OpenFile(session.to_string()));
+                            }
+                        } else if cmd == "open-docker" {
+                            if let Some(session) = v.get("session").and_then(|s| s.as_str()) {
+                                commands.push(ServerCommand::OpenDocker(session.to_string()));
                             }
                         }
                         continue;

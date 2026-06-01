@@ -113,6 +113,20 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                                     }
                                 });
                             }
+                            ServerCommand::OpenDocker(session) => {
+                                tracing::info!(%session, "received open-docker command");
+                                // Serve the Docker management channel in its own
+                                // task so the metrics loop keeps running.
+                                let cfg_t = cfg.clone();
+                                let token_t = agent_token.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) =
+                                        crate::docker::run_docker_channel(&cfg_t, &token_t, &session).await
+                                    {
+                                        tracing::warn!(%session, "docker channel ended: {e}");
+                                    }
+                                });
+                            }
                         }
                     }
                 }

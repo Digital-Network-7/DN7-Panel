@@ -149,6 +149,20 @@ connects *outbound*, this gives the web/mini-program terminal full access to
 or public IP required. The PTY honors window-resize frames so full-screen apps
 (vim/top) render correctly.
 
+## Docker management (agent-relayed)
+
+The backend can push an `open-docker` command. The agent dials back
+`GET /agent/docker?session=` (token in the `Authorization` header) and serves a
+request/response JSON protocol backed by the local `docker` CLI: detect Docker +
+versions, auto-install (official get.docker.com script with the Aliyun mirror,
+then national registry mirrors in `daemon.json`), list/pull/remove images,
+list/start/stop/restart/remove containers + tail logs, and list/remove networks.
+Pulls can go through an accelerated mirror (e.g. `m.daocloud.io`): the agent
+pulls `<mirror>/docker.io/<image>` then re-tags it to the clean image name. The
+operations are a fixed whitelist — there is no arbitrary command pass-through,
+and user-supplied references are validated and passed as separate argv entries
+(never interpolated into a shell).
+
 ## Metrics collected
 
 - CPU usage (% averaged across cores)

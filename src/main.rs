@@ -4,6 +4,7 @@ mod autostart;
 mod config;
 mod crypto;
 mod daemon;
+mod docker;
 mod fetch;
 mod file;
 mod guardian;
