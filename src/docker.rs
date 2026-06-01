@@ -478,6 +478,9 @@ async fn docker_info() -> Result<Value> {
         "client_version": client_version,
         "compose_version": compose_version,
         "cgroup_v2": cgroup_v2(),
+        // Host capacity, so the create form can cap CPU/memory limits.
+        "host_cpus": host_cpus(),
+        "host_mem_bytes": host_mem_bytes(),
     }))
 }
 
@@ -486,6 +489,34 @@ async fn docker_info() -> Result<Value> {
 fn cgroup_v2() -> bool {
     // cgroup v2 mounts a single unified hierarchy with this controllers file.
     std::path::Path::new("/sys/fs/cgroup/cgroup.controllers").exists()
+}
+
+/// Logical CPU count of the host (for capping the `--cpus` limit). Falls back to
+/// 0 when it can't be determined (the UI then doesn't cap).
+fn host_cpus() -> u64 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u64)
+        .unwrap_or(0)
+}
+
+/// Total physical memory of the host in bytes (for capping `--memory`). Parsed
+/// from /proc/meminfo (`MemTotal: <kB> kB`); 0 when unavailable.
+fn host_mem_bytes() -> u64 {
+    let text = match std::fs::read_to_string("/proc/meminfo") {
+        Ok(t) => t,
+        Err(_) => return 0,
+    };
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            // Value is in kB.
+            if let Some(kb) = rest.trim().split_whitespace().next() {
+                if let Ok(kb) = kb.parse::<u64>() {
+                    return kb * 1024;
+                }
+            }
+        }
+    }
+    0
 }
 
 /// List images: id, repo:tag, size, created.
@@ -936,14 +967,25 @@ fn build_run_args(req: &Req) -> Result<(Vec<String>, String)> {
         }
     }
 
-    // Resource limits (cgroup v2). Validated formats only.
+    // Resource limits (cgroup v2). Validated formats only, capped to the host.
     if let Some(cpus) = req.cpus.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         validate_cpus(cpus)?;
+        let host = host_cpus();
+        if host > 0 {
+            let v: f64 = cpus.parse().unwrap_or(0.0);
+            if v > host as f64 {
+                return Err(anyhow!("CPU 限制不能超过宿主机核数（{host}）"));
+            }
+        }
         args.push("--cpus".into());
         args.push(cpus.to_string());
     }
     if let Some(mem) = req.memory.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         validate_memory(mem)?;
+        let host = host_mem_bytes();
+        if host > 0 && mem_to_bytes(mem) > host {
+            return Err(anyhow!("内存限制不能超过宿主机内存"));
+        }
         args.push("--memory".into());
         args.push(mem.to_string());
     }
@@ -997,6 +1039,20 @@ fn validate_memory(s: &str) -> Result<()> {
         return Err(anyhow!("内存限制需大于 0"));
     }
     Ok(())
+}
+
+/// Convert a validated `--memory` value to bytes (for the host cap). Returns 0
+/// for an unparseable value (treated as "no cap" by the caller).
+fn mem_to_bytes(s: &str) -> u64 {
+    let lower = s.to_ascii_lowercase();
+    let (num, mult) = match lower.chars().last() {
+        Some('b') => (&lower[..lower.len() - 1], 1u64),
+        Some('k') => (&lower[..lower.len() - 1], 1024),
+        Some('m') => (&lower[..lower.len() - 1], 1024 * 1024),
+        Some('g') => (&lower[..lower.len() - 1], 1024 * 1024 * 1024),
+        _ => (lower.as_str(), 1),
+    };
+    num.parse::<u64>().ok().map(|n| n.saturating_mul(mult)).unwrap_or(0)
 }
 
 /// Split a command string into argv. Supports simple single/double quoting; no
@@ -1414,6 +1470,14 @@ mod tests {
         assert!(validate_memory("268435456").is_ok());
         assert!(validate_memory("0").is_err());
         assert!(validate_memory("12x").is_err());
+    }
+
+    #[test]
+    fn mem_to_bytes_units() {
+        assert_eq!(mem_to_bytes("512m"), 512 * 1024 * 1024);
+        assert_eq!(mem_to_bytes("1g"), 1024 * 1024 * 1024);
+        assert_eq!(mem_to_bytes("2048"), 2048);
+        assert_eq!(mem_to_bytes("1k"), 1024);
     }
 
     #[test]
