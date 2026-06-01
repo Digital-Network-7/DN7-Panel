@@ -11,13 +11,16 @@
 //!   {"type":"download","path":"/abs/file"}
 //!   {"type":"upload","path":"/abs/file","size":N}  then binary chunks, then
 //!       {"type":"upload-end"}
+//!   {"type":"cancel"}                              abort the active transfer
 //!   {"type":"mkdir","path":"/abs/dir"}
 //!   {"type":"delete","path":"/abs/path"}
 //! Responses (JSON text unless noted):
 //!   {"type":"list","path":..,"entries":[{name,is_dir,size}]}
 //!   {"type":"download-begin","name":..,"size":N}  then binary chunks, then
 //!       {"type":"download-end"}
+//!   {"type":"upload-progress","received":N}        ack bytes written (for speed)
 //!   {"type":"ok","message":..} / {"type":"error","message":..}
+//!   {"type":"cancelled"}                           the active transfer was aborted
 
 use std::path::{Path, PathBuf};
 
@@ -49,6 +52,7 @@ enum ClientMsg {
         size: i64,
     },
     UploadEnd,
+    Cancel,
     Mkdir { path: String },
     Delete { path: String },
 }
@@ -57,6 +61,9 @@ enum ClientMsg {
 struct UploadState {
     file: tokio::fs::File,
     path: PathBuf,
+    /// Bytes written so far; echoed back as `upload-progress` so the client can
+    /// compute the *real* client→agent throughput (not its local buffer fill).
+    received: u64,
 }
 
 /// Connect to the backend file relay and serve the protocol until either side
@@ -95,14 +102,25 @@ pub async fn run_file_channel(cfg: &AgentConfig, agent_token: &str, session: &st
                         }
                     }
                     ClientMsg::Download { path } => {
-                        if let Err(e) = handle_download(&mut ws_tx, &path).await {
-                            send_err(&mut ws_tx, &format!("下载失败：{e}")).await;
+                        match handle_download(&mut ws_tx, &mut ws_rx, &path).await {
+                            Ok(true) => {} // completed
+                            Ok(false) => {
+                                // Cancelled mid-stream by the client.
+                                send_cancelled(&mut ws_tx).await;
+                            }
+                            Err(e) => {
+                                send_err(&mut ws_tx, &format!("下载失败：{e}")).await;
+                            }
                         }
                     }
                     ClientMsg::Upload { path, .. } => {
                         match tokio::fs::File::create(&path).await {
                             Ok(file) => {
-                                upload = Some(UploadState { file, path: PathBuf::from(&path) });
+                                upload = Some(UploadState {
+                                    file,
+                                    path: PathBuf::from(&path),
+                                    received: 0,
+                                });
                             }
                             Err(e) => {
                                 upload = None;
@@ -117,6 +135,14 @@ pub async fn run_file_channel(cfg: &AgentConfig, agent_token: &str, session: &st
                         } else {
                             send_err(&mut ws_tx, "没有进行中的上传").await;
                         }
+                    }
+                    ClientMsg::Cancel => {
+                        // Abort an in-progress upload: drop the partial file.
+                        if let Some(u) = upload.take() {
+                            drop(u.file);
+                            let _ = tokio::fs::remove_file(&u.path).await;
+                        }
+                        send_cancelled(&mut ws_tx).await;
                     }
                     ClientMsg::Mkdir { path } => match tokio::fs::create_dir_all(&path).await {
                         Ok(_) => send_ok(&mut ws_tx, "已创建目录").await,
@@ -141,7 +167,15 @@ pub async fn run_file_channel(cfg: &AgentConfig, agent_token: &str, session: &st
                 if let Some(u) = upload.as_mut() {
                     if let Err(e) = u.file.write_all(&b).await {
                         send_err(&mut ws_tx, &format!("写入失败：{e}")).await;
+                        let _ = tokio::fs::remove_file(&u.path).await;
                         upload = None;
+                    } else {
+                        u.received += b.len() as u64;
+                        // Ack the bytes durably received so the client can show
+                        // the true client→agent throughput (the backend paces
+                        // these frames, so the client's own send rate lies).
+                        let ack = u.received;
+                        send_upload_progress(&mut ws_tx, ack).await;
                     }
                 }
             }
@@ -187,7 +221,15 @@ async fn handle_list(ws: &mut WsSink, path: &str) -> Result<()> {
     Ok(())
 }
 
-async fn handle_download(ws: &mut WsSink, path: &str) -> Result<()> {
+type WsStream = futures_util::stream::SplitStream<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+>;
+
+/// Stream a file to the client, chunk by chunk. Between chunks it watches the
+/// incoming stream for a `{"type":"cancel"}` frame so a download can be aborted
+/// promptly. Returns Ok(true) when the whole file was sent, Ok(false) when the
+/// client cancelled.
+async fn handle_download(ws: &mut WsSink, rx: &mut WsStream, path: &str) -> Result<bool> {
     let md = tokio::fs::metadata(path).await?;
     if md.is_dir() {
         return Err(anyhow!("不能下载目录"));
@@ -206,16 +248,56 @@ async fn handle_download(ws: &mut WsSink, path: &str) -> Result<()> {
         if n == 0 {
             break;
         }
+        // Send the chunk fully (never drop a partial send), then do a quick
+        // non-blocking check for a cancel frame the client may have sent.
         ws.send(Message::Binary(buf[..n].to_vec())).await?;
+        if check_cancel(rx).await {
+            return Ok(false);
+        }
     }
     ws.send(Message::Text("{\"type\":\"download-end\"}".to_string())).await?;
-    Ok(())
+    Ok(true)
+}
+
+/// Non-blocking peek at the incoming stream: returns true if a cancel frame (or
+/// a close) is already pending. Never waits for a new frame.
+async fn check_cancel(rx: &mut WsStream) -> bool {
+    use futures_util::future::FutureExt;
+    match rx.next().now_or_never() {
+        Some(Some(Ok(Message::Text(t)))) => is_cancel(&t),
+        Some(Some(Ok(Message::Close(_)))) | Some(None) => true,
+        _ => false,
+    }
+}
+
+/// True if a text frame is a `{"type":"cancel"}` control message.
+fn is_cancel(t: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(t.trim())
+        .ok()
+        .and_then(|v| v.get("type").and_then(|s| s.as_str()).map(|s| s == "cancel"))
+        .unwrap_or(false)
 }
 
 async fn send_ok(ws: &mut WsSink, message: &str) {
     let _ = ws
         .send(Message::Text(
             serde_json::json!({ "type": "ok", "message": message }).to_string(),
+        ))
+        .await;
+}
+
+async fn send_upload_progress(ws: &mut WsSink, received: u64) {
+    let _ = ws
+        .send(Message::Text(
+            serde_json::json!({ "type": "upload-progress", "received": received }).to_string(),
+        ))
+        .await;
+}
+
+async fn send_cancelled(ws: &mut WsSink) {
+    let _ = ws
+        .send(Message::Text(
+            serde_json::json!({ "type": "cancelled" }).to_string(),
         ))
         .await;
 }
