@@ -13,6 +13,7 @@ mod metrics;
 mod nginx;
 mod pairing;
 mod paths;
+mod pnet;
 mod procfile;
 mod supervisor;
 mod terminal;

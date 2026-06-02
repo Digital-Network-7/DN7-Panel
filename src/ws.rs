@@ -45,6 +45,10 @@ pub enum ServerCommand {
     /// Open an Nginx management channel and relay it back for the given session
     /// id (dial `/agent/nginx?session=...`).
     OpenNginx(String),
+    /// (Re)join the private overlay network: bring up a TUN device at `ip/prefix`
+    /// and relay its packets through the backend (dial `/agent/pnet`). When
+    /// `gone` is true, tear the overlay down instead.
+    Pnet { ip: String, prefix: u8, gone: bool },
 }
 
 /// A live agent->backend metrics stream.
@@ -165,6 +169,16 @@ impl MetricsStream {
                             if let Some(session) = v.get("session").and_then(|s| s.as_str()) {
                                 commands.push(ServerCommand::OpenNginx(session.to_string()));
                             }
+                        } else if cmd == "pnet" {
+                            let ip = v
+                                .get("ip")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let prefix =
+                                v.get("prefix").and_then(|p| p.as_u64()).unwrap_or(24) as u8;
+                            let gone = v.get("gone").and_then(|g| g.as_bool()).unwrap_or(false);
+                            commands.push(ServerCommand::Pnet { ip, prefix, gone });
                         }
                         continue;
                     }

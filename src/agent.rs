@@ -42,6 +42,10 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
     let ack_timeout = Duration::from_secs((cfg.interval_secs.saturating_mul(2)).max(5));
     let mut stream: Option<MetricsStream> = None;
 
+    // Private-network overlay state (one active membership at a time). The
+    // backend pushes a `pnet` command to bring it up / change it / tear it down.
+    let pnet_state = crate::pnet::PnetState::new();
+
     // Auto-update polling runs in its OWN task, not inline in the metrics loop.
     // The upgrade check does blocking network I/O (should_upgrade up to 15s,
     // resolving the latest version up to its own timeout) and, when it fires,
@@ -182,6 +186,18 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                                         tracing::warn!(%session, "nginx channel ended: {e}");
                                     }
                                 });
+                            }
+                            ServerCommand::Pnet { ip, prefix, gone } => {
+                                tracing::info!(%ip, prefix, gone, "received pnet command");
+                                crate::pnet::apply(
+                                    &pnet_state,
+                                    &cfg,
+                                    &agent_token,
+                                    ip,
+                                    prefix,
+                                    gone,
+                                )
+                                .await;
                             }
                         }
                     }
