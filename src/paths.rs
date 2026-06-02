@@ -269,7 +269,7 @@ fn migrate_files(old_dir: &std::path::Path, canonical_dir: &std::path::Path) {
 fn legacy_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     let mut push = |p: PathBuf| {
-        if p != PathBuf::from(INSTALL_DIR) && !dirs.contains(&p) {
+        if p != std::path::Path::new(INSTALL_DIR) && !dirs.contains(&p) {
             dirs.push(p);
         }
     };
@@ -365,12 +365,21 @@ mod tests {
         migrate_files(&old, &canonical);
 
         // Valuables moved over.
-        assert_eq!(fs::read_to_string(canonical.join("teaops-agent.token")).unwrap(), "tok");
-        assert_eq!(fs::read_to_string(canonical.join(".agent_key")).unwrap(), "key");
+        assert_eq!(
+            fs::read_to_string(canonical.join("teaops-agent.token")).unwrap(),
+            "tok"
+        );
+        assert_eq!(
+            fs::read_to_string(canonical.join(".agent_key")).unwrap(),
+            "key"
+        );
         assert!(!old.join("teaops-agent.token").exists());
         assert!(!old.join(".agent_key").exists());
         // Existing canonical version preserved; old copy removed.
-        assert_eq!(fs::read_to_string(canonical.join("teaops-agent.version")).unwrap(), "0.1.0");
+        assert_eq!(
+            fs::read_to_string(canonical.join("teaops-agent.version")).unwrap(),
+            "0.1.0"
+        );
         assert!(!old.join("teaops-agent.version").exists());
         // Log folded (canonical contains both), old log gone.
         let folded = fs::read_to_string(canonical.join("teaops-agent.log")).unwrap();

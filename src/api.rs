@@ -97,9 +97,7 @@ impl ApiClient {
         }
     }
 
-    async fn unwrap_envelope<T: for<'de> Deserialize<'de>>(
-        resp: reqwest::Response,
-    ) -> Result<T> {
+    async fn unwrap_envelope<T: for<'de> Deserialize<'de>>(resp: reqwest::Response) -> Result<T> {
         let status = resp.status();
         let text = resp.text().await?;
         let env: Envelope<T> = serde_json::from_str(&text)

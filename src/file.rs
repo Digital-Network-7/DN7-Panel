@@ -41,8 +41,12 @@ const CHUNK: usize = 256 * 1024;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 enum ClientMsg {
-    List { path: String },
-    Download { path: String },
+    List {
+        path: String,
+    },
+    Download {
+        path: String,
+    },
     // `size` is declared by the client (and metered by the backend); the agent
     // doesn't need it, but keep it so the frame deserializes cleanly.
     Upload {
@@ -53,8 +57,12 @@ enum ClientMsg {
     },
     UploadEnd,
     Cancel,
-    Mkdir { path: String },
-    Delete { path: String },
+    Mkdir {
+        path: String,
+    },
+    Delete {
+        path: String,
+    },
 }
 
 /// State for an in-progress upload (between `upload` and `upload-end`).
@@ -113,21 +121,19 @@ pub async fn run_file_channel(cfg: &AgentConfig, agent_token: &str, session: &st
                             }
                         }
                     }
-                    ClientMsg::Upload { path, .. } => {
-                        match tokio::fs::File::create(&path).await {
-                            Ok(file) => {
-                                upload = Some(UploadState {
-                                    file,
-                                    path: PathBuf::from(&path),
-                                    received: 0,
-                                });
-                            }
-                            Err(e) => {
-                                upload = None;
-                                send_err(&mut ws_tx, &format!("无法创建文件：{e}")).await;
-                            }
+                    ClientMsg::Upload { path, .. } => match tokio::fs::File::create(&path).await {
+                        Ok(file) => {
+                            upload = Some(UploadState {
+                                file,
+                                path: PathBuf::from(&path),
+                                received: 0,
+                            });
                         }
-                    }
+                        Err(e) => {
+                            upload = None;
+                            send_err(&mut ws_tx, &format!("无法创建文件：{e}")).await;
+                        }
+                    },
                     ClientMsg::UploadEnd => {
                         if let Some(mut u) = upload.take() {
                             let _ = u.file.flush().await;
@@ -213,7 +219,10 @@ async fn handle_list(ws: &mut WsSink, path: &str) -> Result<()> {
         let ad = a["is_dir"].as_bool().unwrap_or(false);
         let bd = b["is_dir"].as_bool().unwrap_or(false);
         bd.cmp(&ad).then_with(|| {
-            a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["name"].as_str().unwrap_or(""))
         })
     });
     let payload = serde_json::json!({ "type": "list", "path": dir, "entries": entries });
@@ -255,7 +264,8 @@ async fn handle_download(ws: &mut WsSink, rx: &mut WsStream, path: &str) -> Resu
             return Ok(false);
         }
     }
-    ws.send(Message::Text("{\"type\":\"download-end\"}".to_string())).await?;
+    ws.send(Message::Text("{\"type\":\"download-end\"}".to_string()))
+        .await?;
     Ok(true)
 }
 
@@ -274,7 +284,11 @@ async fn check_cancel(rx: &mut WsStream) -> bool {
 fn is_cancel(t: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(t.trim())
         .ok()
-        .and_then(|v| v.get("type").and_then(|s| s.as_str()).map(|s| s == "cancel"))
+        .and_then(|v| {
+            v.get("type")
+                .and_then(|s| s.as_str())
+                .map(|s| s == "cancel")
+        })
         .unwrap_or(false)
 }
 
@@ -413,8 +427,8 @@ pub async fn run_container_file_channel(
                             continue;
                         }
                         // Buffer into a unique host temp file.
-                        let temp_path = std::env::temp_dir()
-                            .join(format!("teaops-ctn-up-{}", unique_suffix()));
+                        let temp_path =
+                            std::env::temp_dir().join(format!("teaops-ctn-up-{}", unique_suffix()));
                         match tokio::fs::File::create(&temp_path).await {
                             Ok(file) => {
                                 upload = Some(ContainerUploadState {
@@ -502,11 +516,7 @@ pub async fn run_container_file_channel(
 /// Run `sh -c '<script>' sh "<arg>"` inside the container via the daemon exec
 /// API. `arg` becomes `$1` (a separate argv entry — no shell injection). Returns
 /// (exit_code, stdout, stderr-ish combined). No `docker` CLI required.
-async fn ctn_exec_collect(
-    container: &str,
-    script: &str,
-    arg: &str,
-) -> Result<(i64, String)> {
+async fn ctn_exec_collect(container: &str, script: &str, arg: &str) -> Result<(i64, String)> {
     use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
     use futures::StreamExt;
 
@@ -530,7 +540,13 @@ async fn ctn_exec_collect(
         .await
         .map_err(|e| anyhow!("容器内执行失败：{e}"))?;
     let started = dkr
-        .start_exec(&exec.id, Some(StartExecOptions { detach: false, ..Default::default() }))
+        .start_exec(
+            &exec.id,
+            Some(StartExecOptions {
+                detach: false,
+                ..Default::default()
+            }),
+        )
         .await
         .map_err(|e| anyhow!("容器内执行失败：{e}"))?;
 
@@ -570,11 +586,7 @@ async fn ctn_exec_ok(container: &str, script: &str, arg: &str) -> Result<()> {
 
 /// Upload a host temp file into the container at `dest_path` using the archive
 /// (tar) API. Works even on shell-less images.
-async fn ctn_upload_file(
-    container: &str,
-    temp_path: &Path,
-    dest_path: &str,
-) -> Result<()> {
+async fn ctn_upload_file(container: &str, temp_path: &Path, dest_path: &str) -> Result<()> {
     check_abs(dest_path)?;
     let dest = Path::new(dest_path);
     let parent = dest
@@ -650,7 +662,10 @@ done"#;
         let ad = a["is_dir"].as_bool().unwrap_or(false);
         let bd = b["is_dir"].as_bool().unwrap_or(false);
         bd.cmp(&ad).then_with(|| {
-            a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["name"].as_str().unwrap_or(""))
         })
     });
     let payload = serde_json::json!({ "type": "list", "path": dir, "entries": entries });
@@ -671,10 +686,15 @@ async fn ctn_download(
 
     check_abs(path)?;
     let dkr = crate::docker::dkr()?;
-    let opts = bollard::container::DownloadFromContainerOptions { path: path.to_string() };
+    let opts = bollard::container::DownloadFromContainerOptions {
+        path: path.to_string(),
+    };
 
-    // Collect the tar stream into memory. (Container files transferred through
-    // the app are bounded by the per-level rate limit + practical sizes.)
+    // Collect the tar stream into memory, then unpack the single entry. The
+    // archive API doesn't expose a random-access size up front, so we guard
+    // against an oversized file to avoid exhausting agent memory; very large
+    // container files should be copied out by other means.
+    const MAX_CONTAINER_DOWNLOAD: usize = 512 * 1024 * 1024; // 512 MiB
     let mut stream = dkr.download_from_container(container, Some(opts));
     let mut tar_bytes: Vec<u8> = Vec::new();
     while let Some(chunk) = stream.next().await {
@@ -683,11 +703,14 @@ async fn ctn_download(
             anyhow!(friendly_archive_err(&e))
         })?;
         tar_bytes.extend_from_slice(&chunk);
+        if tar_bytes.len() > MAX_CONTAINER_DOWNLOAD {
+            return Err(anyhow!("文件过大（超过 512 MiB），暂不支持在此下载"));
+        }
     }
 
     // Unpack the (single) regular file entry from the tar.
-    let (name, data) = extract_single_file(&tar_bytes)
-        .ok_or_else(|| anyhow!("不能下载目录或空文件"))?;
+    let (name, data) =
+        extract_single_file(&tar_bytes).ok_or_else(|| anyhow!("不能下载目录或空文件"))?;
 
     let begin = serde_json::json!({ "type": "download-begin", "name": name, "size": data.len() });
     ws.send(Message::Text(begin.to_string())).await?;
@@ -701,7 +724,8 @@ async fn ctn_download(
             return Ok(false);
         }
     }
-    ws.send(Message::Text("{\"type\":\"download-end\"}".to_string())).await?;
+    ws.send(Message::Text("{\"type\":\"download-end\"}".to_string()))
+        .await?;
     Ok(true)
 }
 

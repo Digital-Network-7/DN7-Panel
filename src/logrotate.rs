@@ -24,7 +24,7 @@ use crate::config::AgentConfig;
 /// Trim the log once it grows past this many bytes.
 const MAX_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
 /// How much of the tail to keep when trimming.
-const KEEP_BYTES: u64 = 1 * 1024 * 1024; // 1 MiB
+const KEEP_BYTES: u64 = 1024 * 1024; // 1 MiB
 /// How often the janitor checks the size.
 const CHECK_EVERY: Duration = Duration::from_secs(300); // 5 min
 
@@ -63,7 +63,10 @@ fn trim_if_large(path: &Path, max_bytes: u64, keep_bytes: u64) -> std::io::Resul
 
     // Read the tail we want to keep.
     let keep = keep_bytes.min(len);
-    let mut f = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
     f.seek(SeekFrom::Start(len - keep))?;
     let mut tail = Vec::with_capacity(keep as usize);
     f.read_to_end(&mut tail)?;

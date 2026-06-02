@@ -3,14 +3,12 @@
 //! Two managed modes, chosen once at setup and persisted under the agent state
 //! dir (`/var/lib/teaops/nginx/mode`):
 //!
-//!   * **host**   – manage the host's own nginx. We only ever write our own
-//!                  `teaops-<id>.conf` files into `/etc/nginx/conf.d`, never
-//!                  touch the user's existing configs, and reload via
-//!                  `nginx -s reload`.
-//!   * **docker** – run a dedicated `teaops-nginx` container (nginx:alpine) that
-//!                  we created ourselves, with 80/443 published and our config /
-//!                  cert / webroot directories bind-mounted in. We never adopt a
-//!                  pre-existing container.
+//! * **host**   – manage the host's own nginx. We only ever write our own
+//!   `teaops-<id>.conf` files into `/etc/nginx/conf.d`, never touch the user's
+//!   existing configs, and reload via `nginx -s reload`.
+//! * **docker** – run a dedicated `teaops-nginx` container (nginx:alpine) that
+//!   we created ourselves, with 80/443 published and our config / cert / webroot
+//!   directories bind-mounted in. We never adopt a pre-existing container.
 //!
 //! The wire protocol mirrors the docker channel: request/response JSON keyed by
 //! `id`, with long operations (install / Let's Encrypt issuance) run **detached**
@@ -299,7 +297,8 @@ pub async fn run_nginx_channel(cfg: &AgentConfig, agent_token: &str, session: &s
                     Err(e) => {
                         let _ = ws_tx
                             .send(Message::Text(
-                                json!({ "ok": false, "error": format!("bad request: {e}") }).to_string(),
+                                json!({ "ok": false, "error": format!("bad request: {e}") })
+                                    .to_string(),
                             ))
                             .await;
                         continue;
@@ -405,11 +404,16 @@ async fn nginx_info() -> Result<Value> {
     let managed_mode = read_mode();
 
     // Host nginx binary + version.
-    let (ok, _o, e) = run("nginx", &["-v"]).await.unwrap_or((false, String::new(), String::new()));
+    let (ok, _o, e) = run("nginx", &["-v"])
+        .await
+        .unwrap_or((false, String::new(), String::new()));
     // `nginx -v` prints to stderr like "nginx version: nginx/1.24.0".
     let host_nginx_present = ok;
     let host_nginx_version = if ok {
-        e.split('/').nth(1).map(|s| s.trim().to_string()).unwrap_or_default()
+        e.split('/')
+            .nth(1)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
     } else {
         String::new()
     };
@@ -419,8 +423,10 @@ async fn nginx_info() -> Result<Value> {
     let p443 = port_listener(443).await;
 
     // Is our docker nginx container present (created by us) and running?
-    let docker_present = crate::docker::dkr().is_ok()
-        && crate::docker::dkr().unwrap().version().await.is_ok();
+    let docker_present = match crate::docker::dkr() {
+        Ok(d) => d.version().await.is_ok(),
+        Err(_) => false,
+    };
     let (ctn_exists, ctn_running) = if docker_present {
         container_state().await
     } else {
@@ -464,7 +470,9 @@ async fn port_listener(port: u16) -> String {
         return String::new();
     }
     // Fallback: lsof.
-    if let Ok((true, out, _)) = run("lsof", &["-i", &format!(":{port}"), "-sTCP:LISTEN", "-Pn"]).await {
+    if let Ok((true, out, _)) =
+        run("lsof", &["-i", &format!(":{port}"), "-sTCP:LISTEN", "-Pn"]).await
+    {
         if let Some(line) = out.lines().nth(1) {
             return line.split_whitespace().next().unwrap_or("占用").to_string();
         }
@@ -501,7 +509,10 @@ fn listening_inode(path: &str, port: u16) -> Option<u64> {
         if cols[3] != "0A" {
             continue; // not LISTEN
         }
-        let local_port = cols[1].rsplit(':').next().and_then(|h| u16::from_str_radix(h, 16).ok());
+        let local_port = cols[1]
+            .rsplit(':')
+            .next()
+            .and_then(|h| u16::from_str_radix(h, 16).ok());
         if local_port != Some(port) {
             continue;
         }
@@ -588,7 +599,10 @@ async fn list_running_containers() -> Result<Value> {
                 let mut v: Vec<String> = ps
                     .iter()
                     .map(|p| {
-                        let proto = p.typ.map(|t| format!("{t:?}").to_lowercase()).unwrap_or_else(|| "tcp".into());
+                        let proto = p
+                            .typ
+                            .map(|t| format!("{t:?}").to_lowercase())
+                            .unwrap_or_else(|| "tcp".into());
                         match p.public_port {
                             Some(pp) => format!("{pp}->{}/{proto}", p.private_port),
                             None => format!("{}/{proto}", p.private_port),
@@ -623,13 +637,18 @@ fn valid_server_name(s: &str) -> bool {
     s.split_whitespace().all(|h| {
         !h.is_empty()
             && h.len() <= 253
-            && h.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '*' | '_'))
+            && h.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '*' | '_'))
     })
 }
 
 /// The first hostname of a server_name (used for cert CN / acme domain).
 fn primary_host(server_name: &str) -> String {
-    server_name.split_whitespace().next().unwrap_or("").to_string()
+    server_name
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
 
 /// A proxy target host[:port] or container name — no scheme, no path, no shell
@@ -638,7 +657,8 @@ fn valid_host_token(s: &str) -> bool {
     let s = s.trim();
     !s.is_empty()
         && s.len() <= 255
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':'))
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':'))
 }
 
 /// A container name (docker's own charset).
@@ -647,7 +667,8 @@ fn valid_container_name(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 128
         && !s.starts_with('-')
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
 /// A static webroot subdirectory name (single path segment, no separators).
@@ -655,7 +676,8 @@ fn valid_root_segment(s: &str) -> bool {
     let s = s.trim();
     !s.is_empty()
         && s.len() <= 64
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
         && s != "."
         && s != ".."
 }
@@ -687,7 +709,9 @@ fn start_setup(req: &Req) -> Result<Value> {
         }
     }
     if !is_root() {
-        return Err(anyhow!("配置 Nginx 需要 root 权限，请用 root 运行 Agent 后重试"));
+        return Err(anyhow!(
+            "配置 Nginx 需要 root 权限，请用 root 运行 Agent 后重试"
+        ));
     }
 
     op_create(SETUP_OP, "setup", &mode);
@@ -714,7 +738,11 @@ fn start_setup(req: &Req) -> Result<Value> {
 /// where possible), enabled and running. Only used when the user picked host.
 async fn setup_host(op_id: &str) -> Result<()> {
     // Already present?
-    if run("nginx", &["-v"]).await.map(|(ok, ..)| ok).unwrap_or(false) {
+    if run("nginx", &["-v"])
+        .await
+        .map(|(ok, ..)| ok)
+        .unwrap_or(false)
+    {
         op_push(op_id, "检测到宿主机已安装 Nginx");
     } else {
         op_push(op_id, "安装 Nginx（使用系统包管理器）…");
@@ -741,7 +769,9 @@ fi"#;
     // Verify it's runnable.
     let (ok, _, e) = run("nginx", &["-t"]).await?;
     if !ok {
-        return Err(anyhow!(trim_msg(&e).unwrap_or_else(|| "nginx 配置测试失败".into())));
+        return Err(anyhow!(
+            trim_msg(&e).unwrap_or_else(|| "nginx 配置测试失败".into())
+        ));
     }
     Ok(())
 }
@@ -811,7 +841,13 @@ async fn setup_docker(op_id: &str, mirror: &str) -> Result<()> {
     // Remove any previous teaops-nginx (ours) so mounts/ports are fresh.
     op_push(op_id, "创建 Nginx 容器 …");
     let _ = dkr
-        .remove_container(CONTAINER, Some(RemoveContainerOptions { force: true, ..Default::default() }))
+        .remove_container(
+            CONTAINER,
+            Some(RemoveContainerOptions {
+                force: true,
+                ..Default::default()
+            }),
+        )
         .await;
 
     let m_conf = format!("{}:/etc/nginx/conf.d", confd_dir().display());
@@ -823,7 +859,10 @@ async fn setup_docker(op_id: &str, mirror: &str) -> Result<()> {
     for p in ["80", "443"] {
         port_bindings.insert(
             format!("{p}/tcp"),
-            Some(vec![PortBinding { host_ip: None, host_port: Some(p.to_string()) }]),
+            Some(vec![PortBinding {
+                host_ip: None,
+                host_port: Some(p.to_string()),
+            }]),
         );
     }
     let mut exposed: std::collections::HashMap<String, std::collections::HashMap<(), ()>> =
@@ -847,14 +886,24 @@ async fn setup_docker(op_id: &str, mirror: &str) -> Result<()> {
     };
 
     dkr.create_container(
-        Some(CreateContainerOptions { name: CONTAINER.to_string(), platform: None }),
+        Some(CreateContainerOptions {
+            name: CONTAINER.to_string(),
+            platform: None,
+        }),
         config,
     )
     .await
-    .map_err(|e| anyhow!(trim_msg(&e.to_string()).unwrap_or_else(|| "创建 Nginx 容器失败".into())))?;
-    dkr.start_container(CONTAINER, None::<bollard::container::StartContainerOptions<String>>)
-        .await
-        .map_err(|e| anyhow!(trim_msg(&e.to_string()).unwrap_or_else(|| "启动 Nginx 容器失败".into())))?;
+    .map_err(|e| {
+        anyhow!(trim_msg(&e.to_string()).unwrap_or_else(|| "创建 Nginx 容器失败".into()))
+    })?;
+    dkr.start_container(
+        CONTAINER,
+        None::<bollard::container::StartContainerOptions<String>>,
+    )
+    .await
+    .map_err(|e| {
+        anyhow!(trim_msg(&e.to_string()).unwrap_or_else(|| "启动 Nginx 容器失败".into()))
+    })?;
     Ok(())
 }
 
@@ -880,11 +929,21 @@ async fn stream_cmd(op_id: &str, cmd: &str, args: &[&str]) -> Result<()> {
             op_push(op_id, line.trim());
         }
     }
-    let status = child.wait().await.map_err(|e| anyhow!("{cmd} 执行失败：{e}"))?;
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| anyhow!("{cmd} 执行失败：{e}"))?;
     if let Some(mut er) = child.stderr.take() {
         let mut err = String::new();
         let _ = er.read_to_string(&mut err).await;
-        for line in err.lines().rev().take(6).collect::<Vec<_>>().into_iter().rev() {
+        for line in err
+            .lines()
+            .rev()
+            .take(6)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
             op_push(op_id, line.trim());
         }
     }
@@ -903,9 +962,9 @@ async fn stream_cmd(op_id: &str, cmd: &str, args: &[&str]) -> Result<()> {
 /// host paths in host mode).
 struct Layout {
     mode: String,
-    confd: std::path::PathBuf, // where we WRITE conf files (host fs)
-    cert_ref: String,          // dir nginx READS certs from
-    www_ref: String,           // dir nginx READS webroots from
+    confd: std::path::PathBuf,      // where we WRITE conf files (host fs)
+    cert_ref: String,               // dir nginx READS certs from
+    www_ref: String,                // dir nginx READS webroots from
     cert_store: std::path::PathBuf, // where we WRITE cert files (host fs)
     www_store: std::path::PathBuf,  // where we WRITE webroots (host fs)
 }
@@ -1024,7 +1083,11 @@ fn site_from_req(req: &Req) -> Result<Site> {
 
 fn new_site_id() -> String {
     static N: AtomicU64 = AtomicU64::new(1);
-    format!("{}{}", std::process::id() % 100000, N.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "{}{}",
+        std::process::id() % 100000,
+        N.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// Add a site. For SSL with Let's Encrypt, issuance runs detached (returns an
@@ -1115,7 +1178,9 @@ async fn validate_and_reload(lo: &Layout) -> Result<()> {
     if lo.mode == "host" {
         let (ok, _o, e) = run("nginx", &["-t"]).await?;
         if !ok {
-            return Err(anyhow!(trim_msg(&e).unwrap_or_else(|| "nginx 配置无效".into())));
+            return Err(anyhow!(
+                trim_msg(&e).unwrap_or_else(|| "nginx 配置无效".into())
+            ));
         }
         let (ok, _o, e) = run("nginx", &["-s", "reload"]).await?;
         if !ok {
@@ -1126,7 +1191,9 @@ async fn validate_and_reload(lo: &Layout) -> Result<()> {
         // container via the daemon API (no `docker` CLI).
         let (code, out) = ctn_exec(CONTAINER, &["nginx", "-t"]).await?;
         if code != 0 {
-            return Err(anyhow!(trim_msg(&out).unwrap_or_else(|| "nginx 配置无效".into())));
+            return Err(anyhow!(
+                trim_msg(&out).unwrap_or_else(|| "nginx 配置无效".into())
+            ));
         }
         let (code, out) = ctn_exec(CONTAINER, &["nginx", "-s", "reload"]).await?;
         if code != 0 {
@@ -1156,7 +1223,13 @@ async fn ctn_exec(container: &str, cmd: &[&str]) -> Result<(i64, String)> {
         .await
         .map_err(|e| anyhow!("容器内执行失败：{e}"))?;
     let started = dkr
-        .start_exec(&exec.id, Some(StartExecOptions { detach: false, ..Default::default() }))
+        .start_exec(
+            &exec.id,
+            Some(StartExecOptions {
+                detach: false,
+                ..Default::default()
+            }),
+        )
         .await
         .map_err(|e| anyhow!("容器内执行失败：{e}"))?;
     let mut buf = String::new();
@@ -1167,7 +1240,12 @@ async fn ctn_exec(container: &str, cmd: &[&str]) -> Result<(i64, String)> {
             }
         }
     }
-    let code = dkr.inspect_exec(&exec.id).await.ok().and_then(|i| i.exit_code).unwrap_or(0);
+    let code = dkr
+        .inspect_exec(&exec.id)
+        .await
+        .ok()
+        .and_then(|i| i.exit_code)
+        .unwrap_or(0);
     Ok((code, buf))
 }
 
@@ -1293,7 +1371,11 @@ fn write_cert_files(lo: &Layout, site: &Site, cert_pem: &str, key_pem: &str) -> 
 async fn gen_self_signed(lo: &Layout, site: &Site) -> Result<()> {
     std::fs::create_dir_all(&lo.cert_store)?;
     let host = primary_host(&site.server_name);
-    let host = if host == "_" { "localhost".to_string() } else { host };
+    let host = if host == "_" {
+        "localhost".to_string()
+    } else {
+        host
+    };
 
     let mut params = rcgen::CertificateParams::new(vec![host.clone()])
         .map_err(|e| anyhow!("生成证书参数失败：{e}"))?;
@@ -1361,9 +1443,14 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
 
     let host = primary_host(&site.server_name);
     if host.is_empty() || host == "_" || host.contains('*') {
-        return Err(anyhow!("Let's Encrypt 需要一个具体域名（不支持通配符/默认站点）"));
+        return Err(anyhow!(
+            "Let's Encrypt 需要一个具体域名（不支持通配符/默认站点）"
+        ));
     }
-    let acme_root = format!("{}/_acme/.well-known/acme-challenge", lo.www_store.display());
+    let acme_root = format!(
+        "{}/_acme/.well-known/acme-challenge",
+        lo.www_store.display()
+    );
     std::fs::create_dir_all(&acme_root)?;
 
     // Step 1: serve HTTP (no SSL yet) so the http-01 challenge path is reachable.
@@ -1433,12 +1520,21 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
     op_push(op_id, "等待域名验证 …");
     let mut tries = 0;
     let cert_chain_pem = loop {
-        tokio::time::sleep(std::time::Duration::from_secs(if tries == 0 { 1 } else { 3 })).await;
-        let state = order.refresh().await.map_err(|e| anyhow!("查询订单状态失败：{e}"))?;
+        tokio::time::sleep(std::time::Duration::from_secs(if tries == 0 {
+            1
+        } else {
+            3
+        }))
+        .await;
+        let state = order
+            .refresh()
+            .await
+            .map_err(|e| anyhow!("查询订单状态失败：{e}"))?;
         match state.status {
             OrderStatus::Ready => {
                 op_push(op_id, "验证通过，正在签发证书 …");
-                let key_pair = rcgen::KeyPair::generate().map_err(|e| anyhow!("生成私钥失败：{e}"))?;
+                let key_pair =
+                    rcgen::KeyPair::generate().map_err(|e| anyhow!("生成私钥失败：{e}"))?;
                 let mut csr_params = rcgen::CertificateParams::new(vec![host.clone()])
                     .map_err(|e| anyhow!("生成 CSR 参数失败：{e}"))?;
                 csr_params

@@ -239,7 +239,12 @@ pub fn stop_running_instance(cfg: &AgentConfig) {
     // Give the kernel a moment to reap them, then clear stale liveness markers
     // so the replacement supervisor starts a fresh agent instead of adopting.
     std::thread::sleep(std::time::Duration::from_millis(300));
-    for p in [&agent.pid, &agent.heartbeat, &supervisor.pid, &supervisor.heartbeat] {
+    for p in [
+        &agent.pid,
+        &agent.heartbeat,
+        &supervisor.pid,
+        &supervisor.heartbeat,
+    ] {
         let _ = std::fs::remove_file(p);
     }
     let _ = std::fs::remove_file(&daemon_pid);

@@ -98,9 +98,7 @@ impl MetricsStream {
             "update_phase": m.update_phase,
             "update_progress": m.update_progress,
         });
-        self.socket
-            .send(Message::Text(payload.to_string()))
-            .await?;
+        self.socket.send(Message::Text(payload.to_string())).await?;
 
         let mut commands = Vec::new();
 
@@ -108,8 +106,8 @@ impl MetricsStream {
         loop {
             match self.socket.next().await {
                 Some(Ok(Message::Text(text))) => {
-                    let v: serde_json::Value = serde_json::from_str(&text)
-                        .map_err(|e| anyhow!("invalid frame: {e}"))?;
+                    let v: serde_json::Value =
+                        serde_json::from_str(&text).map_err(|e| anyhow!("invalid frame: {e}"))?;
 
                     // Command frame (no "ok" field, has "command").
                     if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
@@ -159,10 +157,7 @@ impl MetricsStream {
                     if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
                         return Ok(commands);
                     }
-                    let err = v
-                        .get("error")
-                        .and_then(|e| e.as_str())
-                        .unwrap_or("unknown");
+                    let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("unknown");
                     return Err(anyhow!("backend rejected report: {err}"));
                 }
                 Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => continue,

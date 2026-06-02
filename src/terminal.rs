@@ -16,7 +16,7 @@ use std::io::{Read, Write};
 
 use anyhow::{anyhow, Result};
 use futures_util::{SinkExt, StreamExt};
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{
@@ -29,11 +29,18 @@ use crate::config::AgentConfig;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum ClientFrame {
-    Resize { cols: u16, rows: u16 },
-    Data { data: String },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
+    Data {
+        data: String,
+    },
     /// Latency probe from the client; echoed straight back as a pong carrying
     /// the same timestamp so the client can compute the full round-trip delay.
-    Ping { t: i64 },
+    Ping {
+        t: i64,
+    },
 }
 
 /// Open a PTY shell and relay it to the backend for `session`. Runs until either
@@ -101,7 +108,13 @@ pub async fn run_container_exec(
         .map_err(|e| anyhow!("无法创建容器会话：{e}"))?;
 
     let started = dkr
-        .start_exec(&exec.id, Some(StartExecOptions { detach: false, ..Default::default() }))
+        .start_exec(
+            &exec.id,
+            Some(StartExecOptions {
+                detach: false,
+                ..Default::default()
+            }),
+        )
         .await
         .map_err(|e| anyhow!("无法启动容器会话：{e}"))?;
 
@@ -167,8 +180,7 @@ fn valid_container_ref(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 256
         && !s.starts_with('-')
-        && s
-            .chars()
+        && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':'))
 }
 
@@ -196,7 +208,12 @@ async fn run_pty(
     // Spin up a PTY with the requested command.
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| anyhow!("openpty: {e}"))?;
 
     let mut child = pair

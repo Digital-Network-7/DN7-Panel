@@ -7,7 +7,7 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 use anyhow::{anyhow, Context, Result};
 
@@ -109,10 +109,13 @@ pub async fn self_update(cfg: &AgentConfig) -> Result<PathBuf> {
     tracing::info!(?target, "self-update: fetching latest binary");
     set_phase(PHASE_DOWNLOADING);
     set_progress(0);
-    let bytes = fetch::fetch_latest_with_progress(cfg, |pct| set_progress(pct)).await?;
+    let bytes = fetch::fetch_latest_with_progress(cfg, set_progress).await?;
     set_phase(PHASE_INSTALLING);
     install_bytes(&bytes, &target).await?;
-    tracing::info!(bytes = bytes.len(), "self-update installed; exiting for restart");
+    tracing::info!(
+        bytes = bytes.len(),
+        "self-update installed; exiting for restart"
+    );
     Ok(target)
 }
 

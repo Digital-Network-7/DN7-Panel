@@ -45,6 +45,7 @@ pub fn spawn(cfg: AgentConfig) {
                 .create(true)
                 .read(true)
                 .write(true)
+                .truncate(false)
                 .open(&relaunch_lock)
             {
                 Ok(f) => f,

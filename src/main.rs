@@ -26,12 +26,12 @@ use crate::config::AgentConfig;
 use crate::procfile::RolePaths;
 
 /// Single binary, two roles selected by argv:
-///   - no args  => supervisor (keeps the agent role alive; self-splits). On a
-///                 normal launch it prints the pairing QR/code, then detaches
-///                 to the background. Launching again while it's already running
-///                 re-prints fresh pairing info instead of starting a duplicate.
-///   - `agent`  => agent role (collects + reports metrics). Spawned by the
-///                 supervisor with inherited stdio; never daemonizes itself.
+/// - no args  => supervisor (keeps the agent role alive; self-splits). On a
+///   normal launch it prints the pairing QR/code, then detaches to the
+///   background. Launching again while it's already running re-prints fresh
+///   pairing info instead of starting a duplicate.
+/// - `agent`  => agent role (collects + reports metrics). Spawned by the
+///   supervisor with inherited stdio; never daemonizes itself.
 fn main() -> Result<()> {
     let role = std::env::args().nth(1);
     let is_agent = role.as_deref() == Some("agent");

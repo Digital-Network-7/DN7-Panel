@@ -58,7 +58,10 @@ pub fn read_pending(cfg: &AgentConfig) -> Option<Pending> {
     if agent_token.is_empty() || register_secret.is_empty() {
         return None;
     }
-    Some(Pending { agent_token, register_secret })
+    Some(Pending {
+        agent_token,
+        register_secret,
+    })
 }
 
 /// Remove the pending pairing file (after a successful claim).
@@ -73,10 +76,7 @@ pub fn persist_token(cfg: &AgentConfig, token: &str) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(
-            &cfg.token_file,
-            std::fs::Permissions::from_mode(0o600),
-        );
+        let _ = std::fs::set_permissions(&cfg.token_file, std::fs::Permissions::from_mode(0o600));
     }
     Ok(())
 }
@@ -89,10 +89,7 @@ fn write_pending(cfg: &AgentConfig, token: &str, secret: &str) -> std::io::Resul
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(
-            pending_path(cfg),
-            std::fs::Permissions::from_mode(0o600),
-        );
+        let _ = std::fs::set_permissions(pending_path(cfg), std::fs::Permissions::from_mode(0o600));
     }
     Ok(())
 }
@@ -118,15 +115,28 @@ pub fn register_and_print(cfg: &AgentConfig) -> Result<()> {
         .get("data")
         .ok_or_else(|| anyhow!("register: missing data"))?;
 
-    let token = data.get("agent_token").and_then(Value::as_str).unwrap_or("");
-    let code = data.get("pairing_code").and_then(Value::as_str).unwrap_or("");
-    let secret = data.get("register_secret").and_then(Value::as_str).unwrap_or("");
+    let token = data
+        .get("agent_token")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let code = data
+        .get("pairing_code")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let secret = data
+        .get("register_secret")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let expiry = data
         .get("expires_at_display")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(|s| format!("{s} (北京时间)"))
-        .or_else(|| data.get("expires_at").and_then(Value::as_str).map(String::from))
+        .or_else(|| {
+            data.get("expires_at")
+                .and_then(Value::as_str)
+                .map(String::from)
+        })
         .unwrap_or_default();
     if token.is_empty() || code.is_empty() || secret.is_empty() {
         return Err(anyhow!("register: empty token/code/secret"));
@@ -154,7 +164,10 @@ pub fn repair_and_print(cfg: &AgentConfig, token: &str) -> Result<()> {
         .get("data")
         .ok_or_else(|| anyhow!("repair: missing data"))?;
 
-    let claimed = data.get("claimed").and_then(Value::as_bool).unwrap_or(false);
+    let claimed = data
+        .get("claimed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if claimed {
         println!("\n========================================");
         println!("  本服务器已被添加到 TeaOps，无需再次配对。");
@@ -162,8 +175,14 @@ pub fn repair_and_print(cfg: &AgentConfig, token: &str) -> Result<()> {
         return Ok(());
     }
 
-    let code = data.get("pairing_code").and_then(Value::as_str).unwrap_or("");
-    let secret = data.get("register_secret").and_then(Value::as_str).unwrap_or("");
+    let code = data
+        .get("pairing_code")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let secret = data
+        .get("register_secret")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let expiry = data
         .get("expires_at_display")
         .and_then(Value::as_str)
@@ -280,7 +299,10 @@ mod tests {
         let module_cols = visible_cols / 2;
         // The rendered grid must be square (rows == module columns); the old
         // half-block renderer made it ~2:1 and looked like vertical bars.
-        assert_eq!(rows, module_cols, "QR must be square, got {rows}x{module_cols}");
+        assert_eq!(
+            rows, module_cols,
+            "QR must be square, got {rows}x{module_cols}"
+        );
         // Every row must have the same visible width.
         for l in &lines {
             assert_eq!(strip_ansi(l).chars().count(), visible_cols);

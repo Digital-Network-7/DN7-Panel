@@ -37,7 +37,9 @@ impl AgentConfig {
         let token_file = env::var("TEAOPS_TOKEN_FILE")
             .map(PathBuf::from)
             .unwrap_or_else(|_| crate::paths::default_base_dir().join("teaops-agent.token"));
-        let agent_token = env::var("TEAOPS_AGENT_TOKEN").ok().filter(|s| !s.is_empty());
+        let agent_token = env::var("TEAOPS_AGENT_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty());
         let runtime_dir = env::var("TEAOPS_RUNTIME_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| crate::paths::default_base_dir());
@@ -87,27 +89,43 @@ impl AgentConfig {
     /// token travels in the `Authorization` header; only the (non-secret,
     /// single-use, server-bound) session id is in the URL.
     pub fn agent_terminal_ws_url(&self, session: &str) -> String {
-        format!("{}/agent/terminal?session={}", self.ws_base(), urlencode(session))
+        format!(
+            "{}/agent/terminal?session={}",
+            self.ws_base(),
+            urlencode(session)
+        )
     }
 
     /// WebSocket URL the agent dials to relay a file-transfer channel back to
     /// the backend for a given session (in response to an `open-file` command).
     pub fn agent_file_ws_url(&self, session: &str) -> String {
-        format!("{}/agent/file?session={}", self.ws_base(), urlencode(session))
+        format!(
+            "{}/agent/file?session={}",
+            self.ws_base(),
+            urlencode(session)
+        )
     }
 
     /// WebSocket URL the agent dials to relay a Docker management channel back
     /// to the backend for a given session (in response to an `open-docker`
     /// command).
     pub fn agent_docker_ws_url(&self, session: &str) -> String {
-        format!("{}/agent/docker?session={}", self.ws_base(), urlencode(session))
+        format!(
+            "{}/agent/docker?session={}",
+            self.ws_base(),
+            urlencode(session)
+        )
     }
 
     /// WebSocket URL the agent dials to relay an Nginx management channel back
     /// to the backend for a given session (in response to an `open-nginx`
     /// command).
     pub fn agent_nginx_ws_url(&self, session: &str) -> String {
-        format!("{}/agent/nginx?session={}", self.ws_base(), urlencode(session))
+        format!(
+            "{}/agent/nginx?session={}",
+            self.ws_base(),
+            urlencode(session)
+        )
     }
 
     /// Derive the ws/wss base from `backend_url`.

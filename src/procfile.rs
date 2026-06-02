@@ -132,6 +132,7 @@ pub fn try_lock(path: &Path) -> Result<Option<LockGuard>> {
         .create(true)
         .read(true)
         .write(true)
+        .truncate(false)
         .open(path)?;
     match file.try_lock_exclusive() {
         Ok(()) => Ok(Some(LockGuard { _file: file })),

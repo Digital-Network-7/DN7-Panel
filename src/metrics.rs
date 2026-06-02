@@ -234,15 +234,37 @@ fn aggregate_disks(disks: &Disks) -> (u64, u64, Vec<DiskMount>) {
 /// common in-memory / pseudo / read-only-image filesystem types.
 fn is_physical_fs(fs: &str) -> bool {
     const VIRTUAL: &[&str] = &[
-        "tmpfs", "devtmpfs", "overlay", "overlayfs", "squashfs", "aufs", "ramfs",
-        "proc", "sysfs", "cgroup", "cgroup2", "devpts", "mqueue", "debugfs",
-        "tracefs", "securityfs", "pstore", "bpf", "configfs", "fusectl",
-        "binfmt_misc", "autofs", "nsfs", "rpc_pipefs", "hugetlbfs", "fuse.lxcfs",
+        "tmpfs",
+        "devtmpfs",
+        "overlay",
+        "overlayfs",
+        "squashfs",
+        "aufs",
+        "ramfs",
+        "proc",
+        "sysfs",
+        "cgroup",
+        "cgroup2",
+        "devpts",
+        "mqueue",
+        "debugfs",
+        "tracefs",
+        "securityfs",
+        "pstore",
+        "bpf",
+        "configfs",
+        "fusectl",
+        "binfmt_misc",
+        "autofs",
+        "nsfs",
+        "rpc_pipefs",
+        "hugetlbfs",
+        "fuse.lxcfs",
     ];
     if fs.is_empty() {
         return false;
     }
-    !VIRTUAL.iter().any(|v| fs == *v)
+    !VIRTUAL.contains(&fs)
 }
 
 /// True for mount points that are virtual/system paths rather than real storage.
@@ -253,32 +275,6 @@ fn is_virtual_mount(mount: &str) -> bool {
         || mount.starts_with("/run")
         || mount == "/snap"
         || mount.starts_with("/snap/")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{is_physical_fs, is_virtual_mount};
-
-    #[test]
-    fn physical_fs_filter() {
-        assert!(is_physical_fs("ext4"));
-        assert!(is_physical_fs("xfs"));
-        assert!(is_physical_fs("btrfs"));
-        assert!(!is_physical_fs("tmpfs"));
-        assert!(!is_physical_fs("overlay"));
-        assert!(!is_physical_fs("squashfs"));
-        assert!(!is_physical_fs(""));
-    }
-
-    #[test]
-    fn virtual_mount_filter() {
-        assert!(is_virtual_mount("/proc"));
-        assert!(is_virtual_mount("/sys/fs/cgroup"));
-        assert!(is_virtual_mount("/run/lock"));
-        assert!(is_virtual_mount("/snap/core/1234"));
-        assert!(!is_virtual_mount("/"));
-        assert!(!is_virtual_mount("/data"));
-    }
 }
 
 fn os_label() -> String {
@@ -308,14 +304,47 @@ fn detect_container() -> bool {
     if std::path::Path::new("/.dockerenv").exists() {
         return true;
     }
-    if std::env::var("container").map(|v| !v.is_empty()).unwrap_or(false) {
+    if std::env::var("container")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
         return true;
     }
     if let Ok(cgroup) = std::fs::read_to_string("/proc/1/cgroup") {
         let c = cgroup.to_ascii_lowercase();
-        if c.contains("docker") || c.contains("kubepods") || c.contains("containerd") || c.contains("/lxc/") {
+        if c.contains("docker")
+            || c.contains("kubepods")
+            || c.contains("containerd")
+            || c.contains("/lxc/")
+        {
             return true;
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_physical_fs, is_virtual_mount};
+
+    #[test]
+    fn physical_fs_filter() {
+        assert!(is_physical_fs("ext4"));
+        assert!(is_physical_fs("xfs"));
+        assert!(is_physical_fs("btrfs"));
+        assert!(!is_physical_fs("tmpfs"));
+        assert!(!is_physical_fs("overlay"));
+        assert!(!is_physical_fs("squashfs"));
+        assert!(!is_physical_fs(""));
+    }
+
+    #[test]
+    fn virtual_mount_filter() {
+        assert!(is_virtual_mount("/proc"));
+        assert!(is_virtual_mount("/sys/fs/cgroup"));
+        assert!(is_virtual_mount("/run/lock"));
+        assert!(is_virtual_mount("/snap/core/1234"));
+        assert!(!is_virtual_mount("/"));
+        assert!(!is_virtual_mount("/data"));
+    }
 }

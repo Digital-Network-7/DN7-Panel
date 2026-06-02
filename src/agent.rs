@@ -46,7 +46,7 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
         // Keep our heartbeat fresh so the supervisor knows we're alive.
         guardian::touch_own_heartbeat(&cfg);
 
-        if tick_count % upgrade_check_every == 0 {
+        if tick_count.is_multiple_of(upgrade_check_every) {
             if let Ok(info) = client.should_upgrade(&agent_token).await {
                 if info.auto_update && upgrade_available(&cfg).await {
                     tracing::info!("auto-update enabled and newer version available; upgrading");
@@ -79,7 +79,9 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                                 if upgrade_available(&cfg).await {
                                     spawn_self_update(&cfg);
                                 } else {
-                                    tracing::info!("already on the latest version; ignoring upgrade");
+                                    tracing::info!(
+                                        "already on the latest version; ignoring upgrade"
+                                    );
                                 }
                             }
                             ServerCommand::OpenTerminal(session) => {
@@ -90,7 +92,8 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                                 let token_t = agent_token.clone();
                                 tokio::spawn(async move {
                                     if let Err(e) =
-                                        crate::terminal::run_terminal(&cfg_t, &token_t, &session).await
+                                        crate::terminal::run_terminal(&cfg_t, &token_t, &session)
+                                            .await
                                     {
                                         tracing::warn!(%session, "terminal relay ended: {e}");
                                     }
@@ -117,7 +120,8 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                                 let token_t = agent_token.clone();
                                 tokio::spawn(async move {
                                     if let Err(e) =
-                                        crate::file::run_file_channel(&cfg_t, &token_t, &session).await
+                                        crate::file::run_file_channel(&cfg_t, &token_t, &session)
+                                            .await
                                     {
                                         tracing::warn!(%session, "file relay ended: {e}");
                                     }
@@ -144,8 +148,10 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                                 let cfg_t = cfg.clone();
                                 let token_t = agent_token.clone();
                                 tokio::spawn(async move {
-                                    if let Err(e) =
-                                        crate::docker::run_docker_channel(&cfg_t, &token_t, &session).await
+                                    if let Err(e) = crate::docker::run_docker_channel(
+                                        &cfg_t, &token_t, &session,
+                                    )
+                                    .await
                                     {
                                         tracing::warn!(%session, "docker channel ended: {e}");
                                     }
@@ -157,7 +163,8 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                                 let token_t = agent_token.clone();
                                 tokio::spawn(async move {
                                     if let Err(e) =
-                                        crate::nginx::run_nginx_channel(&cfg_t, &token_t, &session).await
+                                        crate::nginx::run_nginx_channel(&cfg_t, &token_t, &session)
+                                            .await
                                     {
                                         tracing::warn!(%session, "nginx channel ended: {e}");
                                     }
@@ -255,7 +262,8 @@ async fn resolve_token(
     // (which would print a second QR to the log with a different token).
     if let Some(pending) = crate::pairing::read_pending(cfg) {
         tracing::info!("found pending pairing; waiting for claim in mini program");
-        return poll_until_claimed(cfg, client, &pending.register_secret, &pending.agent_token).await;
+        return poll_until_claimed(cfg, client, &pending.register_secret, &pending.agent_token)
+            .await;
     }
 
     // 4. Fallback pairing flow (pre-flight didn't run / failed): register here
@@ -319,4 +327,3 @@ async fn poll_until_claimed(
         }
     }
 }
-

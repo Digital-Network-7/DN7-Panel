@@ -117,7 +117,8 @@ async fn fetch_from_github<F: Fn(u64)>(
         .error_for_status()?
         .text()
         .await?;
-    let version = highest_version(&body).ok_or_else(|| anyhow!("no version found in releases.atom"))?;
+    let version =
+        highest_version(&body).ok_or_else(|| anyhow!("no version found in releases.atom"))?;
 
     let asset = format!("{BIN_NAME}-linux-x86_64-v{version}");
     let asset_url = format!(

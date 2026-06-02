@@ -14,7 +14,10 @@ pub const PID_FILE: &str = "teaops-supervisor.daemon.pid";
 
 /// True when the process should stay in the foreground (no detaching).
 pub fn wants_foreground() -> bool {
-    if std::env::args().skip(1).any(|a| a == "--foreground" || a == "-f") {
+    if std::env::args()
+        .skip(1)
+        .any(|a| a == "--foreground" || a == "-f")
+    {
         return true;
     }
     matches!(
@@ -34,7 +37,10 @@ pub fn daemonize() -> anyhow::Result<()> {
     let log_path = base.join(LOG_FILE);
     let pid_path = base.join(PID_FILE);
 
-    let log = OpenOptions::new().create(true).append(true).open(&log_path)?;
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
     let log_err = log.try_clone()?;
 
     daemonize::Daemonize::new()

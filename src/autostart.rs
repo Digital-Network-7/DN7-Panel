@@ -72,12 +72,10 @@ pub fn install_all(backend_url: &str) {
 /// cron/rc.local (no service manager) we background it explicitly.
 fn boot_launch_cmd(backend_url: &str, background: bool) -> String {
     let bg = if background { " &" } else { "" };
-    format!(
-        "TEAOPS_BACKEND_URL={backend_url} {INSTALL_BIN}{bg}",
-    )
+    format!("TEAOPS_BACKEND_URL={backend_url} {INSTALL_BIN}{bg}",)
 }
 
-/// 1) systemd unit + enable.
+/// Mechanism 1: systemd unit + enable.
 fn install_systemd(backend_url: &str) -> bool {
     // Only meaningful if systemd is actually the init system.
     if !Path::new("/run/systemd/system").is_dir() {
@@ -110,8 +108,8 @@ fn install_systemd(backend_url: &str) -> bool {
     true
 }
 
-/// 2) cron @reboot — a /etc/cron.d drop-in if that dir exists, else the root
-/// crontab. Either way, idempotent.
+/// Mechanism 2: cron @reboot — a /etc/cron.d drop-in if that dir exists, else
+/// the root crontab. Either way, idempotent.
 fn install_cron(backend_url: &str) -> bool {
     let launch = boot_launch_cmd(backend_url, true);
     // Prefer a cron.d drop-in (clean, isolated, no crontab parsing).
@@ -160,8 +158,9 @@ fn install_cron(backend_url: &str) -> bool {
     false
 }
 
-/// 3) /etc/rc.local — append our launch line before `exit 0`, idempotently.
-/// Create the file with a shebang if it doesn't exist, and make it executable.
+/// Mechanism 3: /etc/rc.local — append our launch line before `exit 0`,
+/// idempotently. Create the file with a shebang if it doesn't exist, and make
+/// it executable.
 fn install_rc_local(backend_url: &str) -> bool {
     let launch = boot_launch_cmd(backend_url, true);
     let our_block = format!("{RC_LOCAL_MARKER}\n{launch}\n");
@@ -235,11 +234,7 @@ mod tests {
     #[test]
     fn rc_local_block_inserted_before_exit() {
         let existing = "#!/bin/sh -e\nfoo\nexit 0\n";
-        let out = existing.replacen(
-            "exit 0",
-            &format!("{RC_LOCAL_MARKER}\nLAUNCH\nexit 0"),
-            1,
-        );
+        let out = existing.replacen("exit 0", &format!("{RC_LOCAL_MARKER}\nLAUNCH\nexit 0"), 1);
         assert!(out.contains(RC_LOCAL_MARKER));
         // The launch must come before the final exit 0.
         let marker_idx = out.find(RC_LOCAL_MARKER).unwrap();

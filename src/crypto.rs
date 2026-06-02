@@ -80,7 +80,7 @@ fn persisted_random_key() -> Option<Vec<u8>> {
     // Generate a fresh 32-byte key and persist it with 0600 perms.
     let mut key = [0u8; 32];
     rand::Rng::fill(&mut rand::thread_rng(), &mut key);
-    if std::fs::write(&path, &key).is_err() {
+    if std::fs::write(&path, key).is_err() {
         return None;
     }
     #[cfg(unix)]
@@ -159,7 +159,7 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 fn from_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())

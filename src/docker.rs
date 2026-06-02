@@ -239,7 +239,11 @@ fn op_dismiss(op_id: &str) {
 
 /// Connect to the backend docker relay and serve the protocol until either side
 /// closes. The connection is stateless: long ops live in the global registry.
-pub async fn run_docker_channel(_cfg: &AgentConfig, agent_token: &str, session: &str) -> Result<()> {
+pub async fn run_docker_channel(
+    _cfg: &AgentConfig,
+    agent_token: &str,
+    session: &str,
+) -> Result<()> {
     let url = _cfg.agent_docker_ws_url(session);
     let mut request = url
         .into_client_request()
@@ -261,7 +265,8 @@ pub async fn run_docker_channel(_cfg: &AgentConfig, agent_token: &str, session: 
                     Err(e) => {
                         let _ = ws_tx
                             .send(Message::Text(
-                                json!({ "ok": false, "error": format!("bad request: {e}") }).to_string(),
+                                json!({ "ok": false, "error": format!("bad request: {e}") })
+                                    .to_string(),
                             ))
                             .await;
                         continue;
@@ -310,7 +315,10 @@ async fn handle(req: &Req) -> Result<Value> {
         "remove_image" => {
             let r = need_ref(req)?;
             let dkr = dkr()?;
-            let opts = bollard::image::RemoveImageOptions { force: true, ..Default::default() };
+            let opts = bollard::image::RemoveImageOptions {
+                force: true,
+                ..Default::default()
+            };
             dkr.remove_image(&r, Some(opts), None)
                 .await
                 .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
@@ -321,7 +329,10 @@ async fn handle(req: &Req) -> Result<Value> {
         "start_container" => {
             let r = need_ref(req)?;
             dkr()?
-                .start_container(&r, None::<bollard::container::StartContainerOptions<String>>)
+                .start_container(
+                    &r,
+                    None::<bollard::container::StartContainerOptions<String>>,
+                )
                 .await
                 .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
             Ok(json!({ "started": r }))
@@ -344,7 +355,10 @@ async fn handle(req: &Req) -> Result<Value> {
         }
         "remove_container" => {
             let r = need_ref(req)?;
-            let opts = bollard::container::RemoveContainerOptions { force: true, ..Default::default() };
+            let opts = bollard::container::RemoveContainerOptions {
+                force: true,
+                ..Default::default()
+            };
             dkr()?
                 .remove_container(&r, Some(opts))
                 .await
@@ -453,9 +467,9 @@ fn validate_token(s: &str) -> Result<()> {
     if s.starts_with('-') {
         return Err(anyhow!("invalid reference"));
     }
-    let ok = s.chars().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':' | '@')
-    });
+    let ok = s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':' | '@'));
     if !ok {
         return Err(anyhow!("invalid reference"));
     }
@@ -555,7 +569,7 @@ fn host_mem_bytes() -> u64 {
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("MemTotal:") {
             // Value is in kB.
-            if let Some(kb) = rest.trim().split_whitespace().next() {
+            if let Some(kb) = rest.split_whitespace().next() {
                 if let Ok(kb) = kb.parse::<u64>() {
                     return kb * 1024;
                 }
@@ -569,7 +583,10 @@ fn host_mem_bytes() -> u64 {
 /// List images: id, repo:tag, size, created.
 async fn list_images() -> Result<Value> {
     let dkr = dkr()?;
-    let opts = bollard::image::ListImagesOptions::<String> { all: false, ..Default::default() };
+    let opts = bollard::image::ListImagesOptions::<String> {
+        all: false,
+        ..Default::default()
+    };
     let images = dkr
         .list_images(Some(opts))
         .await
@@ -649,7 +666,10 @@ fn human_since(created_secs: i64) -> String {
 /// shell-less images like distroless).
 async fn list_containers() -> Result<Value> {
     let dkr = dkr()?;
-    let opts = bollard::container::ListContainersOptions::<String> { all: true, ..Default::default() };
+    let opts = bollard::container::ListContainersOptions::<String> {
+        all: true,
+        ..Default::default()
+    };
     let containers = dkr
         .list_containers(Some(opts))
         .await
@@ -666,7 +686,11 @@ async fn list_containers() -> Result<Value> {
             .unwrap_or_default();
         let state = c.state.clone().unwrap_or_default();
         let running = state == "running";
-        let has_shell = if running { container_has_shell(&dkr, &id).await } else { false };
+        let has_shell = if running {
+            container_has_shell(&dkr, &id).await
+        } else {
+            false
+        };
         items.push(json!({
             "id": short_id,
             "name": name,
@@ -685,7 +709,10 @@ fn fmt_ports(ports: &Option<Vec<bollard::models::Port>>) -> String {
     let mut out: Vec<String> = Vec::new();
     if let Some(ports) = ports {
         for p in ports {
-            let proto = p.typ.map(|t| format!("{t:?}").to_lowercase()).unwrap_or_else(|| "tcp".into());
+            let proto = p
+                .typ
+                .map(|t| format!("{t:?}").to_lowercase())
+                .unwrap_or_else(|| "tcp".into());
             match (p.public_port, &p.ip) {
                 (Some(pub_port), Some(ip)) => {
                     out.push(format!("{ip}:{pub_port}->{}/{proto}", p.private_port))
@@ -722,7 +749,13 @@ async fn container_has_shell(dkr: &Docker, id: &str) -> bool {
     };
     // Start it detached, then inspect the exit code.
     if dkr
-        .start_exec(&exec.id, Some(bollard::exec::StartExecOptions { detach: true, ..Default::default() }))
+        .start_exec(
+            &exec.id,
+            Some(bollard::exec::StartExecOptions {
+                detach: true,
+                ..Default::default()
+            }),
+        )
         .await
         .is_err()
     {
@@ -753,12 +786,25 @@ async fn inspect_container(req: &Req) -> Result<Value> {
         .await
         .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
 
-    let name = c.name.clone().unwrap_or_default().trim_start_matches('/').to_string();
-    let state = c.state.as_ref().and_then(|s| s.status.map(|st| format!("{st:?}").to_lowercase())).unwrap_or_default();
+    let name = c
+        .name
+        .clone()
+        .unwrap_or_default()
+        .trim_start_matches('/')
+        .to_string();
+    let state = c
+        .state
+        .as_ref()
+        .and_then(|s| s.status.map(|st| format!("{st:?}").to_lowercase()))
+        .unwrap_or_default();
     let running = c.state.as_ref().and_then(|s| s.running).unwrap_or(false);
     let exit_code = c.state.as_ref().and_then(|s| s.exit_code).unwrap_or(0);
     let restart_count = c.restart_count.unwrap_or(0);
-    let image = c.config.as_ref().and_then(|cf| cf.image.clone()).unwrap_or_default();
+    let image = c
+        .config
+        .as_ref()
+        .and_then(|cf| cf.image.clone())
+        .unwrap_or_default();
     let restart_policy = c
         .host_config
         .as_ref()
@@ -766,17 +812,25 @@ async fn inspect_container(req: &Req) -> Result<Value> {
         .and_then(|rp| rp.name.map(|n| format!("{n:?}").to_lowercase()))
         .unwrap_or_default();
     let created = c.created.clone().unwrap_or_default();
-    let started_at = c.state.as_ref().and_then(|s| s.started_at.clone()).unwrap_or_default();
+    let started_at = c
+        .state
+        .as_ref()
+        .and_then(|s| s.started_at.clone())
+        .unwrap_or_default();
 
     // Published ports from the network settings.
     let ports = c
         .network_settings
         .as_ref()
         .and_then(|n| n.ports.as_ref())
-        .map(|pm| fmt_port_map(pm))
+        .map(fmt_port_map)
         .unwrap_or_default();
 
-    let has_shell = if running { container_has_shell(&dkr, &r).await } else { false };
+    let has_shell = if running {
+        container_has_shell(&dkr, &r).await
+    } else {
+        false
+    };
 
     Ok(json!({
         "id": r,
@@ -795,9 +849,7 @@ async fn inspect_container(req: &Req) -> Result<Value> {
 }
 
 /// Format a container inspect PortMap into a docker-ps-like summary.
-fn fmt_port_map(
-    pm: &HashMap<String, Option<Vec<bollard::models::PortBinding>>>,
-) -> String {
+fn fmt_port_map(pm: &HashMap<String, Option<Vec<bollard::models::PortBinding>>>) -> String {
     let mut out: Vec<String> = Vec::new();
     for (container_port, bindings) in pm {
         if let Some(bindings) = bindings {
@@ -852,7 +904,9 @@ async fn container_logs(req: &Req) -> Result<Value> {
     if text.trim().is_empty() {
         if let Ok(c) = dkr.inspect_container(&r, None).await {
             let st = c.state.as_ref();
-            let status = st.and_then(|s| s.status.map(|x| format!("{x:?}").to_lowercase())).unwrap_or_default();
+            let status = st
+                .and_then(|s| s.status.map(|x| format!("{x:?}").to_lowercase()))
+                .unwrap_or_default();
             let exit = st.and_then(|s| s.exit_code).unwrap_or(0);
             let err = st.and_then(|s| s.error.clone()).unwrap_or_default();
             let restarts = c.restart_count.unwrap_or(0);
@@ -882,7 +936,12 @@ async fn list_networks() -> Result<Value> {
         .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
     let mut items = Vec::new();
     for n in nets {
-        let id = n.id.clone().unwrap_or_default().chars().take(12).collect::<String>();
+        let id =
+            n.id.clone()
+                .unwrap_or_default()
+                .chars()
+                .take(12)
+                .collect::<String>();
         items.push(json!({
             "id": id,
             "name": n.name.clone().unwrap_or_default(),
@@ -954,8 +1013,8 @@ fn mirror_allowed(host: &str) -> bool {
 fn docker_io_path(image: &str) -> Option<String> {
     let has_slash = image.contains('/');
     let first = image.split('/').next().unwrap_or("");
-    let qualified = has_slash
-        && (first.contains('.') || first.contains(':') || first == "localhost");
+    let qualified =
+        has_slash && (first.contains('.') || first.contains(':') || first == "localhost");
     if qualified {
         return None;
     }
@@ -991,7 +1050,11 @@ fn start_pull(req: &Req) -> Result<Value> {
         .to_string();
     validate_token(&image)?;
 
-    let mirror = req.mirror.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let mirror = req
+        .mirror
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
     // Decide the actual pull source and whether a rename is needed afterwards.
     let (pull_ref, final_ref) = match mirror {
@@ -1007,7 +1070,9 @@ fn start_pull(req: &Req) -> Result<Value> {
         None => (image.clone(), None),
     };
 
-    let shown = final_ref.clone().unwrap_or_else(|| with_default_tag(&image));
+    let shown = final_ref
+        .clone()
+        .unwrap_or_else(|| with_default_tag(&image));
     let op_id = new_op_id();
     op_create(&op_id, "pull", &shown);
 
@@ -1054,7 +1119,10 @@ async fn tag_image(source: &str, target: &str) -> Result<()> {
 /// Remove an image, ignoring errors (best-effort cleanup after a retag).
 async fn remove_image_quiet(reference: &str) {
     if let Ok(dkr) = dkr() {
-        let opts = bollard::image::RemoveImageOptions { force: true, ..Default::default() };
+        let opts = bollard::image::RemoveImageOptions {
+            force: true,
+            ..Default::default()
+        };
         let _ = dkr.remove_image(reference, Some(opts), None).await;
     }
 }
@@ -1122,7 +1190,12 @@ fn validate_path(s: &str) -> Result<()> {
     }
     // Disallow characters that could break out of a single argv entry or look
     // like injection; container/host paths in practice don't need them.
-    let bad = s.chars().any(|c| matches!(c, ';' | '|' | '&' | '$' | '`' | '\n' | '\r' | '"' | '\'' | '\\' | '<' | '>' | '*'));
+    let bad = s.chars().any(|c| {
+        matches!(
+            c,
+            ';' | '|' | '&' | '$' | '`' | '\n' | '\r' | '"' | '\'' | '\\' | '<' | '>' | '*'
+        )
+    });
     if bad {
         return Err(anyhow!("路径包含非法字符"));
     }
@@ -1136,15 +1209,20 @@ fn validate_env(s: &str) -> Result<()> {
     if s.len() > 4096 {
         return Err(anyhow!("环境变量过长"));
     }
-    let (k, _v) = s.split_once('=').ok_or_else(|| anyhow!("环境变量需为 KEY=VALUE 格式"))?;
+    let (k, _v) = s
+        .split_once('=')
+        .ok_or_else(|| anyhow!("环境变量需为 KEY=VALUE 格式"))?;
     if k.is_empty() {
         return Err(anyhow!("环境变量名不能为空"));
     }
-    let key_ok = k.chars().enumerate().all(|(i, c)| {
-        c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())
-    });
+    let key_ok = k
+        .chars()
+        .enumerate()
+        .all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()));
     if !key_ok {
-        return Err(anyhow!("环境变量名只能包含字母、数字、下划线，且不以数字开头"));
+        return Err(anyhow!(
+            "环境变量名只能包含字母、数字、下划线，且不以数字开头"
+        ));
     }
     if s.contains('\n') || s.contains('\r') {
         return Err(anyhow!("环境变量包含非法字符"));
@@ -1204,7 +1282,12 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
 
     // Network (optional; must be an existing network). Empty => default bridge.
     let mut network: Option<String> = None;
-    if let Some(net) = req.network.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(net) = req
+        .network
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         validate_token(net)?;
         network = Some(net.to_string());
     }
@@ -1284,7 +1367,12 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
         // docker NanoCPUs = cpus * 1e9.
         nano_cpus = Some((v * 1_000_000_000.0) as i64);
     }
-    if let Some(mem) = req.memory.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(mem) = req
+        .memory
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         validate_memory(mem)?;
         let host = host_mem_bytes();
         let bytes = mem_to_bytes(mem);
@@ -1297,7 +1385,12 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
     let tty = req.tty.unwrap_or(false);
 
     // Optional command override.
-    let cmd: Option<Vec<String>> = match req.command.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let cmd: Option<Vec<String>> = match req
+        .command
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(c) => Some(split_command(c)?),
         None => None,
     };
@@ -1305,7 +1398,11 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
     let host_config = HostConfig {
         restart_policy: Some(restart_policy),
         binds: if binds.is_empty() { None } else { Some(binds) },
-        port_bindings: if bindings.is_empty() { None } else { Some(bindings) },
+        port_bindings: if bindings.is_empty() {
+            None
+        } else {
+            Some(bindings)
+        },
         nano_cpus,
         memory,
         network_mode: network.clone(),
@@ -1318,7 +1415,11 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
         env: if env.is_empty() { None } else { Some(env) },
         tty: Some(tty),
         open_stdin: Some(tty),
-        exposed_ports: if exposed.is_empty() { None } else { Some(exposed) },
+        exposed_ports: if exposed.is_empty() {
+            None
+        } else {
+            Some(exposed)
+        },
         host_config: Some(host_config),
         ..Default::default()
     };
@@ -1336,7 +1437,9 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
 
 /// Validate a `--cpus` value: a positive decimal like "0.5", "1", "2.5".
 fn validate_cpus(s: &str) -> Result<()> {
-    let v: f64 = s.parse().map_err(|_| anyhow!("CPU 限制格式不正确（如 0.5、1、2）"))?;
+    let v: f64 = s
+        .parse()
+        .map_err(|_| anyhow!("CPU 限制格式不正确（如 0.5、1、2）"))?;
     if v <= 0.0 || v > 1024.0 {
         return Err(anyhow!("CPU 限制超出范围"));
     }
@@ -1376,7 +1479,10 @@ fn mem_to_bytes(s: &str) -> u64 {
         Some('g') => (&lower[..lower.len() - 1], 1024 * 1024 * 1024),
         _ => (lower.as_str(), 1),
     };
-    num.parse::<u64>().ok().map(|n| n.saturating_mul(mult)).unwrap_or(0)
+    num.parse::<u64>()
+        .ok()
+        .map(|n| n.saturating_mul(mult))
+        .unwrap_or(0)
 }
 
 /// Split a command string into argv. Supports simple single/double quoting; no
@@ -1449,7 +1555,11 @@ fn start_create(req: &Req) -> Result<Value> {
                 let short = id.chars().take(12).collect::<String>();
                 op_push(
                     &op_id_t,
-                    &format!("容器已{}：{}", if started { "创建并启动" } else { "创建" }, short),
+                    &format!(
+                        "容器已{}：{}",
+                        if started { "创建并启动" } else { "创建" },
+                        short
+                    ),
                 );
                 op_finish(&op_id_t, "done", "", &target_t);
             }
@@ -1464,18 +1574,25 @@ fn start_create(req: &Req) -> Result<Value> {
 /// new container id and whether it was started.
 async fn create_container(spec: CreateSpec) -> Result<(String, bool)> {
     let dkr = dkr()?;
-    let options = spec.name.clone().map(|name| {
-        bollard::container::CreateContainerOptions { name, platform: None }
-    });
+    let options = spec
+        .name
+        .clone()
+        .map(|name| bollard::container::CreateContainerOptions {
+            name,
+            platform: None,
+        });
     let created = dkr
         .create_container(options, spec.config)
         .await
         .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
     let id = created.id;
     if spec.start {
-        dkr.start_container(&id, None::<bollard::container::StartContainerOptions<String>>)
-            .await
-            .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+        dkr.start_container(
+            &id,
+            None::<bollard::container::StartContainerOptions<String>>,
+        )
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
     }
     Ok((id, spec.start))
 }
@@ -1492,13 +1609,17 @@ fn start_install() -> Result<Value> {
     if let Ok(m) = ops().lock() {
         if let Some(o) = m.get(INSTALL_OP) {
             if o.status == "running" {
-                return Ok(json!({ "op_id": INSTALL_OP, "target": "docker", "already_running": true }));
+                return Ok(
+                    json!({ "op_id": INSTALL_OP, "target": "docker", "already_running": true }),
+                );
             }
         }
     }
 
     if !is_root() {
-        return Err(anyhow!("安装 Docker 需要 root 权限，请用 root 运行 Agent 后重试"));
+        return Err(anyhow!(
+            "安装 Docker 需要 root 权限，请用 root 运行 Agent 后重试"
+        ));
     }
 
     op_create(INSTALL_OP, "install", "docker");
@@ -1574,11 +1695,21 @@ async fn stream_shell_to_op(op_id: &str, script: &str) -> Result<()> {
             op_push(op_id, line.trim());
         }
     }
-    let status = child.wait().await.map_err(|e| anyhow!("安装脚本失败：{e}"))?;
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| anyhow!("安装脚本失败：{e}"))?;
     if let Some(mut e) = child.stderr.take() {
         let mut err = String::new();
         let _ = e.read_to_string(&mut err).await;
-        for line in err.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev() {
+        for line in err
+            .lines()
+            .rev()
+            .take(5)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
             op_push(op_id, line.trim());
         }
     }
@@ -1623,9 +1754,18 @@ mod tests {
 
     #[test]
     fn docker_io_path_qualifies() {
-        assert_eq!(docker_io_path("nginx"), Some("docker.io/library/nginx:latest".into()));
-        assert_eq!(docker_io_path("nginx:1.25"), Some("docker.io/library/nginx:1.25".into()));
-        assert_eq!(docker_io_path("user/app"), Some("docker.io/user/app:latest".into()));
+        assert_eq!(
+            docker_io_path("nginx"),
+            Some("docker.io/library/nginx:latest".into())
+        );
+        assert_eq!(
+            docker_io_path("nginx:1.25"),
+            Some("docker.io/library/nginx:1.25".into())
+        );
+        assert_eq!(
+            docker_io_path("user/app"),
+            Some("docker.io/user/app:latest".into())
+        );
         assert_eq!(docker_io_path("gcr.io/foo/bar"), None);
         assert_eq!(docker_io_path("localhost:5000/x"), None);
     }
@@ -1721,7 +1861,11 @@ mod tests {
     fn build_create_spec_basic() {
         let mut req = mk_req("nginx:latest");
         req.name = Some("web".into());
-        req.ports = Some(vec![PortMap { host: 8080, container: 80, proto: None }]);
+        req.ports = Some(vec![PortMap {
+            host: 8080,
+            container: 80,
+            proto: None,
+        }]);
         req.env = Some(vec!["FOO=bar".into()]);
         req.volumes = Some(vec![VolumeMap {
             host: "/srv/html".into(),
@@ -1743,7 +1887,12 @@ mod tests {
         let bind = pb.get("80/tcp").unwrap().as_ref().unwrap();
         assert_eq!(bind[0].host_port.as_deref(), Some("8080"));
         // env + bind present
-        assert!(spec.config.env.as_ref().unwrap().contains(&"FOO=bar".to_string()));
+        assert!(spec
+            .config
+            .env
+            .as_ref()
+            .unwrap()
+            .contains(&"FOO=bar".to_string()));
         assert!(hc
             .binds
             .as_ref()
@@ -1755,7 +1904,11 @@ mod tests {
     #[test]
     fn build_create_spec_rejects_bad_port() {
         let mut req = mk_req("nginx");
-        req.ports = Some(vec![PortMap { host: 0, container: 80, proto: None }]);
+        req.ports = Some(vec![PortMap {
+            host: 0,
+            container: 80,
+            proto: None,
+        }]);
         assert!(build_create_spec(&req).is_err());
     }
 
@@ -1830,7 +1983,10 @@ mod tests {
 
     #[test]
     fn splits_command() {
-        assert_eq!(split_command("sleep infinity").unwrap(), vec!["sleep", "infinity"]);
+        assert_eq!(
+            split_command("sleep infinity").unwrap(),
+            vec!["sleep", "infinity"]
+        );
         assert_eq!(
             split_command("sh -c \"echo hi there\"").unwrap(),
             vec!["sh", "-c", "echo hi there"]
