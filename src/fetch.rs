@@ -18,6 +18,26 @@ fn http() -> reqwest::Client {
         .expect("http client")
 }
 
+/// HTTP client for the (potentially very slow) binary download.
+///
+/// Deliberately has NO overall request timeout: on a server with tiny download
+/// bandwidth the transfer can legitimately take many minutes, and an overall
+/// timeout (the old 120s) would abort a perfectly healthy, still-progressing
+/// download — which surfaced as the self-update "resetting" after ~1-2 minutes.
+/// Instead we bound only the *connect* and *idle read* times: a genuinely dead
+/// or stalled connection (no bytes for `read_timeout`) is still caught and
+/// retried, but a slow-but-progressing download runs to completion. The read
+/// timeout resets after every successful read.
+fn download_http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent("teaops-agent/updater")
+        .connect_timeout(std::time::Duration::from_secs(30))
+        // No bytes at all for 5 minutes => treat the connection as dead.
+        .read_timeout(std::time::Duration::from_secs(300))
+        .build()
+        .expect("download http client")
+}
+
 /// Architecture token the backend expects (`x86_64` / `arm64`).
 fn arch() -> &'static str {
     // Compile-time target arch; the agent binary is arch-specific anyway.
@@ -39,7 +59,7 @@ pub async fn fetch_latest_with_progress<F: Fn(u64) + Copy>(
         cfg.backend_url.trim_end_matches('/'),
         arch()
     );
-    let resp = http().get(&url).send().await?.error_for_status()?;
+    let resp = download_http().get(&url).send().await?.error_for_status()?;
     let bytes = download_streaming(resp, on_progress).await?;
     if bytes.is_empty() {
         return Err(anyhow!("backend returned an empty binary"));
