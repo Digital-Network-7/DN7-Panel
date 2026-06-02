@@ -25,6 +25,7 @@
 //!   {"id","op":"create_container", ...}          -> {op_id} (detached)
 //!   {"id","op":"remove_image","ref"}
 //!   {"id","op":"list_containers"}
+//!   {"id","op":"inspect_container","ref"}              -> one container's detail
 //!   {"id","op":"start_container"|"stop_container"|"restart_container"|"remove_container","ref"}
 //!   {"id","op":"logs","ref","tail"?}
 //!   {"id","op":"list_networks"}
@@ -304,6 +305,7 @@ async fn handle(req: &Req) -> Result<Value> {
             Ok(json!({ "removed": r }))
         }
         "list_containers" => list_containers().await,
+        "inspect_container" => inspect_container(req).await,
         "start_container" => {
             let r = need_ref(req)?;
             run_ok(&["start", &r]).await?;
@@ -564,7 +566,9 @@ async fn list_images() -> Result<Value> {
     Ok(json!({ "images": items }))
 }
 
-/// List containers (all states): id, name, image, state, status, ports.
+/// List containers (all states): id, name, image, state, status, ports, and
+/// whether a shell is available (so the UI can hide the terminal button for
+/// shell-less images like distroless).
 async fn list_containers() -> Result<Value> {
     let fmt = "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}\t{{.Ports}}";
     let stdout = run_ok(&["ps", "-a", "--format", fmt]).await?;
@@ -574,16 +578,73 @@ async fn list_containers() -> Result<Value> {
         if f.len() < 5 {
             continue;
         }
+        let id = f[0];
+        let state = f[3];
+        // Only probe a shell for running containers (exec needs it running).
+        let has_shell = if state == "running" {
+            container_has_shell(id).await
+        } else {
+            false
+        };
         items.push(json!({
-            "id": f[0],
+            "id": id,
             "name": f[1],
             "image": f[2],
-            "state": f[3],
+            "state": state,
             "status": f[4],
             "ports": f.get(5).copied().unwrap_or(""),
+            "has_shell": has_shell,
         }));
     }
     Ok(json!({ "containers": items }))
+}
+
+/// Probe whether a running container has a usable `/bin/sh` (so the terminal
+/// button is only shown when an interactive shell can actually be opened).
+async fn container_has_shell(id: &str) -> bool {
+    run(&["exec", id, "/bin/sh", "-c", "true"])
+        .await
+        .map(|(ok, ..)| ok)
+        .unwrap_or(false)
+}
+
+/// Inspect one container for the detail page: identity, state, restart policy,
+/// resource limits, created time, command, and shell availability.
+async fn inspect_container(req: &Req) -> Result<Value> {
+    let r = need_ref(req)?;
+    let fmt = "{{.Name}}\t{{.Config.Image}}\t{{.State.Status}}\t{{.State.Running}}\t{{.HostConfig.RestartPolicy.Name}}\t{{.Created}}\t{{.State.StartedAt}}\t{{.State.ExitCode}}\t{{.RestartCount}}";
+    let (ok, stdout, stderr) = run(&["inspect", "-f", fmt, &r]).await?;
+    if !ok {
+        return Err(anyhow!(trim_msg(&stderr).unwrap_or_else(|| "无法获取容器信息".into())));
+    }
+    let f: Vec<&str> = stdout.trim().split('\t').collect();
+    let name = f.first().copied().unwrap_or("").trim_start_matches('/').to_string();
+    let state = f.get(2).copied().unwrap_or("").to_string();
+    let running = f.get(3).copied().unwrap_or("") == "true";
+
+    // Ports (published) from the ps view for a friendly summary.
+    let ports = run(&["ps", "-a", "--filter", &format!("id={r}"), "--format", "{{.Ports}}"])
+        .await
+        .ok()
+        .map(|(_, o, _)| o.trim().to_string())
+        .unwrap_or_default();
+
+    let has_shell = if running { container_has_shell(&r).await } else { false };
+
+    Ok(json!({
+        "id": r,
+        "name": name,
+        "image": f.get(1).copied().unwrap_or(""),
+        "state": state,
+        "running": running,
+        "restart_policy": f.get(4).copied().unwrap_or(""),
+        "created": f.get(5).copied().unwrap_or(""),
+        "started_at": f.get(6).copied().unwrap_or(""),
+        "exit_code": f.get(7).copied().unwrap_or("").parse::<i64>().unwrap_or(0),
+        "restart_count": f.get(8).copied().unwrap_or("").parse::<i64>().unwrap_or(0),
+        "ports": ports,
+        "has_shell": has_shell,
+    }))
 }
 
 /// Tail a container's logs.
