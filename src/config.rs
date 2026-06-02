@@ -12,8 +12,12 @@ pub struct AgentConfig {
     pub token_file: PathBuf,
     /// Optional pre-provisioned agent token (skips pairing flow entirely).
     pub agent_token: Option<String>,
-    /// Shared runtime directory for pid/heartbeat/lock files.
+    /// Transient process-state directory (`<base>/run`): pid/heartbeat/lock.
     pub runtime_dir: PathBuf,
+    /// Persisted-data directory (`<base>/data`): token, version, `.agent_key`.
+    pub data_dir: PathBuf,
+    /// Log directory (`<base>/log`): the daemon log.
+    pub log_dir: PathBuf,
     /// Seconds without a heartbeat before a peer role is considered dead.
     pub heartbeat_timeout_secs: u64,
     /// Supervisor: how often to check the agent child (seconds).
@@ -30,15 +34,23 @@ impl AgentConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1);
+        // Base dir (normally /var/ops). Everything else hangs off it, grouped
+        // into data/run/log subdirs. TEAOPS_RUNTIME_DIR overrides the base for
+        // backward compatibility with existing deployments / tests.
+        let base_dir = env::var("TEAOPS_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| crate::paths::default_base_dir());
+        let data_dir = base_dir.join(crate::paths::DATA_SUBDIR);
+        let runtime_dir = base_dir.join(crate::paths::RUN_SUBDIR);
+        let log_dir = base_dir.join(crate::paths::LOG_SUBDIR);
+        // The token lives in the persisted-data subdir. An explicit
+        // TEAOPS_TOKEN_FILE still wins for special deployments.
         let token_file = env::var("TEAOPS_TOKEN_FILE")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| crate::paths::default_base_dir().join("teaops-agent.token"));
+            .unwrap_or_else(|_| data_dir.join("teaops-agent.token"));
         let agent_token = env::var("TEAOPS_AGENT_TOKEN")
             .ok()
             .filter(|s| !s.is_empty());
-        let runtime_dir = env::var("TEAOPS_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| crate::paths::default_base_dir());
         let heartbeat_timeout_secs = env::var("TEAOPS_HEARTBEAT_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -58,6 +70,8 @@ impl AgentConfig {
             token_file,
             agent_token,
             runtime_dir,
+            data_dir,
+            log_dir,
             heartbeat_timeout_secs,
             supervise_interval_secs,
             restart_backoff_secs,

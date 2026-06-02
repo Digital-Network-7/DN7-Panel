@@ -34,8 +34,11 @@ pub fn daemonize() -> anyhow::Result<()> {
     use std::fs::OpenOptions;
 
     let base = crate::paths::default_base_dir();
-    let log_path = base.join(LOG_FILE);
-    let pid_path = base.join(PID_FILE);
+    // Group output the way the rest of the tree is grouped: the log under
+    // `log/`, the daemon pid under `run/`. Create them first.
+    crate::paths::ensure_dirs();
+    let log_path = crate::paths::log_dir().join(LOG_FILE);
+    let pid_path = crate::paths::run_dir().join(PID_FILE);
 
     let log = OpenOptions::new()
         .create(true)

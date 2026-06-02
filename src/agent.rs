@@ -19,7 +19,7 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
     guardian::write_own_pid(&cfg);
     // Record the running version so a later foreground launch can decide whether
     // it's newer (and should replace us) or not (and should just re-pair).
-    crate::procfile::write_version(&cfg.runtime_dir);
+    crate::procfile::write_version(&cfg.data_dir);
     guardian::spawn(cfg.clone());
 
     let client = ApiClient::new(&cfg);

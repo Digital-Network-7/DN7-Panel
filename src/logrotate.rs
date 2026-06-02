@@ -30,7 +30,7 @@ const CHECK_EVERY: Duration = Duration::from_secs(300); // 5 min
 
 /// Path of the daemon log the agent writes to.
 fn log_path(cfg: &AgentConfig) -> PathBuf {
-    cfg.runtime_dir.join(crate::daemon::LOG_FILE)
+    cfg.log_dir.join(crate::daemon::LOG_FILE)
 }
 
 /// Spawn the background log-trimming task (runs for the supervisor's lifetime).

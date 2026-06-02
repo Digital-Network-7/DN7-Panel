@@ -20,6 +20,8 @@ use crate::procfile::{role_alive, try_lock, write_heartbeat, write_pid, RolePath
 /// Entry point for the supervisor role.
 pub async fn run(cfg: AgentConfig) -> Result<()> {
     std::fs::create_dir_all(&cfg.runtime_dir).ok();
+    std::fs::create_dir_all(&cfg.data_dir).ok();
+    std::fs::create_dir_all(&cfg.log_dir).ok();
 
     let me = RolePaths::new(&cfg.runtime_dir, "supervisor");
     let agent = RolePaths::new(&cfg.runtime_dir, "agent");
@@ -34,7 +36,7 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
     };
     write_pid(&me.pid)?;
     write_heartbeat(&me.heartbeat)?;
-    crate::procfile::write_version(&cfg.runtime_dir);
+    crate::procfile::write_version(&cfg.data_dir);
     tracing::info!(pid = std::process::id(), "supervisor started");
 
     // Heartbeat task: keep our heartbeat fresh so the agent's guardian sees us.

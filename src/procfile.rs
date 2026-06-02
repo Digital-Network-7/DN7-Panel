@@ -92,19 +92,21 @@ extern "C" {
 
 /// Path of the file recording the version of the currently-running agent. The
 /// supervisor writes it on startup; a fresh foreground launch reads it to decide
-/// whether to replace the running instance with a newer binary.
-pub fn version_path(runtime_dir: &Path) -> PathBuf {
-    runtime_dir.join("teaops-agent.version")
+/// whether to replace the running instance with a newer binary. Lives in the
+/// persisted-data dir (callers pass `cfg.data_dir`).
+pub fn version_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("teaops-agent.version")
 }
 
 /// Record this binary's version as the running version (best-effort).
-pub fn write_version(runtime_dir: &Path) {
-    let _ = std::fs::write(version_path(runtime_dir), env!("CARGO_PKG_VERSION"));
+pub fn write_version(data_dir: &Path) {
+    let _ = std::fs::create_dir_all(data_dir);
+    let _ = std::fs::write(version_path(data_dir), env!("CARGO_PKG_VERSION"));
 }
 
 /// Read the recorded running version, if present.
-pub fn read_version(runtime_dir: &Path) -> Option<String> {
-    std::fs::read_to_string(version_path(runtime_dir))
+pub fn read_version(data_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(version_path(data_dir))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())

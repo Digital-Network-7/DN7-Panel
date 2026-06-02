@@ -64,8 +64,9 @@ fn machine_fingerprint() -> Vec<u8> {
 }
 
 /// Path of the fallback per-host random key (only used when no machine-id).
+/// Lives in the persisted-data subdir alongside the token.
 fn key_file_path() -> std::path::PathBuf {
-    crate::paths::default_base_dir().join(".agent_key")
+    crate::paths::data_dir().join(".agent_key")
 }
 
 /// Read the persisted random key, generating + storing one on first use.
@@ -80,6 +81,9 @@ fn persisted_random_key() -> Option<Vec<u8>> {
     // Generate a fresh 32-byte key and persist it with 0600 perms.
     let mut key = [0u8; 32];
     rand::Rng::fill(&mut rand::thread_rng(), &mut key);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     if std::fs::write(&path, key).is_err() {
         return None;
     }

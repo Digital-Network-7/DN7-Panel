@@ -69,6 +69,12 @@ fn main() -> Result<()> {
     // first relocation.
     paths::cleanup_legacy_locations();
 
+    // Group the previously-flat /var/ops files into data/run/log subdirs. This
+    // migrates an existing (older) install's token/key/version in place so an
+    // upgrade keeps its identity instead of needing to re-pair. Idempotent.
+    paths::ensure_dirs();
+    paths::migrate_flat_layout();
+
     // Install redundant boot autostart (systemd + cron@reboot + rc.local) so the
     // agent comes back after a reboot. Best-effort + idempotent; no-ops for an
     // unprivileged run. Done on the supervisor (top-level) launch only.
@@ -89,7 +95,7 @@ fn main() -> Result<()> {
         // to a normal launch. Otherwise keep the old behavior — just re-display
         // pairing info for the current server and exit.
         let current = env!("CARGO_PKG_VERSION");
-        let running = procfile::read_version(&cfg.runtime_dir);
+        let running = procfile::read_version(&cfg.data_dir);
         if is_newer(current, running.as_deref()) {
             println!(
                 "检测到正在运行的 Agent 版本 {} 低于当前版本 {current}，正在替换为新版本……",
@@ -141,7 +147,7 @@ fn main() -> Result<()> {
     if daemon::wants_foreground() {
         eprintln!("running in foreground");
     } else {
-        let log = paths::default_base_dir().join(daemon::LOG_FILE);
+        let log = paths::log_dir().join(daemon::LOG_FILE);
         println!("Agent 正在后台运行，日志见 {}", log.display());
         daemon::daemonize()?;
     }

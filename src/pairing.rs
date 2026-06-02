@@ -71,6 +71,9 @@ pub fn clear_pending(cfg: &AgentConfig) {
 
 /// Persist the final (claimed) agent token, encrypted at rest with 0600 perms.
 pub fn persist_token(cfg: &AgentConfig, token: &str) -> std::io::Result<()> {
+    if let Some(dir) = cfg.token_file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let out = crate::crypto::encrypt(token);
     std::fs::write(&cfg.token_file, out)?;
     #[cfg(unix)]
@@ -83,6 +86,9 @@ pub fn persist_token(cfg: &AgentConfig, token: &str) -> std::io::Result<()> {
 
 /// Persist a pending pairing (token + register_secret), encrypted at rest.
 fn write_pending(cfg: &AgentConfig, token: &str, secret: &str) -> std::io::Result<()> {
+    if let Some(dir) = pending_path(cfg).parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let body = format!("{token}\n{secret}\n");
     let out = crate::crypto::encrypt(&body);
     std::fs::write(pending_path(cfg), out)?;

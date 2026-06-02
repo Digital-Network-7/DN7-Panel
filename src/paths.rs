@@ -18,6 +18,36 @@ pub const INSTALL_DIR: &str = "/var/ops";
 /// Canonical agent binary path.
 pub const INSTALL_BIN: &str = "/var/ops/teaops-agent";
 
+/// Subdirectory names under the base dir, grouping the previously-flat files:
+///   - `data/` : values that must persist (token, version, encryption key)
+///   - `run/`  : transient process state (pid, heartbeat, lock)
+///   - `log/`  : the daemon log
+pub const DATA_SUBDIR: &str = "data";
+pub const RUN_SUBDIR: &str = "run";
+pub const LOG_SUBDIR: &str = "log";
+
+/// Persisted-data directory (`<base>/data`): token, version, `.agent_key`.
+pub fn data_dir() -> PathBuf {
+    default_base_dir().join(DATA_SUBDIR)
+}
+
+/// Transient runtime directory (`<base>/run`): pid/heartbeat/lock files.
+pub fn run_dir() -> PathBuf {
+    default_base_dir().join(RUN_SUBDIR)
+}
+
+/// Log directory (`<base>/log`): the daemon log.
+pub fn log_dir() -> PathBuf {
+    default_base_dir().join(LOG_SUBDIR)
+}
+
+/// Create the data/run/log subdirectories under the base dir (best-effort).
+pub fn ensure_dirs() {
+    for d in [data_dir(), run_dir(), log_dir()] {
+        let _ = std::fs::create_dir_all(&d);
+    }
+}
+
 /// The path to spawn / relaunch / self-update against. Prefers the canonical
 /// install binary when present; otherwise falls back to the current exe with
 /// any trailing " (deleted)" stripped.
@@ -212,28 +242,59 @@ fn migrate_old_runtime(old_dir: &std::path::Path) {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
-    // 2-4) Move valuables, fold the log, drop transient state.
+    // 2-4) Move valuables, fold the log, drop transient state — into the new
+    // grouped subdirs under /var/ops (data/run/log).
     migrate_files(old_dir, canonical_dir);
     tracing::info!(dir = %old_dir.display(), "migrated old agent runtime files to /var/ops");
 }
 
-/// Move the valuable runtime files from `old_dir` into `canonical_dir` (without
-/// clobbering existing ones), append the old log into the canonical log, and
-/// delete the transient process-state files from `old_dir`. Split out from
-/// `migrate_old_runtime` (which also stops the old process) so it's unit
-/// testable against temp dirs.
-fn migrate_files(old_dir: &std::path::Path, canonical_dir: &std::path::Path) {
+/// Migrate a *flat* `/var/ops` layout (everything directly under the base dir,
+/// as written by older agents) into the grouped `data/`, `run/`, `log/`
+/// subdirs. Idempotent and best-effort: if there are no flat files it does
+/// nothing. Runs on every supervisor launch so an upgrade picks up its existing
+/// token/key without re-pairing. The old running instance (if any) is *this*
+/// process about to start, so there's nothing to stop here.
+pub fn migrate_flat_layout() {
+    let base = default_base_dir();
+    // Only act when at least one known flat file is present directly in base.
+    let has_flat = VALUABLE_FILES
+        .iter()
+        .chain(TRANSIENT_FILES.iter())
+        .any(|f| base.join(f).is_file())
+        || base.join(LOG_FILE_NAME).is_file();
+    if !has_flat {
+        return;
+    }
+    ensure_dirs();
+    migrate_files(&base, &base);
+    tracing::info!("migrated flat /var/ops layout into data/run/log subdirs");
+}
+
+/// Move the valuable runtime files from `old_dir` into the grouped subdirs under
+/// `dest_base` (`data/` for persisted files, `log/` for the log), without
+/// clobbering existing ones, and delete the transient process-state files from
+/// `old_dir`. Split out from `migrate_old_runtime` (which also stops the old
+/// process) so it's unit testable against temp dirs.
+///
+/// `old_dir == dest_base` is supported: that's the in-place flat→subdir
+/// migration (files move from the base into its own data/run/log children).
+fn migrate_files(old_dir: &std::path::Path, dest_base: &std::path::Path) {
     use std::io::Write;
 
-    // Move valuable files into the canonical dir if not already present there.
+    let data_dst = dest_base.join(DATA_SUBDIR);
+    let log_dst_dir = dest_base.join(LOG_SUBDIR);
+    let _ = std::fs::create_dir_all(&data_dst);
+    let _ = std::fs::create_dir_all(&log_dst_dir);
+
+    // Move valuable (persisted) files into <dest_base>/data if not already there.
     for name in VALUABLE_FILES {
         let src = old_dir.join(name);
-        if !src.exists() {
+        if !src.is_file() {
             continue;
         }
-        let dst = canonical_dir.join(name);
+        let dst = data_dst.join(name);
         if dst.exists() {
-            let _ = std::fs::remove_file(&src); // keep the canonical copy
+            let _ = std::fs::remove_file(&src); // keep the existing copy
         } else if std::fs::rename(&src, &dst).is_err() {
             // rename fails across filesystems; fall back to copy + remove.
             if std::fs::copy(&src, &dst).is_ok() {
@@ -242,22 +303,27 @@ fn migrate_files(old_dir: &std::path::Path, canonical_dir: &std::path::Path) {
         }
     }
 
-    // Append the old log into the canonical log, then remove it.
+    // Append the old log into <dest_base>/log/teaops-agent.log, then remove it.
     let old_log = old_dir.join(LOG_FILE_NAME);
     if old_log.is_file() {
-        if let Ok(bytes) = std::fs::read(&old_log) {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(canonical_dir.join(LOG_FILE_NAME))
-            {
-                let _ = f.write_all(&bytes);
+        let dst_log = log_dst_dir.join(LOG_FILE_NAME);
+        // Skip if it's literally the same file (shouldn't happen: old is flat,
+        // dst is under log/), guarding against truncating-into-self.
+        if old_log != dst_log {
+            if let Ok(bytes) = std::fs::read(&old_log) {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&dst_log)
+                {
+                    let _ = f.write_all(&bytes);
+                }
             }
+            let _ = std::fs::remove_file(&old_log);
         }
-        let _ = std::fs::remove_file(&old_log);
     }
 
-    // Delete transient state from the old directory.
+    // Delete transient state from the old directory (regenerated under run/).
     for name in TRANSIENT_FILES {
         let _ = std::fs::remove_file(old_dir.join(name));
     }
@@ -339,50 +405,51 @@ mod tests {
 
     #[test]
     fn migrate_files_moves_valuables_folds_log_drops_transient() {
-        use super::migrate_files;
+        use super::{migrate_files, DATA_SUBDIR, LOG_SUBDIR};
         use std::fs;
 
-        // Build an isolated old dir + canonical dir under a unique temp path.
+        // Build an isolated old dir + dest base under a unique temp path.
         let base = std::env::temp_dir().join(format!("teaops-mig-{}", std::process::id()));
         let old = base.join("old");
-        let canonical = base.join("var-ops");
+        let dest = base.join("var-ops");
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&old).unwrap();
-        fs::create_dir_all(&canonical).unwrap();
+        fs::create_dir_all(&dest).unwrap();
+        let data = dest.join(DATA_SUBDIR);
+        let logd = dest.join(LOG_SUBDIR);
 
         // Valuable files in the old dir.
         fs::write(old.join("teaops-agent.token"), "tok").unwrap();
         fs::write(old.join(".agent_key"), "key").unwrap();
-        // A valuable file that ALSO exists in canonical (must be kept, not clobbered).
+        // A valuable file that ALSO exists at the destination (kept, not clobbered).
         fs::write(old.join("teaops-agent.version"), "0.0.1").unwrap();
-        fs::write(canonical.join("teaops-agent.version"), "0.1.0").unwrap();
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("teaops-agent.version"), "0.1.0").unwrap();
         // Transient state + a log to fold.
         fs::write(old.join("teaops-supervisor.heartbeat"), "123").unwrap();
         fs::write(old.join("teaops-supervisor.pid"), "999").unwrap();
         fs::write(old.join("teaops-agent.log"), "old-log\n").unwrap();
-        fs::write(canonical.join("teaops-agent.log"), "new-log\n").unwrap();
+        fs::create_dir_all(&logd).unwrap();
+        fs::write(logd.join("teaops-agent.log"), "new-log\n").unwrap();
 
-        migrate_files(&old, &canonical);
+        migrate_files(&old, &dest);
 
-        // Valuables moved over.
+        // Valuables moved into <dest>/data.
         assert_eq!(
-            fs::read_to_string(canonical.join("teaops-agent.token")).unwrap(),
+            fs::read_to_string(data.join("teaops-agent.token")).unwrap(),
             "tok"
         );
-        assert_eq!(
-            fs::read_to_string(canonical.join(".agent_key")).unwrap(),
-            "key"
-        );
+        assert_eq!(fs::read_to_string(data.join(".agent_key")).unwrap(), "key");
         assert!(!old.join("teaops-agent.token").exists());
         assert!(!old.join(".agent_key").exists());
-        // Existing canonical version preserved; old copy removed.
+        // Existing version preserved; old copy removed.
         assert_eq!(
-            fs::read_to_string(canonical.join("teaops-agent.version")).unwrap(),
+            fs::read_to_string(data.join("teaops-agent.version")).unwrap(),
             "0.1.0"
         );
         assert!(!old.join("teaops-agent.version").exists());
-        // Log folded (canonical contains both), old log gone.
-        let folded = fs::read_to_string(canonical.join("teaops-agent.log")).unwrap();
+        // Log folded into <dest>/log (contains both), old log gone.
+        let folded = fs::read_to_string(logd.join("teaops-agent.log")).unwrap();
         assert!(folded.contains("new-log"));
         assert!(folded.contains("old-log"));
         assert!(!old.join("teaops-agent.log").exists());
