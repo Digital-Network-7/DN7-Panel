@@ -111,6 +111,8 @@ impl MetricsStream {
             "disk_mounts": m.disk_mounts,
             "update_phase": m.update_phase,
             "update_progress": m.update_progress,
+            "update_done_bytes": m.update_done_bytes,
+            "update_total_bytes": m.update_total_bytes,
         });
         self.socket.send(Message::Text(payload.to_string())).await?;
 

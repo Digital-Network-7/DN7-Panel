@@ -33,6 +33,11 @@ pub const PHASE_ERROR: u8 = 4;
 static PHASE: AtomicU8 = AtomicU8::new(PHASE_IDLE);
 /// Download progress percent (0..100); only meaningful while DOWNLOADING.
 static PROGRESS: AtomicU64 = AtomicU64::new(0);
+/// Total bytes of the binary being downloaded (0 until known); lets the UI show
+/// "current MB / total MB" instead of just a percent.
+static TOTAL_BYTES: AtomicU64 = AtomicU64::new(0);
+/// Bytes downloaded so far (only meaningful while DOWNLOADING).
+static DONE_BYTES: AtomicU64 = AtomicU64::new(0);
 
 /// True while a self-update task is running (download/install in progress), used
 /// to coalesce duplicate upgrade triggers.
@@ -43,6 +48,14 @@ pub fn phase() -> u8 {
 }
 pub fn progress() -> u64 {
     PROGRESS.load(Ordering::Relaxed)
+}
+/// Total bytes of the in-flight download (0 until the content length is known).
+pub fn total_bytes() -> u64 {
+    TOTAL_BYTES.load(Ordering::Relaxed)
+}
+/// Bytes downloaded so far in the in-flight download.
+pub fn done_bytes() -> u64 {
+    DONE_BYTES.load(Ordering::Relaxed)
 }
 pub fn phase_str() -> &'static str {
     match phase() {
@@ -58,6 +71,11 @@ fn set_phase(p: u8) {
 }
 fn set_progress(pct: u64) {
     PROGRESS.store(pct.min(100), Ordering::Relaxed);
+}
+/// Record the total/done byte counts for the in-flight download.
+pub fn set_bytes(done: u64, total: u64) {
+    DONE_BYTES.store(done, Ordering::Relaxed);
+    TOTAL_BYTES.store(total, Ordering::Relaxed);
 }
 
 /// Try to claim the single in-flight update slot. Returns false if one is
@@ -109,6 +127,7 @@ pub async fn self_update(cfg: &AgentConfig) -> Result<PathBuf> {
     tracing::info!(?target, "self-update: fetching latest binary");
     set_phase(PHASE_DOWNLOADING);
     set_progress(0);
+    set_bytes(0, 0);
     let bytes = fetch::fetch_latest_with_progress(cfg, set_progress).await?;
     set_phase(PHASE_INSTALLING);
     install_bytes(&bytes, &target).await?;
@@ -143,6 +162,7 @@ pub async fn run_self_update(cfg: &AgentConfig) {
             tokio::time::sleep(std::time::Duration::from_secs(20)).await;
             set_phase(PHASE_IDLE);
             set_progress(0);
+            set_bytes(0, 0);
             end();
         }
     }

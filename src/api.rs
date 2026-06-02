@@ -93,6 +93,8 @@ struct ReportReq {
     disk_mounts: Vec<crate::metrics::DiskMount>,
     update_phase: String,
     update_progress: u64,
+    update_done_bytes: u64,
+    update_total_bytes: u64,
 }
 
 /// HTTP client wrapper around the TeaOps backend API.
@@ -181,6 +183,8 @@ impl ApiClient {
             disk_mounts: m.disk_mounts.clone(),
             update_phase: m.update_phase.clone(),
             update_progress: m.update_progress,
+            update_done_bytes: m.update_done_bytes,
+            update_total_bytes: m.update_total_bytes,
         };
         let resp = self
             .http

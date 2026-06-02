@@ -35,7 +35,7 @@ pub async fn fetch_latest_with_progress<F: Fn(u64) + Copy>(
     on_progress: F,
 ) -> Result<Vec<u8>> {
     let url = format!(
-        "{}/agent/dist/download?arch={}",
+        "{}/agent/dist/download?arch={}&rate=3145728",
         cfg.backend_url.trim_end_matches('/'),
         arch()
     );
@@ -59,11 +59,14 @@ async fn download_streaming<F: Fn(u64)>(
     let mut got: u64 = 0;
     let mut last_pct: u64 = 0;
     on_progress(0);
+    // Surface absolute byte counts too, so the UI can show "current / total MB".
+    crate::update::set_bytes(0, total.unwrap_or(0));
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| anyhow!("download stream error: {e}"))?;
         bytes.extend_from_slice(&chunk);
         got += chunk.len() as u64;
+        crate::update::set_bytes(got, total.unwrap_or(0));
         if let Some(total) = total.filter(|t| *t > 0) {
             let pct = (got * 100 / total).min(100);
             if pct != last_pct {
