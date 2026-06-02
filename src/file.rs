@@ -38,6 +38,29 @@ use crate::config::AgentConfig;
 /// Chunk size for streaming file content (256 KiB).
 const CHUNK: usize = 256 * 1024;
 
+/// Reject deleting a path that is (or sits at) a critical system directory, to
+/// guard against a catastrophic recursive delete (e.g. an accidental `/` or
+/// `/etc`). This is a safety net, not an access-control boundary: the server
+/// owner already has full file access by design — we only block the handful of
+/// paths whose removal would brick the host.
+fn is_protected_path(path: &str) -> bool {
+    // Normalize: trim, drop a single trailing slash (but keep root "/").
+    let p = path.trim();
+    let p = if p.len() > 1 {
+        p.trim_end_matches('/')
+    } else {
+        p
+    };
+    if p.is_empty() || p == "/" {
+        return true;
+    }
+    const PROTECTED: &[&str] = &[
+        "/bin", "/sbin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64", "/libx32", "/proc",
+        "/root", "/run", "/sys", "/usr", "/var",
+    ];
+    PROTECTED.contains(&p)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 enum ClientMsg {
@@ -155,6 +178,10 @@ pub async fn run_file_channel(cfg: &AgentConfig, agent_token: &str, session: &st
                         Err(e) => send_err(&mut ws_tx, &format!("创建目录失败：{e}")).await,
                     },
                     ClientMsg::Delete { path } => {
+                        if is_protected_path(&path) {
+                            send_err(&mut ws_tx, "该系统目录受保护，禁止删除").await;
+                            continue;
+                        }
                         let p = Path::new(&path);
                         let res = if p.is_dir() {
                             tokio::fs::remove_dir_all(&path).await
@@ -325,16 +352,18 @@ async fn send_err(ws: &mut WsSink, message: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Container-scoped file transfer (via `docker exec` / `docker cp`).
+// Container-scoped file transfer (Docker daemon API; no `docker` CLI).
 //
-// Mirrors the host file protocol but every operation runs *inside* a container:
-//   - list/mkdir/delete/stat run `docker exec <c> sh -c '<script>' sh "<path>"`
-//     with the path passed as a positional arg ($1), never interpolated into
-//     the script, so there's no shell-injection surface.
-// ---------------------------------------------------------------------------
-// Container-scoped file transfer (daemon API: exec for list/mkdir/delete,
-// archive/tar for upload + download). No `docker` CLI required.
-// Paths must be absolute (so they can't be mistaken for command flags).
+// Mirrors the host file protocol but every operation targets a container:
+//   - list/mkdir/delete run via the daemon exec API (`/bin/sh -c '<script>' sh
+//     "<path>"`), the path passed as a positional arg ($1), never interpolated
+//     into the script — no shell-injection surface.
+//   - download streams the container archive (tar) API, parsing the single
+//     entry incrementally and forwarding its bytes in chunks (no full buffering).
+//   - upload buffers chunks into a host temp file, then streams a tar of it into
+//     the container via the archive API (works on shell-less images too).
+// Paths must be absolute (so they can't be mistaken for flags), and deletes of
+// critical system directories are refused (see `is_protected_path`).
 // ---------------------------------------------------------------------------
 
 /// State for an in-progress container upload (temp file on the host, copied into
@@ -478,6 +507,10 @@ pub async fn run_container_file_channel(
                         }
                     }
                     ClientMsg::Delete { path } => {
+                        if is_protected_path(&path) {
+                            send_err(&mut ws_tx, "该系统目录受保护，禁止删除").await;
+                            continue;
+                        }
                         match ctn_exec_ok(container, "rm -rf \"$1\"", &path).await {
                             Ok(_) => send_ok(&mut ws_tx, "已删除").await,
                             Err(e) => send_err(&mut ws_tx, &format!("删除失败：{e}")).await,
@@ -585,7 +618,9 @@ async fn ctn_exec_ok(container: &str, script: &str, arg: &str) -> Result<()> {
 }
 
 /// Upload a host temp file into the container at `dest_path` using the archive
-/// (tar) API. Works even on shell-less images.
+/// (tar) API, **streaming** the tar body (header + file content read in chunks +
+/// padding + footer) so we never hold the whole file in memory. Works even on
+/// shell-less images.
 async fn ctn_upload_file(container: &str, temp_path: &Path, dest_path: &str) -> Result<()> {
     check_abs(dest_path)?;
     let dest = Path::new(dest_path);
@@ -599,30 +634,111 @@ async fn ctn_upload_file(container: &str, temp_path: &Path, dest_path: &str) -> 
         .map(|s| s.to_string_lossy().to_string())
         .ok_or_else(|| anyhow!("目标路径无效"))?;
 
-    // Build an in-memory tar containing the single file under its base name.
-    let data = tokio::fs::read(temp_path).await?;
-    let mut tar_buf: Vec<u8> = Vec::new();
-    {
-        let mut builder = tar::Builder::new(&mut tar_buf);
-        let mut header = tar::Header::new_gnu();
-        header.set_size(data.len() as u64);
-        header.set_mode(0o644);
-        header.set_entry_type(tar::EntryType::file());
-        builder
-            .append_data(&mut header, &fname, data.as_slice())
-            .map_err(|e| anyhow!("打包失败：{e}"))?;
-        builder.finish().map_err(|e| anyhow!("打包失败：{e}"))?;
-    }
+    // File size (for the tar header) from metadata — no full read.
+    let size = tokio::fs::metadata(temp_path).await?.len();
+
+    // Build the 512-byte tar header up front (size is known).
+    let mut header = tar::Header::new_gnu();
+    header.set_size(size);
+    header.set_mode(0o644);
+    header.set_entry_type(tar::EntryType::file());
+    header
+        .set_path(&fname)
+        .map_err(|e| anyhow!("打包失败：{e}"))?;
+    header.set_cksum();
+
+    let body = upload_tar_stream(header, temp_path.to_path_buf(), size);
 
     let dkr = crate::docker::dkr()?;
     let opts = bollard::container::UploadToContainerOptions {
         path: parent,
         ..Default::default()
     };
-    dkr.upload_to_container(container, Some(opts), tar_buf.into())
+    dkr.upload_to_container_streaming(container, Some(opts), body)
         .await
         .map_err(|e| anyhow!("{e}"))?;
     Ok(())
+}
+
+/// Build a streaming tar body for a single file: 512-byte header, then the file
+/// content read in CHUNK pieces, then NUL padding to a 512 boundary, then the
+/// two zero blocks that terminate a tar. Never buffers the whole file.
+fn upload_tar_stream(
+    header: tar::Header,
+    temp_path: std::path::PathBuf,
+    size: u64,
+) -> impl futures::Stream<Item = bytes::Bytes> + Send + 'static {
+    use bytes::Bytes;
+
+    // Tar stages emitted in order.
+    enum Stage {
+        Header,
+        Body { file: tokio::fs::File, left: u64 },
+        Pad,
+        Footer,
+        Done,
+    }
+
+    let header_bytes = Bytes::copy_from_slice(header.as_bytes());
+    let pad = ((512 - (size % 512)) % 512) as usize;
+
+    futures::stream::unfold(Stage::Header, move |stage| {
+        let header_bytes = header_bytes.clone();
+        let temp_path = temp_path.clone();
+        async move {
+            use tokio::io::AsyncReadExt;
+            match stage {
+                Stage::Header => {
+                    // Open the file lazily for the body stage.
+                    let next = if size > 0 {
+                        match tokio::fs::File::open(&temp_path).await {
+                            Ok(file) => Stage::Body { file, left: size },
+                            // On open failure, end the stream early (upload fails
+                            // server-side with a truncated/invalid tar).
+                            Err(_) => Stage::Done,
+                        }
+                    } else if pad > 0 {
+                        Stage::Pad
+                    } else {
+                        Stage::Footer
+                    };
+                    Some((header_bytes, next))
+                }
+                Stage::Body { mut file, left } => {
+                    let want = (left as usize).min(CHUNK);
+                    let mut buf = vec![0u8; want];
+                    match file.read(&mut buf).await {
+                        Ok(0) => {
+                            // Unexpected EOF; move on to padding/footer.
+                            let next = if pad > 0 { Stage::Pad } else { Stage::Footer };
+                            // Emit nothing this step — recurse via an empty chunk.
+                            Some((Bytes::new(), next))
+                        }
+                        Ok(n) => {
+                            buf.truncate(n);
+                            let remaining = left - n as u64;
+                            let next = if remaining > 0 {
+                                Stage::Body {
+                                    file,
+                                    left: remaining,
+                                }
+                            } else if pad > 0 {
+                                Stage::Pad
+                            } else {
+                                Stage::Footer
+                            };
+                            Some((Bytes::from(buf), next))
+                        }
+                        Err(_) => Some((Bytes::new(), Stage::Footer)),
+                    }
+                }
+                Stage::Pad => Some((Bytes::from(vec![0u8; pad]), Stage::Footer)),
+                // Tar archives end with two 512-byte zero blocks.
+                Stage::Footer => Some((Bytes::from(vec![0u8; 1024]), Stage::Done)),
+                Stage::Done => None,
+            }
+        }
+    })
 }
 
 /// List a directory inside the container via the daemon exec API. Emits the same
@@ -673,9 +789,10 @@ done"#;
     Ok(())
 }
 
-/// Stream a file out of the container via the archive (tar) API, unpacking the
-/// single entry and forwarding its bytes in chunks. Honors a mid-stream cancel.
-/// Returns Ok(false) if the client cancelled.
+/// Stream a file out of the container via the archive (tar) API, parsing the
+/// tar **incrementally** as bytes arrive and forwarding the single file entry's
+/// payload in chunks — never buffering the whole file in memory. Honors a
+/// mid-stream cancel. Returns Ok(false) if the client cancelled.
 async fn ctn_download(
     ws: &mut WsSink,
     rx: &mut WsStream,
@@ -689,44 +806,105 @@ async fn ctn_download(
     let opts = bollard::container::DownloadFromContainerOptions {
         path: path.to_string(),
     };
-
-    // Collect the tar stream into memory, then unpack the single entry. The
-    // archive API doesn't expose a random-access size up front, so we guard
-    // against an oversized file to avoid exhausting agent memory; very large
-    // container files should be copied out by other means.
-    const MAX_CONTAINER_DOWNLOAD: usize = 512 * 1024 * 1024; // 512 MiB
     let mut stream = dkr.download_from_container(container, Some(opts));
-    let mut tar_bytes: Vec<u8> = Vec::new();
+
+    // Incremental single-entry tar parser. Docker returns a tar with one header
+    // (512 bytes: name @0..100, octal size @124..136) followed by `size` bytes
+    // of content. We parse the header from the first 512 bytes, emit
+    // download-begin, then forward content bytes as they arrive.
+    let mut header: Vec<u8> = Vec::with_capacity(512);
+    let mut begun = false;
+    let mut remaining: u64 = 0; // content bytes still to forward
+    let mut pending: Vec<u8> = Vec::new(); // buffered content not yet flushed
+
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| {
-            // The most common failure is a missing path.
-            anyhow!(friendly_archive_err(&e))
-        })?;
-        tar_bytes.extend_from_slice(&chunk);
-        if tar_bytes.len() > MAX_CONTAINER_DOWNLOAD {
-            return Err(anyhow!("文件过大（超过 512 MiB），暂不支持在此下载"));
+        let chunk = chunk.map_err(|e| anyhow!(friendly_archive_err(&e)))?;
+        let mut data: &[u8] = &chunk;
+
+        // Phase 1: assemble the 512-byte tar header.
+        if !begun {
+            let need = 512 - header.len();
+            let take = need.min(data.len());
+            header.extend_from_slice(&data[..take]);
+            data = &data[take..];
+            if header.len() < 512 {
+                continue; // need more bytes for the header
+            }
+            let (name, size) =
+                parse_tar_header(&header).ok_or_else(|| anyhow!("不能下载目录或空文件"))?;
+            if size == 0 {
+                return Err(anyhow!("不能下载目录或空文件"));
+            }
+            remaining = size;
+            begun = true;
+            let begin = serde_json::json!({ "type": "download-begin", "name": name, "size": size });
+            ws.send(Message::Text(begin.to_string())).await?;
+        }
+
+        // Phase 2: `data` now holds (some) content + trailing tar padding.
+        if remaining > 0 && !data.is_empty() {
+            let content_len = (remaining as usize).min(data.len());
+            pending.extend_from_slice(&data[..content_len]);
+            remaining -= content_len as u64;
+
+            // Flush full CHUNK-sized frames, checking for cancel between them.
+            while pending.len() >= CHUNK {
+                let frame: Vec<u8> = pending.drain(..CHUNK).collect();
+                ws.send(Message::Binary(frame)).await?;
+                if check_cancel(rx).await {
+                    return Ok(false);
+                }
+            }
+        }
+        // Bytes past the content are tar padding/footer — ignored.
+        if begun && remaining == 0 {
+            break;
         }
     }
 
-    // Unpack the (single) regular file entry from the tar.
-    let (name, data) =
-        extract_single_file(&tar_bytes).ok_or_else(|| anyhow!("不能下载目录或空文件"))?;
-
-    let begin = serde_json::json!({ "type": "download-begin", "name": name, "size": data.len() });
-    ws.send(Message::Text(begin.to_string())).await?;
-
-    let mut offset = 0;
-    while offset < data.len() {
-        let end = (offset + CHUNK).min(data.len());
-        ws.send(Message::Binary(data[offset..end].to_vec())).await?;
-        offset = end;
+    // Flush any remaining tail (< CHUNK).
+    if !pending.is_empty() {
+        ws.send(Message::Binary(pending)).await?;
         if check_cancel(rx).await {
             return Ok(false);
         }
     }
+
+    if !begun {
+        return Err(anyhow!("文件不存在"));
+    }
     ws.send(Message::Text("{\"type\":\"download-end\"}".to_string()))
         .await?;
     Ok(true)
+}
+
+/// Parse a POSIX/GNU tar header: file base name (bytes 0..100, NUL-terminated)
+/// and content size (octal ASCII, bytes 124..136). Returns None if the entry
+/// isn't a regular file or the header is malformed.
+fn parse_tar_header(h: &[u8]) -> Option<(String, u64)> {
+    if h.len() < 512 {
+        return None;
+    }
+    // Type flag at offset 156: '0' or '\0' == regular file.
+    let typeflag = h[156];
+    if !(typeflag == b'0' || typeflag == 0) {
+        return None;
+    }
+    // Name (may be empty if using a GNU long-name extension, which docker
+    // doesn't emit for a single file copy).
+    let name_end = h[0..100].iter().position(|&b| b == 0).unwrap_or(100);
+    let raw_name = String::from_utf8_lossy(&h[0..name_end]).to_string();
+    let base = raw_name
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("download")
+        .to_string();
+    // Size: octal ASCII in bytes 124..136.
+    let size_field = &h[124..136];
+    let size_str = String::from_utf8_lossy(size_field);
+    let size = u64::from_str_radix(size_str.trim().trim_end_matches('\0').trim(), 8).ok()?;
+    Some((base, size))
 }
 
 /// Map a bollard archive error to a friendly message.
@@ -739,26 +917,56 @@ fn friendly_archive_err(e: &bollard::errors::Error) -> String {
     }
 }
 
-/// Extract the first regular-file entry from a tar archive, returning
-/// (basename, bytes). Returns None if there's no regular file (e.g. a dir).
-fn extract_single_file(tar_bytes: &[u8]) -> Option<(String, Vec<u8>)> {
-    let mut ar = tar::Archive::new(std::io::Cursor::new(tar_bytes));
-    let entries = ar.entries().ok()?;
-    for entry in entries.flatten() {
-        let is_file = entry.header().entry_type().is_file();
-        if !is_file {
-            continue;
-        }
-        let name = entry
-            .path()
-            .ok()
-            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
-            .unwrap_or_else(|| "download".to_string());
-        let mut data = Vec::new();
-        let mut entry = entry;
-        if std::io::Read::read_to_end(&mut entry, &mut data).is_ok() {
-            return Some((name, data));
-        }
+#[cfg(test)]
+mod tests {
+    use super::{is_protected_path, parse_tar_header, valid_container_ref};
+
+    #[test]
+    fn protected_paths() {
+        assert!(is_protected_path("/"));
+        assert!(is_protected_path(""));
+        assert!(is_protected_path("/etc"));
+        assert!(is_protected_path("/etc/"));
+        assert!(is_protected_path("/usr"));
+        assert!(is_protected_path("/var"));
+        assert!(is_protected_path("  /bin  "));
+        assert!(!is_protected_path("/etc/nginx"));
+        assert!(!is_protected_path("/root/data")); // /root is protected, subdir isn't
+        assert!(!is_protected_path("/home/user/file.txt"));
+        assert!(!is_protected_path("/data"));
     }
-    None
+
+    #[test]
+    fn container_ref_validation() {
+        assert!(valid_container_ref("my-app"));
+        assert!(valid_container_ref("a1b2c3"));
+        assert!(!valid_container_ref(""));
+        assert!(!valid_container_ref("-rm"));
+        assert!(!valid_container_ref("a b"));
+    }
+
+    #[test]
+    fn tar_header_roundtrip() {
+        // Build a real tar header with the `tar` crate, then parse it back.
+        let mut h = tar::Header::new_gnu();
+        h.set_size(1234);
+        h.set_mode(0o644);
+        h.set_entry_type(tar::EntryType::file());
+        h.set_path("hello.txt").unwrap();
+        h.set_cksum();
+        let bytes = h.as_bytes();
+        let (name, size) = parse_tar_header(bytes).expect("parse");
+        assert_eq!(name, "hello.txt");
+        assert_eq!(size, 1234);
+    }
+
+    #[test]
+    fn tar_header_rejects_dir() {
+        let mut h = tar::Header::new_gnu();
+        h.set_size(0);
+        h.set_entry_type(tar::EntryType::Directory);
+        h.set_path("adir/").unwrap();
+        h.set_cksum();
+        assert!(parse_tar_header(h.as_bytes()).is_none());
+    }
 }
