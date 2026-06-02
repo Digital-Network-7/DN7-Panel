@@ -196,6 +196,17 @@ fn aggregate_disks(disks: &Disks) -> (u64, u64, Vec<DiskMount>) {
     let mut used: u64 = 0;
     let mut mounts: Vec<DiskMount> = Vec::new();
     for disk in disks.list() {
+        // Only count real physical disks: skip pseudo / virtual filesystems
+        // (tmpfs, overlay, squashfs, proc, ...) which otherwise show up as
+        // spurious or zero-sized entries (and a blank row in the UI).
+        let fs = disk.file_system().to_string_lossy().to_ascii_lowercase();
+        if !is_physical_fs(&fs) {
+            continue;
+        }
+        let mount = disk.mount_point().to_string_lossy().to_string();
+        if is_virtual_mount(&mount) {
+            continue;
+        }
         let key = disk.name().to_string_lossy().to_string();
         if !key.is_empty() && !seen.insert(key) {
             continue; // already counted this device
@@ -209,7 +220,7 @@ fn aggregate_disks(disks: &Disks) -> (u64, u64, Vec<DiskMount>) {
         total += dt;
         used += du;
         mounts.push(DiskMount {
-            mount: disk.mount_point().to_string_lossy().to_string(),
+            mount,
             total: dt,
             used: du,
         });
@@ -217,6 +228,57 @@ fn aggregate_disks(disks: &Disks) -> (u64, u64, Vec<DiskMount>) {
     // Largest filesystems first so the UI shows the most relevant mounts on top.
     mounts.sort_by(|a, b| b.total.cmp(&a.total));
     (total, used, mounts)
+}
+
+/// True for real, persistent disk filesystems we want to count. Excludes the
+/// common in-memory / pseudo / read-only-image filesystem types.
+fn is_physical_fs(fs: &str) -> bool {
+    const VIRTUAL: &[&str] = &[
+        "tmpfs", "devtmpfs", "overlay", "overlayfs", "squashfs", "aufs", "ramfs",
+        "proc", "sysfs", "cgroup", "cgroup2", "devpts", "mqueue", "debugfs",
+        "tracefs", "securityfs", "pstore", "bpf", "configfs", "fusectl",
+        "binfmt_misc", "autofs", "nsfs", "rpc_pipefs", "hugetlbfs", "fuse.lxcfs",
+    ];
+    if fs.is_empty() {
+        return false;
+    }
+    !VIRTUAL.iter().any(|v| fs == *v)
+}
+
+/// True for mount points that are virtual/system paths rather than real storage.
+fn is_virtual_mount(mount: &str) -> bool {
+    mount.starts_with("/proc")
+        || mount.starts_with("/sys")
+        || mount.starts_with("/dev")
+        || mount.starts_with("/run")
+        || mount == "/snap"
+        || mount.starts_with("/snap/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_physical_fs, is_virtual_mount};
+
+    #[test]
+    fn physical_fs_filter() {
+        assert!(is_physical_fs("ext4"));
+        assert!(is_physical_fs("xfs"));
+        assert!(is_physical_fs("btrfs"));
+        assert!(!is_physical_fs("tmpfs"));
+        assert!(!is_physical_fs("overlay"));
+        assert!(!is_physical_fs("squashfs"));
+        assert!(!is_physical_fs(""));
+    }
+
+    #[test]
+    fn virtual_mount_filter() {
+        assert!(is_virtual_mount("/proc"));
+        assert!(is_virtual_mount("/sys/fs/cgroup"));
+        assert!(is_virtual_mount("/run/lock"));
+        assert!(is_virtual_mount("/snap/core/1234"));
+        assert!(!is_virtual_mount("/"));
+        assert!(!is_virtual_mount("/data"));
+    }
 }
 
 fn os_label() -> String {

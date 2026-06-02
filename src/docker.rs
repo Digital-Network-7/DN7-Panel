@@ -339,7 +339,21 @@ async fn handle(req: &Req) -> Result<Value> {
         }
         "remove_network" => {
             let r = need_ref(req)?;
-            run_ok(&["network", "rm", &r]).await?;
+            let (ok, _o, stderr) = run(&["network", "rm", &r]).await?;
+            if !ok {
+                // The usual failure is an in-use network; give a clear hint
+                // instead of the raw docker error (which the UI could otherwise
+                // mislabel as a connection failure).
+                let raw = stderr.to_lowercase();
+                let msg = if raw.contains("active endpoints") || raw.contains("in use") {
+                    "该网络仍有容器在使用，请先断开相关容器后再删除".to_string()
+                } else if raw.contains("predefined") || raw.contains("pre-defined") {
+                    "内置网络（bridge/host/none）不可删除".to_string()
+                } else {
+                    trim_msg(&stderr).unwrap_or_else(|| "删除网络失败".into())
+                };
+                return Err(anyhow!(msg));
+            }
             Ok(json!({ "removed": r }))
         }
         "inspect_container_networks" => inspect_container_networks(req).await,
