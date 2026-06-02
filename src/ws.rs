@@ -9,6 +9,7 @@
 
 use anyhow::{anyhow, Result};
 use futures_util::{SinkExt, StreamExt};
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
     connect_async,
@@ -75,7 +76,20 @@ impl MetricsStream {
 
     /// Send one metrics report and wait for the backend ack. Returns any
     /// command frames received while waiting for the ack (e.g. an upgrade).
-    pub async fn send(&mut self, m: &Metrics) -> Result<Vec<ServerCommand>> {
+    ///
+    /// The ack wait is bounded by `ack_timeout`: if the backend doesn't ack
+    /// within it (a stalled/half-open connection), we error out so the caller
+    /// drops the socket and reconnects, rather than blocking the whole metrics
+    /// loop for tens of seconds (which would otherwise let samples pile up and
+    /// then burst out on recovery).
+    pub async fn send(&mut self, m: &Metrics, ack_timeout: Duration) -> Result<Vec<ServerCommand>> {
+        match tokio::time::timeout(ack_timeout, self.send_inner(m)).await {
+            Ok(res) => res,
+            Err(_) => Err(anyhow!("timed out waiting for backend ack")),
+        }
+    }
+
+    async fn send_inner(&mut self, m: &Metrics) -> Result<Vec<ServerCommand>> {
         let payload = serde_json::json!({
             "agent_token": self.token,
             "cpu_usage": m.cpu_usage,

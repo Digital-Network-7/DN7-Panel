@@ -90,6 +90,7 @@ struct ReportReq {
 }
 
 /// HTTP client wrapper around the TeaOps backend API.
+#[derive(Clone)]
 pub struct ApiClient {
     http: reqwest::Client,
     base: String,

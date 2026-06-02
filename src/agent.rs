@@ -31,49 +31,52 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
 
     let ws_url = cfg.agent_ws_url();
     let mut interval = tokio::time::interval(Duration::from_secs(cfg.interval_secs));
+    // Don't burst-catch-up missed ticks: if a send stalls (slow network, an
+    // in-flight update saturating the link), we want to resume at the normal
+    // cadence afterwards, not fire a backlog of ticks back-to-back (which made
+    // the UI jump and skewed the stored history with a clump of same-timestamp
+    // samples).
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Bound how long a single report waits for the backend ack before we treat
+    // the socket as stalled and reconnect. At least 5s, otherwise ~2 intervals.
+    let ack_timeout = Duration::from_secs((cfg.interval_secs.saturating_mul(2)).max(5));
     let mut stream: Option<MetricsStream> = None;
 
-    // Periodic auto-update poll: every ~5 minutes, ask the backend whether
-    // auto-update is on, and upgrade only when a newer version exists.
-    let upgrade_check_every = std::cmp::max(1, 300 / cfg.interval_secs.max(1));
-    let mut tick_count: u64 = 0;
+    // Auto-update polling runs in its OWN task, not inline in the metrics loop.
+    // The upgrade check does blocking network I/O (should_upgrade up to 15s,
+    // resolving the latest version up to its own timeout) and, when it fires,
+    // a download — none of which should stall metrics reporting. Decoupling it
+    // keeps the report cadence steady regardless of update activity (this was a
+    // source of the "updates interfere with reporting/other functions" feel).
+    spawn_upgrade_poller(cfg.clone(), client.clone(), agent_token.clone());
 
     loop {
         interval.tick().await;
-        tick_count = tick_count.wrapping_add(1);
         let snapshot = collector.collect();
 
         // Keep our heartbeat fresh so the supervisor knows we're alive.
         guardian::touch_own_heartbeat(&cfg);
 
-        if tick_count.is_multiple_of(upgrade_check_every) {
-            if let Ok(info) = client.should_upgrade(&agent_token).await {
-                // The backend owns the rollout schedule + target version: it
-                // tells us exactly when our turn has come (`upgrade_now`). We
-                // still confirm a newer version is actually available before
-                // pulling, so a stale signal can't trigger a needless update.
-                if info.auto_update && info.upgrade_now && upgrade_available(&cfg).await {
-                    tracing::info!("backend cleared this agent for rollout; upgrading");
-                    spawn_self_update(&cfg);
-                }
-            }
-        }
-
         if stream.is_none() {
-            match MetricsStream::connect(&ws_url, &agent_token).await {
-                Ok(s) => {
+            match tokio::time::timeout(ack_timeout, MetricsStream::connect(&ws_url, &agent_token))
+                .await
+            {
+                Ok(Ok(s)) => {
                     tracing::info!(url = %ws_url, "metrics websocket connected");
                     stream = Some(s);
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::debug!("websocket connect failed ({e}); using HTTP this tick");
+                }
+                Err(_) => {
+                    tracing::debug!("websocket connect timed out; using HTTP this tick");
                 }
             }
         }
 
         let mut sent = false;
         if let Some(s) = stream.as_mut() {
-            match s.send(&snapshot).await {
+            match s.send(&snapshot, ack_timeout).await {
                 Ok(commands) => {
                     sent = true;
                     for cmd in commands {
@@ -226,6 +229,37 @@ fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
     let b = it.next()?.parse().ok()?;
     let c = it.next().unwrap_or("0").parse().ok()?;
     Some((a, b, c))
+}
+
+/// Spawn the periodic auto-update poller as an independent task so its blocking
+/// network I/O (backend poll + version resolve + download) never stalls the
+/// metrics loop. Every ~5 minutes it asks the backend whether this agent is
+/// cleared to upgrade now; if so (and a newer version really exists), it kicks
+/// off a background self-update. `run_self_update` already coalesces duplicate
+/// triggers, so overlapping with a WS `upgrade` command is harmless.
+fn spawn_upgrade_poller(cfg: AgentConfig, client: ApiClient, agent_token: String) {
+    tokio::spawn(async move {
+        let every =
+            Duration::from_secs((300 / cfg.interval_secs.max(1)).max(1) * cfg.interval_secs.max(1));
+        let mut ticker = tokio::time::interval(every.max(Duration::from_secs(30)));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            match client.should_upgrade(&agent_token).await {
+                Ok(info) => {
+                    // The backend owns the rollout schedule + target version: it
+                    // tells us exactly when our turn has come (`upgrade_now`). We
+                    // still confirm a newer version is actually available before
+                    // pulling, so a stale signal can't trigger a needless update.
+                    if info.auto_update && info.upgrade_now && upgrade_available(&cfg).await {
+                        tracing::info!("backend cleared this agent for rollout; upgrading");
+                        spawn_self_update(&cfg);
+                    }
+                }
+                Err(e) => tracing::debug!("should_upgrade poll failed: {e}"),
+            }
+        }
+    });
 }
 
 /// Fetch the latest binary, replace our own executable, and exit so the
