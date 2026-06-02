@@ -317,14 +317,11 @@ async fn send_err(ws: &mut WsSink, message: &str) {
 //   - list/mkdir/delete/stat run `docker exec <c> sh -c '<script>' sh "<path>"`
 //     with the path passed as a positional arg ($1), never interpolated into
 //     the script, so there's no shell-injection surface.
-//   - download streams `docker exec <c> cat <abs-path>` stdout in chunks.
-//   - upload buffers chunks into a host temp file, then `docker cp` into the
-//     container on upload-end.
+// ---------------------------------------------------------------------------
+// Container-scoped file transfer (daemon API: exec for list/mkdir/delete,
+// archive/tar for upload + download). No `docker` CLI required.
 // Paths must be absolute (so they can't be mistaken for command flags).
 // ---------------------------------------------------------------------------
-
-use std::process::Stdio;
-use tokio::process::Command as TokioCommand;
 
 /// State for an in-progress container upload (temp file on the host, copied into
 /// the container on upload-end).
@@ -437,23 +434,13 @@ pub async fn run_container_file_channel(
                         if let Some(mut u) = upload.take() {
                             let _ = u.file.flush().await;
                             drop(u.file);
-                            // Copy the temp file into the container.
-                            let spec = format!("{container}:{}", u.dest_path);
-                            let res = TokioCommand::new("docker")
-                                .arg("cp")
-                                .arg(&u.temp_path)
-                                .arg(&spec)
-                                .output()
-                                .await;
+                            // Upload the temp file into the container via the
+                            // archive API (tar stream) — no `docker` CLI needed.
+                            let res = ctn_upload_file(container, &u.temp_path, &u.dest_path).await;
                             let _ = tokio::fs::remove_file(&u.temp_path).await;
                             match res {
-                                Ok(o) if o.status.success() => {
+                                Ok(_) => {
                                     send_ok(&mut ws_tx, &format!("已上传到 {}", u.dest_path)).await;
-                                }
-                                Ok(o) => {
-                                    let err = String::from_utf8_lossy(&o.stderr);
-                                    send_err(&mut ws_tx, &format!("上传到容器失败：{}", err.trim()))
-                                        .await;
                                 }
                                 Err(e) => {
                                     send_err(&mut ws_tx, &format!("上传到容器失败：{e}")).await;
@@ -512,30 +499,126 @@ pub async fn run_container_file_channel(
     Ok(())
 }
 
-/// Run `docker exec <c> sh -c '<script>' sh "<arg>"` and error on non-zero exit.
-/// `arg` becomes `$1` in the script (a separate argv entry — no injection).
+/// Run `sh -c '<script>' sh "<arg>"` inside the container via the daemon exec
+/// API. `arg` becomes `$1` (a separate argv entry — no shell injection). Returns
+/// (exit_code, stdout, stderr-ish combined). No `docker` CLI required.
+async fn ctn_exec_collect(
+    container: &str,
+    script: &str,
+    arg: &str,
+) -> Result<(i64, String)> {
+    use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
+    use futures::StreamExt;
+
+    let dkr = crate::docker::dkr()?;
+    let exec = dkr
+        .create_exec(
+            container,
+            CreateExecOptions {
+                attach_stdout: Some(true),
+                attach_stderr: Some(true),
+                cmd: Some(vec![
+                    "/bin/sh".to_string(),
+                    "-c".to_string(),
+                    script.to_string(),
+                    "sh".to_string(),
+                    arg.to_string(),
+                ]),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| anyhow!("容器内执行失败：{e}"))?;
+    let started = dkr
+        .start_exec(&exec.id, Some(StartExecOptions { detach: false, ..Default::default() }))
+        .await
+        .map_err(|e| anyhow!("容器内执行失败：{e}"))?;
+
+    let mut buf = String::new();
+    if let StartExecResults::Attached { mut output, .. } = started {
+        while let Some(item) = output.next().await {
+            if let Ok(msg) = item {
+                buf.push_str(&String::from_utf8_lossy(&msg.into_bytes()));
+            }
+        }
+    }
+    // Inspect for the real exit code.
+    let code = dkr
+        .inspect_exec(&exec.id)
+        .await
+        .ok()
+        .and_then(|i| i.exit_code)
+        .unwrap_or(0);
+    Ok((code, buf))
+}
+
+/// Run a container script expecting a zero exit (mkdir/delete).
 async fn ctn_exec_ok(container: &str, script: &str, arg: &str) -> Result<()> {
     check_abs(arg)?;
-    let out = TokioCommand::new("docker")
-        .args(["exec", container, "sh", "-c", script, "sh", arg])
-        .output()
-        .await
-        .map_err(|e| anyhow!("docker exec: {e}"))?;
-    if out.status.success() {
+    let (code, out) = ctn_exec_collect(container, script, arg).await?;
+    if code == 0 {
         Ok(())
     } else {
-        let err = String::from_utf8_lossy(&out.stderr);
-        Err(anyhow!(err.trim().chars().take(300).collect::<String>()))
+        let msg = out.trim();
+        Err(anyhow!(if msg.is_empty() {
+            "操作失败".to_string()
+        } else {
+            msg.chars().take(300).collect::<String>()
+        }))
     }
 }
 
-/// List a directory inside the container. Emits the same `{type:"list"}` shape
-/// as the host path: each entry is `{name, is_dir, size}`.
+/// Upload a host temp file into the container at `dest_path` using the archive
+/// (tar) API. Works even on shell-less images.
+async fn ctn_upload_file(
+    container: &str,
+    temp_path: &Path,
+    dest_path: &str,
+) -> Result<()> {
+    check_abs(dest_path)?;
+    let dest = Path::new(dest_path);
+    let parent = dest
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/".to_string());
+    let fname = dest
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .ok_or_else(|| anyhow!("目标路径无效"))?;
+
+    // Build an in-memory tar containing the single file under its base name.
+    let data = tokio::fs::read(temp_path).await?;
+    let mut tar_buf: Vec<u8> = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut tar_buf);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_entry_type(tar::EntryType::file());
+        builder
+            .append_data(&mut header, &fname, data.as_slice())
+            .map_err(|e| anyhow!("打包失败：{e}"))?;
+        builder.finish().map_err(|e| anyhow!("打包失败：{e}"))?;
+    }
+
+    let dkr = crate::docker::dkr()?;
+    let opts = bollard::container::UploadToContainerOptions {
+        path: parent,
+        ..Default::default()
+    };
+    dkr.upload_to_container(container, Some(opts), tar_buf.into())
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
+    Ok(())
+}
+
+/// List a directory inside the container via the daemon exec API. Emits the same
+/// `{type:"list"}` shape as the host path: each entry is `{name, is_dir, size}`.
 async fn ctn_list(ws: &mut WsSink, container: &str, path: &str) -> Result<()> {
     let dir = if path.trim().is_empty() { "/" } else { path };
     check_abs(dir)?;
     // Portable listing: for each entry print "<d|f>\t<size>\t<name>".
-    // stat -c (coreutils/busybox) then stat -f (BSD) then 0.
     let script = r#"cd "$1" 2>/dev/null || exit 7
 for name in * .[!.]* ..?*; do
   [ -e "$name" ] || [ -L "$name" ] || continue
@@ -546,21 +629,10 @@ for name in * .[!.]* ..?*; do
     printf 'f\t%s\t%s\n' "$sz" "$name"
   fi
 done"#;
-    let out = TokioCommand::new("docker")
-        .args(["exec", container, "sh", "-c", script, "sh", dir])
-        .output()
-        .await
-        .map_err(|e| anyhow!("docker exec: {e}"))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        let msg = err.trim();
-        return Err(anyhow!(if msg.is_empty() {
-            "目录不存在或无权限".to_string()
-        } else {
-            msg.chars().take(300).collect::<String>()
-        }));
+    let (code, stdout) = ctn_exec_collect(container, script, dir).await?;
+    if code != 0 {
+        return Err(anyhow!("目录不存在或无权限"));
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
     let mut entries = Vec::new();
     for line in stdout.lines() {
         let mut it = line.splitn(3, '\t');
@@ -571,7 +643,7 @@ done"#;
             _ => continue,
         };
         let is_dir = t == "d";
-        let size: u64 = sz.parse().unwrap_or(0);
+        let size: u64 = sz.trim().parse().unwrap_or(0);
         entries.push(serde_json::json!({ "name": name, "is_dir": is_dir, "size": size }));
     }
     entries.sort_by(|a, b| {
@@ -586,65 +658,83 @@ done"#;
     Ok(())
 }
 
-/// Stream a file out of the container with `docker exec <c> cat <abs-path>`,
-/// chunking stdout and honoring a mid-stream cancel. Returns Ok(false) if the
-/// client cancelled.
+/// Stream a file out of the container via the archive (tar) API, unpacking the
+/// single entry and forwarding its bytes in chunks. Honors a mid-stream cancel.
+/// Returns Ok(false) if the client cancelled.
 async fn ctn_download(
     ws: &mut WsSink,
     rx: &mut WsStream,
     container: &str,
     path: &str,
 ) -> Result<bool> {
+    use futures::StreamExt;
+
     check_abs(path)?;
-    // Stat the size + reject directories first.
-    let stat_script = r#"if [ -d "$1" ]; then echo DIR; exit 0; fi
-[ -e "$1" ] || { echo MISSING; exit 0; }
-stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null || echo 0"#;
-    let stat_out = TokioCommand::new("docker")
-        .args(["exec", container, "sh", "-c", stat_script, "sh", path])
-        .output()
-        .await
-        .map_err(|e| anyhow!("docker exec: {e}"))?;
-    let stat_str = String::from_utf8_lossy(&stat_out.stdout);
-    let first = stat_str.trim();
-    if first == "DIR" {
-        return Err(anyhow!("不能下载目录"));
+    let dkr = crate::docker::dkr()?;
+    let opts = bollard::container::DownloadFromContainerOptions { path: path.to_string() };
+
+    // Collect the tar stream into memory. (Container files transferred through
+    // the app are bounded by the per-level rate limit + practical sizes.)
+    let mut stream = dkr.download_from_container(container, Some(opts));
+    let mut tar_bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| {
+            // The most common failure is a missing path.
+            anyhow!(friendly_archive_err(&e))
+        })?;
+        tar_bytes.extend_from_slice(&chunk);
     }
-    if first == "MISSING" {
-        return Err(anyhow!("文件不存在"));
-    }
-    let size: u64 = first.parse().unwrap_or(0);
-    let name = Path::new(path)
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "download".to_string());
-    let begin = serde_json::json!({ "type": "download-begin", "name": name, "size": size });
+
+    // Unpack the (single) regular file entry from the tar.
+    let (name, data) = extract_single_file(&tar_bytes)
+        .ok_or_else(|| anyhow!("不能下载目录或空文件"))?;
+
+    let begin = serde_json::json!({ "type": "download-begin", "name": name, "size": data.len() });
     ws.send(Message::Text(begin.to_string())).await?;
 
-    // Stream the file content.
-    let mut child = TokioCommand::new("docker")
-        .args(["exec", container, "cat", path])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| anyhow!("docker exec cat: {e}"))?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("no stdout"))?;
-    let mut buf = vec![0u8; CHUNK];
-    loop {
-        let n = stdout.read(&mut buf).await?;
-        if n == 0 {
-            break;
-        }
-        ws.send(Message::Binary(buf[..n].to_vec())).await?;
+    let mut offset = 0;
+    while offset < data.len() {
+        let end = (offset + CHUNK).min(data.len());
+        ws.send(Message::Binary(data[offset..end].to_vec())).await?;
+        offset = end;
         if check_cancel(rx).await {
-            let _ = child.kill().await;
             return Ok(false);
         }
     }
-    let _ = child.wait().await;
     ws.send(Message::Text("{\"type\":\"download-end\"}".to_string())).await?;
     Ok(true)
+}
+
+/// Map a bollard archive error to a friendly message.
+fn friendly_archive_err(e: &bollard::errors::Error) -> String {
+    let s = e.to_string();
+    if s.contains("no such file") || s.contains("not found") || s.contains("404") {
+        "文件不存在".to_string()
+    } else {
+        s.chars().take(300).collect()
+    }
+}
+
+/// Extract the first regular-file entry from a tar archive, returning
+/// (basename, bytes). Returns None if there's no regular file (e.g. a dir).
+fn extract_single_file(tar_bytes: &[u8]) -> Option<(String, Vec<u8>)> {
+    let mut ar = tar::Archive::new(std::io::Cursor::new(tar_bytes));
+    let entries = ar.entries().ok()?;
+    for entry in entries.flatten() {
+        let is_file = entry.header().entry_type().is_file();
+        if !is_file {
+            continue;
+        }
+        let name = entry
+            .path()
+            .ok()
+            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
+            .unwrap_or_else(|| "download".to_string());
+        let mut data = Vec::new();
+        let mut entry = entry;
+        if std::io::Read::read_to_end(&mut entry, &mut data).is_ok() {
+            return Some((name, data));
+        }
+    }
+    None
 }

@@ -22,6 +22,17 @@ rand = "0.8"
 daemonize = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Docker management over the daemon socket (no `docker` CLI dependency).
+bollard = "0.17"
+# Tar streaming for container file transfer via the docker archive API.
+tar = "0.4"
+# Pure-Rust certificate generation (self-signed) — replaces the openssl CLI.
+rcgen = "0.13"
+# Pure-Rust ACME (Let's Encrypt) client — replaces acme.sh + curl/wget.
+instant-acme = "0.7"
+# Async traits / stream helpers used by the docker + acme integrations.
+futures = "0.3"
+bytes = "1"
 
 [profile.release]
 opt-level = 3

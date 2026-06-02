@@ -153,10 +153,13 @@ or public IP required. The PTY honors window-resize frames so full-screen apps
 
 The backend can push an `open-docker` command. The agent dials back
 `GET /agent/docker?session=` (token in the `Authorization` header) and serves a
-request/response JSON protocol backed by the local `docker` CLI: detect Docker +
+request/response JSON protocol backed by the **Docker daemon API** (via the
+`bollard` crate over the local socket — no `docker` CLI required): detect Docker +
 versions, auto-install (official get.docker.com script with the Aliyun mirror,
 then national registry mirrors in `daemon.json`), list/pull/remove images,
 list/start/stop/restart/remove containers + tail logs, and list/remove networks.
+Container terminals use the daemon's exec-attach API and container file transfer
+uses the archive (tar) API, so neither needs the `docker` CLI on the host.
 Pulls can go through an accelerated mirror (e.g. `m.daocloud.io`): the agent
 pulls `<mirror>/docker.io/<image>` then re-tags it to the clean image name. Image
 pulls and the Docker install run as **detached operations** in a process-global

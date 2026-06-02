@@ -44,16 +44,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
+use bollard::Docker;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::process::Command;
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{client::IntoClientRequest, http::header::AUTHORIZATION, Message},
 };
 
 use crate::config::AgentConfig;
+
+/// Connect to the local Docker daemon via its unix socket (or the platform
+/// default). Replaces shelling out to the `docker` CLI — works as long as the
+/// daemon socket is reachable, with no `docker` binary required on PATH.
+pub fn dkr() -> Result<Docker> {
+    Docker::connect_with_defaults()
+        .map_err(|e| anyhow!("无法连接 Docker 守护进程：{e}（请确认 Docker 已安装并运行）"))
+}
 
 #[derive(Debug, Deserialize)]
 struct Req {
@@ -301,29 +309,46 @@ async fn handle(req: &Req) -> Result<Value> {
         }
         "remove_image" => {
             let r = need_ref(req)?;
-            run_ok(&["rmi", "-f", &r]).await?;
+            let dkr = dkr()?;
+            let opts = bollard::image::RemoveImageOptions { force: true, ..Default::default() };
+            dkr.remove_image(&r, Some(opts), None)
+                .await
+                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
             Ok(json!({ "removed": r }))
         }
         "list_containers" => list_containers().await,
         "inspect_container" => inspect_container(req).await,
         "start_container" => {
             let r = need_ref(req)?;
-            run_ok(&["start", &r]).await?;
+            dkr()?
+                .start_container(&r, None::<bollard::container::StartContainerOptions<String>>)
+                .await
+                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
             Ok(json!({ "started": r }))
         }
         "stop_container" => {
             let r = need_ref(req)?;
-            run_ok(&["stop", &r]).await?;
+            dkr()?
+                .stop_container(&r, None)
+                .await
+                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
             Ok(json!({ "stopped": r }))
         }
         "restart_container" => {
             let r = need_ref(req)?;
-            run_ok(&["restart", &r]).await?;
+            dkr()?
+                .restart_container(&r, None)
+                .await
+                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
             Ok(json!({ "restarted": r }))
         }
         "remove_container" => {
             let r = need_ref(req)?;
-            run_ok(&["rm", "-f", &r]).await?;
+            let opts = bollard::container::RemoveContainerOptions { force: true, ..Default::default() };
+            dkr()?
+                .remove_container(&r, Some(opts))
+                .await
+                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
             Ok(json!({ "removed": r }))
         }
         "logs" => container_logs(req).await,
@@ -336,23 +361,29 @@ async fn handle(req: &Req) -> Result<Value> {
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| anyhow!("缺少网络名"))?;
             validate_name(name)?;
-            run_ok(&["network", "create", name]).await?;
+            let opts = bollard::network::CreateNetworkOptions {
+                name: name.to_string(),
+                driver: "bridge".to_string(),
+                ..Default::default()
+            };
+            dkr()?
+                .create_network(opts)
+                .await
+                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
             Ok(json!({ "created": name }))
         }
         "remove_network" => {
             let r = need_ref(req)?;
-            let (ok, _o, stderr) = run(&["network", "rm", &r]).await?;
-            if !ok {
-                // The usual failure is an in-use network; give a clear hint
-                // instead of the raw docker error (which the UI could otherwise
-                // mislabel as a connection failure).
-                let raw = stderr.to_lowercase();
+            if let Err(e) = dkr()?.remove_network(&r).await {
+                // The usual failure is an in-use / predefined network; give a
+                // clear hint instead of the raw docker error.
+                let raw = e.to_string().to_lowercase();
                 let msg = if raw.contains("active endpoints") || raw.contains("in use") {
                     "该网络仍有容器在使用，请先断开相关容器后再删除".to_string()
                 } else if raw.contains("predefined") || raw.contains("pre-defined") {
                     "内置网络（bridge/host/none）不可删除".to_string()
                 } else {
-                    trim_msg(&stderr).unwrap_or_else(|| "删除网络失败".into())
+                    friendly_docker_err(&e)
                 };
                 return Err(anyhow!(msg));
             }
@@ -362,13 +393,27 @@ async fn handle(req: &Req) -> Result<Value> {
         "connect_network" => {
             let r = need_ref(req)?;
             let net = need_network(req)?;
-            run_ok(&["network", "connect", &net, &r]).await?;
+            let cfg = bollard::network::ConnectNetworkOptions {
+                container: r.clone(),
+                endpoint_config: Default::default(),
+            };
+            dkr()?
+                .connect_network(&net, cfg)
+                .await
+                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
             Ok(json!({ "connected": net }))
         }
         "disconnect_network" => {
             let r = need_ref(req)?;
             let net = need_network(req)?;
-            run_ok(&["network", "disconnect", &net, &r]).await?;
+            let cfg = bollard::network::DisconnectNetworkOptions {
+                container: r.clone(),
+                force: false,
+            };
+            dkr()?
+                .disconnect_network(&net, cfg)
+                .await
+                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
             Ok(json!({ "disconnected": net }))
         }
         other => Err(anyhow!("unsupported op: {other}")),
@@ -418,30 +463,13 @@ fn validate_token(s: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// docker command helpers
+// docker daemon helpers (bollard)
 // ---------------------------------------------------------------------------
 
-/// Run `docker <args...>` and return (success, stdout, stderr).
-async fn run(args: &[&str]) -> Result<(bool, String, String)> {
-    let out = Command::new("docker")
-        .args(args)
-        .output()
-        .await
-        .map_err(|e| anyhow!("无法执行 docker：{e}（请确认已安装并在 PATH 中）"))?;
-    Ok((
-        out.status.success(),
-        String::from_utf8_lossy(&out.stdout).to_string(),
-        String::from_utf8_lossy(&out.stderr).to_string(),
-    ))
-}
-
-/// Run a docker command, erroring (with stderr) on non-zero exit.
-async fn run_ok(args: &[&str]) -> Result<String> {
-    let (ok, stdout, stderr) = run(args).await?;
-    if !ok {
-        return Err(anyhow!(trim_msg(&stderr).unwrap_or_else(|| "命令执行失败".into())));
-    }
-    Ok(stdout)
+/// Turn a bollard error into a bounded, user-facing message.
+fn friendly_docker_err(e: &bollard::errors::Error) -> String {
+    // bollard surfaces the daemon's JSON message for API errors; trim it.
+    trim_msg(&e.to_string()).unwrap_or_else(|| "Docker 操作失败".into())
 }
 
 /// Keep an error message bounded and non-empty.
@@ -454,37 +482,39 @@ fn trim_msg(s: &str) -> Option<String> {
     Some(s)
 }
 
-/// Detect docker (and compose) presence + versions. Never errors: a missing
-/// docker is reported as `installed:false` so the UI can offer to install it.
+/// Detect docker presence + versions via the daemon API. Never errors: an
+/// unreachable daemon is reported as `installed:false` so the UI can offer to
+/// install it.
 async fn docker_info() -> Result<Value> {
-    let (ok, stdout, _) = run(&[
-        "version",
-        "--format",
-        "{{.Server.Version}}|{{.Client.Version}}",
-    ])
-    .await
-    .unwrap_or((false, String::new(), String::new()));
+    let dkr = match dkr() {
+        Ok(d) => d,
+        Err(_) => {
+            return Ok(json!({
+                "installed": false,
+                "daemon_running": false,
+                "docker_present": false,
+            }));
+        }
+    };
 
-    if !ok {
-        let present = Command::new("docker").arg("--version").output().await.is_ok();
-        return Ok(json!({
-            "installed": false,
-            "daemon_running": false,
-            "docker_present": present,
-        }));
-    }
+    let version = match dkr.version().await {
+        Ok(v) => v,
+        Err(_) => {
+            // Socket exists but daemon not answering (or no permission).
+            return Ok(json!({
+                "installed": false,
+                "daemon_running": false,
+                "docker_present": false,
+            }));
+        }
+    };
 
-    let line = stdout.trim();
-    let mut parts = line.split('|');
-    let server_version = parts.next().unwrap_or("").trim().to_string();
-    let client_version = parts.next().unwrap_or("").trim().to_string();
+    let server_version = version.version.clone().unwrap_or_default();
+    // The API version field is the closest "client" analogue without a CLI.
+    let client_version = version.api_version.clone().unwrap_or_default();
 
-    let compose_version = run(&["compose", "version", "--short"])
-        .await
-        .ok()
-        .filter(|(ok, _, _)| *ok)
-        .map(|(_, o, _)| o.trim().to_string())
-        .unwrap_or_default();
+    // Compose plugin version isn't exposed over the engine API; report empty.
+    let compose_version = String::new();
 
     Ok(json!({
         "installed": !server_version.is_empty(),
@@ -536,155 +566,303 @@ fn host_mem_bytes() -> u64 {
 }
 
 /// List images: id, repo:tag, size, created.
+/// List images: id, repo:tag, size, created.
 async fn list_images() -> Result<Value> {
-    let fmt = "{{.ID}}\t{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}";
-    let stdout = run_ok(&["images", "--format", fmt]).await?;
+    let dkr = dkr()?;
+    let opts = bollard::image::ListImagesOptions::<String> { all: false, ..Default::default() };
+    let images = dkr
+        .list_images(Some(opts))
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
     let mut items = Vec::new();
-    for line in stdout.lines() {
-        let f: Vec<&str> = line.split('\t').collect();
-        if f.len() < 5 {
-            continue;
-        }
-        let repo = f[1];
-        let tag = f[2];
-        let name = if repo == "<none>" {
-            f[0].to_string()
-        } else if tag == "<none>" {
-            repo.to_string()
+    for img in images {
+        let short_id = img
+            .id
+            .strip_prefix("sha256:")
+            .unwrap_or(&img.id)
+            .chars()
+            .take(12)
+            .collect::<String>();
+        // Prefer the first non-<none> repo tag; fall back to the short id.
+        let tags: Vec<String> = img
+            .repo_tags
+            .into_iter()
+            .filter(|t| t != "<none>:<none>")
+            .collect();
+        let (name, repo, tag) = if let Some(t) = tags.first() {
+            let mut sp = t.rsplitn(2, ':');
+            let tg = sp.next().unwrap_or("latest").to_string();
+            let rp = sp.next().unwrap_or(t).to_string();
+            (t.clone(), rp, tg)
         } else {
-            format!("{repo}:{tag}")
+            (short_id.clone(), "<none>".to_string(), "<none>".to_string())
         };
         items.push(json!({
-            "id": f[0],
+            "id": short_id,
             "name": name,
             "repo": repo,
             "tag": tag,
-            "size": f[3],
-            "created": f[4],
+            "size": human_size(img.size.max(0) as u64),
+            "created": human_since(img.created),
         }));
     }
     Ok(json!({ "images": items }))
+}
+
+/// Format a byte count like docker's human sizes (e.g. "12.3MB").
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = bytes as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{bytes}B")
+    } else {
+        format!("{v:.1}{}", UNITS[i])
+    }
+}
+
+/// Format a unix-timestamp "created" into a relative "x天前/小时前" hint.
+fn human_since(created_secs: i64) -> String {
+    if created_secs <= 0 {
+        return String::new();
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let diff = (now - created_secs).max(0);
+    if diff < 3600 {
+        format!("{}分钟前", (diff / 60).max(1))
+    } else if diff < 86400 {
+        format!("{}小时前", diff / 3600)
+    } else {
+        format!("{}天前", diff / 86400)
+    }
 }
 
 /// List containers (all states): id, name, image, state, status, ports, and
 /// whether a shell is available (so the UI can hide the terminal button for
 /// shell-less images like distroless).
 async fn list_containers() -> Result<Value> {
-    let fmt = "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}\t{{.Ports}}";
-    let stdout = run_ok(&["ps", "-a", "--format", fmt]).await?;
+    let dkr = dkr()?;
+    let opts = bollard::container::ListContainersOptions::<String> { all: true, ..Default::default() };
+    let containers = dkr
+        .list_containers(Some(opts))
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
     let mut items = Vec::new();
-    for line in stdout.lines() {
-        let f: Vec<&str> = line.split('\t').collect();
-        if f.len() < 5 {
-            continue;
-        }
-        let id = f[0];
-        let state = f[3];
-        // Only probe a shell for running containers (exec needs it running).
-        let has_shell = if state == "running" {
-            container_has_shell(id).await
-        } else {
-            false
-        };
+    for c in containers {
+        let id = c.id.clone().unwrap_or_default();
+        let short_id = id.chars().take(12).collect::<String>();
+        let name = c
+            .names
+            .as_ref()
+            .and_then(|n| n.first())
+            .map(|s| s.trim_start_matches('/').to_string())
+            .unwrap_or_default();
+        let state = c.state.clone().unwrap_or_default();
+        let running = state == "running";
+        let has_shell = if running { container_has_shell(&dkr, &id).await } else { false };
         items.push(json!({
-            "id": id,
-            "name": f[1],
-            "image": f[2],
+            "id": short_id,
+            "name": name,
+            "image": c.image.clone().unwrap_or_default(),
             "state": state,
-            "status": f[4],
-            "ports": f.get(5).copied().unwrap_or(""),
+            "status": c.status.clone().unwrap_or_default(),
+            "ports": fmt_ports(&c.ports),
             "has_shell": has_shell,
         }));
     }
     Ok(json!({ "containers": items }))
 }
 
+/// Format published ports like docker ps (e.g. "0.0.0.0:8080->80/tcp").
+fn fmt_ports(ports: &Option<Vec<bollard::models::Port>>) -> String {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(ports) = ports {
+        for p in ports {
+            let proto = p.typ.map(|t| format!("{t:?}").to_lowercase()).unwrap_or_else(|| "tcp".into());
+            match (p.public_port, &p.ip) {
+                (Some(pub_port), Some(ip)) => {
+                    out.push(format!("{ip}:{pub_port}->{}/{proto}", p.private_port))
+                }
+                (Some(pub_port), None) => {
+                    out.push(format!("{pub_port}->{}/{proto}", p.private_port))
+                }
+                _ => out.push(format!("{}/{proto}", p.private_port)),
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out.join(", ")
+}
+
 /// Probe whether a running container has a usable `/bin/sh` (so the terminal
 /// button is only shown when an interactive shell can actually be opened).
-async fn container_has_shell(id: &str) -> bool {
-    run(&["exec", id, "/bin/sh", "-c", "true"])
+async fn container_has_shell(dkr: &Docker, id: &str) -> bool {
+    let exec = dkr
+        .create_exec(
+            id,
+            bollard::exec::CreateExecOptions {
+                cmd: Some(vec!["/bin/sh", "-c", "true"]),
+                attach_stdout: Some(false),
+                attach_stderr: Some(false),
+                ..Default::default()
+            },
+        )
+        .await;
+    let exec = match exec {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    // Start it detached, then inspect the exit code.
+    if dkr
+        .start_exec(&exec.id, Some(bollard::exec::StartExecOptions { detach: true, ..Default::default() }))
         .await
-        .map(|(ok, ..)| ok)
-        .unwrap_or(false)
+        .is_err()
+    {
+        return false;
+    }
+    // Give it a brief moment, then check the exit code.
+    for _ in 0..10 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if let Ok(inspect) = dkr.inspect_exec(&exec.id).await {
+            if let Some(running) = inspect.running {
+                if running {
+                    continue;
+                }
+            }
+            return inspect.exit_code == Some(0);
+        }
+    }
+    false
 }
 
 /// Inspect one container for the detail page: identity, state, restart policy,
-/// resource limits, created time, command, and shell availability.
+/// created time, and shell availability.
 async fn inspect_container(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
-    let fmt = "{{.Name}}\t{{.Config.Image}}\t{{.State.Status}}\t{{.State.Running}}\t{{.HostConfig.RestartPolicy.Name}}\t{{.Created}}\t{{.State.StartedAt}}\t{{.State.ExitCode}}\t{{.RestartCount}}";
-    let (ok, stdout, stderr) = run(&["inspect", "-f", fmt, &r]).await?;
-    if !ok {
-        return Err(anyhow!(trim_msg(&stderr).unwrap_or_else(|| "无法获取容器信息".into())));
-    }
-    let f: Vec<&str> = stdout.trim().split('\t').collect();
-    let name = f.first().copied().unwrap_or("").trim_start_matches('/').to_string();
-    let state = f.get(2).copied().unwrap_or("").to_string();
-    let running = f.get(3).copied().unwrap_or("") == "true";
-
-    // Ports (published) from the ps view for a friendly summary.
-    let ports = run(&["ps", "-a", "--filter", &format!("id={r}"), "--format", "{{.Ports}}"])
+    let dkr = dkr()?;
+    let c = dkr
+        .inspect_container(&r, None)
         .await
-        .ok()
-        .map(|(_, o, _)| o.trim().to_string())
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+
+    let name = c.name.clone().unwrap_or_default().trim_start_matches('/').to_string();
+    let state = c.state.as_ref().and_then(|s| s.status.map(|st| format!("{st:?}").to_lowercase())).unwrap_or_default();
+    let running = c.state.as_ref().and_then(|s| s.running).unwrap_or(false);
+    let exit_code = c.state.as_ref().and_then(|s| s.exit_code).unwrap_or(0);
+    let restart_count = c.restart_count.unwrap_or(0);
+    let image = c.config.as_ref().and_then(|cf| cf.image.clone()).unwrap_or_default();
+    let restart_policy = c
+        .host_config
+        .as_ref()
+        .and_then(|h| h.restart_policy.as_ref())
+        .and_then(|rp| rp.name.map(|n| format!("{n:?}").to_lowercase()))
+        .unwrap_or_default();
+    let created = c.created.clone().unwrap_or_default();
+    let started_at = c.state.as_ref().and_then(|s| s.started_at.clone()).unwrap_or_default();
+
+    // Published ports from the network settings.
+    let ports = c
+        .network_settings
+        .as_ref()
+        .and_then(|n| n.ports.as_ref())
+        .map(|pm| fmt_port_map(pm))
         .unwrap_or_default();
 
-    let has_shell = if running { container_has_shell(&r).await } else { false };
+    let has_shell = if running { container_has_shell(&dkr, &r).await } else { false };
 
     Ok(json!({
         "id": r,
         "name": name,
-        "image": f.get(1).copied().unwrap_or(""),
+        "image": image,
         "state": state,
         "running": running,
-        "restart_policy": f.get(4).copied().unwrap_or(""),
-        "created": f.get(5).copied().unwrap_or(""),
-        "started_at": f.get(6).copied().unwrap_or(""),
-        "exit_code": f.get(7).copied().unwrap_or("").parse::<i64>().unwrap_or(0),
-        "restart_count": f.get(8).copied().unwrap_or("").parse::<i64>().unwrap_or(0),
+        "restart_policy": restart_policy,
+        "created": created,
+        "started_at": started_at,
+        "exit_code": exit_code,
+        "restart_count": restart_count,
         "ports": ports,
         "has_shell": has_shell,
     }))
 }
 
-/// Tail a container's logs.
+/// Format a container inspect PortMap into a docker-ps-like summary.
+fn fmt_port_map(
+    pm: &HashMap<String, Option<Vec<bollard::models::PortBinding>>>,
+) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for (container_port, bindings) in pm {
+        if let Some(bindings) = bindings {
+            for b in bindings {
+                let host_ip = b.host_ip.clone().unwrap_or_default();
+                let host_port = b.host_port.clone().unwrap_or_default();
+                if host_port.is_empty() {
+                    out.push(container_port.clone());
+                } else if host_ip.is_empty() {
+                    out.push(format!("{host_port}->{container_port}"));
+                } else {
+                    out.push(format!("{host_ip}:{host_port}->{container_port}"));
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out.join(", ")
+}
+
+/// Tail a container's logs (via the daemon API).
 async fn container_logs(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
-    let tail = req.tail.unwrap_or(200).clamp(1, 2000).to_string();
-    let (ok, stdout, stderr) = run(&["logs", "--tail", &tail, &r]).await?;
-    if !ok {
-        return Err(anyhow!(trim_msg(&stderr).unwrap_or_else(|| "无法获取日志".into())));
-    }
-    let mut text = stdout;
-    if !stderr.trim().is_empty() {
-        if !text.is_empty() {
-            text.push('\n');
+    let tail = req.tail.unwrap_or(200).clamp(1, 2000);
+    let dkr = dkr()?;
+    let opts = bollard::container::LogsOptions::<String> {
+        stdout: true,
+        stderr: true,
+        tail: tail.to_string(),
+        timestamps: false,
+        ..Default::default()
+    };
+    let mut stream = dkr.logs(&r, Some(opts));
+    let mut text = String::new();
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(out) => {
+                // LogOutput derefs to the raw bytes of the line.
+                text.push_str(&String::from_utf8_lossy(&out.into_bytes()));
+            }
+            Err(e) => {
+                if text.is_empty() {
+                    return Err(anyhow!(friendly_docker_err(&e)));
+                }
+                break;
+            }
         }
-        text.push_str(&stderr);
     }
     // If there's no output, a constantly-restarting container is the usual
     // cause. Surface its state + last exit code so the user understands why.
     if text.trim().is_empty() {
-        if let Ok((true, info, _)) = run(&[
-            "inspect",
-            "-f",
-            "{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}|{{.RestartCount}}",
-            &r,
-        ])
-        .await
-        {
-            let f: Vec<&str> = info.trim().split('|').collect();
-            let status = f.first().copied().unwrap_or("");
-            let exit = f.get(1).copied().unwrap_or("");
-            let err = f.get(2).copied().unwrap_or("");
-            let restarts = f.get(3).copied().unwrap_or("0");
+        if let Ok(c) = dkr.inspect_container(&r, None).await {
+            let st = c.state.as_ref();
+            let status = st.and_then(|s| s.status.map(|x| format!("{x:?}").to_lowercase())).unwrap_or_default();
+            let exit = st.and_then(|s| s.exit_code).unwrap_or(0);
+            let err = st.and_then(|s| s.error.clone()).unwrap_or_default();
+            let restarts = c.restart_count.unwrap_or(0);
             let mut hint = format!(
                 "（容器暂无日志输出）\n状态：{status} · 退出码：{exit} · 重启次数：{restarts}"
             );
             if !err.trim().is_empty() {
                 hint.push_str(&format!("\n错误：{}", err.trim()));
             }
-            if restarts != "0" || status == "restarting" {
+            if restarts != 0 || status == "restarting" {
                 hint.push_str(
                     "\n\n提示：容器可能因默认命令立即退出而不断重启。请在创建时开启「分配终端」或填写常驻启动命令（如 sleep infinity），或将重启策略设为 no。",
                 );
@@ -697,19 +875,19 @@ async fn container_logs(req: &Req) -> Result<Value> {
 
 /// List networks: id, name, driver, scope.
 async fn list_networks() -> Result<Value> {
-    let fmt = "{{.ID}}\t{{.Name}}\t{{.Driver}}\t{{.Scope}}";
-    let stdout = run_ok(&["network", "ls", "--format", fmt]).await?;
+    let dkr = dkr()?;
+    let nets = dkr
+        .list_networks::<String>(None)
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
     let mut items = Vec::new();
-    for line in stdout.lines() {
-        let f: Vec<&str> = line.split('\t').collect();
-        if f.len() < 4 {
-            continue;
-        }
+    for n in nets {
+        let id = n.id.clone().unwrap_or_default().chars().take(12).collect::<String>();
         items.push(json!({
-            "id": f[0],
-            "name": f[1],
-            "driver": f[2],
-            "scope": f[3],
+            "id": id,
+            "name": n.name.clone().unwrap_or_default(),
+            "driver": n.driver.clone().unwrap_or_default(),
+            "scope": n.scope.clone().unwrap_or_default(),
         }));
     }
     Ok(json!({ "networks": items }))
@@ -722,14 +900,17 @@ async fn list_networks() -> Result<Value> {
 /// UI surfaces the agent's docker error in that case rather than guessing.
 async fn inspect_container_networks(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
-    // Networks the container is currently on.
-    let fmt = "{{range $k, $v := .NetworkSettings.Networks}}{{$k}}\n{{end}}";
-    let stdout = run_ok(&["inspect", "-f", fmt, &r]).await?;
-    let attached: Vec<String> = stdout
-        .lines()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let dkr = dkr()?;
+    let c = dkr
+        .inspect_container(&r, None)
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    let attached: Vec<String> = c
+        .network_settings
+        .as_ref()
+        .and_then(|n| n.networks.as_ref())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
 
     // All networks (to compute the "available to connect" set).
     let all = list_networks().await?;
@@ -839,11 +1020,11 @@ fn start_pull(req: &Req) -> Result<Value> {
                 if let Some(final_ref) = final_ref.as_deref() {
                     if final_ref != pull_ref {
                         op_push(&op_id_t, &format!("重命名为 {final_ref}"));
-                        if let Err(e) = run_ok(&["tag", &pull_ref, final_ref]).await {
+                        if let Err(e) = tag_image(&pull_ref, final_ref).await {
                             op_finish(&op_id_t, "error", &e.to_string(), "");
                             return;
                         }
-                        let _ = run(&["rmi", &pull_ref]).await; // best-effort
+                        let _ = remove_image_quiet(&pull_ref).await; // best-effort
                     }
                 }
                 op_push(&op_id_t, "完成");
@@ -856,31 +1037,57 @@ fn start_pull(req: &Req) -> Result<Value> {
     Ok(json!({ "op_id": op_id, "target": shown }))
 }
 
-/// Run `docker pull <ref>`, pushing each output line into the op registry.
-async fn run_pull_detached(op_id: &str, pull_ref: &str) -> Result<()> {
-    use std::process::Stdio;
-    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+/// Tag an image `source` as `target` (target = repo[:tag]).
+async fn tag_image(source: &str, target: &str) -> Result<()> {
+    let (repo, tag) = match target.rsplit_once(':') {
+        // Avoid splitting on a registry-port colon when there's no real tag.
+        Some((r, t)) if !t.contains('/') => (r.to_string(), t.to_string()),
+        _ => (target.to_string(), "latest".to_string()),
+    };
+    let opts = bollard::image::TagImageOptions { repo, tag };
+    dkr()?
+        .tag_image(source, Some(opts))
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))
+}
 
-    let mut child = Command::new("docker")
-        .args(["pull", pull_ref])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| anyhow!("无法执行 docker pull：{e}"))?;
-
-    if let Some(out) = child.stdout.take() {
-        let mut lines = BufReader::new(out).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            op_push(op_id, line.trim());
-        }
+/// Remove an image, ignoring errors (best-effort cleanup after a retag).
+async fn remove_image_quiet(reference: &str) {
+    if let Ok(dkr) = dkr() {
+        let opts = bollard::image::RemoveImageOptions { force: true, ..Default::default() };
+        let _ = dkr.remove_image(reference, Some(opts), None).await;
     }
-    let status = child.wait().await.map_err(|e| anyhow!("docker pull 失败：{e}"))?;
-    if !status.success() {
-        let mut err = String::new();
-        if let Some(mut e) = child.stderr.take() {
-            let _ = e.read_to_string(&mut err).await;
+}
+
+/// Pull `pull_ref` via the daemon's create_image stream, pushing each progress
+/// status line into the op registry.
+async fn run_pull_detached(op_id: &str, pull_ref: &str) -> Result<()> {
+    let dkr = dkr()?;
+    let opts = bollard::image::CreateImageOptions {
+        from_image: pull_ref.to_string(),
+        ..Default::default()
+    };
+    let mut stream = dkr.create_image(Some(opts), None, None);
+    let mut last = String::new();
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(info) => {
+                // Build a concise progress line: "<status> <progress>".
+                let mut line = info.status.unwrap_or_default();
+                if let Some(p) = info.progress {
+                    if !p.is_empty() {
+                        line.push(' ');
+                        line.push_str(&p);
+                    }
+                }
+                let line = line.trim().to_string();
+                if !line.is_empty() && line != last {
+                    op_push(op_id, &line);
+                    last = line;
+                }
+            }
+            Err(e) => return Err(anyhow!(friendly_docker_err(&e))),
         }
-        return Err(anyhow!(trim_msg(&err).unwrap_or_else(|| "拉取失败".into())));
     }
     Ok(())
 }
@@ -945,9 +1152,19 @@ fn validate_env(s: &str) -> Result<()> {
     Ok(())
 }
 
-/// Build the `docker run` argv from a validated request. Returns the args plus
-/// the resolved (or empty) container name for display.
-fn build_run_args(req: &Req) -> Result<(Vec<String>, String)> {
+/// A validated container creation spec, ready for the bollard create API.
+struct CreateSpec {
+    image: String,
+    name: Option<String>,
+    start: bool,
+    config: bollard::container::Config<String>,
+}
+
+/// Build a bollard create config from a validated request. Every user value is
+/// validated before it lands in the config (no shell, no CLI args).
+fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
+    use bollard::models::{HostConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum};
+
     let image = req
         .image
         .as_deref()
@@ -957,15 +1174,13 @@ fn build_run_args(req: &Req) -> Result<(Vec<String>, String)> {
         .to_string();
     validate_token(&image)?;
 
-    let mut args: Vec<String> = vec!["run".into(), "-d".into()];
-
     // Name (optional).
     let mut display_name = String::new();
+    let mut name: Option<String> = None;
     if let Some(n) = req.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         validate_name(n)?;
-        args.push("--name".into());
-        args.push(n.to_string());
         display_name = n.to_string();
+        name = Some(n.to_string());
     }
 
     // Restart policy (whitelisted; default unless-stopped).
@@ -978,17 +1193,25 @@ fn build_run_args(req: &Req) -> Result<(Vec<String>, String)> {
     if !restart_allowed(restart) {
         return Err(anyhow!("不支持的重启策略"));
     }
-    args.push("--restart".into());
-    args.push(restart.to_string());
+    let restart_policy = RestartPolicy {
+        name: Some(match restart {
+            "always" => RestartPolicyNameEnum::ALWAYS,
+            "no" => RestartPolicyNameEnum::NO,
+            _ => RestartPolicyNameEnum::UNLESS_STOPPED,
+        }),
+        maximum_retry_count: None,
+    };
 
     // Network (optional; must be an existing network). Empty => default bridge.
+    let mut network: Option<String> = None;
     if let Some(net) = req.network.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         validate_token(net)?;
-        args.push("--network".into());
-        args.push(net.to_string());
+        network = Some(net.to_string());
     }
 
-    // Port mappings.
+    // Port mappings -> exposed_ports + host port bindings.
+    let mut exposed: HashMap<String, HashMap<(), ()>> = HashMap::new();
+    let mut bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
     if let Some(ports) = &req.ports {
         if ports.len() > 50 {
             return Err(anyhow!("端口映射过多"));
@@ -1001,12 +1224,20 @@ fn build_run_args(req: &Req) -> Result<(Vec<String>, String)> {
             if proto != "tcp" && proto != "udp" {
                 return Err(anyhow!("协议只能是 tcp 或 udp"));
             }
-            args.push("-p".into());
-            args.push(format!("{}:{}/{}", p.host, p.container, proto));
+            let key = format!("{}/{}", p.container, proto);
+            exposed.insert(key.clone(), HashMap::new());
+            bindings.insert(
+                key,
+                Some(vec![PortBinding {
+                    host_ip: None,
+                    host_port: Some(p.host.to_string()),
+                }]),
+            );
         }
     }
 
     // Environment variables.
+    let mut env: Vec<String> = Vec::new();
     if let Some(envs) = &req.env {
         if envs.len() > 100 {
             return Err(anyhow!("环境变量过多"));
@@ -1017,12 +1248,12 @@ fn build_run_args(req: &Req) -> Result<(Vec<String>, String)> {
                 continue;
             }
             validate_env(e)?;
-            args.push("-e".into());
-            args.push(e.to_string());
+            env.push(e.to_string());
         }
     }
 
-    // Volume mounts.
+    // Volume mounts -> binds.
+    let mut binds: Vec<String> = Vec::new();
     if let Some(vols) = &req.volumes {
         if vols.len() > 50 {
             return Err(anyhow!("挂载过多"));
@@ -1032,57 +1263,75 @@ fn build_run_args(req: &Req) -> Result<(Vec<String>, String)> {
             let container = v.container.trim();
             validate_path(host)?;
             validate_path(container)?;
-            let spec = if v.readonly {
+            binds.push(if v.readonly {
                 format!("{host}:{container}:ro")
             } else {
                 format!("{host}:{container}")
-            };
-            args.push("-v".into());
-            args.push(spec);
+            });
         }
     }
 
     // Resource limits (cgroup v2). Validated formats only, capped to the host.
+    let mut nano_cpus: Option<i64> = None;
+    let mut memory: Option<i64> = None;
     if let Some(cpus) = req.cpus.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         validate_cpus(cpus)?;
         let host = host_cpus();
-        if host > 0 {
-            let v: f64 = cpus.parse().unwrap_or(0.0);
-            if v > host as f64 {
-                return Err(anyhow!("CPU 限制不能超过宿主机核数（{host}）"));
-            }
+        let v: f64 = cpus.parse().unwrap_or(0.0);
+        if host > 0 && v > host as f64 {
+            return Err(anyhow!("CPU 限制不能超过宿主机核数（{host}）"));
         }
-        args.push("--cpus".into());
-        args.push(cpus.to_string());
+        // docker NanoCPUs = cpus * 1e9.
+        nano_cpus = Some((v * 1_000_000_000.0) as i64);
     }
     if let Some(mem) = req.memory.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         validate_memory(mem)?;
         let host = host_mem_bytes();
-        if host > 0 && mem_to_bytes(mem) > host {
+        let bytes = mem_to_bytes(mem);
+        if host > 0 && bytes > host {
             return Err(anyhow!("内存限制不能超过宿主机内存"));
         }
-        args.push("--memory".into());
-        args.push(mem.to_string());
+        memory = Some(bytes as i64);
     }
 
-    // Pseudo-TTY (+ keep stdin open): without this, images whose default
-    // command is an interactive shell (ubuntu/debian/alpine -> bash/sh) exit
-    // immediately, and combined with a restart policy they loop forever.
-    if req.tty.unwrap_or(false) {
-        args.push("-it".into());
-    }
+    let tty = req.tty.unwrap_or(false);
 
-    args.push(image);
+    // Optional command override.
+    let cmd: Option<Vec<String>> = match req.command.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(c) => Some(split_command(c)?),
+        None => None,
+    };
 
-    // Optional command override (appended after the image, like `docker run`).
-    if let Some(cmd) = req.command.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        let parts = split_command(cmd)?;
-        for p in parts {
-            args.push(p);
-        }
-    }
+    let host_config = HostConfig {
+        restart_policy: Some(restart_policy),
+        binds: if binds.is_empty() { None } else { Some(binds) },
+        port_bindings: if bindings.is_empty() { None } else { Some(bindings) },
+        nano_cpus,
+        memory,
+        network_mode: network.clone(),
+        ..Default::default()
+    };
 
-    Ok((args, display_name))
+    let config = bollard::container::Config {
+        image: Some(image.clone()),
+        cmd,
+        env: if env.is_empty() { None } else { Some(env) },
+        tty: Some(tty),
+        open_stdin: Some(tty),
+        exposed_ports: if exposed.is_empty() { None } else { Some(exposed) },
+        host_config: Some(host_config),
+        ..Default::default()
+    };
+
+    Ok((
+        CreateSpec {
+            image,
+            name,
+            start: req.start.unwrap_or(true),
+            config,
+        },
+        display_name,
+    ))
 }
 
 /// Validate a `--cpus` value: a positive decimal like "0.5", "1", "2.5".
@@ -1178,13 +1427,12 @@ fn split_command(s: &str) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// Validate the request, register a detached op, run `docker run -d`, and (if
-/// not starting) immediately stop the container. Returns an op_id.
+/// Validate the request, register a detached op, create the container via the
+/// daemon API, and (when requested) start it. Returns an op_id.
 fn start_create(req: &Req) -> Result<Value> {
-    let (args, display_name) = build_run_args(req)?;
-    let start = req.start.unwrap_or(true);
+    let (spec, display_name) = build_create_spec(req)?;
     let target = if display_name.is_empty() {
-        req.image.clone().unwrap_or_default()
+        spec.image.clone()
     } else {
         display_name.clone()
     };
@@ -1196,31 +1444,40 @@ fn start_create(req: &Req) -> Result<Value> {
     let target_t = target.clone();
     tokio::spawn(async move {
         op_push(&op_id_t, "正在创建容器 …");
-        // `docker run -d` creates and starts. If the user opted not to start,
-        // create with `create` instead so it lands in a stopped state.
-        let run_args: Vec<&str> = if start {
-            args.iter().map(String::as_str).collect()
-        } else {
-            // swap the leading "run" for "create" (drop the -d, harmless on create)
-            let mut a: Vec<&str> = args.iter().map(String::as_str).collect();
-            a[0] = "create";
-            a
-        };
-        match run(&run_args).await {
-            Ok((true, stdout, _)) => {
-                let cid = stdout.trim();
-                let short = cid.chars().take(12).collect::<String>();
-                op_push(&op_id_t, &format!("容器已{}：{}", if start { "创建并启动" } else { "创建" }, short));
+        match create_container(spec).await {
+            Ok((id, started)) => {
+                let short = id.chars().take(12).collect::<String>();
+                op_push(
+                    &op_id_t,
+                    &format!("容器已{}：{}", if started { "创建并启动" } else { "创建" }, short),
+                );
                 op_finish(&op_id_t, "done", "", &target_t);
-            }
-            Ok((false, _, stderr)) => {
-                op_finish(&op_id_t, "error", &trim_msg(&stderr).unwrap_or_else(|| "创建失败".into()), "");
             }
             Err(e) => op_finish(&op_id_t, "error", &e.to_string(), ""),
         }
     });
 
     Ok(json!({ "op_id": op_id, "target": target }))
+}
+
+/// Create (and optionally start) a container via the daemon API. Returns the
+/// new container id and whether it was started.
+async fn create_container(spec: CreateSpec) -> Result<(String, bool)> {
+    let dkr = dkr()?;
+    let options = spec.name.clone().map(|name| {
+        bollard::container::CreateContainerOptions { name, platform: None }
+    });
+    let created = dkr
+        .create_container(options, spec.config)
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    let id = created.id;
+    if spec.start {
+        dkr.start_container(&id, None::<bollard::container::StartContainerOptions<String>>)
+            .await
+            .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    }
+    Ok((id, spec.start))
 }
 
 // ---------------------------------------------------------------------------
@@ -1301,6 +1558,7 @@ systemctl restart docker 2>/dev/null || service docker restart 2>/dev/null || tr
 async fn stream_shell_to_op(op_id: &str, script: &str) -> Result<()> {
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+    use tokio::process::Command;
 
     let mut child = Command::new("sh")
         .arg("-c")
@@ -1460,7 +1718,7 @@ mod tests {
     }
 
     #[test]
-    fn build_run_args_basic() {
+    fn build_create_spec_basic() {
         let mut req = mk_req("nginx:latest");
         req.name = Some("web".into());
         req.ports = Some(vec![PortMap { host: 8080, container: 80, proto: None }]);
@@ -1470,68 +1728,83 @@ mod tests {
             container: "/usr/share/nginx/html".into(),
             readonly: true,
         }]);
-        let (args, name) = build_run_args(&req).unwrap();
+        let (spec, name) = build_create_spec(&req).unwrap();
         assert_eq!(name, "web");
+        assert_eq!(spec.name.as_deref(), Some("web"));
+        assert_eq!(spec.config.image.as_deref(), Some("nginx:latest"));
+        let hc = spec.config.host_config.as_ref().unwrap();
         // default restart policy applied
-        assert!(args.windows(2).any(|w| w[0] == "--restart" && w[1] == "unless-stopped"));
-        assert!(args.windows(2).any(|w| w[0] == "-p" && w[1] == "8080:80/tcp"));
-        assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == "FOO=bar"));
-        assert!(args
-            .windows(2)
-            .any(|w| w[0] == "-v" && w[1] == "/srv/html:/usr/share/nginx/html:ro"));
-        // image is the last argument
-        assert_eq!(args.last().unwrap(), "nginx:latest");
+        assert_eq!(
+            hc.restart_policy.as_ref().unwrap().name,
+            Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED)
+        );
+        // port binding host 8080 -> container 80/tcp
+        let pb = hc.port_bindings.as_ref().unwrap();
+        let bind = pb.get("80/tcp").unwrap().as_ref().unwrap();
+        assert_eq!(bind[0].host_port.as_deref(), Some("8080"));
+        // env + bind present
+        assert!(spec.config.env.as_ref().unwrap().contains(&"FOO=bar".to_string()));
+        assert!(hc
+            .binds
+            .as_ref()
+            .unwrap()
+            .contains(&"/srv/html:/usr/share/nginx/html:ro".to_string()));
+        assert!(spec.start);
     }
 
     #[test]
-    fn build_run_args_rejects_bad_port() {
+    fn build_create_spec_rejects_bad_port() {
         let mut req = mk_req("nginx");
         req.ports = Some(vec![PortMap { host: 0, container: 80, proto: None }]);
-        assert!(build_run_args(&req).is_err());
+        assert!(build_create_spec(&req).is_err());
     }
 
     #[test]
-    fn build_run_args_rejects_bad_restart() {
+    fn build_create_spec_rejects_bad_restart() {
         let mut req = mk_req("nginx");
         req.restart = Some("on-failure".into());
-        assert!(build_run_args(&req).is_err());
+        assert!(build_create_spec(&req).is_err());
     }
 
     #[test]
-    fn build_run_args_includes_network() {
+    fn build_create_spec_includes_network() {
         let mut req = mk_req("nginx");
         req.network = Some("my-net".into());
-        let (args, _) = build_run_args(&req).unwrap();
-        assert!(args.windows(2).any(|w| w[0] == "--network" && w[1] == "my-net"));
+        let (spec, _) = build_create_spec(&req).unwrap();
+        let hc = spec.config.host_config.as_ref().unwrap();
+        assert_eq!(hc.network_mode.as_deref(), Some("my-net"));
     }
 
     #[test]
-    fn build_run_args_rejects_bad_network() {
+    fn build_create_spec_rejects_bad_network() {
         let mut req = mk_req("nginx");
         req.network = Some("bad net".into());
-        assert!(build_run_args(&req).is_err());
+        assert!(build_create_spec(&req).is_err());
     }
 
     #[test]
-    fn build_run_args_tty_and_command() {
+    fn build_create_spec_tty_and_command() {
         let mut req = mk_req("ubuntu");
         req.tty = Some(true);
         req.command = Some("sleep infinity".into());
-        let (args, _) = build_run_args(&req).unwrap();
-        assert!(args.iter().any(|a| a == "-it"));
-        // image then command tokens at the tail
-        let pos = args.iter().position(|a| a == "ubuntu").unwrap();
-        assert_eq!(&args[pos + 1..], &["sleep", "infinity"]);
+        let (spec, _) = build_create_spec(&req).unwrap();
+        assert_eq!(spec.config.tty, Some(true));
+        assert_eq!(spec.config.open_stdin, Some(true));
+        assert_eq!(
+            spec.config.cmd.as_ref().unwrap(),
+            &vec!["sleep".to_string(), "infinity".to_string()]
+        );
     }
 
     #[test]
-    fn build_run_args_resource_limits() {
+    fn build_create_spec_resource_limits() {
         let mut req = mk_req("nginx");
         req.cpus = Some("0.5".into());
         req.memory = Some("512m".into());
-        let (args, _) = build_run_args(&req).unwrap();
-        assert!(args.windows(2).any(|w| w[0] == "--cpus" && w[1] == "0.5"));
-        assert!(args.windows(2).any(|w| w[0] == "--memory" && w[1] == "512m"));
+        let (spec, _) = build_create_spec(&req).unwrap();
+        let hc = spec.config.host_config.as_ref().unwrap();
+        assert_eq!(hc.nano_cpus, Some(500_000_000));
+        assert_eq!(hc.memory, Some(512 * 1024 * 1024));
     }
 
     #[test]

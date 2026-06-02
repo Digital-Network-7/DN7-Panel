@@ -419,7 +419,8 @@ async fn nginx_info() -> Result<Value> {
     let p443 = port_listener(443).await;
 
     // Is our docker nginx container present (created by us) and running?
-    let docker_present = run("docker", &["--version"]).await.map(|(ok, ..)| ok).unwrap_or(false);
+    let docker_present = crate::docker::dkr().is_ok()
+        && crate::docker::dkr().unwrap().version().await.is_ok();
     let (ctn_exists, ctn_running) = if docker_present {
         container_state().await
     } else {
@@ -444,9 +445,9 @@ async fn nginx_info() -> Result<Value> {
 }
 
 /// Best-effort: a short description of what's listening on `port` (process name)
-/// or "" if it appears free. Tries `ss` then `lsof`.
+/// or "" if it appears free. Tries `ss`, then `lsof`, then a pure-Rust
+/// `/proc/net` fallback so it still works when neither tool is installed.
 async fn port_listener(port: u16) -> String {
-    let pat = format!(":{port} ");
     if let Ok((true, out, _)) = run("ss", &["-ltnp"]).await {
         for line in out.lines() {
             if line.contains(&format!(":{port}")) && line.to_lowercase().contains("listen") {
@@ -460,7 +461,6 @@ async fn port_listener(port: u16) -> String {
                 return "占用".to_string();
             }
         }
-        let _ = pat;
         return String::new();
     }
     // Fallback: lsof.
@@ -469,53 +469,141 @@ async fn port_listener(port: u16) -> String {
             return line.split_whitespace().next().unwrap_or("占用").to_string();
         }
     }
-    String::new()
+    // Last resort: parse /proc directly (no external tools needed).
+    proc_port_listener(port)
 }
 
-/// (exists, running) for our teaops-nginx container.
-async fn container_state() -> (bool, bool) {
-    let exists = run(
-        "docker",
-        &["ps", "-a", "--filter", &format!("name=^{CONTAINER}$"), "--format", "{{.Names}}"],
-    )
-    .await
-    .map(|(_, o, _)| o.lines().any(|l| l.trim() == CONTAINER))
-    .unwrap_or(false);
-    if !exists {
-        return (false, false);
-    }
-    let running = run(
-        "docker",
-        &["ps", "--filter", &format!("name=^{CONTAINER}$"), "--format", "{{.Names}}"],
-    )
-    .await
-    .map(|(_, o, _)| o.lines().any(|l| l.trim() == CONTAINER))
-    .unwrap_or(false);
-    (true, running)
+/// Pure-Rust port-listener probe: scan `/proc/net/tcp` + `tcp6` for a socket in
+/// the LISTEN state on `port`, then resolve its owning process name by matching
+/// the socket inode against `/proc/<pid>/fd`. Returns the process name, a
+/// generic "占用" if the port is held but the owner can't be resolved, or "" if
+/// the port appears free.
+fn proc_port_listener(port: u16) -> String {
+    let inode = match listening_inode("/proc/net/tcp", port)
+        .or_else(|| listening_inode("/proc/net/tcp6", port))
+    {
+        Some(i) => i,
+        None => return String::new(),
+    };
+    proc_name_for_inode(inode).unwrap_or_else(|| "占用".to_string())
 }
 
-/// List running containers (name + first published port hint) so the proxy form
-/// can offer "forward to container:port" targets. Docker mode only.
-async fn list_running_containers() -> Result<Value> {
-    let fmt = "{{.Names}}\t{{.Ports}}\t{{.Image}}";
-    let (ok, out, err) = run("docker", &["ps", "--format", fmt]).await?;
-    if !ok {
-        return Err(anyhow!(trim_msg(&err).unwrap_or_else(|| "无法获取容器".into())));
-    }
-    let mut items = Vec::new();
-    for line in out.lines() {
-        let f: Vec<&str> = line.split('\t').collect();
-        if f.is_empty() {
+/// Find the socket inode listening on `port` in a `/proc/net/tcp{,6}` file.
+/// Columns: `sl local_address rem_address st ... inode`. `local_address` is
+/// `HEXIP:HEXPORT`; LISTEN state is `0A`.
+fn listening_inode(path: &str, port: u16) -> Option<u64> {
+    let text = std::fs::read_to_string(path).ok()?;
+    for line in text.lines().skip(1) {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 10 {
             continue;
         }
-        let name = f[0];
-        if name == CONTAINER {
+        if cols[3] != "0A" {
+            continue; // not LISTEN
+        }
+        let local_port = cols[1].rsplit(':').next().and_then(|h| u16::from_str_radix(h, 16).ok());
+        if local_port != Some(port) {
+            continue;
+        }
+        if let Ok(inode) = cols[9].parse::<u64>() {
+            return Some(inode);
+        }
+    }
+    None
+}
+
+/// Resolve the process name owning a socket `inode` by scanning `/proc/<pid>/fd`
+/// for a `socket:[<inode>]` symlink, then reading `/proc/<pid>/comm`.
+fn proc_name_for_inode(inode: u64) -> Option<String> {
+    let want = format!("socket:[{inode}]");
+    let entries = std::fs::read_dir("/proc").ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let pid = match name.to_str().and_then(|s| s.parse::<u32>().ok()) {
+            Some(p) => p,
+            None => continue, // not a pid dir
+        };
+        let fd_dir = format!("/proc/{pid}/fd");
+        let fds = match std::fs::read_dir(&fd_dir) {
+            Ok(f) => f,
+            Err(_) => continue, // no permission / process gone
+        };
+        for fd in fds.flatten() {
+            if let Ok(target) = std::fs::read_link(fd.path()) {
+                if target.to_string_lossy() == want {
+                    return std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// (exists, running) for our teaops-nginx container (via the daemon API).
+async fn container_state() -> (bool, bool) {
+    let dkr = match crate::docker::dkr() {
+        Ok(d) => d,
+        Err(_) => return (false, false),
+    };
+    match dkr.inspect_container(CONTAINER, None).await {
+        Ok(c) => {
+            let running = c.state.as_ref().and_then(|s| s.running).unwrap_or(false);
+            (true, running)
+        }
+        Err(_) => (false, false),
+    }
+}
+
+/// List running containers (name + published port hint) so the proxy form can
+/// offer "forward to container:port" targets. Docker mode only. Uses the daemon
+/// API (no `docker` CLI).
+async fn list_running_containers() -> Result<Value> {
+    let dkr = crate::docker::dkr()?;
+    let opts = bollard::container::ListContainersOptions::<String> {
+        all: false,
+        ..Default::default()
+    };
+    let containers = dkr
+        .list_containers(Some(opts))
+        .await
+        .map_err(|e| anyhow!(trim_msg(&e.to_string()).unwrap_or_else(|| "无法获取容器".into())))?;
+    let mut items = Vec::new();
+    for c in containers {
+        let name = c
+            .names
+            .as_ref()
+            .and_then(|n| n.first())
+            .map(|s| s.trim_start_matches('/').to_string())
+            .unwrap_or_default();
+        if name.is_empty() || name == CONTAINER {
             continue; // don't proxy to ourselves
         }
+        let ports = c
+            .ports
+            .as_ref()
+            .map(|ps| {
+                let mut v: Vec<String> = ps
+                    .iter()
+                    .map(|p| {
+                        let proto = p.typ.map(|t| format!("{t:?}").to_lowercase()).unwrap_or_else(|| "tcp".into());
+                        match p.public_port {
+                            Some(pp) => format!("{pp}->{}/{proto}", p.private_port),
+                            None => format!("{}/{proto}", p.private_port),
+                        }
+                    })
+                    .collect();
+                v.sort();
+                v.dedup();
+                v.join(", ")
+            })
+            .unwrap_or_default();
         items.push(json!({
             "name": name,
-            "ports": f.get(1).copied().unwrap_or(""),
-            "image": f.get(2).copied().unwrap_or(""),
+            "ports": ports,
+            "image": c.image.clone().unwrap_or_default(),
         }));
     }
     Ok(json!({ "containers": items }))
@@ -659,13 +747,19 @@ fi"#;
 }
 
 /// Docker mode: pull nginx:alpine (via mirror) and run our dedicated container
-/// with 80/443 published and our config/cert/webroot dirs mounted in. We never
-/// adopt an existing container — if one named teaops-nginx already exists we
-/// reuse it only if we created it (same name + our mounts), else recreate.
+/// with 80/443 published and our config/cert/webroot dirs mounted in, via the
+/// daemon API (no `docker` CLI). We never adopt a container we didn't create —
+/// any existing teaops-nginx is removed and recreated with our mounts.
 async fn setup_docker(op_id: &str, mirror: &str) -> Result<()> {
-    if !run("docker", &["--version"]).await.map(|(ok, ..)| ok).unwrap_or(false) {
-        return Err(anyhow!("未检测到 Docker，请先在「Docker 管理」中安装 Docker"));
-    }
+    use bollard::container::{Config, CreateContainerOptions, RemoveContainerOptions};
+    use bollard::models::{HostConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum};
+    use futures::StreamExt;
+
+    let dkr = crate::docker::dkr()
+        .map_err(|_| anyhow!("未检测到 Docker，请先在「Docker 管理」中安装 Docker"))?;
+    dkr.version()
+        .await
+        .map_err(|_| anyhow!("未检测到 Docker，请先在「Docker 管理」中安装 Docker"))?;
 
     // Prepare host directories that we mount into the container.
     std::fs::create_dir_all(confd_dir())?;
@@ -679,35 +773,88 @@ async fn setup_docker(op_id: &str, mirror: &str) -> Result<()> {
         format!("{mirror}/docker.io/library/nginx:alpine")
     };
     op_push(op_id, &format!("拉取镜像 {pull_ref} …"));
-    stream_cmd(op_id, "docker", &["pull", &pull_ref]).await?;
+    {
+        let opts = bollard::image::CreateImageOptions {
+            from_image: pull_ref.clone(),
+            ..Default::default()
+        };
+        let mut stream = dkr.create_image(Some(opts), None, None);
+        let mut last = String::new();
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(info) => {
+                    let mut line = info.status.unwrap_or_default();
+                    if let Some(p) = info.progress {
+                        if !p.is_empty() {
+                            line.push(' ');
+                            line.push_str(&p);
+                        }
+                    }
+                    let line = line.trim().to_string();
+                    if !line.is_empty() && line != last {
+                        op_push(op_id, &line);
+                        last = line;
+                    }
+                }
+                Err(e) => return Err(anyhow!("拉取镜像失败：{e}")),
+            }
+        }
+    }
     if pull_ref != "nginx:alpine" {
-        let _ = run("docker", &["tag", &pull_ref, "nginx:alpine"]).await;
+        let opts = bollard::image::TagImageOptions {
+            repo: "nginx".to_string(),
+            tag: "alpine".to_string(),
+        };
+        let _ = dkr.tag_image(&pull_ref, Some(opts)).await;
     }
 
     // Remove any previous teaops-nginx (ours) so mounts/ports are fresh.
     op_push(op_id, "创建 Nginx 容器 …");
-    let _ = run("docker", &["rm", "-f", CONTAINER]).await;
+    let _ = dkr
+        .remove_container(CONTAINER, Some(RemoveContainerOptions { force: true, ..Default::default() }))
+        .await;
 
-    let confd = confd_dir();
-    let certs = certs_dir();
-    let www = www_dir();
-    let m_conf = format!("{}:/etc/nginx/conf.d", confd.display());
-    let m_cert = format!("{}:/etc/nginx/certs", certs.display());
-    let m_www = format!("{}:/usr/share/nginx/html", www.display());
+    let m_conf = format!("{}:/etc/nginx/conf.d", confd_dir().display());
+    let m_cert = format!("{}:/etc/nginx/certs", certs_dir().display());
+    let m_www = format!("{}:/usr/share/nginx/html", www_dir().display());
 
-    let (ok, _o, e) = run(
-        "docker",
-        &[
-            "run", "-d", "--name", CONTAINER, "--restart", "unless-stopped",
-            "-p", "80:80", "-p", "443:443",
-            "-v", &m_conf, "-v", &m_cert, "-v", &m_www,
-            "nginx:alpine",
-        ],
-    )
-    .await?;
-    if !ok {
-        return Err(anyhow!(trim_msg(&e).unwrap_or_else(|| "创建 Nginx 容器失败".into())));
+    let mut port_bindings: std::collections::HashMap<String, Option<Vec<PortBinding>>> =
+        std::collections::HashMap::new();
+    for p in ["80", "443"] {
+        port_bindings.insert(
+            format!("{p}/tcp"),
+            Some(vec![PortBinding { host_ip: None, host_port: Some(p.to_string()) }]),
+        );
     }
+    let mut exposed: std::collections::HashMap<String, std::collections::HashMap<(), ()>> =
+        std::collections::HashMap::new();
+    exposed.insert("80/tcp".to_string(), std::collections::HashMap::new());
+    exposed.insert("443/tcp".to_string(), std::collections::HashMap::new());
+
+    let config = Config {
+        image: Some("nginx:alpine".to_string()),
+        exposed_ports: Some(exposed),
+        host_config: Some(HostConfig {
+            binds: Some(vec![m_conf, m_cert, m_www]),
+            port_bindings: Some(port_bindings),
+            restart_policy: Some(RestartPolicy {
+                name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
+                maximum_retry_count: None,
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    dkr.create_container(
+        Some(CreateContainerOptions { name: CONTAINER.to_string(), platform: None }),
+        config,
+    )
+    .await
+    .map_err(|e| anyhow!(trim_msg(&e.to_string()).unwrap_or_else(|| "创建 Nginx 容器失败".into())))?;
+    dkr.start_container(CONTAINER, None::<bollard::container::StartContainerOptions<String>>)
+        .await
+        .map_err(|e| anyhow!(trim_msg(&e.to_string()).unwrap_or_else(|| "启动 Nginx 容器失败".into())))?;
     Ok(())
 }
 
@@ -975,31 +1122,81 @@ async fn validate_and_reload(lo: &Layout) -> Result<()> {
             return Err(anyhow!(trim_msg(&e).unwrap_or_else(|| "重载失败".into())));
         }
     } else {
-        let (ok, _o, e) = run("docker", &["exec", CONTAINER, "nginx", "-t"]).await?;
-        if !ok {
-            return Err(anyhow!(trim_msg(&e).unwrap_or_else(|| "nginx 配置无效".into())));
+        // Docker mode: exec `nginx -t` then `nginx -s reload` inside our
+        // container via the daemon API (no `docker` CLI).
+        let (code, out) = ctn_exec(CONTAINER, &["nginx", "-t"]).await?;
+        if code != 0 {
+            return Err(anyhow!(trim_msg(&out).unwrap_or_else(|| "nginx 配置无效".into())));
         }
-        let (ok, _o, e) = run("docker", &["exec", CONTAINER, "nginx", "-s", "reload"]).await?;
-        if !ok {
-            return Err(anyhow!(trim_msg(&e).unwrap_or_else(|| "重载失败".into())));
+        let (code, out) = ctn_exec(CONTAINER, &["nginx", "-s", "reload"]).await?;
+        if code != 0 {
+            return Err(anyhow!(trim_msg(&out).unwrap_or_else(|| "重载失败".into())));
         }
     }
     Ok(())
+}
+
+/// Exec a command inside a container via the daemon API; returns (exit_code,
+/// combined stdout+stderr).
+async fn ctn_exec(container: &str, cmd: &[&str]) -> Result<(i64, String)> {
+    use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
+    use futures::StreamExt;
+
+    let dkr = crate::docker::dkr()?;
+    let exec = dkr
+        .create_exec(
+            container,
+            CreateExecOptions {
+                attach_stdout: Some(true),
+                attach_stderr: Some(true),
+                cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| anyhow!("容器内执行失败：{e}"))?;
+    let started = dkr
+        .start_exec(&exec.id, Some(StartExecOptions { detach: false, ..Default::default() }))
+        .await
+        .map_err(|e| anyhow!("容器内执行失败：{e}"))?;
+    let mut buf = String::new();
+    if let StartExecResults::Attached { mut output, .. } = started {
+        while let Some(item) = output.next().await {
+            if let Ok(msg) = item {
+                buf.push_str(&String::from_utf8_lossy(&msg.into_bytes()));
+            }
+        }
+    }
+    let code = dkr.inspect_exec(&exec.id).await.ok().and_then(|i| i.exit_code).unwrap_or(0);
+    Ok((code, buf))
 }
 
 /// In docker mode, connect teaops-nginx to the target container's first
 /// user-defined network so it can reach it by name. Best-effort (ignored on the
 /// default bridge, where name resolution isn't available anyway).
 async fn ensure_shared_network(target: &str) {
-    let fmt = "{{range $k, $v := .NetworkSettings.Networks}}{{$k}}\n{{end}}";
-    if let Ok((true, out, _)) = run("docker", &["inspect", "-f", fmt, target]).await {
-        for net in out.lines().map(str::trim).filter(|s| !s.is_empty()) {
-            if net == "bridge" || net == "host" || net == "none" {
-                continue;
-            }
-            let _ = run("docker", &["network", "connect", net, CONTAINER]).await;
-            return;
+    let dkr = match crate::docker::dkr() {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let nets: Vec<String> = match dkr.inspect_container(target, None).await {
+        Ok(c) => c
+            .network_settings
+            .and_then(|n| n.networks)
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default(),
+        Err(_) => return,
+    };
+    for net in nets {
+        if net == "bridge" || net == "host" || net == "none" {
+            continue;
         }
+        let cfg = bollard::network::ConnectNetworkOptions {
+            container: CONTAINER.to_string(),
+            endpoint_config: Default::default(),
+        };
+        let _ = dkr.connect_network(&net, cfg).await;
+        return;
     }
 }
 
@@ -1089,28 +1286,50 @@ fn write_cert_files(lo: &Layout, site: &Site, cert_pem: &str, key_pem: &str) -> 
     Ok(())
 }
 
-/// Generate a self-signed cert/key pair for the site's primary host. Runs in the
-/// nginx container in docker mode (openssl is bundled in nginx:alpine), or on
-/// the host otherwise.
+/// Generate a self-signed cert/key pair for the site's primary host using
+/// pure-Rust `rcgen` (no `openssl` dependency). Writes directly into the host
+/// cert store; in docker mode that directory is bind-mounted into the nginx
+/// container, so the container reads the very same files.
 async fn gen_self_signed(lo: &Layout, site: &Site) -> Result<()> {
     std::fs::create_dir_all(&lo.cert_store)?;
     let host = primary_host(&site.server_name);
     let host = if host == "_" { "localhost".to_string() } else { host };
-    let crt = format!("{}/{}.crt", lo.cert_ref, site.id);
-    let key = format!("{}/{}.key", lo.cert_ref, site.id);
-    let subj = format!("/CN={host}");
-    let args_str = format!(
-        "openssl req -x509 -nodes -newkey rsa:2048 -days 3650 -keyout '{key}' -out '{crt}' -subj '{subj}'"
-    );
-    let (ok, _o, e) = if lo.mode == "host" {
-        sh(&args_str).await?
-    } else {
-        run("docker", &["exec", CONTAINER, "sh", "-c", &args_str]).await?
-    };
-    if !ok {
-        return Err(anyhow!(trim_msg(&e).unwrap_or_else(|| "生成自签证书失败".into())));
-    }
+
+    let mut params = rcgen::CertificateParams::new(vec![host.clone()])
+        .map_err(|e| anyhow!("生成证书参数失败：{e}"))?;
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, host.clone());
+    // 10-year validity (self-signed; the browser will warn regardless).
+    let now = std::time::SystemTime::now();
+    params.not_before = now.into();
+    params.not_after = (now + std::time::Duration::from_secs(3650 * 24 * 3600)).into();
+
+    let key_pair = rcgen::KeyPair::generate().map_err(|e| anyhow!("生成私钥失败：{e}"))?;
+    let cert = params
+        .self_signed(&key_pair)
+        .map_err(|e| anyhow!("签发自签证书失败：{e}"))?;
+
+    let crt_path = lo.cert_store.join(format!("{}.crt", site.id));
+    let key_path = lo.cert_store.join(format!("{}.key", site.id));
+    std::fs::write(&crt_path, cert.pem())?;
+    std::fs::write(&key_path, key_pair.serialize_pem())?;
+    // Keep the private key readable only by us.
+    set_key_perms(&key_path);
     Ok(())
+}
+
+/// Best-effort: restrict a private key file to owner-only (0600).
+fn set_key_perms(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
 }
 
 /// Issue a Let's Encrypt cert via acme.sh (webroot/http-01), detached. The flow:
@@ -1136,11 +1355,18 @@ async fn start_cert_issue(lo: Layout, site: Site) -> Result<Value> {
 }
 
 async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
+    use instant_acme::{
+        Account, AuthorizationStatus, ChallengeType, Identifier, NewAccount, NewOrder, OrderStatus,
+    };
+
     let host = primary_host(&site.server_name);
-    let acme_root = format!("{}/_acme", lo.www_store.display());
+    if host.is_empty() || host == "_" || host.contains('*') {
+        return Err(anyhow!("Let's Encrypt 需要一个具体域名（不支持通配符/默认站点）"));
+    }
+    let acme_root = format!("{}/_acme/.well-known/acme-challenge", lo.www_store.display());
     std::fs::create_dir_all(&acme_root)?;
 
-    // Step 1: serve HTTP (no SSL yet) so http-01 works.
+    // Step 1: serve HTTP (no SSL yet) so the http-01 challenge path is reachable.
     op_push(op_id, "准备 HTTP 验证站点 …");
     let mut http_site = site.clone();
     http_site.ssl = false;
@@ -1150,48 +1376,140 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
         return Err(e);
     }
 
-    // Step 2: issue. acme.sh runs on the host (it just needs to write into the
-    // webroot and reach Let's Encrypt over the network).
-    let acme_webroot = if lo.mode == "host" {
-        acme_root.clone()
-    } else {
-        // host path of the webroot (the container serves it under www_ref/_acme)
-        acme_root.clone()
-    };
-    op_push(op_id, "安装 acme.sh（如已安装则跳过）…");
-    let install = r#"set -e
-if [ ! -f "$HOME/.acme.sh/acme.sh" ]; then
-  if command -v curl >/dev/null 2>&1; then curl -fsSL https://get.acme.sh | sh -s email=admin@teaops.local;
-  elif command -v wget >/dev/null 2>&1; then wget -qO- https://get.acme.sh | sh -s email=admin@teaops.local;
-  else echo "no curl/wget" >&2; exit 1; fi
-fi"#;
-    stream_sh(op_id, install).await?;
+    // Step 2: create (or implicitly register) an ACME account with Let's Encrypt.
+    op_push(op_id, "连接 Let's Encrypt 并创建账户 …");
+    let (account, _creds) = Account::create(
+        &NewAccount {
+            contact: &[],
+            terms_of_service_agreed: true,
+            only_return_existing: false,
+        },
+        instant_acme::LetsEncrypt::Production.url(),
+        None,
+    )
+    .await
+    .map_err(|e| anyhow!("创建 ACME 账户失败：{e}"))?;
 
+    // Step 3: place an order for the domain.
     op_push(op_id, &format!("为 {host} 申请证书 …"));
-    let crt = lo.cert_store.join(format!("{}.crt", site.id));
-    let key = lo.cert_store.join(format!("{}.key", site.id));
-    let issue = format!(
-        "set -e\n\"$HOME/.acme.sh/acme.sh\" --issue -d '{host}' -w '{webroot}' --server letsencrypt --keylength 2048\n\"$HOME/.acme.sh/acme.sh\" --install-cert -d '{host}' --fullchain-file '{crt}' --key-file '{key}'",
-        webroot = acme_webroot,
-        crt = crt.display(),
-        key = key.display(),
-    );
-    stream_sh(op_id, &issue).await?;
+    let identifier = Identifier::Dns(host.clone());
+    let mut order = account
+        .new_order(&NewOrder {
+            identifiers: &[identifier],
+        })
+        .await
+        .map_err(|e| anyhow!("创建订单失败：{e}"))?;
 
-    if !crt.exists() || !key.exists() {
-        return Err(anyhow!("证书签发失败，请确认域名已解析到本机且 80 端口可被公网访问"));
+    // Step 4: satisfy the HTTP-01 challenge for each authorization.
+    let authorizations = order
+        .authorizations()
+        .await
+        .map_err(|e| anyhow!("获取授权失败：{e}"))?;
+    let mut challenge_files: Vec<std::path::PathBuf> = Vec::new();
+    for authz in &authorizations {
+        if !matches!(authz.status, AuthorizationStatus::Pending) {
+            continue;
+        }
+        let challenge = authz
+            .challenges
+            .iter()
+            .find(|c| c.r#type == ChallengeType::Http01)
+            .ok_or_else(|| anyhow!("该域名不支持 HTTP-01 验证"))?;
+
+        // Write the key authorization to <webroot>/.well-known/acme-challenge/<token>.
+        let token = &challenge.token;
+        let key_auth = order.key_authorization(challenge);
+        let file = std::path::Path::new(&acme_root).join(token);
+        std::fs::write(&file, key_auth.as_str())?;
+        challenge_files.push(file);
+
+        order
+            .set_challenge_ready(&challenge.url)
+            .await
+            .map_err(|e| anyhow!("提交验证失败：{e}"))?;
     }
 
-    // Step 3: rewrite with SSL + persist + reload.
+    // Step 5: poll the order until it's ready (or fails), then finalize.
+    op_push(op_id, "等待域名验证 …");
+    let mut tries = 0;
+    let cert_chain_pem = loop {
+        tokio::time::sleep(std::time::Duration::from_secs(if tries == 0 { 1 } else { 3 })).await;
+        let state = order.refresh().await.map_err(|e| anyhow!("查询订单状态失败：{e}"))?;
+        match state.status {
+            OrderStatus::Ready => {
+                op_push(op_id, "验证通过，正在签发证书 …");
+                let key_pair = rcgen::KeyPair::generate().map_err(|e| anyhow!("生成私钥失败：{e}"))?;
+                let mut csr_params = rcgen::CertificateParams::new(vec![host.clone()])
+                    .map_err(|e| anyhow!("生成 CSR 参数失败：{e}"))?;
+                csr_params
+                    .distinguished_name
+                    .push(rcgen::DnType::CommonName, host.clone());
+                let csr = csr_params
+                    .serialize_request(&key_pair)
+                    .map_err(|e| anyhow!("生成 CSR 失败：{e}"))?;
+                order
+                    .finalize(csr.der())
+                    .await
+                    .map_err(|e| anyhow!("finalize 失败：{e}"))?;
+                // Persist the issued chain + our key.
+                let chain = wait_for_cert(&mut order).await?;
+                // Save the key alongside (PEM).
+                let key_path = lo.cert_store.join(format!("{}.key", site.id));
+                std::fs::write(&key_path, key_pair.serialize_pem())?;
+                set_key_perms(&key_path);
+                break chain;
+            }
+            OrderStatus::Invalid => {
+                let _ = cleanup_files(&challenge_files);
+                return Err(anyhow!(
+                    "域名验证失败，请确认 {host} 已解析到本机且 80 端口可被公网访问"
+                ));
+            }
+            _ => {
+                tries += 1;
+                if tries > 40 {
+                    let _ = cleanup_files(&challenge_files);
+                    return Err(anyhow!("验证超时，请确认域名解析与 80 端口可达"));
+                }
+            }
+        }
+    };
+
+    // Clean up challenge token files.
+    let _ = cleanup_files(&challenge_files);
+
+    // Write the issued certificate chain.
+    let crt_path = lo.cert_store.join(format!("{}.crt", site.id));
+    std::fs::write(&crt_path, cert_chain_pem)?;
+
+    // Step 6: rewrite with SSL + persist + reload.
     op_push(op_id, "启用 HTTPS 配置 …");
     write_site_conf(lo, site)?;
-    if let Err(e) = validate_and_reload(lo).await {
-        return Err(e);
-    }
+    validate_and_reload(lo).await?;
     let mut sites = load_sites();
     sites.retain(|s| s.id != site.id);
     sites.push(site.clone());
     save_sites(&sites)?;
+    Ok(())
+}
+
+/// Poll an order's certificate endpoint until the chain PEM is available.
+async fn wait_for_cert(order: &mut instant_acme::Order) -> Result<String> {
+    for _ in 0..15 {
+        match order.certificate().await {
+            Ok(Some(pem)) => return Ok(pem),
+            Ok(None) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+            Err(e) => return Err(anyhow!("下载证书失败：{e}")),
+        }
+    }
+    Err(anyhow!("证书签发超时"))
+}
+
+/// Best-effort cleanup of the written HTTP-01 challenge token files.
+fn cleanup_files(files: &[std::path::PathBuf]) -> std::io::Result<()> {
+    for f in files {
+        let _ = std::fs::remove_file(f);
+    }
     Ok(())
 }
 
