@@ -20,10 +20,6 @@ pub struct AgentConfig {
     pub supervise_interval_secs: u64,
     /// Supervisor: minimum delay between agent restarts (seconds).
     pub restart_backoff_secs: u64,
-    /// Download/CDN service base URL (fallback binary source).
-    pub download_url: String,
-    /// Upstream repo (`owner/name`) for GitHub-first downloads/self-update.
-    pub repo: String,
 }
 
 impl AgentConfig {
@@ -55,12 +51,6 @@ impl AgentConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(2);
-        let download_url = env::var("TEAOPS_DOWNLOAD_URL")
-            .unwrap_or_else(|_| "https://downloader.teaops.dn7.cn".to_string())
-            .trim_end_matches('/')
-            .to_string();
-        let repo =
-            env::var("TEAOPS_REPO").unwrap_or_else(|_| "simonsmithmd/Teaops-agent".to_string());
 
         AgentConfig {
             backend_url: backend_url.trim_end_matches('/').to_string(),
@@ -71,8 +61,6 @@ impl AgentConfig {
             heartbeat_timeout_secs,
             supervise_interval_secs,
             restart_backoff_secs,
-            download_url,
-            repo,
         }
     }
 

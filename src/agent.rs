@@ -48,8 +48,12 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
 
         if tick_count.is_multiple_of(upgrade_check_every) {
             if let Ok(info) = client.should_upgrade(&agent_token).await {
-                if info.auto_update && upgrade_available(&cfg).await {
-                    tracing::info!("auto-update enabled and newer version available; upgrading");
+                // The backend owns the rollout schedule + target version: it
+                // tells us exactly when our turn has come (`upgrade_now`). We
+                // still confirm a newer version is actually available before
+                // pulling, so a stale signal can't trigger a needless update.
+                if info.auto_update && info.upgrade_now && upgrade_available(&cfg).await {
+                    tracing::info!("backend cleared this agent for rollout; upgrading");
                     spawn_self_update(&cfg);
                 }
             }

@@ -113,8 +113,6 @@ read and are re-encrypted on the next write.
 | `TEAOPS_HEARTBEAT_TIMEOUT_SECS` | `15` | peer liveness threshold |
 | `TEAOPS_SUPERVISE_INTERVAL_SECS` | `3` | supervisor child-check interval |
 | `TEAOPS_RESTART_BACKOFF_SECS` | `2` | delay between agent restarts |
-| `TEAOPS_REPO` | `simonsmithmd/Teaops-agent` | upstream repo for self-update |
-| `TEAOPS_DOWNLOAD_URL` | `https://downloader.teaops.dn7.cn` | fallback binary source |
 
 ## Transport
 
@@ -126,15 +124,16 @@ socket on the next one. Pairing (register/poll) always uses HTTP.
 
 ## Self-update
 
-The backend can push an `upgrade` command over the WebSocket (triggered by the
-owner in the mini program, immediately or via the per-server auto-update
-toggle), and the agent also polls `/agent/should-upgrade` periodically. On
-upgrade, the agent role:
+The backend is the single source of agent binaries and decides *when* each
+server upgrades (a staggered 1-server/second rollout, rate-limited). The backend
+can push an `upgrade` command over the WebSocket (manual, or when this server's
+rollout slot opens), and the agent also polls `/agent/should-upgrade` — which
+acts as the rollout gate, so a server offline during its slot picks the upgrade
+up on its next poll. On upgrade, the agent role:
 
-1. fetches the latest Linux binary **GitHub-first** — it parses the upstream
-   `releases.atom`, picks the highest version, and downloads that release asset;
-   if GitHub is unreachable it falls back to the download/CDN service
-   (`downloader.teaops.dn7.cn`),
+1. downloads the latest Linux binary for its CPU arch from the backend
+   (`GET /agent/dist/download?arch=`) — the agent no longer contacts GitHub or
+   the retired downloader directly; the backend mirrors releases itself,
 2. atomically replaces its own executable, and
 3. exits cleanly so the supervisor role restarts it on the new version.
 

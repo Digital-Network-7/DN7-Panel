@@ -36,6 +36,16 @@ pub struct PollData {
 #[derive(Debug, Deserialize)]
 pub struct ShouldUpgradeData {
     pub auto_update: bool,
+    /// Version the backend wants this agent on (empty if none published).
+    /// Part of the wire contract; the agent gates on `upgrade_now` + its own
+    /// version check, so this is informational for now.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub target_version: String,
+    /// True only when the backend's staggered rollout has cleared THIS server
+    /// to upgrade now. New agents act on this; absent for older backends.
+    #[serde(default)]
+    pub upgrade_now: bool,
 }
 
 #[derive(Debug, Serialize)]
