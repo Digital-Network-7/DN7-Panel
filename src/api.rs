@@ -66,6 +66,12 @@ struct ShouldUpgradeReq {
 }
 
 #[derive(Debug, Serialize)]
+struct TrafficReportReq<'a> {
+    agent_token: String,
+    samples: &'a [crate::traffic::ProcTrafficDelta],
+}
+
+#[derive(Debug, Serialize)]
 struct ReportReq {
     agent_token: String,
     cpu_usage: f64,
@@ -199,5 +205,27 @@ impl ApiClient {
             .send()
             .await?;
         Self::unwrap_envelope(resp).await
+    }
+
+    /// POST /agent/traffic — push a batch of per-process traffic deltas. Fire-
+    /// and-forget from the caller's perspective beyond surfacing transport
+    /// errors; the backend folds them into windowed Top-N rankings.
+    pub async fn report_traffic(
+        &self,
+        agent_token: &str,
+        samples: &[crate::traffic::ProcTrafficDelta],
+    ) -> Result<()> {
+        let req = TrafficReportReq {
+            agent_token: agent_token.to_string(),
+            samples,
+        };
+        let resp = self
+            .http
+            .post(format!("{}/agent/traffic", self.base))
+            .json(&req)
+            .send()
+            .await?;
+        let _: serde_json::Value = Self::unwrap_envelope(resp).await?;
+        Ok(())
     }
 }

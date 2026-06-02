@@ -33,6 +33,13 @@ instant-acme = "0.7"
 # Async traits / stream helpers used by the docker + acme integrations.
 futures = "0.3"
 bytes = "1"
+# Per-process network accounting (Linux): SOCK_DIAG netlink for per-socket
+# cumulative TCP byte counters, mapped to pids via /proc. Pure Rust, no C deps
+# (keeps the musl-static build intact). Linux-only; gated in code by target_os.
+[target.'cfg(target_os = "linux")'.dependencies]
+netlink-sys = "0.8"
+netlink-packet-core = "0.7"
+netlink-packet-sock-diag = { version = "0.4", features = ["rich_nlas"] }
 
 [profile.release]
 opt-level = 3

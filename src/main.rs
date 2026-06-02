@@ -16,6 +16,7 @@ mod paths;
 mod procfile;
 mod supervisor;
 mod terminal;
+mod traffic;
 mod update;
 mod ws;
 

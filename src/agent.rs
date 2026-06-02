@@ -50,6 +50,12 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
     // source of the "updates interfere with reporting/other functions" feel).
     spawn_upgrade_poller(cfg.clone(), client.clone(), agent_token.clone());
 
+    // Per-process traffic accounting runs in its own task on a slower cadence
+    // (scanning /proc + a netlink dump every second would be wasteful and isn't
+    // needed for Top-N rankings). It's fully decoupled from the metrics loop so
+    // it can never stall reporting.
+    spawn_traffic_reporter(client.clone(), agent_token.clone());
+
     loop {
         interval.tick().await;
         let snapshot = collector.collect();
@@ -229,6 +235,44 @@ fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
     let b = it.next()?.parse().ok()?;
     let c = it.next().unwrap_or("0").parse().ok()?;
     Some((a, b, c))
+}
+
+/// Spawn the per-process traffic reporter as an independent task. Every minute
+/// it samples per-process byte deltas (via the platform `TrafficMonitor`) and
+/// POSTs the heaviest contributors to the backend, which keeps windowed Top-N
+/// rankings. Decoupled from the metrics loop so the (heavier) /proc + netlink
+/// scan never affects report cadence. No-op data on unsupported platforms.
+fn spawn_traffic_reporter(client: ApiClient, agent_token: String) {
+    /// How often to sample + report per-process traffic.
+    const SAMPLE_EVERY: Duration = Duration::from_secs(60);
+    /// Cap on processes reported per batch (the backend ranks Top-10; sending a
+    /// few more lets short-lived spikes still place).
+    const MAX_PROCS: usize = 40;
+
+    tokio::spawn(async move {
+        let mut monitor = crate::traffic::TrafficMonitor::new();
+        tracing::info!(
+            collector = monitor.kind(),
+            "per-process traffic accounting started"
+        );
+        let mut ticker = tokio::time::interval(SAMPLE_EVERY);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            // Sampling touches /proc + a netlink dump; run it on the blocking
+            // pool so it never holds up the async runtime.
+            let mut deltas = tokio::task::block_in_place(|| monitor.sample());
+            if deltas.is_empty() {
+                continue;
+            }
+            // Keep the heaviest contributors (by rx+tx) so the batch stays small.
+            deltas.sort_by_key(|d| std::cmp::Reverse(d.rx_bytes.saturating_add(d.tx_bytes)));
+            deltas.truncate(MAX_PROCS);
+            if let Err(e) = client.report_traffic(&agent_token, &deltas).await {
+                tracing::debug!("traffic report failed: {e}");
+            }
+        }
+    });
 }
 
 /// Spawn the periodic auto-update poller as an independent task so its blocking
