@@ -340,14 +340,37 @@ fn block_base_name(dev_name: &str) -> Option<String> {
     }
 }
 
-/// True for mount points that are virtual/system paths rather than real storage.
+/// True for mount points that are virtual/system paths rather than real,
+/// user-relevant storage. Excludes kernel/pseudo paths, boot/firmware
+/// partitions, and container/runtime internal mounts that just add noise.
 fn is_virtual_mount(mount: &str) -> bool {
-    mount.starts_with("/proc")
+    // Kernel / pseudo filesystems.
+    if mount.starts_with("/proc")
         || mount.starts_with("/sys")
         || mount.starts_with("/dev")
         || mount.starts_with("/run")
-        || mount == "/snap"
-        || mount.starts_with("/snap/")
+    {
+        return true;
+    }
+    // Snap loop mounts.
+    if mount == "/snap" || mount.starts_with("/snap/") {
+        return true;
+    }
+    // Boot / EFI / firmware partitions (tiny, not user storage; were the source
+    // of the odd "/boot/efi" SSD tag).
+    if mount == "/boot" || mount.starts_with("/boot/") || mount.starts_with("/efi") {
+        return true;
+    }
+    // Container/runtime internal mounts (docker/k8s/containerd overlays, etc.).
+    if mount.starts_with("/var/lib/docker")
+        || mount.starts_with("/var/lib/kubelet")
+        || mount.starts_with("/var/lib/containers")
+        || mount.starts_with("/var/lib/containerd")
+        || mount.starts_with("/var/snap")
+    {
+        return true;
+    }
+    false
 }
 
 fn os_label() -> String {
@@ -431,7 +454,16 @@ mod tests {
         assert!(is_virtual_mount("/sys/fs/cgroup"));
         assert!(is_virtual_mount("/run/lock"));
         assert!(is_virtual_mount("/snap/core/1234"));
+        // Boot / EFI / firmware partitions are excluded (the /boot/efi tag bug).
+        assert!(is_virtual_mount("/boot"));
+        assert!(is_virtual_mount("/boot/efi"));
+        assert!(is_virtual_mount("/efi"));
+        // Container/runtime internal mounts are excluded.
+        assert!(is_virtual_mount("/var/lib/docker/overlay2/abc"));
+        assert!(is_virtual_mount("/var/lib/kubelet/pods/x"));
+        // Real user storage is kept.
         assert!(!is_virtual_mount("/"));
         assert!(!is_virtual_mount("/data"));
+        assert!(!is_virtual_mount("/home"));
     }
 }
