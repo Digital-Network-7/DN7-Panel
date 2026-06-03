@@ -232,6 +232,15 @@ impl Collector {
     }
 }
 
+/// Current time as epoch milliseconds (UTC). Used as the agent-side sample
+/// timestamp embedded in each metrics report.
+pub fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn clamp_pct(v: f64) -> f64 {
     if v.is_nan() {
         0.0

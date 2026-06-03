@@ -99,6 +99,7 @@ struct ReportReq {
     update_progress: u64,
     update_done_bytes: u64,
     update_total_bytes: u64,
+    sampled_at_ms: u64,
 }
 
 /// HTTP client wrapper around the TeaOps backend API.
@@ -193,6 +194,7 @@ impl ApiClient {
             update_progress: m.update_progress,
             update_done_bytes: m.update_done_bytes,
             update_total_bytes: m.update_total_bytes,
+            sampled_at_ms: crate::metrics::epoch_millis(),
         };
         let resp = self
             .http

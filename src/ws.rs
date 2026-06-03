@@ -103,6 +103,14 @@ impl MetricsStream {
     async fn send_inner(&mut self, m: &Metrics) -> Result<Vec<ServerCommand>> {
         let payload = serde_json::json!({
             "agent_token": self.token,
+            // Agent-side sample time as epoch milliseconds. The backend uses
+            // this (clamped to its own clock) as the authoritative sample
+            // timestamp so reports that arrive clustered after a transient
+            // network/update stall keep their true spacing instead of all
+            // landing at the backend's receive instant (which made the UI jump
+            // and skewed the stored history). Epoch millis avoids pulling a
+            // date-formatting crate into the lean musl agent.
+            "sampled_at_ms": crate::metrics::epoch_millis(),
             "cpu_usage": m.cpu_usage,
             "memory_usage": m.memory_usage,
             "disk_usage": m.disk_usage,
