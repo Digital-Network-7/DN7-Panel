@@ -31,11 +31,16 @@ pub struct Metrics {
     pub ip: String,
     /// Whether this agent is running inside a Docker/container environment.
     pub is_container: bool,
-    /// Logical CPU core count.
+    /// Logical CPU core count (threads).
     pub cpu_cores: i64,
+    /// Physical CPU core count (0/unknown falls back to logical on display).
+    pub cpu_physical_cores: i64,
     /// CPU model/brand string (e.g. "Intel(R) Xeon(R) ... @ 2.50GHz"), resolved
     /// once at startup. Empty if unavailable.
     pub cpu_model: String,
+    /// Best-effort memory hardware description (e.g. "Samsung DDR5 4800 MT/s"),
+    /// from dmidecode when available (root). Empty otherwise.
+    pub mem_model: String,
     /// Total / used physical memory, in bytes.
     pub mem_total: u64,
     pub mem_used: u64,
@@ -76,6 +81,10 @@ pub struct Collector {
     is_container: bool,
     /// CPU model/brand, resolved once at startup.
     cpu_model: String,
+    /// Physical core count, resolved once at startup (0 = unknown).
+    cpu_physical_cores: i64,
+    /// Memory hardware description (dmidecode, best-effort), resolved once.
+    mem_model: String,
 }
 
 impl Collector {
@@ -89,6 +98,8 @@ impl Collector {
             .first()
             .map(|c| c.brand().trim().to_string())
             .unwrap_or_default();
+        let cpu_physical_cores = sys.physical_core_count().unwrap_or(0) as i64;
+        let mem_model = detect_mem_model();
         Collector {
             sys,
             networks,
@@ -100,6 +111,8 @@ impl Collector {
             ip_checked_at: Some(Instant::now()),
             is_container: detect_container(),
             cpu_model,
+            cpu_physical_cores,
+            mem_model,
         }
     }
 
@@ -186,7 +199,9 @@ impl Collector {
             ip: self.ip.clone(),
             is_container: self.is_container,
             cpu_cores,
+            cpu_physical_cores: self.cpu_physical_cores,
             cpu_model: self.cpu_model.clone(),
+            mem_model: self.mem_model.clone(),
             mem_total: total_mem,
             mem_used: used_mem,
             disk_total,
@@ -381,6 +396,78 @@ fn os_label() -> String {
     } else {
         format!("{name} {version}")
     }
+}
+
+/// Best-effort memory hardware description via `dmidecode -t memory`. Reads the
+/// first populated DIMM's manufacturer + type + speed (e.g. "Samsung DDR5
+/// 4800 MT/s"). Requires root + dmidecode; returns "" when unavailable (most
+/// containers/cloud VMs), which the UI treats as "unknown" and simply omits.
+fn detect_mem_model() -> String {
+    // Only meaningful on Linux with dmidecode present; cheap to attempt.
+    let out = match std::process::Command::new("dmidecode")
+        .args(["-t", "memory"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return String::new(),
+    };
+    let text = String::from_utf8_lossy(&out);
+    // dmidecode prints one block per "Memory Device". Pick the first populated
+    // one (Size not "No Module Installed").
+    let mut manufacturer = String::new();
+    let mut ram_type = String::new();
+    let mut speed = String::new();
+    let mut installed = false;
+    let mut in_device = false;
+    for line in text.lines() {
+        let l = line.trim();
+        if l == "Memory Device" {
+            // Starting a new device block: if the previous one was populated and
+            // had enough info, stop here.
+            if installed && (!ram_type.is_empty() || !manufacturer.is_empty()) {
+                break;
+            }
+            in_device = true;
+            installed = false;
+            manufacturer.clear();
+            ram_type.clear();
+            speed.clear();
+            continue;
+        }
+        if !in_device {
+            continue;
+        }
+        if let Some(v) = l.strip_prefix("Size:") {
+            let v = v.trim();
+            installed = !v.is_empty() && v != "No Module Installed" && v != "0";
+        } else if let Some(v) = l.strip_prefix("Type:") {
+            let v = v.trim();
+            if v != "Unknown" && v != "Other" {
+                ram_type = v.to_string();
+            }
+        } else if let Some(v) = l.strip_prefix("Manufacturer:") {
+            let v = v.trim();
+            if !v.is_empty() && v != "Unknown" && !v.starts_with("Not ") {
+                manufacturer = v.to_string();
+            }
+        } else if let Some(v) = l.strip_prefix("Configured Memory Speed:") {
+            let v = v.trim();
+            if v != "Unknown" && !v.is_empty() {
+                speed = v.to_string();
+            }
+        } else if let Some(v) = l.strip_prefix("Speed:") {
+            // Fallback to rated Speed when Configured isn't reported.
+            let v = v.trim();
+            if speed.is_empty() && v != "Unknown" && !v.is_empty() {
+                speed = v.to_string();
+            }
+        }
+    }
+    let parts: Vec<&str> = [manufacturer.as_str(), ram_type.as_str(), speed.as_str()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect();
+    parts.join(" ")
 }
 
 /// Best-effort local IP discovery by opening a UDP socket to a public address.
