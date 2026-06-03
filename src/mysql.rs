@@ -24,6 +24,12 @@
 //!   {"id","op":"switch_version","inst","version"}       -> {op_id} (detached)
 //!   {"id","op":"databases","inst"}                      -> [{name,tables,size}]
 //!   {"id","op":"credentials","inst"}                    -> {host,port,user,password}
+//!   {"id","op":"list_users","inst"}                     -> [{user,host,system}]
+//!   {"id","op":"create_user","inst","username","host","password"}
+//!   {"id","op":"drop_user","inst","username","host"}
+//!   {"id","op":"grant"|"revoke","inst","username","host","database","privilege"}
+//!   {"id","op":"query","inst","sql"}                     -> {columns,rows,truncated}
+//!   {"id","op":"backup","inst"}                          -> {op_id} (detached dump)
 //!   {"id","op":"list_ops"} / {"op_log","op_id"} / {"dismiss_op","op_id"}
 //! Responses: {"id","ok":true,"data":..} / {"id","ok":false,"error":".."}
 
@@ -84,6 +90,21 @@ struct Req {
     /// op id (op_log / dismiss_op)
     #[serde(default)]
     op_id: Option<String>,
+    /// account management: username / host / password / privileges / database
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    host: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    database: Option<String>,
+    /// privilege scope: "all" (read+write) | "ro" (read-only) | "custom" later
+    #[serde(default)]
+    privilege: Option<String>,
+    /// raw SQL for the query runner
+    #[serde(default)]
+    sql: Option<String>,
 }
 
 /// Persisted per-instance manifest (`<data>/mysql/<id>.json`, 0600).
@@ -416,6 +437,13 @@ async fn handle(req: &Req) -> Result<Value> {
         "change_port" => change_port(req).await,
         "databases" => databases(req).await,
         "credentials" => credentials(req).await,
+        "list_users" => list_users(req).await,
+        "create_user" => create_user(req).await,
+        "drop_user" => drop_user(req).await,
+        "grant" => grant(req).await,
+        "revoke" => revoke(req).await,
+        "query" => query(req).await,
+        "backup" => start_backup(req),
         "list_ops" => Ok(ops_snapshot()),
         "op_log" => Ok(op_log(req.op_id.as_deref().unwrap_or(""))),
         "dismiss_op" => {
@@ -1123,6 +1151,304 @@ async fn databases(req: &Req) -> Result<Value> {
 }
 
 // ---------------------------------------------------------------------------
+// Account management (B): list / create / drop users, grant / revoke.
+// ---------------------------------------------------------------------------
+
+/// Validate a MySQL identifier (username / database / host) used inside quoted
+/// SQL. We allow a conservative charset so a value can't break out of its quote
+/// even though we also escape; `%` is allowed for the host wildcard.
+fn valid_ident(s: &str, allow_wildcard: bool) -> bool {
+    if s.is_empty() || s.len() > 64 {
+        return false;
+    }
+    s.chars().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') || (allow_wildcard && c == '%')
+    })
+}
+
+/// Backtick-escape an identifier (double any backticks) for `\`name\``.
+fn ident_quote(s: &str) -> String {
+    format!("`{}`", s.replace('`', "``"))
+}
+
+/// List non-system MySQL accounts as {user, host}. Reads mysql.user.
+async fn list_users(req: &Req) -> Result<Value> {
+    let m = load_manifest(need_inst(req)?)?;
+    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let sql = "SELECT User, Host FROM mysql.user ORDER BY User, Host;";
+    let (code, out) = mysql_exec_query(&m.container, &password, sql).await?;
+    if code != 0 {
+        return Err(anyhow!(
+            "查询失败：{}",
+            out.trim().chars().take(200).collect::<String>()
+        ));
+    }
+    // System/internal accounts we don't surface for management.
+    const SYS_USERS: [&str; 6] = [
+        "mysql.sys",
+        "mysql.session",
+        "mysql.infoschema",
+        "root",
+        "mariadb.sys",
+        "healthcheck",
+    ];
+    let mut users = Vec::new();
+    for line in out.lines() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+        let mut it = line.split('\t');
+        let user = it.next().unwrap_or("").trim();
+        let host = it.next().unwrap_or("").trim();
+        if user.is_empty() {
+            continue;
+        }
+        users.push(json!({
+            "user": user,
+            "host": host,
+            "system": SYS_USERS.contains(&user),
+        }));
+    }
+    Ok(json!({ "users": users }))
+}
+
+/// Create a user `'name'@'host'` with a password. Returns nothing extra.
+async fn create_user(req: &Req) -> Result<Value> {
+    let m = load_manifest(need_inst(req)?)?;
+    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let user = req.username.as_deref().map(str::trim).unwrap_or("");
+    let host = req.host.as_deref().map(str::trim).unwrap_or("%");
+    let pwd = req.password.as_deref().unwrap_or("");
+    if !valid_ident(user, false) {
+        return Err(anyhow!("用户名只能包含字母、数字、_ - . 且不超过 64 字符"));
+    }
+    if !valid_ident(host, true) {
+        return Err(anyhow!("主机格式不合法（可用 % 通配）"));
+    }
+    if pwd.is_empty() || pwd.len() > 128 {
+        return Err(anyhow!("密码不能为空且不超过 128 字符"));
+    }
+    let sql = format!(
+        "CREATE USER '{}'@'{}' IDENTIFIED BY '{}';",
+        sql_escape(user),
+        sql_escape(host),
+        sql_escape(pwd)
+    );
+    run_stmt(&m.container, &password, &sql).await?;
+    Ok(json!({ "created": user, "host": host }))
+}
+
+/// Drop a user `'name'@'host'`. root and system accounts are protected.
+async fn drop_user(req: &Req) -> Result<Value> {
+    let m = load_manifest(need_inst(req)?)?;
+    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let user = req.username.as_deref().map(str::trim).unwrap_or("");
+    let host = req.host.as_deref().map(str::trim).unwrap_or("%");
+    if !valid_ident(user, false) || !valid_ident(host, true) {
+        return Err(anyhow!("用户或主机不合法"));
+    }
+    if user.eq_ignore_ascii_case("root")
+        || user.starts_with("mysql.")
+        || user.starts_with("mariadb.")
+    {
+        return Err(anyhow!("不允许删除系统账号"));
+    }
+    let sql = format!("DROP USER '{}'@'{}';", sql_escape(user), sql_escape(host));
+    run_stmt(&m.container, &password, &sql).await?;
+    Ok(json!({ "dropped": user, "host": host }))
+}
+
+/// Grant privileges on a database to a user. `privilege` is "all" (read+write)
+/// or "ro" (SELECT only). Database "*" means all databases.
+async fn grant(req: &Req) -> Result<Value> {
+    let m = load_manifest(need_inst(req)?)?;
+    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let user = req.username.as_deref().map(str::trim).unwrap_or("");
+    let host = req.host.as_deref().map(str::trim).unwrap_or("%");
+    let db = req.database.as_deref().map(str::trim).unwrap_or("*");
+    let priv_kind = req.privilege.as_deref().unwrap_or("all");
+    if !valid_ident(user, false) || !valid_ident(host, true) {
+        return Err(anyhow!("用户或主机不合法"));
+    }
+    let privs = match priv_kind {
+        "ro" => "SELECT",
+        "all" => "ALL PRIVILEGES",
+        _ => return Err(anyhow!("不支持的权限类型")),
+    };
+    let scope = grant_scope(db)?;
+    let sql = format!(
+        "GRANT {privs} ON {scope} TO '{}'@'{}'; FLUSH PRIVILEGES;",
+        sql_escape(user),
+        sql_escape(host)
+    );
+    run_stmt(&m.container, &password, &sql).await?;
+    Ok(json!({ "granted": priv_kind, "db": db }))
+}
+
+/// Revoke all privileges on a database from a user.
+async fn revoke(req: &Req) -> Result<Value> {
+    let m = load_manifest(need_inst(req)?)?;
+    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let user = req.username.as_deref().map(str::trim).unwrap_or("");
+    let host = req.host.as_deref().map(str::trim).unwrap_or("%");
+    let db = req.database.as_deref().map(str::trim).unwrap_or("*");
+    if !valid_ident(user, false) || !valid_ident(host, true) {
+        return Err(anyhow!("用户或主机不合法"));
+    }
+    let scope = grant_scope(db)?;
+    let sql = format!(
+        "REVOKE ALL PRIVILEGES, GRANT OPTION ON {scope} FROM '{}'@'{}'; FLUSH PRIVILEGES;",
+        sql_escape(user),
+        sql_escape(host)
+    );
+    run_stmt(&m.container, &password, &sql).await?;
+    Ok(json!({ "revoked": db }))
+}
+
+/// Build a GRANT scope `\`db\`.*` or `*.*`. Validates the db identifier.
+fn grant_scope(db: &str) -> Result<String> {
+    if db == "*" {
+        Ok("*.*".to_string())
+    } else if valid_ident(db, false) {
+        Ok(format!("{}.*", ident_quote(db)))
+    } else {
+        Err(anyhow!("数据库名不合法"))
+    }
+}
+
+/// Run a statement expecting success; surfaces the engine's error message.
+async fn run_stmt(container: &str, password: &str, sql: &str) -> Result<()> {
+    let (code, out) = mysql_exec(container, password, sql).await?;
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "{}",
+            out.trim().chars().take(240).collect::<String>()
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Query runner (B): run arbitrary SQL, return columns + rows for display.
+// ---------------------------------------------------------------------------
+
+/// Execute a user-supplied SQL statement and return a tabular result. Output is
+/// capped to keep the payload small. This is a power-user tool: writes are
+/// allowed (the UI warns), but the result is always truncated.
+async fn query(req: &Req) -> Result<Value> {
+    let m = load_manifest(need_inst(req)?)?;
+    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let sql = req.sql.as_deref().map(str::trim).unwrap_or("");
+    if sql.is_empty() {
+        return Err(anyhow!("SQL 不能为空"));
+    }
+    if sql.len() > 8192 {
+        return Err(anyhow!("SQL 过长"));
+    }
+
+    // Column-mode (-B) keeps a header row + tab-separated columns; we cap rows.
+    let (code, out) = mysql_exec_columns(&m.container, &password, sql).await?;
+    if code != 0 {
+        return Err(anyhow!(
+            "{}",
+            out.trim().chars().take(300).collect::<String>()
+        ));
+    }
+
+    // Parse: first line = header (column names), rest = rows. NULLs render as
+    // the literal "NULL" from the client; we pass them through.
+    const MAX_ROWS: usize = 200;
+    let mut lines = out.lines();
+    let columns: Vec<String> = match lines.next() {
+        Some(h) if !h.is_empty() => h.split('\t').map(|s| s.to_string()).collect(),
+        _ => {
+            // No result set (e.g. an UPDATE/DDL). Report affected as a note.
+            return Ok(json!({ "columns": [], "rows": [], "note": "执行成功（无结果集）" }));
+        }
+    };
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut truncated = false;
+    for line in lines {
+        if rows.len() >= MAX_ROWS {
+            truncated = true;
+            break;
+        }
+        rows.push(line.split('\t').map(|s| s.to_string()).collect());
+    }
+    Ok(json!({
+        "columns": columns,
+        "rows": rows,
+        "truncated": truncated,
+        "row_count": rows.len(),
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Backup (B): mysqldump the whole instance to a SQL file, return its text.
+// ---------------------------------------------------------------------------
+
+/// Start a detached backup op (mysqldump). The op log streams progress; on
+/// success the dump is written to a file inside the container and its path +
+/// size are reported. (Download wiring is a follow-up; this captures the dump
+/// safely without holding it all in a single WS frame.)
+fn start_backup(req: &Req) -> Result<Value> {
+    let inst = need_inst(req)?.to_string();
+    let _ = load_manifest(&inst)?; // validate it exists
+    let op_id = new_op_id();
+    op_create(&op_id, "backup", &inst);
+    let op_t = op_id.clone();
+    let inst_t = inst.clone();
+    tokio::spawn(async move {
+        match run_backup_detached(&op_t, &inst_t).await {
+            Ok(()) => op_finish(&op_t, "done", "", &inst_t),
+            Err(e) => op_finish(&op_t, "error", &e.to_string(), ""),
+        }
+    });
+    Ok(json!({ "op_id": op_id, "inst_id": inst }))
+}
+
+/// Run `mysqldump --all-databases` inside the container, writing to
+/// `/var/lib/mysql/teaops-backup-<ts>.sql` (on the persistent data volume so it
+/// survives), and report the path + size.
+async fn run_backup_detached(op_id: &str, inst: &str) -> Result<()> {
+    let m = load_manifest(inst)?;
+    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    if !is_ready(&m.container, &password).await {
+        return Err(anyhow!("实例未就绪，无法备份"));
+    }
+    op_push(op_id, "正在导出数据库（mysqldump）…");
+    let ts = now_secs();
+    let path = format!("/var/lib/mysql/teaops-backup-{ts}.sql");
+    // Use the dump tool that matches the engine; both accept the same flags.
+    let script = format!(
+        "if command -v mysqldump >/dev/null 2>&1; then DUMP=mysqldump; else DUMP=mariadb-dump; fi; \
+         \"$DUMP\" -uroot --all-databases --single-transaction --routines --events > '{}' 2>/tmp/dumperr; \
+         rc=$?; if [ $rc -ne 0 ]; then cat /tmp/dumperr; exit $rc; fi; \
+         wc -c < '{}'",
+        path, path
+    );
+    let (code, out) = exec_sh(&m.container, &password, &script).await?;
+    if code != 0 {
+        return Err(anyhow!(
+            "备份失败：{}",
+            out.trim().chars().take(240).collect::<String>()
+        ));
+    }
+    let bytes: i64 = out
+        .trim()
+        .lines()
+        .last()
+        .unwrap_or("0")
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    op_push(op_id, &format!("备份完成：{path}（{bytes} 字节）"));
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // In-container mysql client exec helpers.
 // ---------------------------------------------------------------------------
 
@@ -1140,6 +1466,34 @@ async fn mysql_exec_query(container: &str, password: &str, sql: &str) -> Result<
     exec_client(container, password, sql, true).await
 }
 
+/// Run a SQL statement returning batch/tab-separated output *with* the header
+/// row (`-B`, no `-N`), used by the query runner to render column names.
+async fn mysql_exec_columns(container: &str, password: &str, sql: &str) -> Result<(i64, String)> {
+    exec_argv(
+        container,
+        password,
+        vec![
+            "-uroot".to_string(),
+            "--protocol=socket".to_string(),
+            "-B".to_string(),
+            "-e".to_string(),
+            sql.to_string(),
+        ],
+    )
+    .await
+}
+
+/// Run an arbitrary `/bin/sh -c` script inside the container with `MYSQL_PWD`
+/// set (so a dump tool can authenticate). Returns (exit_code, combined output).
+async fn exec_sh(container: &str, password: &str, script: &str) -> Result<(i64, String)> {
+    exec_raw(
+        container,
+        password,
+        vec!["/bin/sh".to_string(), "-c".to_string(), script.to_string()],
+    )
+    .await
+}
+
 /// Exec the mysql client inside the container. `batch` adds `-N -B` for
 /// machine-readable output. `MYSQL_PWD` carries the password so it never
 /// appears in argv / process list.
@@ -1149,29 +1503,42 @@ async fn exec_client(
     sql: &str,
     batch: bool,
 ) -> Result<(i64, String)> {
-    use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
+    let mut args: Vec<String> = vec!["-uroot".to_string(), "--protocol=socket".to_string()];
+    if batch {
+        args.push("-N".to_string());
+        args.push("-B".to_string());
+    }
+    args.push("-e".to_string());
+    args.push(sql.to_string());
+    exec_argv(container, password, args).await
+}
 
-    let dkr = dkr()?;
-    // Prefer `mysql`; fall back to `mariadb` (newer MariaDB images ship the
-    // `mariadb` client and symlink `mysql`, but be safe). We pick via a small
-    // shell test so a single exec works on both image families.
-    let mut argv: Vec<String> = vec![
+/// Run the mysql/mariadb client inside the container with the given client args
+/// (a small shell test picks whichever client binary exists). `MYSQL_PWD`
+/// carries the password. Returns (exit_code, combined output).
+async fn exec_argv(
+    container: &str,
+    password: &str,
+    client_args: Vec<String>,
+) -> Result<(i64, String)> {
+    let mut cmd: Vec<String> = vec![
         "/bin/sh".to_string(),
         "-c".to_string(),
         // `exec` so the client's exit code is the exec's exit code.
         "if command -v mysql >/dev/null 2>&1; then exec mysql \"$@\"; else exec mariadb \"$@\"; fi"
             .to_string(),
         "sh".to_string(),
-        "-uroot".to_string(),
-        "--protocol=socket".to_string(),
     ];
-    if batch {
-        argv.push("-N".to_string());
-        argv.push("-B".to_string());
-    }
-    argv.push("-e".to_string());
-    argv.push(sql.to_string());
+    cmd.extend(client_args);
+    exec_raw(container, password, cmd).await
+}
 
+/// Low-level container exec: run `cmd` (argv) with `MYSQL_PWD` set. Returns
+/// (exit_code, combined stdout+stderr).
+async fn exec_raw(container: &str, password: &str, cmd: Vec<String>) -> Result<(i64, String)> {
+    use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
+
+    let dkr = dkr()?;
     let exec = dkr
         .create_exec(
             container,
@@ -1179,7 +1546,7 @@ async fn exec_client(
                 attach_stdout: Some(true),
                 attach_stderr: Some(true),
                 env: Some(vec![format!("MYSQL_PWD={password}")]),
-                cmd: Some(argv),
+                cmd: Some(cmd),
                 ..Default::default()
             },
         )
@@ -1288,5 +1655,31 @@ mod tests {
         assert!(validate_port(3306).is_ok());
         assert!(validate_port(0).is_err());
         assert!(validate_port(70000).is_err());
+    }
+
+    #[test]
+    fn ident_validation() {
+        assert!(valid_ident("app_user", false));
+        assert!(valid_ident("my-db.1", false));
+        assert!(!valid_ident("", false));
+        assert!(!valid_ident("bad name", false));
+        assert!(!valid_ident("drop;table", false));
+        // wildcard only allowed for host.
+        assert!(valid_ident("%", true));
+        assert!(!valid_ident("%", false));
+        assert!(!valid_ident(&"x".repeat(65), false));
+    }
+
+    #[test]
+    fn ident_quote_escapes_backticks() {
+        assert_eq!(ident_quote("db"), "`db`");
+        assert_eq!(ident_quote("a`b"), "`a``b`");
+    }
+
+    #[test]
+    fn grant_scope_forms() {
+        assert_eq!(grant_scope("*").unwrap(), "*.*");
+        assert_eq!(grant_scope("mydb").unwrap(), "`mydb`.*");
+        assert!(grant_scope("bad db").is_err());
     }
 }
