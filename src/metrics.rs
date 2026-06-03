@@ -14,6 +14,14 @@ pub struct DiskMount {
     /// Derived from the backing block device's rotational flag.
     #[serde(default)]
     pub kind: String,
+    /// Parent block device this mount lives on, e.g. "/dev/vda". Lets the UI
+    /// group mounts under their physical disk. Empty if undeterminable.
+    #[serde(default)]
+    pub device: String,
+    /// Whole-disk capacity of `device` in bytes (the physical disk size, not
+    /// the partition/filesystem size). 0 if undeterminable.
+    #[serde(default)]
+    pub device_size: u64,
 }
 
 /// A single metrics snapshot collected from the local machine.
@@ -272,11 +280,20 @@ fn aggregate_disks(disks: &Disks) -> (u64, u64, Vec<DiskMount>) {
         let du = dt.saturating_sub(avail);
         total += dt;
         used += du;
+        let dev_name = disk.name().to_string_lossy().to_string();
+        let base = block_base_name(&dev_name);
+        let device = base
+            .as_ref()
+            .map(|b| format!("/dev/{b}"))
+            .unwrap_or_default();
+        let device_size = base.as_deref().map(whole_disk_size).unwrap_or(0);
         mounts.push(DiskMount {
             mount,
             total: dt,
             used: du,
-            kind: disk_kind(&disk.name().to_string_lossy()),
+            kind: disk_kind(&dev_name),
+            device,
+            device_size,
         });
     }
     // Largest filesystems first so the UI shows the most relevant mounts on top.
@@ -335,6 +352,21 @@ fn disk_kind(dev_name: &str) -> String {
             _ => "other".to_string(),
         },
         Err(_) => "other".to_string(),
+    }
+}
+
+/// Whole-disk capacity in bytes for a block-device base name (e.g. "vda",
+/// "nvme0n1"), read from `/sys/block/<base>/size` (count of 512-byte sectors).
+/// 0 when unavailable (non-Linux, missing node, parse error).
+fn whole_disk_size(base: &str) -> u64 {
+    let path = format!("/sys/block/{base}/size");
+    match std::fs::read_to_string(&path) {
+        Ok(s) => s
+            .trim()
+            .parse::<u64>()
+            .map(|sectors| sectors * 512)
+            .unwrap_or(0),
+        Err(_) => 0,
     }
 }
 
