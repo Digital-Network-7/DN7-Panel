@@ -120,11 +120,18 @@ async fn run_overlay(
         if *cancel.borrow() {
             break;
         }
+        let started = std::time::Instant::now();
         match connect_and_pipe(cfg, token, &tun, &mut cancel).await {
             Ok(_cancelled) => break, // cancelled cleanly
             Err(e) => {
                 if *cancel.borrow() {
                     break;
+                }
+                // A connection that stayed up a while was healthy; reset the
+                // backoff so a later blip recovers fast instead of staying
+                // stuck at the 15s ceiling.
+                if started.elapsed() >= std::time::Duration::from_secs(30) {
+                    backoff = 1;
                 }
                 tracing::warn!(%ip, "pnet relay dropped ({e}); reconnecting in {backoff}s");
                 tokio::select! {
@@ -172,12 +179,32 @@ async fn connect_and_pipe(
     let (mut ws_tx, mut ws_rx) = ws.split();
     tracing::info!("pnet relay connected");
 
+    // Keepalive + dead-connection detection. Without this, an idle relay can be
+    // silently dropped by a proxy/NAT and we'd only notice when traffic next
+    // flows (the "ping fails until it recovers" symptom). We send a Ping every
+    // KEEPALIVE secs and treat the link as dead if nothing (data/ping/pong) is
+    // received for IDLE_TIMEOUT.
+    const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(15);
+    const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
+    let mut keepalive = tokio::time::interval(KEEPALIVE);
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_rx = std::time::Instant::now();
+
     let mut buf = vec![0u8; 1600];
     loop {
         tokio::select! {
             _ = cancel.changed() => {
                 if *cancel.borrow() {
                     return Ok(true);
+                }
+            }
+            // Periodic keepalive ping + idle watchdog.
+            _ = keepalive.tick() => {
+                if last_rx.elapsed() >= IDLE_TIMEOUT {
+                    return Err(anyhow!("relay idle timeout"));
+                }
+                if ws_tx.send(Message::Ping(Vec::new())).await.is_err() {
+                    return Err(anyhow!("relay ping failed"));
                 }
             }
             // Local TUN -> backend (binary frame per packet).
@@ -194,6 +221,7 @@ async fn connect_and_pipe(
             }
             // Backend -> local TUN.
             frame = ws_rx.next() => {
+                last_rx = std::time::Instant::now();
                 match frame {
                     Some(Ok(Message::Binary(pkt))) => {
                         let _ = tun.send_all(&pkt).await;
