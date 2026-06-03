@@ -484,6 +484,20 @@ async fn list_instances() -> Result<Value> {
             ),
             None => ("missing".to_string(), "容器不存在".to_string()),
         };
+
+        // A `running` container may still be initializing its data dir (queries
+        // fail until mysqld is up). Probe so the UI can show "初始化中" vs
+        // "运行中". `restarting` usually means an init/config failure loop.
+        let mut phase = state.clone();
+        let mut ready = false;
+        if state == "running" {
+            let pwd = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+            ready = is_ready(&m.container, &pwd).await;
+            if !ready {
+                phase = "initializing".to_string();
+            }
+        }
+
         items.push(json!({
             "id": m.id,
             "engine": m.engine,
@@ -492,6 +506,8 @@ async fn list_instances() -> Result<Value> {
             "port": m.port,
             "exposed": m.port.is_some(),
             "state": state,
+            "phase": phase,
+            "ready": ready,
             "status": status,
             "running": state == "running",
             "created_at": m.created_at,
@@ -581,6 +597,16 @@ async fn run_install_detached(
     let dkr = dkr()?;
     let image = image_ref(engine, version);
 
+    // 0. If exposing a host port, fail fast when it's already published by
+    // another container (a clearer error than Docker's late "port is allocated").
+    if let Some(p) = port {
+        if let Some(owner) = host_port_owner(&dkr, p).await {
+            return Err(anyhow!(
+                "宿主机端口 {p} 已被容器 {owner} 占用，请换一个端口"
+            ));
+        }
+    }
+
     // 1. Pull the image (stream status lines into the op log).
     op_push(op_id, &format!("正在拉取镜像 {image} …"));
     pull_image(&dkr, &image, op_id).await?;
@@ -609,7 +635,8 @@ async fn run_install_detached(
     .await
     .map_err(|e| anyhow!(friendly(&e)))?;
 
-    // 5. Persist the manifest (now the instance is officially TeaOps-managed).
+    // 5. Persist the manifest first (now the instance is officially
+    // TeaOps-managed and will show up in the list even while initializing).
     let m = Manifest {
         id: inst_id.to_string(),
         engine: engine.to_string(),
@@ -621,7 +648,21 @@ async fn run_install_detached(
         created_at: now_secs(),
     };
     save_manifest(&m)?;
-    op_push(op_id, "安装完成");
+
+    // 6. Wait for mysqld to actually accept connections (data-dir init takes a
+    // while on first run). The container is `running` almost immediately but
+    // queries fail until this completes, so block the op until it's truly ready.
+    op_push(op_id, "等待数据库就绪 …");
+    if wait_ready(&container, &password, op_id, 180).await {
+        op_push(op_id, "安装完成，数据库已就绪");
+    } else {
+        // Don't hard-fail: the container exists and may still come up. Surface
+        // a clear hint so the user knows to check the container's state.
+        op_push(
+            op_id,
+            "数据库初始化超时，请稍后在实例详情中查看状态（容器可能仍在初始化或反复重启）",
+        );
+    }
     Ok(())
 }
 
@@ -653,6 +694,32 @@ async fn pull_image(dkr: &Docker, image: &str, op_id: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// True if a host TCP port is already published by an existing container.
+/// Returns the owning container's name when occupied, else None.
+async fn host_port_owner(dkr: &Docker, port: i64) -> Option<String> {
+    let opts = bollard::container::ListContainersOptions::<String> {
+        all: true,
+        ..Default::default()
+    };
+    let containers = dkr.list_containers(Some(opts)).await.ok()?;
+    for c in containers {
+        if let Some(ports) = &c.ports {
+            for p in ports {
+                if p.public_port == Some(port as u16) {
+                    let name = c
+                        .names
+                        .as_ref()
+                        .and_then(|n| n.first())
+                        .map(|s| s.trim_start_matches('/').to_string())
+                        .unwrap_or_else(|| "未知".to_string());
+                    return Some(name);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Create a named volume tagged as TeaOps-managed.
@@ -862,6 +929,17 @@ async fn change_port(req: &Req) -> Result<Value> {
 
     let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let image = image_ref(&m.engine, &m.version);
+    // Reject a host port already owned by a *different* container.
+    if let Some(p) = new_port {
+        let dkr = dkr()?;
+        if let Some(owner) = host_port_owner(&dkr, p).await {
+            if owner != m.container {
+                return Err(anyhow!(
+                    "宿主机端口 {p} 已被容器 {owner} 占用，请换一个端口"
+                ));
+            }
+        }
+    }
     recreate_container(&m, &image, new_port, &password).await?;
     m.port = new_port;
     save_manifest(&m)?;
@@ -945,7 +1023,15 @@ async fn run_switch_detached(op_id: &str, inst: &str, version: &str) -> Result<(
 
     m.version = version.to_string();
     save_manifest(&m)?;
-    op_push(op_id, "版本切换完成");
+    op_push(op_id, "等待数据库就绪 …");
+    if wait_ready(&m.container, &password, op_id, 180).await {
+        op_push(op_id, "版本切换完成，数据库已就绪");
+    } else {
+        op_push(
+            op_id,
+            "切换后数据库初始化超时，可能与目标版本不兼容（尤其是降级），请在实例详情中查看状态",
+        );
+    }
     Ok(())
 }
 
@@ -1126,6 +1212,41 @@ async fn exec_client(
         .and_then(|i| i.exit_code)
         .unwrap_or(0);
     Ok((code, buf))
+}
+
+// ---------------------------------------------------------------------------
+// Readiness probe.
+// ---------------------------------------------------------------------------
+
+/// Whether mysqld inside the container actually accepts connections yet. A
+/// freshly-started container is `running` long before the server finishes
+/// initializing its data dir, so we probe with a real `SELECT 1`.
+async fn is_ready(container: &str, password: &str) -> bool {
+    match mysql_exec_query(container, password, "SELECT 1;").await {
+        Ok((code, _)) => code == 0,
+        Err(_) => false,
+    }
+}
+
+/// Poll `is_ready` until it returns true or the timeout elapses. Pushes a few
+/// progress lines into the op log so the UI shows "初始化中…" rather than a
+/// silent hang. Returns true once ready, false on timeout.
+async fn wait_ready(container: &str, password: &str, op_id: &str, timeout_secs: u64) -> bool {
+    let start = std::time::Instant::now();
+    let mut announced = false;
+    loop {
+        if is_ready(container, password).await {
+            return true;
+        }
+        if start.elapsed().as_secs() >= timeout_secs {
+            return false;
+        }
+        if !announced {
+            op_push(op_id, "数据库正在初始化，请稍候 …");
+            announced = true;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
 }
 
 #[cfg(test)]
