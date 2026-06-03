@@ -130,6 +130,17 @@ impl AgentConfig {
         )
     }
 
+    /// WebSocket URL the agent dials to relay a MySQL management channel back
+    /// to the backend for a given session (in response to an `open-mysql`
+    /// command).
+    pub fn agent_mysql_ws_url(&self, session: &str) -> String {
+        format!(
+            "{}/agent/mysql?session={}",
+            self.ws_base(),
+            urlencode(session)
+        )
+    }
+
     /// WebSocket URL the agent dials to relay a process-list channel back to the
     /// backend for a given session (in response to an `open-procs` command).
     pub fn agent_procs_ws_url(&self, session: &str) -> String {

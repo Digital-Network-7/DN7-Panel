@@ -200,6 +200,19 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                                     }
                                 });
                             }
+                            ServerCommand::OpenMysql(session) => {
+                                tracing::info!(%session, "received open-mysql command");
+                                let cfg_t = cfg.clone();
+                                let token_t = agent_token.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) =
+                                        crate::mysql::run_mysql_channel(&cfg_t, &token_t, &session)
+                                            .await
+                                    {
+                                        tracing::warn!(%session, "mysql channel ended: {e}");
+                                    }
+                                });
+                            }
                             ServerCommand::Pnet { ip, prefix, gone } => {
                                 tracing::info!(%ip, prefix, gone, "received pnet command");
                                 crate::pnet::apply(

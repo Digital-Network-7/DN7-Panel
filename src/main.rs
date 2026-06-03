@@ -10,6 +10,7 @@ mod file;
 mod guardian;
 mod logrotate;
 mod metrics;
+mod mysql;
 mod nginx;
 mod pairing;
 mod paths;

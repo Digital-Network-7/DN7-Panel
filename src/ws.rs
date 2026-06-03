@@ -45,6 +45,10 @@ pub enum ServerCommand {
     /// Open an Nginx management channel and relay it back for the given session
     /// id (dial `/agent/nginx?session=...`).
     OpenNginx(String),
+    /// Open a MySQL management channel and relay it back for the given session
+    /// id (dial `/agent/mysql?session=...`). Manages only TeaOps-provisioned
+    /// MySQL/MariaDB Docker containers.
+    OpenMysql(String),
     /// Open a process-list channel and relay it back for the given session id
     /// (dial `/agent/procs?session=...`). Returns Top-N processes by CPU/mem.
     OpenProcs(String),
@@ -175,6 +179,10 @@ impl MetricsStream {
                         } else if cmd == "open-nginx" {
                             if let Some(session) = v.get("session").and_then(|s| s.as_str()) {
                                 commands.push(ServerCommand::OpenNginx(session.to_string()));
+                            }
+                        } else if cmd == "open-mysql" {
+                            if let Some(session) = v.get("session").and_then(|s| s.as_str()) {
+                                commands.push(ServerCommand::OpenMysql(session.to_string()));
                             }
                         } else if cmd == "open-procs" {
                             if let Some(session) = v.get("session").and_then(|s| s.as_str()) {
