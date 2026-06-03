@@ -10,6 +10,10 @@ pub struct DiskMount {
     pub mount: String,
     pub total: u64,
     pub used: u64,
+    /// Storage category for grouping in the UI: "ssd" | "hdd" | "other".
+    /// Derived from the backing block device's rotational flag.
+    #[serde(default)]
+    pub kind: String,
 }
 
 /// A single metrics snapshot collected from the local machine.
@@ -29,6 +33,9 @@ pub struct Metrics {
     pub is_container: bool,
     /// Logical CPU core count.
     pub cpu_cores: i64,
+    /// CPU model/brand string (e.g. "Intel(R) Xeon(R) ... @ 2.50GHz"), resolved
+    /// once at startup. Empty if unavailable.
+    pub cpu_model: String,
     /// Total / used physical memory, in bytes.
     pub mem_total: u64,
     pub mem_used: u64,
@@ -67,6 +74,8 @@ pub struct Collector {
     ip_checked_at: Option<Instant>,
     /// Whether we're inside a container — detected once at startup.
     is_container: bool,
+    /// CPU model/brand, resolved once at startup.
+    cpu_model: String,
 }
 
 impl Collector {
@@ -75,6 +84,11 @@ impl Collector {
         sys.refresh_all();
         let networks = Networks::new_with_refreshed_list();
         let disks = Disks::new_with_refreshed_list();
+        let cpu_model = sys
+            .cpus()
+            .first()
+            .map(|c| c.brand().trim().to_string())
+            .unwrap_or_default();
         Collector {
             sys,
             networks,
@@ -85,6 +99,7 @@ impl Collector {
             ip: local_ip().unwrap_or_default(),
             ip_checked_at: Some(Instant::now()),
             is_container: detect_container(),
+            cpu_model,
         }
     }
 
@@ -171,6 +186,7 @@ impl Collector {
             ip: self.ip.clone(),
             is_container: self.is_container,
             cpu_cores,
+            cpu_model: self.cpu_model.clone(),
             mem_total: total_mem,
             mem_used: used_mem,
             disk_total,
@@ -221,6 +237,13 @@ fn aggregate_disks(disks: &Disks) -> (u64, u64, Vec<DiskMount>) {
         if dt == 0 {
             continue; // skip pseudo/zero-sized filesystems
         }
+        // Sanity guard: reject absurd capacities (e.g. an FTP/network mount that
+        // reports a bogus multi-petabyte total) so one bad row can't blow up the
+        // aggregate percentage. 1 PiB is far above any realistic single mount.
+        const MAX_SANE_BYTES: u64 = 1 << 50; // 1 PiB
+        if dt > MAX_SANE_BYTES {
+            continue;
+        }
         let avail = disk.available_space();
         let du = dt.saturating_sub(avail);
         total += dt;
@@ -229,6 +252,7 @@ fn aggregate_disks(disks: &Disks) -> (u64, u64, Vec<DiskMount>) {
             mount,
             total: dt,
             used: du,
+            kind: disk_kind(&disk.name().to_string_lossy()),
         });
     }
     // Largest filesystems first so the UI shows the most relevant mounts on top.
@@ -236,41 +260,84 @@ fn aggregate_disks(disks: &Disks) -> (u64, u64, Vec<DiskMount>) {
     (total, used, mounts)
 }
 
-/// True for real, persistent disk filesystems we want to count. Excludes the
-/// common in-memory / pseudo / read-only-image filesystem types.
+/// True for real, local, persistent disk filesystems we want to count.
+///
+/// Uses an **allowlist** of known physical/local filesystem types rather than a
+/// denylist: network and FUSE mounts (NFS, CIFS/SMB, sshfs, curlftpfs/FTP, …)
+/// must NOT be counted — they aren't local storage and often report bogus
+/// capacities (e.g. an FTP mount showing "0 / 1024 TB" which wrecks the
+/// percentage). Anything not explicitly recognized as a local disk FS is
+/// excluded.
 fn is_physical_fs(fs: &str) -> bool {
-    const VIRTUAL: &[&str] = &[
-        "tmpfs",
-        "devtmpfs",
-        "overlay",
-        "overlayfs",
-        "squashfs",
-        "aufs",
-        "ramfs",
-        "proc",
-        "sysfs",
-        "cgroup",
-        "cgroup2",
-        "devpts",
-        "mqueue",
-        "debugfs",
-        "tracefs",
-        "securityfs",
-        "pstore",
-        "bpf",
-        "configfs",
-        "fusectl",
-        "binfmt_misc",
-        "autofs",
-        "nsfs",
-        "rpc_pipefs",
-        "hugetlbfs",
-        "fuse.lxcfs",
+    const PHYSICAL: &[&str] = &[
+        // Linux native.
+        "ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs", "jfs", "reiserfs", "reiser4", "nilfs2",
+        "bcachefs", "zfs", "ufs",
+        // Windows / removable, mounted as real block devices.
+        "ntfs", "ntfs3", "fuseblk", // fuseblk = ntfs-3g on a real disk
+        "vfat", "exfat", "msdos", "fat", "fat32", "udf",
+        // macOS-style (rare on servers, but local disks).
+        "hfs", "hfsplus", "apfs",
     ];
     if fs.is_empty() {
         return false;
     }
-    !VIRTUAL.contains(&fs)
+    // Defensively reject any FUSE userspace filesystem except ntfs-3g's
+    // `fuseblk` (handled in the allowlist): sshfs, curlftpfs, rclone, gvfs, etc.
+    if fs.starts_with("fuse.") || fs == "fuse" {
+        return false;
+    }
+    PHYSICAL.contains(&fs)
+}
+
+/// Classify a block device as "ssd" | "hdd" | "other" by reading the kernel's
+/// rotational flag for the backing device. `dev_name` is sysinfo's device name
+/// (e.g. "/dev/sda1", "/dev/nvme0n1p2"). NVMe is always SSD. Non-Linux or an
+/// unreadable flag yields "other".
+fn disk_kind(dev_name: &str) -> String {
+    let base = match block_base_name(dev_name) {
+        Some(b) => b,
+        None => return "other".to_string(),
+    };
+    // NVMe is solid-state by definition.
+    if base.starts_with("nvme") {
+        return "ssd".to_string();
+    }
+    let path = format!("/sys/block/{base}/queue/rotational");
+    match std::fs::read_to_string(&path) {
+        Ok(s) => match s.trim() {
+            "0" => "ssd".to_string(),
+            "1" => "hdd".to_string(),
+            _ => "other".to_string(),
+        },
+        Err(_) => "other".to_string(),
+    }
+}
+
+/// Reduce a device path to its parent block-device name under `/sys/block`:
+/// "/dev/sda1" -> "sda", "/dev/nvme0n1p2" -> "nvme0n1", "/dev/vdb" -> "vdb".
+fn block_base_name(dev_name: &str) -> Option<String> {
+    let name = dev_name.rsplit('/').next().unwrap_or(dev_name);
+    if name.is_empty() {
+        return None;
+    }
+    // NVMe: strip a trailing "pN" partition suffix (nvme0n1p2 -> nvme0n1).
+    if name.starts_with("nvme") {
+        if let Some(idx) = name.rfind('p') {
+            // Only strip if what's after 'p' is all digits (partition number).
+            if name[idx + 1..].chars().all(|c| c.is_ascii_digit()) && idx > 0 {
+                return Some(name[..idx].to_string());
+            }
+        }
+        return Some(name.to_string());
+    }
+    // sd*/vd*/xvd*/hd*: strip trailing partition digits (sda1 -> sda).
+    let trimmed = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    if trimmed.is_empty() {
+        Some(name.to_string())
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// True for mount points that are virtual/system paths rather than real storage.
@@ -335,13 +402,27 @@ mod tests {
 
     #[test]
     fn physical_fs_filter() {
+        // Local disk filesystems are counted.
         assert!(is_physical_fs("ext4"));
         assert!(is_physical_fs("xfs"));
         assert!(is_physical_fs("btrfs"));
+        assert!(is_physical_fs("ntfs"));
+        assert!(is_physical_fs("vfat"));
+        assert!(is_physical_fs("fuseblk")); // ntfs-3g on a real disk
+                                            // Pseudo / in-memory / image filesystems are excluded.
         assert!(!is_physical_fs("tmpfs"));
         assert!(!is_physical_fs("overlay"));
         assert!(!is_physical_fs("squashfs"));
         assert!(!is_physical_fs(""));
+        // Network / FUSE mounts (the FTP/sshfs/NFS bug) are excluded.
+        assert!(!is_physical_fs("nfs"));
+        assert!(!is_physical_fs("nfs4"));
+        assert!(!is_physical_fs("cifs"));
+        assert!(!is_physical_fs("smbfs"));
+        assert!(!is_physical_fs("fuse.sshfs"));
+        assert!(!is_physical_fs("fuse.curlftpfs"));
+        assert!(!is_physical_fs("fuse.rclone"));
+        assert!(!is_physical_fs("fuse"));
     }
 
     #[test]

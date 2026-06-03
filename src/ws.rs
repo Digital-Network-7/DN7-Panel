@@ -108,6 +108,7 @@ impl MetricsStream {
             "agent_version": env!("CARGO_PKG_VERSION"),
             "is_container": m.is_container,
             "cpu_cores": m.cpu_cores,
+            "cpu_model": m.cpu_model,
             "mem_total": m.mem_total,
             "mem_used": m.mem_used,
             "disk_total": m.disk_total,

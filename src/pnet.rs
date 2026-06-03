@@ -89,14 +89,12 @@ async fn run_overlay(
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     use anyhow::anyhow;
-    use futures_util::{SinkExt, StreamExt};
     use std::net::Ipv4Addr;
     use tokio_tun::Tun;
-    use tokio_tungstenite::tungstenite::{
-        client::IntoClientRequest, http::header::AUTHORIZATION, Message,
-    };
 
-    // 1) Bring up the TUN device at ip/prefix.
+    // 1) Bring up the TUN device at ip/prefix. Kept up for the whole lifetime
+    //    of this overlay (across WS reconnects) so a transient relay drop never
+    //    removes the interface or its route.
     let addr: Ipv4Addr = ip.parse().map_err(|_| anyhow!("bad pnet ip: {ip}"))?;
     let netmask = prefix_to_netmask(prefix);
     let tun = Tun::builder()
@@ -112,7 +110,54 @@ async fn run_overlay(
     tracing::info!(name = tun.name(), %ip, "pnet TUN up");
     let tun = Arc::new(tun);
 
-    // 2) Connect the relay WebSocket to the backend.
+    // 2) Reconnect loop: keep a relay WebSocket to the backend alive for as long
+    //    as the overlay is active. If the WS drops (network blip, backend
+    //    restart), back off briefly and reconnect — the TUN stays up throughout,
+    //    so peers become reachable again automatically instead of the overlay
+    //    silently dying (the cause of intermittent ping failures).
+    let mut backoff = 1u64;
+    loop {
+        if *cancel.borrow() {
+            break;
+        }
+        match connect_and_pipe(cfg, token, &tun, &mut cancel).await {
+            Ok(_cancelled) => break, // cancelled cleanly
+            Err(e) => {
+                if *cancel.borrow() {
+                    break;
+                }
+                tracing::warn!(%ip, "pnet relay dropped ({e}); reconnecting in {backoff}s");
+                tokio::select! {
+                    _ = cancel.changed() => { if *cancel.borrow() { break; } }
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(backoff)) => {}
+                }
+                backoff = (backoff * 2).min(15);
+                continue;
+            }
+        }
+    }
+    tracing::info!(%ip, "pnet overlay stopped");
+    Ok(())
+}
+
+/// One relay session: connect the `/agent/pnet` WebSocket and pipe packets
+/// between it and the (persistent) TUN device until the WS closes or the
+/// overlay is cancelled. Returns Ok(true) when cancelled, Err on WS failure
+/// (so the caller reconnects). A successful connection resets the caller's
+/// backoff implicitly (it only grows on Err).
+#[cfg(target_os = "linux")]
+async fn connect_and_pipe(
+    cfg: &AgentConfig,
+    token: &str,
+    tun: &std::sync::Arc<tokio_tun::Tun>,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<bool> {
+    use anyhow::anyhow;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{
+        client::IntoClientRequest, http::header::AUTHORIZATION, Message,
+    };
+
     let url = format!("{}/agent/pnet", ws_base(cfg));
     let mut req = url
         .into_client_request()
@@ -125,14 +170,14 @@ async fn run_overlay(
     );
     let (ws, _resp) = tokio_tungstenite::connect_async(req).await?;
     let (mut ws_tx, mut ws_rx) = ws.split();
+    tracing::info!("pnet relay connected");
 
-    // 3) Pipe packets both ways until cancelled or either side closes.
-    let mut buf = vec![0u8; 1500];
+    let mut buf = vec![0u8; 1600];
     loop {
         tokio::select! {
             _ = cancel.changed() => {
                 if *cancel.borrow() {
-                    break;
+                    return Ok(true);
                 }
             }
             // Local TUN -> backend (binary frame per packet).
@@ -141,7 +186,7 @@ async fn run_overlay(
                     Ok(0) => {}
                     Ok(n) => {
                         if ws_tx.send(Message::Binary(buf[..n].to_vec())).await.is_err() {
-                            break;
+                            return Err(anyhow!("relay send failed"));
                         }
                     }
                     Err(e) => return Err(anyhow!("tun recv: {e}")),
@@ -153,15 +198,16 @@ async fn run_overlay(
                     Some(Ok(Message::Binary(pkt))) => {
                         let _ = tun.send_all(&pkt).await;
                     }
-                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {}
+                    Some(Ok(Message::Close(_))) | None => {
+                        return Err(anyhow!("relay closed by server"));
+                    }
                     Some(Ok(_)) => {}
                     Some(Err(e)) => return Err(anyhow!("pnet ws: {e}")),
                 }
             }
         }
     }
-    tracing::info!(%ip, "pnet overlay relay stopped");
-    Ok(())
 }
 
 /// Non-Linux: no TUN support; the overlay is a no-op.
