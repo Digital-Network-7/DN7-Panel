@@ -35,6 +35,9 @@ pub struct Metrics {
     pub cpu_cores: i64,
     /// Physical CPU core count (0/unknown falls back to logical on display).
     pub cpu_physical_cores: i64,
+    /// Whether the CPU is virtualized (running under a hypervisor / cloud VM or
+    /// in a container) — i.e. the cores are vCPUs, not dedicated physical cores.
+    pub cpu_virtual: bool,
     /// CPU model/brand string (e.g. "Intel(R) Xeon(R) ... @ 2.50GHz"), resolved
     /// once at startup. Empty if unavailable.
     pub cpu_model: String,
@@ -83,6 +86,8 @@ pub struct Collector {
     cpu_model: String,
     /// Physical core count, resolved once at startup (0 = unknown).
     cpu_physical_cores: i64,
+    /// Whether the CPU is virtualized (vCPU), detected once at startup.
+    cpu_virtual: bool,
     /// Memory hardware description (dmidecode, best-effort), resolved once.
     mem_model: String,
 }
@@ -99,6 +104,8 @@ impl Collector {
             .map(|c| c.brand().trim().to_string())
             .unwrap_or_default();
         let cpu_physical_cores = sys.physical_core_count().unwrap_or(0) as i64;
+        let is_container = detect_container();
+        let cpu_virtual = detect_virtual_cpu(is_container);
         let mem_model = detect_mem_model();
         Collector {
             sys,
@@ -109,9 +116,10 @@ impl Collector {
             os_version: os_label(),
             ip: local_ip().unwrap_or_default(),
             ip_checked_at: Some(Instant::now()),
-            is_container: detect_container(),
+            is_container,
             cpu_model,
             cpu_physical_cores,
+            cpu_virtual,
             mem_model,
         }
     }
@@ -200,6 +208,7 @@ impl Collector {
             is_container: self.is_container,
             cpu_cores,
             cpu_physical_cores: self.cpu_physical_cores,
+            cpu_virtual: self.cpu_virtual,
             cpu_model: self.cpu_model.clone(),
             mem_model: self.mem_model.clone(),
             mem_total: total_mem,
@@ -504,6 +513,79 @@ fn detect_container() -> bool {
         }
     }
     false
+}
+
+/// Detect whether the CPU is virtualized (vCPU) rather than dedicated physical
+/// cores. True for cloud VMs / hypervisor guests and for containers (whose
+/// "cores" are the host's, scheduled by the hypervisor/host). Best-effort,
+/// Linux-focused; conservative — returns false when nothing indicates a VM.
+///
+/// Signals, in order:
+///   1. containers are always vCPU;
+///   2. `systemd-detect-virt -q` exits 0 when virtualized;
+///   3. the `hypervisor` flag in `/proc/cpuinfo` (set by most hypervisors);
+///   4. `/sys/hypervisor/type` (Xen) or DMI product/vendor naming a hypervisor.
+fn detect_virtual_cpu(is_container: bool) -> bool {
+    if is_container {
+        return true;
+    }
+    // systemd-detect-virt is the most reliable when present.
+    if let Ok(status) = std::process::Command::new("systemd-detect-virt")
+        .arg("-q")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        // Exit 0 => some virtualization detected; non-zero => bare metal/none.
+        if status.success() {
+            return true;
+        }
+        // A definitive "none" answer — trust it.
+        return false;
+    }
+    // Fallback: the hypervisor CPU flag (KVM/VMware/Hyper-V/Xen HVM all set it).
+    if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
+        for line in cpuinfo.lines() {
+            if line.starts_with("flags") && line.contains(" hypervisor") {
+                return true;
+            }
+        }
+    }
+    // Xen paravirtual guests expose this.
+    if std::path::Path::new("/sys/hypervisor/type").exists() {
+        return true;
+    }
+    // DMI naming as a last resort (cloud/hypervisor product or vendor strings).
+    let dmi = |p: &str| {
+        std::fs::read_to_string(p)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    let hay = format!(
+        "{} {} {}",
+        dmi("/sys/class/dmi/id/product_name"),
+        dmi("/sys/class/dmi/id/sys_vendor"),
+        dmi("/sys/class/dmi/id/board_vendor"),
+    );
+    const VM_HINTS: &[&str] = &[
+        "kvm",
+        "qemu",
+        "vmware",
+        "virtualbox",
+        "vbox",
+        "xen",
+        "hyper-v",
+        "microsoft corporation",
+        "bochs",
+        "openstack",
+        "amazon ec2",
+        "google compute",
+        "alibaba cloud",
+        "tencent cloud",
+        "huawei cloud",
+        "droplet", // DigitalOcean
+    ];
+    VM_HINTS.iter().any(|h| hay.contains(h))
 }
 
 #[cfg(test)]

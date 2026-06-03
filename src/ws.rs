@@ -109,6 +109,7 @@ impl MetricsStream {
             "is_container": m.is_container,
             "cpu_cores": m.cpu_cores,
             "cpu_physical_cores": m.cpu_physical_cores,
+            "cpu_virtual": m.cpu_virtual,
             "cpu_model": m.cpu_model,
             "mem_model": m.mem_model,
             "mem_total": m.mem_total,
