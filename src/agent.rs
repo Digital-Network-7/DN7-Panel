@@ -187,6 +187,19 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                                     }
                                 });
                             }
+                            ServerCommand::OpenProcs(session) => {
+                                tracing::info!(%session, "received open-procs command");
+                                let cfg_t = cfg.clone();
+                                let token_t = agent_token.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) =
+                                        crate::procs::run_procs_channel(&cfg_t, &token_t, &session)
+                                            .await
+                                    {
+                                        tracing::warn!(%session, "procs channel ended: {e}");
+                                    }
+                                });
+                            }
                             ServerCommand::Pnet { ip, prefix, gone } => {
                                 tracing::info!(%ip, prefix, gone, "received pnet command");
                                 crate::pnet::apply(

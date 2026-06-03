@@ -130,6 +130,16 @@ impl AgentConfig {
         )
     }
 
+    /// WebSocket URL the agent dials to relay a process-list channel back to the
+    /// backend for a given session (in response to an `open-procs` command).
+    pub fn agent_procs_ws_url(&self, session: &str) -> String {
+        format!(
+            "{}/agent/procs?session={}",
+            self.ws_base(),
+            urlencode(session)
+        )
+    }
+
     /// Derive the ws/wss base from `backend_url`.
     fn ws_base(&self) -> String {
         if let Some(rest) = self.backend_url.strip_prefix("https://") {

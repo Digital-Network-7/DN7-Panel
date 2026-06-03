@@ -45,6 +45,9 @@ pub enum ServerCommand {
     /// Open an Nginx management channel and relay it back for the given session
     /// id (dial `/agent/nginx?session=...`).
     OpenNginx(String),
+    /// Open a process-list channel and relay it back for the given session id
+    /// (dial `/agent/procs?session=...`). Returns Top-N processes by CPU/mem.
+    OpenProcs(String),
     /// (Re)join the private overlay network: bring up a TUN device at `ip/prefix`
     /// and relay its packets through the backend (dial `/agent/pnet`). When
     /// `gone` is true, tear the overlay down instead.
@@ -172,6 +175,10 @@ impl MetricsStream {
                         } else if cmd == "open-nginx" {
                             if let Some(session) = v.get("session").and_then(|s| s.as_str()) {
                                 commands.push(ServerCommand::OpenNginx(session.to_string()));
+                            }
+                        } else if cmd == "open-procs" {
+                            if let Some(session) = v.get("session").and_then(|s| s.as_str()) {
+                                commands.push(ServerCommand::OpenProcs(session.to_string()));
                             }
                         } else if cmd == "pnet" {
                             let ip = v

@@ -15,6 +15,7 @@ mod pairing;
 mod paths;
 mod pnet;
 mod procfile;
+mod procs;
 mod supervisor;
 mod terminal;
 mod traffic;
