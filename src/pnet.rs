@@ -182,10 +182,12 @@ async fn connect_and_pipe(
     // Keepalive + dead-connection detection. Without this, an idle relay can be
     // silently dropped by a proxy/NAT and we'd only notice when traffic next
     // flows (the "ping fails until it recovers" symptom). We send a Ping every
-    // KEEPALIVE secs and treat the link as dead if nothing (data/ping/pong) is
-    // received for IDLE_TIMEOUT.
-    const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(15);
-    const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
+    // second (the liveness check cadence) and treat the link as dead if nothing
+    // (data/ping/pong) is received for IDLE_TIMEOUT — a few seconds of grace so
+    // normal jitter doesn't trigger a spurious reconnect (which would churn the
+    // TLS handshake/auth). 1s check + 3s timeout => recovery within ~3-4s.
+    const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(1);
+    const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
     let mut keepalive = tokio::time::interval(KEEPALIVE);
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_rx = std::time::Instant::now();
