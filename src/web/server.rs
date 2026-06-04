@@ -86,6 +86,7 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
         .route("/api/files/download", get(files_download))
         .route("/api/files/upload", post(files_upload))
         // WeChat scan login proxied to the backend (NAT-safe via this agent).
+        .route("/api/wx/status", get(wx_status))
         .route("/api/wx/login/start", post(wx_login_start))
         .route("/api/wx/login/poll", get(wx_login_poll))
         .with_state(state);
@@ -594,6 +595,21 @@ async fn backend_call(state: &Shared, path: &str, extra: Value) -> anyhow::Resul
 
 fn err_msg(e: impl std::fmt::Display) -> Response {
     Json(json!({ "ok": false, "error": e.to_string() })).into_response()
+}
+
+/// GET /api/wx/status — PUBLIC. Reports whether this server is bound to a
+/// mini-program account (a claimed `servers` row). The login page hides the
+/// WeChat scan option entirely when it isn't bound (or the backend is
+/// unreachable), since scan login validates server ownership.
+async fn wx_status(State(state): State<Shared>) -> Response {
+    match backend_call(&state, "/agent/wx/login/status", json!({})).await {
+        Ok(d) => {
+            let bound = d.get("bound").and_then(|b| b.as_bool()).unwrap_or(false);
+            Json(json!({ "bound": bound })).into_response()
+        }
+        // Backend unreachable / unknown token: treat as not bound (hide the tab).
+        Err(_) => Json(json!({ "bound": false })).into_response(),
+    }
 }
 
 /// POST /api/wx/login/start — PUBLIC (pre-auth login page). Calls the backend

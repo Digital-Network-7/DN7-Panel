@@ -134,8 +134,9 @@ embedded page (`web/ui/index.html`) is a left-right sci-fi UI with:
 - **Docker**: image / container / network management — pull (with mirror),
   create, start/stop/restart/remove, logs, connect/disconnect networks, an
   **in-container terminal** (`docker exec`), and **container file transfer**.
-- **Nginx**: host/docker setup, add/remove sites (proxy-host / proxy-container /
-  static), HTTPS via Let's Encrypt / self-signed / manual, reload.
+- **Nginx**: Docker-mode setup (TeaOps creates/manages an nginx container),
+  add/remove sites (proxy-host / proxy-container / static), HTTPS via Let's
+  Encrypt / self-signed / manual, reload.
 - **MySQL**: create/manage TeaOps-provisioned MySQL/MariaDB instances —
   start/stop/restart/remove, connection info, account management, a SQL runner,
   port remap and mysqldump backup.
@@ -144,12 +145,15 @@ embedded page (`web/ui/index.html`) is a left-right sci-fi UI with:
 
 Auth: an access **password is auto-generated on first run** and logged once (and
 viewable on the settings page); login mints an in-memory bearer session. Login
-attempts are rate-limited. The **account is `admin` (editable)**. Owners can also
-**log in by WeChat scan** — the page renders a QR the server owner scans with the
-mini-program 扫一扫 (validated against existing server ownership, no separate
-binding). Port, password, account and the enabled flag are editable on the
-settings page and persisted in `<data>/web.json` (0600); changing the port or
-disabling the console takes effect after an agent restart.
+attempts are rate-limited. The **account is `admin` (editable)**. When the server
+is **bound to a mini-program account** (it's been added by an owner), the login
+page also offers **WeChat scan login** — it renders a QR the server owner scans
+with the mini-program 扫一扫 (validated against existing server ownership, no
+separate binding). When the server isn't bound (or the backend is unreachable),
+the WeChat option is hidden and only password login is shown. Port, password,
+account and the enabled flag are editable on the settings page and persisted in
+`<data>/web.json` (0600); changing the port or disabling the console takes effect
+after an agent restart.
 
 > ⚠️ Security: the console binds to all interfaces over **plain HTTP** by
 > product decision, so the password and session token travel unencrypted.

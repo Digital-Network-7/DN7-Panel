@@ -187,7 +187,7 @@
     <div id="paneWx" class="hidden">
       <div class="qrwrap">
         <div id="qrbox"></div>
-        <div class="tip">用微信扫描，在小程序首页「扫一扫」确认登录</div>
+        <div class="tip">如您是服务器所有者，想要快捷登录，请在微信小程序「茶记本」中使用「扫一扫」确认登录</div>
         <div class="qrstate" id="qrstate"></div>
       </div>
     </div>
@@ -327,7 +327,7 @@ function startWxLogin() {
     .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok || b.ok === false) throw new Error(b.error || '无法发起'); return b; })
     .then((b) => {
       $('qrbox').innerHTML = b.svg || '';
-      $('qrstate').textContent = '请用小程序首页「扫一扫」，由服务器所有者确认';
+      $('qrstate').textContent = '请在微信小程序「茶记本」中使用「扫一扫」确认登录';
       pollWx(b.ticket);
     })
     .catch((e) => { $('qrstate').textContent = e.message; });
@@ -354,13 +354,14 @@ function logout() {
 // =========================================================================
 // Shell + tabs
 // =========================================================================
+const FOLDER_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" style="vertical-align:-3px"><path d="M3 6.5C3 5.7 3.7 5 4.5 5H9l2 2h8.5c.8 0 1.5.7 1.5 1.5v9c0 .8-.7 1.5-1.5 1.5h-15C3.7 19 3 18.3 3 17.5v-11Z"/></svg>';
 const TABS = [
   { key: 'dash', label: '监控', ic: '◉' },
   { key: 'term', label: '终端', ic: '▤' },
   { key: 'docker', label: 'Docker', ic: '⬢' },
   { key: 'nginx', label: 'Nginx', ic: '⬡' },
   { key: 'mysql', label: 'MySQL', ic: '⛁' },
-  { key: 'files', label: '文件', ic: '🗀' },
+  { key: 'files', label: '文件', ic: FOLDER_SVG },
   { key: 'settings', label: '设置', ic: '⚙' },
 ];
 
@@ -1018,13 +1019,12 @@ function renderNginx(v) {
   op('nginx', { op: 'info' }).then((info) => {
     if (!info.managed_mode) {
       v.innerHTML = `<div class="card"><h3>Nginx 初始化</h3>
-        <p class="mut">选择 Nginx 运行模式：<b>host</b> 使用本机系统 Nginx；<b>docker</b> 由 TeaOps 创建并管理一个容器。</p>
+        <p class="mut">TeaOps 将基于 Docker 创建并管理一个 Nginx 容器，统一托管站点与证书。请确保 Docker 已安装并运行。</p>
         <div class="row" style="margin:14px 0">
-          <select id="ngMode" class="field" style="max-width:200px"><option value="docker">Docker 模式</option><option value="host">主机模式</option></select>
-          <button class="btn" id="ngSetup">初始化</button>
+          <button class="btn" id="ngSetup">初始化（Docker 模式）</button>
         </div>
         <pre class="out hidden" id="ngSetupOut"></pre></div>`;
-      $('ngSetup').onclick = () => { $('ngSetup').disabled = true; $('ngSetupOut').classList.remove('hidden'); $('ngSetupOut').textContent = '初始化中…'; op('nginx', { op: 'setup', mode: $('ngMode').value }).then((r) => watchOp('nginx', r.op_id, $('ngSetupOut'), () => { toast('初始化完成', 'ok'); renderNginx(v); })).catch((e) => { $('ngSetupOut').textContent = '错误：' + e.message; $('ngSetup').disabled = false; }); };
+      $('ngSetup').onclick = () => { $('ngSetup').disabled = true; $('ngSetupOut').classList.remove('hidden'); $('ngSetupOut').textContent = '初始化中…'; op('nginx', { op: 'setup', mode: 'docker' }).then((r) => watchOp('nginx', r.op_id, $('ngSetupOut'), () => { toast('初始化完成', 'ok'); renderNginx(v); })).catch((e) => { $('ngSetupOut').textContent = '错误：' + e.message; $('ngSetup').disabled = false; }); };
       return;
     }
     v.innerHTML = `<div class="row" style="margin-bottom:14px"><span class="chip on">模式：${esc(info.managed_mode)}</span><span class="sp" style="flex:1"></span><button class="btn sm" id="ngAdd">添加站点</button><button class="btn sec sm" id="ngReload">重载配置</button><button class="btn sec sm" id="ngRef">刷新</button></div><div id="ngSites" class="mut">加载中…</div>`;
@@ -1254,6 +1254,24 @@ function renderSettings(v) {
 // Bootstrap
 // =========================================================================
 $('pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+
+// Only offer WeChat scan login when this server is bound to a mini-program
+// account (scan login validates server ownership). Otherwise hide the tab
+// segment entirely and stay on password login.
+function initWxOption() {
+  fetch('/api/wx/status').then((r) => r.json()).then((b) => {
+    if (b && b.bound) return; // keep the tab
+    const seg = document.querySelector('#login .seg');
+    if (seg) seg.classList.add('hidden');
+    loginMode('pw');
+  }).catch(() => {
+    const seg = document.querySelector('#login .seg');
+    if (seg) seg.classList.add('hidden');
+    loginMode('pw');
+  });
+}
+initWxOption();
+
 if (S.token) showApp();
 </script>
 </body>
