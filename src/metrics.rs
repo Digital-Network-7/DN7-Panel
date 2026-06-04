@@ -98,6 +98,20 @@ pub struct Collector {
     cpu_virtual: bool,
     /// Memory hardware description (dmidecode, best-effort), resolved once.
     mem_model: String,
+    /// Cache of per-device static disk facts (kind / device path / whole-disk
+    /// size) keyed by sysinfo's device name. These come from `/sys/block/*`
+    /// which never changes at runtime, so we read them once per device instead
+    /// of on every 1s tick.
+    disk_static: std::collections::HashMap<String, DiskStatic>,
+}
+
+/// Static (runtime-invariant) facts about a backing block device, cached so the
+/// per-tick disk aggregation doesn't re-read `/sys/block/*` every second.
+#[derive(Clone)]
+struct DiskStatic {
+    kind: String,
+    device: String,
+    device_size: u64,
 }
 
 impl Collector {
@@ -129,6 +143,7 @@ impl Collector {
             cpu_physical_cores,
             cpu_virtual,
             mem_model,
+            disk_static: std::collections::HashMap::new(),
         }
     }
 
@@ -159,7 +174,8 @@ impl Collector {
 
         // Refresh disks in place (cheap) and aggregate used/total + per-mount.
         self.disks.refresh();
-        let (disk_total, disk_used, disk_mounts) = aggregate_disks(&self.disks);
+        let (disk_total, disk_used, disk_mounts) =
+            aggregate_disks(&self.disks, &mut self.disk_static);
         let disk_usage = if disk_total == 0 {
             0.0
         } else {
@@ -252,7 +268,10 @@ fn clamp_pct(v: f64) -> f64 {
 /// Aggregate disk usage across mounted disks, de-duplicating by underlying
 /// device so the same physical disk mounted twice (bind mounts, etc.) isn't
 /// double-counted. Returns (total_bytes, used_bytes, per-mount breakdown).
-fn aggregate_disks(disks: &Disks) -> (u64, u64, Vec<DiskMount>) {
+fn aggregate_disks(
+    disks: &Disks,
+    cache: &mut std::collections::HashMap<String, DiskStatic>,
+) -> (u64, u64, Vec<DiskMount>) {
     use std::collections::HashSet;
     let mut seen: HashSet<String> = HashSet::new();
     let mut total: u64 = 0;
@@ -290,19 +309,29 @@ fn aggregate_disks(disks: &Disks) -> (u64, u64, Vec<DiskMount>) {
         total += dt;
         used += du;
         let dev_name = disk.name().to_string_lossy().to_string();
-        let base = block_base_name(&dev_name);
-        let device = base
-            .as_ref()
-            .map(|b| format!("/dev/{b}"))
-            .unwrap_or_default();
-        let device_size = base.as_deref().map(whole_disk_size).unwrap_or(0);
+        // Static device facts (kind / device path / whole-disk size) come from
+        // `/sys/block/*` which never changes at runtime — read once per device
+        // and reuse, so a 1s tick doesn't keep hitting the filesystem.
+        let st = cache.entry(dev_name.clone()).or_insert_with(|| {
+            let base = block_base_name(&dev_name);
+            let device = base
+                .as_ref()
+                .map(|b| format!("/dev/{b}"))
+                .unwrap_or_default();
+            let device_size = base.as_deref().map(whole_disk_size).unwrap_or(0);
+            DiskStatic {
+                kind: disk_kind(&dev_name),
+                device,
+                device_size,
+            }
+        });
         mounts.push(DiskMount {
             mount,
             total: dt,
             used: du,
-            kind: disk_kind(&dev_name),
-            device,
-            device_size,
+            kind: st.kind.clone(),
+            device: st.device.clone(),
+            device_size: st.device_size,
         });
     }
     // Largest filesystems first so the UI shows the most relevant mounts on top.

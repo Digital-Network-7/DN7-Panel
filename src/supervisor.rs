@@ -106,7 +106,7 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
                 tokio::time::sleep(Duration::from_secs(cfg.restart_backoff_secs)).await;
             }
             _ = version_check.tick() => {
-                if on_disk_is_newer() {
+                if on_disk_is_newer(&cfg) {
                     tracing::info!("on-disk binary is newer than this supervisor; re-exec'ing");
                     // Stop the current agent child cleanly first, then re-exec
                     // the (new) supervisor binary in our place. Release our role
@@ -133,16 +133,15 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
 }
 
 /// Whether the on-disk canonical binary reports a strictly newer version than
-/// this running supervisor. Runs `<stable_bin> version` (cheap, no side
-/// effects). False on any error so we never re-exec on a flaky read.
-fn on_disk_is_newer() -> bool {
-    let exe = crate::paths::stable_bin();
-    let out = match std::process::Command::new(&exe).arg("version").output() {
-        Ok(o) if o.status.success() => o,
-        _ => return false,
-    };
-    let disk = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    crate::supervisor::version_gt(&disk, env!("CARGO_PKG_VERSION"))
+/// this running supervisor. Reads the version file that the running agent keeps
+/// updated (`procfile::write_version`, written on every agent startup) instead
+/// of fork+exec'ing the whole binary every ~60s just to print a version. False
+/// on any error so we never re-exec on a flaky/missing read.
+fn on_disk_is_newer(cfg: &AgentConfig) -> bool {
+    match crate::procfile::read_version(&cfg.data_dir) {
+        Some(disk) => crate::supervisor::version_gt(&disk, env!("CARGO_PKG_VERSION")),
+        None => false,
+    }
 }
 
 /// Parse-and-compare semver; true if `a` > `b`. Local copy to avoid a cross-

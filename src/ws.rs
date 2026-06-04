@@ -101,43 +101,32 @@ impl MetricsStream {
     }
 
     async fn send_inner(&mut self, m: &Metrics) -> Result<Vec<ServerCommand>> {
-        let payload = serde_json::json!({
-            "agent_token": self.token,
+        // Serialize a *borrowed* view of the snapshot directly to the wire
+        // string. This avoids building an intermediate serde_json::Value and
+        // cloning every string field (hostname/os/ip/cpu_model/disk_mounts/...)
+        // into it on every 1s tick — Metrics already derives Serialize, so we
+        // flatten it and add the three transport-only fields by reference.
+        #[derive(serde::Serialize)]
+        struct Report<'a> {
+            agent_token: &'a str,
             // Agent-side sample time as epoch milliseconds. The backend uses
             // this (clamped to its own clock) as the authoritative sample
             // timestamp so reports that arrive clustered after a transient
             // network/update stall keep their true spacing instead of all
-            // landing at the backend's receive instant (which made the UI jump
-            // and skewed the stored history). Epoch millis avoids pulling a
-            // date-formatting crate into the lean musl agent.
-            "sampled_at_ms": crate::metrics::epoch_millis(),
-            "cpu_usage": m.cpu_usage,
-            "memory_usage": m.memory_usage,
-            "disk_usage": m.disk_usage,
-            "net_rx": m.net_rx,
-            "net_tx": m.net_tx,
-            "uptime": m.uptime,
-            "hostname": m.hostname,
-            "os_version": m.os_version,
-            "ip": m.ip,
-            "agent_version": env!("CARGO_PKG_VERSION"),
-            "is_container": m.is_container,
-            "cpu_cores": m.cpu_cores,
-            "cpu_physical_cores": m.cpu_physical_cores,
-            "cpu_virtual": m.cpu_virtual,
-            "cpu_model": m.cpu_model,
-            "mem_model": m.mem_model,
-            "mem_total": m.mem_total,
-            "mem_used": m.mem_used,
-            "disk_total": m.disk_total,
-            "disk_used": m.disk_used,
-            "disk_mounts": m.disk_mounts,
-            "update_phase": m.update_phase,
-            "update_progress": m.update_progress,
-            "update_done_bytes": m.update_done_bytes,
-            "update_total_bytes": m.update_total_bytes,
-        });
-        self.socket.send(Message::Text(payload.to_string())).await?;
+            // landing at the backend's receive instant. Epoch millis avoids
+            // pulling a date-formatting crate into the lean musl agent.
+            sampled_at_ms: u64,
+            agent_version: &'static str,
+            #[serde(flatten)]
+            metrics: &'a Metrics,
+        }
+        let payload = serde_json::to_string(&Report {
+            agent_token: &self.token,
+            sampled_at_ms: crate::metrics::epoch_millis(),
+            agent_version: env!("CARGO_PKG_VERSION"),
+            metrics: m,
+        })?;
+        self.socket.send(Message::Text(payload)).await?;
 
         let mut commands = Vec::new();
 
