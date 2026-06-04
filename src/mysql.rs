@@ -298,55 +298,11 @@ fn op_finish(op_id: &str, status: &str, error: &str, inst_id: &str) {
 }
 
 /// Estimate 0..100 progress from install/backup log lines (counts layers that
-/// reached a terminal state vs total seen). Returns -1 when indeterminate.
+/// Estimate 0..100 progress from install/backup image-pull log lines (shared
+/// with the docker module — same phase-weighted logic). Returns -1 when
+/// indeterminate.
 fn pull_pct(lines: &[String], status: &str) -> i64 {
-    if status == "done" {
-        return 100;
-    }
-    let mut seen: HashMap<String, bool> = HashMap::new();
-    let mut total = 0i64;
-    let mut done = 0i64;
-    let mut saw = false;
-    for ln in lines {
-        let l = ln.as_str();
-        if l.contains("Pulling from") || l.contains("Digest:") || l.contains("Status:") {
-            continue;
-        }
-        let is_layer = l.contains("Downloading")
-            || l.contains("Extracting")
-            || l.contains("Waiting")
-            || l.contains("Verifying")
-            || l.contains("Pull complete")
-            || l.contains("Already exists");
-        if !is_layer {
-            continue;
-        }
-        saw = true;
-        let complete = l.contains("Pull complete") || l.contains("Already exists");
-        let key: String = l
-            .split_whitespace()
-            .next()
-            .map(|s| s.trim_end_matches(':').to_string())
-            .unwrap_or_else(|| l.to_string());
-        match seen.get(&key).copied() {
-            None => {
-                seen.insert(key, complete);
-                total += 1;
-                if complete {
-                    done += 1;
-                }
-            }
-            Some(false) if complete => {
-                seen.insert(key, true);
-                done += 1;
-            }
-            _ => {}
-        }
-    }
-    if !saw || total == 0 {
-        return -1;
-    }
-    ((done as f64 / total as f64) * 100.0).min(98.0) as i64
+    crate::docker::pull_pct(lines, status)
 }
 
 fn ops_snapshot() -> Value {

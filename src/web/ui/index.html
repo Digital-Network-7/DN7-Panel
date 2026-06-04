@@ -128,15 +128,17 @@
   .dash .card .big { font-size:24px; }
   .dash .procwrap { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
   .dash .procwrap .scroll { flex:1 1 auto; min-height:0; overflow-y:auto; }
-  /* Network stat card: two rows + a compact dual sparkline at the bottom. */
-  .netcard .netrows { display:flex; flex-direction:column; gap:3px; margin-top:2px; }
-  .netcard .netrow { display:flex; align-items:baseline; gap:6px; font-variant-numeric:tabular-nums; }
-  .netcard .netrow b { font-size:17px; font-weight:650; }
-  .netcard .netrow s { font-size:11px; color:var(--mut); text-decoration:none; }
-  .netcard .netrow .arrow { font-size:13px; font-weight:700; width:14px; }
-  .netcard .netrow.rx .arrow { color:var(--cy); }
-  .netcard .netrow.tx .arrow { color:#a855f7; }
-  .netcard .netchart { margin:8px -18px -15px; height:40px; }
+  /* Network stat card: left/right split (上行 amber, 下行 blue). */
+  .netcard .netsplit { display:flex; gap:10px; margin-top:2px; }
+  .netcard .netcell { flex:1; min-width:0; }
+  .netcard .nethdr { display:flex; align-items:center; gap:5px; font-size:11.5px; font-weight:600; }
+  .netcard .netic { width:15px; height:15px; display:inline-flex; }
+  .netcard .netic svg { width:15px; height:15px; }
+  .netcard .netval { font-size:16px; font-weight:650; margin-top:1px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .netcard .netval s { font-size:10.5px; color:var(--mut); text-decoration:none; margin-left:1px; }
+  .netcard .netcell.up .nethdr, .netcard .netcell.up .netic { color:#f59e0b; }
+  .netcard .netcell.dn .nethdr, .netcard .netcell.dn .netic { color:#38bdf8; }
+  .netcard .netchart { margin:6px -2px -15px; height:34px; }
   .sechead { display:flex; align-items:center; gap:10px; margin:22px 0 12px; }
   .sechead h3 { margin:0; font-size:14px; font-weight:600; } .sechead .sp { flex:1; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
@@ -166,6 +168,21 @@
   .formgrid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
   .formgrid .full { grid-column:1 / -1; }
   @media (max-width:680px){ .formgrid{grid-template-columns:1fr;} }
+  /* Dynamic key/value row lists (ports / env / volumes) — miniapp-like. */
+  .kvlist { display:flex; flex-direction:column; gap:8px; }
+  .kvrow { display:flex; align-items:center; gap:8px; }
+  .kvrow .field { padding:8px 10px; }
+  .kvrow .sep { color:var(--mut); flex:0 0 auto; font-size:13px; }
+  .kvrow .rm { flex:0 0 auto; width:30px; height:30px; border-radius:8px; border:1px solid var(--line); background:var(--hov); color:var(--err); cursor:pointer; font-size:16px; line-height:1; }
+  .kvrow .ro { flex:0 0 auto; display:flex; align-items:center; gap:5px; font-size:12px; color:var(--mut); white-space:nowrap; }
+  .kvadd { align-self:flex-start; font-size:12.5px; color:var(--cy); cursor:pointer; background:none; border:none; padding:2px 0; }
+  /* Searchable image picker (create-container form). */
+  .imgpick { position:relative; }
+  .imgpop { position:absolute; left:0; right:0; top:calc(100% + 4px); z-index:20; max-height:240px; overflow-y:auto;
+    background:var(--panel-solid); border:1px solid var(--line2); border-radius:10px; box-shadow:var(--shadow); }
+  .imgopt { padding:9px 12px; font-size:13px; cursor:pointer; display:flex; align-items:center; gap:8px; font-family:ui-monospace,Menlo,Consolas,monospace; }
+  .imgopt:hover { background:var(--hov); }
+  .imgtag { font-size:10.5px; color:var(--mut); border:1px solid var(--line2); border-radius:99px; padding:1px 7px; }
 
   /* ---- Modal ---- */
   .mask { position:fixed; inset:0; background:rgba(4,7,13,0.62); backdrop-filter:blur(3px); z-index:50; display:flex; align-items:center; justify-content:center; padding:20px; }
@@ -511,45 +528,50 @@ function card(title, big, sub, pct) {
   return `<div class="card"><h3>${title}</h3><div class="big">${big}</div><div class="sub">${sub}</div>${bar}</div>`;
 }
 // Network throughput as a single stat card (same size as CPU/mem/disk): two
-// rows (↓ down, ↑ up) over a compact dual sparkline.
+// Network throughput stat card (same footprint as CPU/mem/disk): a left/right
+// split — left = 上行 (upload, amber), right = 下行 (download, blue) — each with
+// a nice SVG icon, the live value, and its own mini area chart. The two colors
+// are deliberately far apart (warm vs cool) so up/down read at a glance.
 function netCard(rx, tx, hist) {
-  return `<div class="card netcard">
-    <h3>网络吞吐</h3>
-    <div class="netrows">
-      <div class="netrow rx"><span class="arrow">↓</span><b>${fmtBytes(rx)}</b><s>/s</s></div>
-      <div class="netrow tx"><span class="arrow">↑</span><b>${fmtBytes(tx)}</b><s>/s</s></div>
+  const upIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V7"/><path d="M6 11l6-6 6 6"/><path d="M5 21h14"/></svg>';
+  const dnIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v12"/><path d="M6 13l6 6 6-6"/><path d="M5 3h14"/></svg>';
+  return `<div class="card netcard"><h3>网络吞吐</h3>
+    <div class="netsplit">
+      <div class="netcell up">
+        <div class="nethdr"><span class="netic">${upIcon}</span><span>上行</span></div>
+        <div class="netval">${fmtBytes(tx)}<s>/s</s></div>
+        <div class="netchart">${areaChart(hist.tx, 'up')}</div>
+      </div>
+      <div class="netcell dn">
+        <div class="nethdr"><span class="netic">${dnIcon}</span><span>下行</span></div>
+        <div class="netval">${fmtBytes(rx)}<s>/s</s></div>
+        <div class="netchart">${areaChart(hist.rx, 'dn')}</div>
+      </div>
     </div>
-    <div class="netchart">${dualChart(hist.rx, hist.tx)}</div>
   </div>`;
 }
-// Compact dual area chart (rx + tx) sharing one viewbox, normalized together.
-function dualChart(rxData, txData) {
-  const W = 260, H = 40, pad = 3;
-  const n = Math.max(rxData.length, txData.length);
-  if (n < 2) return '<div style="height:40px"></div>';
-  const max = Math.max(1, ...rxData, ...txData);
-  const path = (data, kind) => {
-    const m = data.length;
-    if (m < 2) return '';
-    const xs = (i) => (i * (W / (m - 1)));
-    const ys = (val) => (H - pad - (val / max) * (H - pad * 2));
-    const pts = data.map((val, i) => [xs(i), ys(val)]);
-    let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
-      const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
-      const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
-      d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
-    }
-    const stroke = kind === 'rx' ? '#22d3ee' : '#a855f7';
-    return `<path d="${d} L${W},${H} L0,${H} Z" fill="url(#dg_${kind})"/><path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.6"/>`;
-  };
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="40" preserveAspectRatio="none">
-    <defs>
-      <linearGradient id="dg_rx" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22d3ee" stop-opacity="0.35"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0.02"/></linearGradient>
-      <linearGradient id="dg_tx" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a855f7" stop-opacity="0.30"/><stop offset="1" stop-color="#a855f7" stop-opacity="0.02"/></linearGradient>
-    </defs>
-    ${path(rxData, 'rx')}${path(txData, 'tx')}
+// Single-series smooth area chart, normalized to its own recent peak. `kind`
+// (up|dn) selects the gradient/stroke colour.
+function areaChart(data, kind) {
+  const W = 130, H = 34, pad = 3;
+  const m = data.length;
+  if (m < 2) return '<div style="height:34px"></div>';
+  const max = Math.max(1, ...data);
+  const xs = (i) => (i * (W / (m - 1)));
+  const ys = (val) => (H - pad - (val / max) * (H - pad * 2));
+  const pts = data.map((val, i) => [xs(i), ys(val)]);
+  let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+  }
+  const stroke = kind === 'up' ? '#f59e0b' : '#38bdf8';
+  const gid = 'ng_' + kind;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="34" preserveAspectRatio="none">
+    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${stroke}" stop-opacity="0.38"/><stop offset="1" stop-color="${stroke}" stop-opacity="0.02"/></linearGradient></defs>
+    <path d="${d} L${W},${H} L0,${H} Z" fill="url(#${gid})"/><path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.8" stroke-linecap="round"/>
   </svg>`;
 }
 
@@ -937,13 +959,12 @@ function dkImages(info) {
     list.forEach((im) => {
       const acts = im.managed
         ? '<span class="chip">内置</span>'
-        : `<div class="actions"><button class="btn sm" data-run="${esc(im.name)}">创建容器</button><button class="btn sm danger" data-rm="${esc(im.name)}">删除</button></div>`;
+        : `<div class="actions"><button class="btn sm danger" data-rm="${esc(im.name)}">删除</button></div>`;
       h += `<tr><td class="mono" style="font-size:12px">${esc(im.name)}</td><td>${esc(im.size)}</td><td class="mut">${esc(im.created)}</td>
         <td class="act">${acts}</td></tr>`;
     });
     $('dkIList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
     document.querySelectorAll('#dkIList [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(`删除镜像 ${b.dataset.rm}？`)) op('docker', { op: 'remove_image', ref: b.dataset.rm }).then(() => { toast('已删除', 'ok'); dkImages(info); }).catch((e) => toast(e.message, 'err')); });
-    document.querySelectorAll('#dkIList [data-run]').forEach((b) => b.onclick = () => dkCreateForm(b.dataset.run, info));
   }).catch((e) => { $('dkIList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
 
@@ -970,32 +991,118 @@ function dkPullForm() {
 }
 
 function dkCreateForm(image, info) {
-  const cap = info || {};
   modal('创建容器', `
     <div class="formgrid">
-      <div class="full"><label class="lbl">镜像</label><input id="ccImg" class="field" value="${esc(image || '')}" placeholder="nginx:latest" /></div>
+      <div class="full"><label class="lbl">镜像</label>
+        <div class="imgpick" id="ccImgPick">
+          <input id="ccImg" class="field" value="${esc(image || '')}" placeholder="选择或输入镜像，如 nginx:latest" autocomplete="off" />
+          <div class="imgpop hidden" id="ccImgPop"></div>
+        </div>
+      </div>
       <div><label class="lbl">容器名（可选）</label><input id="ccName" class="field" placeholder="my-app" /></div>
       <div><label class="lbl">重启策略</label><select id="ccRestart" class="field"><option value="unless-stopped">unless-stopped</option><option value="always">always</option><option value="no">no</option></select></div>
-      <div class="full"><label class="lbl">端口映射（每行 host:container，可加 /udp）</label><textarea id="ccPorts" class="field" rows="2" placeholder="8080:80"></textarea></div>
-      <div class="full"><label class="lbl">环境变量（每行 KEY=VALUE）</label><textarea id="ccEnv" class="field" rows="2" placeholder="TZ=Asia/Shanghai"></textarea></div>
-      <div class="full"><label class="lbl">挂载卷（每行 host:container[:ro]）</label><textarea id="ccVol" class="field" rows="2" placeholder="/data/app:/app"></textarea></div>
+      <div class="full"><label class="lbl">端口映射</label><div class="kvlist" id="ccPorts"></div><button type="button" class="kvadd" id="ccPortsAdd">+ 添加端口</button></div>
+      <div class="full"><label class="lbl">环境变量</label><div class="kvlist" id="ccEnv"></div><button type="button" class="kvadd" id="ccEnvAdd">+ 添加变量</button></div>
+      <div class="full"><label class="lbl">挂载卷</label><div class="kvlist" id="ccVol"></div><button type="button" class="kvadd" id="ccVolAdd">+ 添加挂载</button></div>
       <div><label class="lbl">启动命令（可选）</label><input id="ccCmd" class="field" placeholder="留空用镜像默认" /></div>
-      <div style="display:flex;align-items:flex-end;gap:16px"><label style="display:flex;gap:7px;align-items:center"><input type="checkbox" id="ccTty" /> 分配终端</label><label style="display:flex;gap:7px;align-items:center"><input type="checkbox" id="ccStart" checked /> 创建后启动</label></div>
+      <div style="display:flex;align-items:flex-end;gap:16px"><label style="display:flex;gap:7px;align-items:center"><input type="checkbox" id="ccTty" checked /> 分配终端</label><label style="display:flex;gap:7px;align-items:center"><input type="checkbox" id="ccStart" checked /> 创建后启动</label></div>
     </div>
     <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="ccGo">创建</button></div>
     <div class="hidden" id="ccJob" style="margin-top:14px"></div>`, (close) => {
+    // Searchable image picker: all local images (incl. 内置), filtered live.
+    setupImagePicker();
+    // Dynamic row helpers.
+    const portRow = (v) => kvRow('ccPorts', [
+      { ph: '宿主端口', val: v && v.h }, { sep: ':' }, { ph: '容器端口', val: v && v.c },
+    ], { proto: true, protoVal: v && v.proto });
+    const envRow = (v) => kvRow('ccEnv', [
+      { ph: 'KEY', val: v && v.k }, { sep: '=' }, { ph: 'VALUE', val: v && v.v, grow: true },
+    ]);
+    const volRow = (v) => kvRow('ccVol', [
+      { ph: '宿主路径 /data/app', val: v && v.h, grow: true }, { sep: ':' }, { ph: '容器路径 /app', val: v && v.c, grow: true },
+    ], { ro: true });
+    $('ccPortsAdd').onclick = () => portRow();
+    $('ccEnvAdd').onclick = () => envRow();
+    $('ccVolAdd').onclick = () => volRow();
+    portRow(); // start with one empty row each
     $('ccGo').onclick = () => {
       const image = $('ccImg').value.trim(); if (!image) return toast('请输入镜像', 'err');
-      const ports = parseLines($('ccPorts').value).map((l) => { const [hp, rest] = l.split(':'); const [cp, proto] = (rest || '').split('/'); return { host: Number(hp), container: Number(cp), proto: proto || 'tcp' }; }).filter((p) => p.host && p.container);
-      const volumes = parseLines($('ccVol').value).map((l) => { const parts = l.split(':'); return { host: parts[0], container: parts[1], readonly: parts[2] === 'ro' }; }).filter((vv) => vv.host && vv.container);
-      const env = parseLines($('ccEnv').value);
+      const ports = readKv('ccPorts').map((r) => ({ host: Number(r[0]), container: Number(r[1]), proto: r.proto || 'tcp' })).filter((p) => p.host && p.container);
+      const env = readKv('ccEnv').map((r) => (r[0] ? r[0] + '=' + (r[1] || '') : '')).filter(Boolean);
+      const volumes = readKv('ccVol').map((r) => ({ host: r[0], container: r[1], readonly: !!r.ro })).filter((vv) => vv.host && vv.container);
       const body = { op: 'create_container', image, name: $('ccName').value.trim() || undefined, restart: $('ccRestart').value, ports, env, volumes, command: $('ccCmd').value.trim() || undefined, tty: $('ccTty').checked, start: $('ccStart').checked };
       $('ccGo').disabled = true; $('ccJob').classList.remove('hidden');
       op('docker', body).then((r) => renderJob($('ccJob'), 'docker', r.op_id, '', { onDone: () => { toast('容器已创建', 'ok'); close(); switchTab('docker'); }, onError: () => { $('ccGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ccGo').disabled = false; });
     };
   });
 }
-function parseLines(s) { return String(s || '').split('\n').map((x) => x.trim()).filter(Boolean); }
+
+// Wire the searchable image dropdown in the create form: loads all local images
+// (built-in ones included), shows a filtered list as the user types/focuses.
+function setupImagePicker() {
+  const inp = $('ccImg'), pop = $('ccImgPop');
+  let names = [];
+  op('docker', { op: 'list_images' }).then((d) => {
+    names = (d.images || []).map((im) => ({ name: im.name, managed: im.managed })).filter((x) => x.name && x.name !== '<none>:<none>');
+    if (document.activeElement === inp) renderPop();
+  }).catch(() => {});
+  const renderPop = () => {
+    const q = inp.value.trim().toLowerCase();
+    const list = names.filter((x) => !q || x.name.toLowerCase().includes(q)).slice(0, 30);
+    if (!list.length) { pop.classList.add('hidden'); return; }
+    pop.innerHTML = list.map((x) => `<div class="imgopt" data-n="${esc(x.name)}">${esc(x.name)}${x.managed ? '<span class="imgtag">内置</span>' : ''}</div>`).join('');
+    pop.classList.remove('hidden');
+    pop.querySelectorAll('.imgopt').forEach((o) => o.onmousedown = (e) => { e.preventDefault(); inp.value = o.dataset.n; pop.classList.add('hidden'); });
+  };
+  inp.addEventListener('focus', renderPop);
+  inp.addEventListener('input', renderPop);
+  inp.addEventListener('blur', () => setTimeout(() => pop.classList.add('hidden'), 150));
+}
+
+// Append a dynamic key/value row to list `id`. `cells` is an array of either
+// { ph, val, grow } (an input) or { sep } (a literal separator). `opts` adds a
+// proto select (ports) or a readonly checkbox (volumes).
+function kvRow(id, cells, opts) {
+  opts = opts || {};
+  const wrap = $(id);
+  const row = el('div', { class: 'kvrow' });
+  cells.forEach((c) => {
+    if (c.sep != null) { row.appendChild(el('span', { class: 'sep' }, c.sep)); return; }
+    const i = el('input', { class: 'field' + (c.grow ? ' grow' : ''), placeholder: c.ph || '' });
+    if (c.grow) i.style.flex = '1';
+    if (c.val != null) i.value = c.val;
+    row.appendChild(i);
+  });
+  if (opts.proto) {
+    const sel = el('select', { class: 'field', style: 'flex:0 0 70px' });
+    sel.innerHTML = '<option value="tcp">tcp</option><option value="udp">udp</option>';
+    if (opts.protoVal === 'udp') sel.value = 'udp';
+    sel._proto = true;
+    row.appendChild(sel);
+  }
+  if (opts.ro) {
+    const lab = el('label', { class: 'ro' });
+    lab.innerHTML = '<input type="checkbox" /> 只读';
+    lab.querySelector('input')._ro = true;
+    row.appendChild(lab);
+  }
+  const rm = el('button', { class: 'rm', type: 'button' }, '×');
+  rm.onclick = () => row.remove();
+  row.appendChild(rm);
+  wrap.appendChild(row);
+}
+// Read a dynamic kv list back: array of [v0, v1, ...] with .proto / .ro extras.
+function readKv(id) {
+  return Array.from($(id).querySelectorAll('.kvrow')).map((row) => {
+    const vals = Array.from(row.querySelectorAll('input[type="text"], input:not([type])')).map((i) => i.value.trim());
+    const out = vals;
+    const proto = row.querySelector('select');
+    if (proto && proto._proto) out.proto = proto.value;
+    const ro = row.querySelector('input[type="checkbox"]');
+    if (ro && ro._ro) out.ro = ro.checked;
+    return out;
+  });
+}
 
 function dkNetworks() {
   const body = $('dkBody');

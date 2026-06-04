@@ -190,58 +190,61 @@ fn op_finish(op_id: &str, status: &str, error: &str, result_image: &str) {
 }
 
 /// Estimate 0..100 progress from pull/install log lines (counts layers that
-/// reached a terminal state vs total seen). Returns -1 when indeterminate. The
-/// web/mini-program render an indeterminate bar for -1.
-fn pull_pct(lines: &[String], status: &str) -> i64 {
+/// Estimate 0..100 progress from pull/install log lines, weighting each layer
+/// by its phase (downloading → download-complete → extracting → complete) and
+/// averaging across all layers seen. Returns -1 when indeterminate. This makes
+/// the bar advance steadily during download/extract instead of only jumping
+/// when whole layers finish. The web/mini-program render an indeterminate bar
+/// for -1. Shared by the nginx/mysql modules (their image pulls log the same
+/// docker progress lines).
+pub(crate) fn pull_pct(lines: &[String], status: &str) -> i64 {
     if status == "done" {
         return 100;
     }
     use std::collections::HashMap;
-    let mut seen: HashMap<String, bool> = HashMap::new();
-    let mut total = 0i64;
-    let mut done = 0i64;
-    let mut saw = false;
+    // Per-layer phase weight (0.0..1.0), keyed by the layer's leading hex id.
+    let mut layers: HashMap<String, f64> = HashMap::new();
+    let phase = |l: &str| -> Option<f64> {
+        if l.contains("Already exists") || l.contains("Pull complete") {
+            Some(1.0)
+        } else if l.contains("Extracting") {
+            Some(0.80)
+        } else if l.contains("Verifying Checksum") || l.contains("Download complete") {
+            Some(0.55)
+        } else if l.contains("Downloading") {
+            Some(0.45)
+        } else if l.contains("Waiting") || l.contains("Pulling fs layer") {
+            Some(0.05)
+        } else {
+            None
+        }
+    };
     for ln in lines {
         let l = ln.as_str();
         if l.contains("Pulling from") || l.contains("Digest:") || l.contains("Status:") {
             continue;
         }
-        let is_layer = l.contains("Downloading")
-            || l.contains("Extracting")
-            || l.contains("Waiting")
-            || l.contains("Verifying")
-            || l.contains("Pull complete")
-            || l.contains("Already exists");
-        if !is_layer {
-            continue;
-        }
-        saw = true;
-        let complete = l.contains("Pull complete") || l.contains("Already exists");
-        // Key by the leading hex id when present, else the whole line.
+        let p = match phase(l) {
+            Some(p) => p,
+            None => continue,
+        };
         let key: String = l
             .split_whitespace()
             .next()
             .map(|s| s.trim_end_matches(':').to_string())
             .unwrap_or_else(|| l.to_string());
-        match seen.get(&key).copied() {
-            None => {
-                seen.insert(key, complete);
-                total += 1;
-                if complete {
-                    done += 1;
-                }
-            }
-            Some(false) if complete => {
-                seen.insert(key, true);
-                done += 1;
-            }
-            _ => {}
+        // Keep the furthest phase seen for this layer (never go backwards).
+        let entry = layers.entry(key).or_insert(0.0);
+        if p > *entry {
+            *entry = p;
         }
     }
-    if !saw || total == 0 {
+    if layers.is_empty() {
         return -1;
     }
-    ((done as f64 / total as f64) * 100.0).min(98.0) as i64
+    let sum: f64 = layers.values().sum();
+    let pct = (sum / layers.len() as f64) * 100.0;
+    pct.clamp(1.0, 99.0) as i64
 }
 
 /// Snapshot of all operations (without the full log) for `list_ops`.
@@ -1361,7 +1364,12 @@ async fn remove_image_quiet(reference: &str) {
 }
 
 /// Pull `pull_ref` via the daemon's create_image stream, pushing each progress
-/// status line into the op registry.
+/// Pull `pull_ref` via the daemon's create_image stream, pushing each progress
+/// status line into the op registry. Detects mid-stream errors (the daemon
+/// reports a failed layer via the `error` field WITHOUT ending the stream as a
+/// transport error) and verifies the image actually exists afterward, so a
+/// failed pull (common on mainland networks without a mirror) never reports
+/// success.
 async fn run_pull_detached(op_id: &str, pull_ref: &str) -> Result<()> {
     let dkr = dkr()?;
     let opts = bollard::image::CreateImageOptions {
@@ -1370,9 +1378,20 @@ async fn run_pull_detached(op_id: &str, pull_ref: &str) -> Result<()> {
     };
     let mut stream = dkr.create_image(Some(opts), None, None);
     let mut last = String::new();
+    let mut stream_error: Option<String> = None;
     while let Some(item) = stream.next().await {
         match item {
             Ok(info) => {
+                // The daemon signals a layer/pull failure inline via `error`
+                // rather than closing the stream with a transport error.
+                if let Some(err) = info.error {
+                    let e = err.trim();
+                    if !e.is_empty() {
+                        op_push(op_id, &format!("错误：{e}"));
+                        stream_error = Some(trim_msg(e).unwrap_or_else(|| "拉取失败".into()));
+                        continue;
+                    }
+                }
                 // Build a concise progress line: "<status> <progress>".
                 let mut line = info.status.unwrap_or_default();
                 if let Some(p) = info.progress {
@@ -1390,6 +1409,15 @@ async fn run_pull_detached(op_id: &str, pull_ref: &str) -> Result<()> {
             Err(e) => return Err(anyhow!(friendly_docker_err(&e))),
         }
     }
+    if let Some(err) = stream_error {
+        return Err(anyhow!(err));
+    }
+    // Final verification: the image must actually exist now. The stream can end
+    // without an explicit error even when nothing was pulled (e.g. a dropped
+    // connection mid-transfer), so confirm before reporting success.
+    dkr.inspect_image(pull_ref)
+        .await
+        .map_err(|_| anyhow!("拉取未完成或镜像不存在（网络中断？建议选择加速镜像源后重试）"))?;
     Ok(())
 }
 
