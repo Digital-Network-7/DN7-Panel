@@ -152,8 +152,10 @@ with the mini-program 扫一扫 (validated against existing server ownership, no
 separate binding). When the server isn't bound (or the backend is unreachable),
 the WeChat option is hidden and only password login is shown. Port, password,
 account and the enabled flag are editable on the settings page and persisted in
-`<data>/web.json` (0600); changing the port or disabling the console takes effect
-after an agent restart.
+`<data>/web.json` (0600). The auto-generated **default** password is stored in
+plaintext (so the operator can read it from the log/file); once the user sets
+their own password it's stored **encrypted** (machine-bound AES-GCM). Changing
+the port or disabling the console takes effect after an agent restart.
 
 > ⚠️ Security: the console binds to all interfaces over **plain HTTP** by
 > product decision, so the password and session token travel unencrypted.

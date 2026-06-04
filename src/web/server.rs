@@ -147,7 +147,7 @@ async fn login(
     }
     let (exp_user, exp_pw) = {
         let s = state.settings.lock().unwrap();
-        (s.username.clone(), s.password.clone())
+        (s.username.clone(), s.password_plain())
     };
     // Account name must match (case-sensitive) and the password must match.
     let user_ok = req.username == exp_user;
@@ -262,7 +262,7 @@ async fn get_settings(State(state): State<Shared>, headers: header::HeaderMap) -
     let s = state.settings.lock().unwrap().clone();
     Json(json!({
         "ok": true,
-        "data": { "enabled": s.enabled, "port": s.port, "username": s.username, "password": s.password }
+        "data": { "enabled": s.enabled, "port": s.port, "username": s.username, "password": s.password_plain() }
     }))
     .into_response()
 }
@@ -304,7 +304,13 @@ async fn put_settings(
             if pw.len() < 6 || pw.len() > 128 {
                 return (StatusCode::BAD_REQUEST, "密码长度需为 6-128").into_response();
             }
-            s.password = pw.to_string();
+            // Only treat it as a change when it differs from the current
+            // plaintext (the settings form pre-fills the current password). A
+            // user-chosen password is stored ENCRYPTED; the auto-generated
+            // default stays plaintext until the user replaces it.
+            if pw != s.password_plain() {
+                s.set_user_password(pw);
+            }
         }
         if let Some(un) = req.username {
             let un = un.trim();

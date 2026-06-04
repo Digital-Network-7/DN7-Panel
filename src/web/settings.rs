@@ -17,13 +17,39 @@ pub struct WebSettings {
     /// Login account name (default "admin"; user-editable).
     #[serde(default = "default_username")]
     pub username: String,
-    /// Auto-generated access password (shown once in the daemon log; the user
-    /// can also read it via an authenticated settings call).
+    /// Access password, stored at rest. The auto-generated **default** password
+    /// is kept as plaintext (so the operator can read it from the daemon log /
+    /// settings file); once the user changes it, it's stored **encrypted**
+    /// (`nonce:cipher`, machine-bound via `crate::crypto`). Read it back with
+    /// `password_plain()`, never this field directly.
     pub password: String,
+    /// True while `password` is still the auto-generated default (plaintext).
+    /// Cleared the moment the user sets their own password (then encrypted).
+    #[serde(default = "default_true")]
+    pub pw_default: bool,
 }
 
 fn default_username() -> String {
     "admin".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl WebSettings {
+    /// The plaintext password for login comparison / display. Transparently
+    /// decrypts a user-set (encrypted) password; returns a default/plaintext
+    /// value verbatim.
+    pub fn password_plain(&self) -> String {
+        crate::crypto::maybe_decrypt(&self.password).unwrap_or_else(|| self.password.clone())
+    }
+
+    /// Set a user-chosen password: store it **encrypted** and mark it non-default.
+    pub fn set_user_password(&mut self, plain: &str) {
+        self.password = crate::crypto::encrypt(plain);
+        self.pw_default = false;
+    }
 }
 
 fn settings_path() -> std::path::PathBuf {
@@ -53,6 +79,7 @@ pub fn load_or_init(default_enabled: bool, default_port: u16) -> WebSettings {
         port: default_port,
         username: default_username(),
         password: gen_password(),
+        pw_default: true,
     };
     if let Err(e) = save(&s) {
         tracing::warn!("could not persist web settings: {e}");
@@ -79,4 +106,41 @@ pub fn save(s: &WebSettings) -> Result<()> {
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_password_stays_plaintext() {
+        let s = WebSettings {
+            enabled: true,
+            port: 1080,
+            username: "admin".into(),
+            password: "PlainDefault123".into(),
+            pw_default: true,
+        };
+        // A default password is readable verbatim and isn't ciphertext-shaped.
+        assert_eq!(s.password_plain(), "PlainDefault123");
+        assert!(!s.password.contains(':'));
+    }
+
+    #[test]
+    fn user_password_is_encrypted_and_roundtrips() {
+        let mut s = WebSettings {
+            enabled: true,
+            port: 1080,
+            username: "admin".into(),
+            password: "PlainDefault123".into(),
+            pw_default: true,
+        };
+        s.set_user_password("mySecret!42");
+        // Stored encrypted (nonce:cipher), not the plaintext.
+        assert_ne!(s.password, "mySecret!42");
+        assert!(s.password.contains(':'));
+        assert!(!s.pw_default);
+        // But it decrypts back to the original for login comparison.
+        assert_eq!(s.password_plain(), "mySecret!42");
+    }
 }

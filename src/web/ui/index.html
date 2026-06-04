@@ -88,10 +88,10 @@
   html[data-theme="light"] nav button.active { color:#fff; }
   nav button .ic { width:18px; text-align:center; opacity:.95; font-size:15px; }
   aside .foot { border-top:1px solid var(--line); padding-top:12px; }
-  aside .ver { font-size:11.5px; color:var(--mut); padding:0 8px; display:flex; align-items:center; gap:7px; }
+  aside .ver { font-size:11.5px; color:var(--mut); padding:0 8px; display:flex; align-items:center; justify-content:center; gap:7px; }
   aside .ver b { color:var(--fg); font-weight:600; }
 
-  .content { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .content { flex:1; min-width:0; display:flex; flex-direction:column; min-height:100vh; }
   .topbar { display:flex; align-items:center; gap:14px; padding:13px 22px; border-bottom:1px solid var(--line);
     background:var(--panel2); backdrop-filter:blur(8px); position:sticky; top:0; z-index:5; }
   .topbar h2 { margin:0; font-size:16px; font-weight:600; letter-spacing:.4px; }
@@ -103,6 +103,7 @@
   .userbox .av { width:24px; height:24px; border-radius:99px; background:linear-gradient(135deg,var(--cy),var(--vio)); display:flex; align-items:center; justify-content:center; font-size:12px; color:#fff; font-weight:600; }
   .userbox b { font-size:13px; font-weight:600; }
   main { padding:22px 24px; }
+  main.fill { padding:0; overflow:hidden; flex:1 1 auto; min-height:0; display:flex; }
 
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; }
   .card { background:var(--panel); backdrop-filter:blur(10px); border:1px solid var(--line); border-radius:14px; padding:18px; }
@@ -111,6 +112,28 @@
   .card .sub { color:var(--mut); font-size:12px; margin-top:5px; }
   .bar { height:6px; border-radius:99px; background:var(--hov); margin-top:12px; overflow:hidden; }
   .bar > i { display:block; height:100%; border-radius:99px; background:linear-gradient(90deg,var(--cy),var(--vio)); transition:width .4s; }
+
+  /* ---- Dashboard one-screen layout ---- */
+  .dash { display:flex; flex-direction:column; gap:14px; flex:1 1 auto; min-height:0; width:100%; padding:18px 24px; box-sizing:border-box; }
+  .dash .grid { flex:0 0 auto; }
+  .dash .card { padding:15px 18px; }
+  .dash .card .big { font-size:24px; }
+  .dash .netwrap { flex:0 0 auto; }
+  .dash .procwrap { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
+  .dash .procwrap .scroll { flex:1 1 auto; min-height:0; overflow-y:auto; }
+  /* Network throughput: left/right split */
+  .netsplit { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:640px){ .netsplit { grid-template-columns:1fr; } }
+  .netcell { position:relative; border-radius:12px; overflow:hidden; padding:14px 16px 0; background:var(--panel2); border:1px solid var(--line); }
+  .netcell .lab { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:600; }
+  .netcell .val { font-size:26px; font-weight:700; margin-top:2px; font-variant-numeric:tabular-nums; }
+  .netcell .val s { font-size:13px; color:var(--mut); font-weight:400; text-decoration:none; margin-left:3px; }
+  .netcell .arrow { width:22px; height:22px; border-radius:7px; display:flex; align-items:center; justify-content:center; font-size:13px; color:#fff; }
+  .netcell .chart { margin:6px -16px 0; height:74px; }
+  .netcell.rx .arrow { background:linear-gradient(135deg,#22d3ee,#3b82f6); }
+  .netcell.tx .arrow { background:linear-gradient(135deg,#8b5cf6,#d946ef); }
+  .netcell.rx .lab { color:var(--cy); }
+  .netcell.tx .lab { color:var(--vio); }
   .sechead { display:flex; align-items:center; gap:10px; margin:22px 0 12px; }
   .sechead h3 { margin:0; font-size:14px; font-weight:600; } .sechead .sp { flex:1; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
@@ -400,6 +423,9 @@ function switchTab(k) {
   document.querySelectorAll('#nav button').forEach((b) => b.className = b.dataset.k === k ? 'active' : '');
   $('title').textContent = (TABS.find((t) => t.key === k) || {}).label || '';
   const v = $('view'); v.innerHTML = '';
+  // The dashboard is a fixed one-screen layout (no body scroll); other tabs
+  // scroll normally.
+  v.classList.toggle('fill', k === 'dash');
   if (k === 'dash') renderDash(v);
   else if (k === 'term') renderTerm(v);
   else if (k === 'docker') renderDocker(v);
@@ -410,13 +436,15 @@ function switchTab(k) {
 }
 
 // =========================================================================
-// Dashboard — improved network up/down card with sparkline
+// Dashboard — one screen: stat cards + split network throughput + proc table
 // =========================================================================
 function renderDash(v) {
   v.innerHTML = `
-    <div class="grid" id="cards"></div>
-    <div class="card" style="margin-top:16px"><h3>网络吞吐</h3><div id="netcard"></div></div>
-    <div class="card" style="margin-top:16px"><h3>进程 · CPU Top</h3><div id="procs" class="mut">加载中…</div></div>`;
+    <div class="dash">
+      <div class="grid" id="cards"></div>
+      <div class="card netwrap"><h3>网络吞吐</h3><div class="netsplit" id="netcard"></div></div>
+      <div class="card procwrap"><h3>进程 · CPU Top</h3><div class="scroll" id="procs"><div class="mut">加载中…</div></div></div>
+    </div>`;
   const hist = { rx: [], tx: [] };
   const refresh = () => {
     api('/api/metrics').then((b) => {
@@ -425,14 +453,13 @@ function renderDash(v) {
         card('CPU', (m.cpu_usage || 0).toFixed(1) + '%', (m.cpu_cores || 0) + ' 核心', m.cpu_usage),
         card('内存', (m.memory_usage || 0).toFixed(1) + '%', fmtBytes(m.mem_used) + ' / ' + fmtBytes(m.mem_total), m.memory_usage),
         card('磁盘', (m.disk_usage || 0).toFixed(1) + '%', fmtBytes(m.disk_used) + ' / ' + fmtBytes(m.disk_total), m.disk_usage),
-        card('运行时长', fmtUptime(m.uptime), esc(m.hostname || ''), null),
       ].join('');
       hist.rx.push(m.net_rx || 0); hist.tx.push(m.net_tx || 0);
-      if (hist.rx.length > 60) { hist.rx.shift(); hist.tx.shift(); }
+      if (hist.rx.length > 48) { hist.rx.shift(); hist.tx.shift(); }
       $('netcard').innerHTML = netCard(m.net_rx || 0, m.net_tx || 0, hist);
     }).catch(() => {});
     api('/api/procs').then((b) => {
-      const rows = (b.data.by_cpu || []).slice(0, 12);
+      const rows = (b.data.by_cpu || []).slice(0, 20);
       let h = '<table class="proctable"><colgroup><col class="c-name"/><col class="c-pid"/><col class="c-cpu"/><col class="c-mem"/></colgroup><tr><th>进程</th><th class="num">PID</th><th class="num">CPU</th><th class="num">内存</th></tr>';
       rows.forEach((p) => { h += `<tr><td class="mono nm" title="${esc(p.name)}">${esc(p.name)}</td><td class="num">${p.pid}</td><td class="num">${(p.cpu || 0).toFixed(1)}%</td><td class="num">${fmtBytes(p.mem)}</td></tr>`; });
       $('procs').innerHTML = h + '</table>';
@@ -444,45 +471,56 @@ function card(title, big, sub, pct) {
   const bar = pct == null ? '' : `<div class="bar"><i style="width:${Math.min(100, Math.max(0, pct)).toFixed(0)}%"></i></div>`;
   return `<div class="card"><h3>${title}</h3><div class="big">${big}</div><div class="sub">${sub}</div>${bar}</div>`;
 }
-function fmtUptime(s) {
-  s = Number(s) || 0; const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
-  if (d > 0) return d + '天' + h + '时'; if (h > 0) return h + '时' + m + '分'; return m + '分';
-}
-// Network card: two big arrowed readouts (down/up) + a dual sparkline.
+// Network throughput: two cells (left=下行, right=上行), each a polished area
+// chart with its own gradient + glow, normalized to its own recent peak.
 function netCard(rx, tx, hist) {
-  const spark = sparkline(hist.rx, hist.tx);
   return `
-  <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">
-    <div style="display:flex;gap:24px;flex:1;min-width:240px">
-      <div>
-        <div style="display:flex;align-items:center;gap:7px;color:var(--cy);font-size:12px;font-weight:600"><span style="font-size:15px">↓</span> 下行</div>
-        <div style="font-size:24px;font-weight:650;margin-top:3px">${fmtBytes(rx)}<span style="font-size:13px;color:var(--mut);font-weight:400">/s</span></div>
-      </div>
-      <div>
-        <div style="display:flex;align-items:center;gap:7px;color:var(--vio);font-size:12px;font-weight:600"><span style="font-size:15px">↑</span> 上行</div>
-        <div style="font-size:24px;font-weight:650;margin-top:3px">${fmtBytes(tx)}<span style="font-size:13px;color:var(--mut);font-weight:400">/s</span></div>
-      </div>
+    <div class="netcell rx">
+      <div class="lab"><span class="arrow">↓</span> 下行</div>
+      <div class="val">${fmtBytes(rx)}<s>/s</s></div>
+      <div class="chart">${areaChart(hist.rx, 'rx')}</div>
     </div>
-    <div style="flex:2;min-width:260px">${spark}</div>
-  </div>`;
+    <div class="netcell tx">
+      <div class="lab"><span class="arrow">↑</span> 上行</div>
+      <div class="val">${fmtBytes(tx)}<s>/s</s></div>
+      <div class="chart">${areaChart(hist.tx, 'tx')}</div>
+    </div>`;
 }
-// Inline SVG dual sparkline (rx cyan, tx violet), normalized to the window max.
-function sparkline(rx, tx) {
-  const W = 380, H = 64, n = Math.max(rx.length, tx.length);
-  if (n < 2) return '<div style="height:64px;display:flex;align-items:center;justify-content:center;color:var(--mut);font-size:12px">采集中…</div>';
-  const max = Math.max(1, ...rx, ...tx);
-  const path = (arr) => {
-    const step = W / (n - 1);
-    return arr.map((val, i) => `${i === 0 ? 'M' : 'L'}${(i * step).toFixed(1)},${(H - (val / max) * (H - 6) - 3).toFixed(1)}`).join(' ');
-  };
-  const area = (arr) => `${path(arr)} L${W},${H} L0,${H} Z`;
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="64" preserveAspectRatio="none">
+// A smooth, filled area chart (single series) with a gradient fill, a soft
+// glow on the stroke, and a highlighted leading dot. `kind` picks the palette.
+function areaChart(data, kind) {
+  const W = 300, H = 74, pad = 4;
+  const n = data.length;
+  if (n < 2) return '<div style="height:74px;display:flex;align-items:center;justify-content:center;color:var(--mut);font-size:12px">采集中…</div>';
+  const max = Math.max(1, ...data);
+  const stroke = kind === 'rx' ? '#22d3ee' : '#a855f7';
+  const gid = 'g_' + kind, glow = 'gl_' + kind;
+  const xs = (i) => (i * (W / (n - 1)));
+  const ys = (val) => (H - pad - (val / max) * (H - pad * 2 - 2));
+  // Smooth path via Catmull-Rom → cubic Bézier for a clean curve (no jitter).
+  const pts = data.map((val, i) => [xs(i), ys(val)]);
+  let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+  }
+  const area = `${d} L${W},${H} L0,${H} Z`;
+  const last = pts[pts.length - 1];
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="74" preserveAspectRatio="none">
     <defs>
-      <linearGradient id="gr" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--cy)" stop-opacity="0.35"/><stop offset="1" stop-color="var(--cy)" stop-opacity="0"/></linearGradient>
-      <linearGradient id="gt" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--vio)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--vio)" stop-opacity="0"/></linearGradient>
+      <linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="${stroke}" stop-opacity="0.42"/>
+        <stop offset="1" stop-color="${stroke}" stop-opacity="0.02"/>
+      </linearGradient>
+      <filter id="${glow}" x="-20%" y="-40%" width="140%" height="180%">
+        <feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
     </defs>
-    <path d="${area(rx)}" fill="url(#gr)"/><path d="${path(rx)}" fill="none" stroke="var(--cy)" stroke-width="1.6"/>
-    <path d="${area(tx)}" fill="url(#gt)"/><path d="${path(tx)}" fill="none" stroke="var(--vio)" stroke-width="1.6"/>
+    <path d="${area}" fill="url(#${gid})"/>
+    <path d="${d}" fill="none" stroke="${stroke}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" filter="url(#${glow})"/>
+    <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.6" fill="${stroke}"/>
   </svg>`;
 }
 
