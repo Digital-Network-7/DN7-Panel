@@ -361,6 +361,35 @@ pub async fn web_dispatch(req: &Value) -> Result<Value> {
 /// Dispatch one request. Long ops (`pull_image`, `install`) start a detached
 /// task and return an `op_id` immediately.
 async fn handle(req: &Req) -> Result<Value> {
+    // Guard: TeaOps-managed service containers/images (nginx / mysql) can't be
+    // operated on from the generic Docker channel at all — they're managed by
+    // their own modules so state/volumes stay consistent. This applies to every
+    // caller (web console AND the mini-program relay).
+    const CONTAINER_OPS: &[&str] = &[
+        "start_container",
+        "stop_container",
+        "restart_container",
+        "remove_container",
+        "logs",
+        "inspect_container",
+        "inspect_container_networks",
+        "connect_network",
+        "disconnect_network",
+    ];
+    if CONTAINER_OPS.contains(&req.op.as_str()) {
+        if let Some(r) = req.reference.as_deref() {
+            if let Some(why) = managed_container_guard(r).await {
+                return Err(anyhow!(why));
+            }
+        }
+    }
+    if req.op == "remove_image" {
+        if let Some(r) = req.reference.as_deref() {
+            if managed_image_guard(r).await {
+                return Err(anyhow!("该镜像由 TeaOps 的 Nginx/MySQL 使用，无法删除"));
+            }
+        }
+    }
     match req.op.as_str() {
         "info" => docker_info().await,
         "list_images" => list_images().await,
@@ -525,12 +554,45 @@ async fn managed_container_guard(reference: &str) -> Option<String> {
     let is_mysql = name == crate::mysql::CONTAINER || labels.contains_key("teaops.mysql");
     let is_nginx = name == crate::nginx::CONTAINER;
     if is_mysql {
-        Some("该容器由 TeaOps MySQL 管理，请在「MySQL」页面删除实例".to_string())
+        Some("该容器由 TeaOps MySQL 管理，请在「MySQL」页面操作".to_string())
     } else if is_nginx {
         Some("该容器由 TeaOps Nginx 管理，请在「Nginx」页面操作".to_string())
     } else {
         None
     }
+}
+
+/// True if `reference` is an image used by a TeaOps-managed service container
+/// (nginx / mysql) — such images can't be removed from the Docker page.
+async fn managed_image_guard(reference: &str) -> bool {
+    let dkr = match dkr() {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    let managed = managed_image_refs(&dkr).await;
+    if managed.contains(reference) {
+        return true;
+    }
+    // The caller may pass a short id; resolve the ref's image id and compare.
+    if let Ok(insp) = dkr.inspect_image(reference).await {
+        if let Some(id) = insp.id {
+            let short = id
+                .strip_prefix("sha256:")
+                .unwrap_or(&id)
+                .chars()
+                .take(12)
+                .collect::<String>();
+            if managed.contains(&short) {
+                return true;
+            }
+        }
+        if let Some(tags) = insp.repo_tags {
+            if tags.iter().any(|t| managed.contains(t)) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn need_ref(req: &Req) -> Result<String> {
@@ -679,9 +741,12 @@ fn host_mem_bytes() -> u64 {
 }
 
 /// List images: id, repo:tag, size, created.
-/// List images: id, repo:tag, size, created.
 async fn list_images() -> Result<Value> {
     let dkr = dkr()?;
+    // Determine which images are used by TeaOps-managed service containers
+    // (nginx / mysql) so the UI can mark them "内置" and the agent can refuse
+    // to remove them.
+    let managed_images = managed_image_refs(&dkr).await;
     let opts = bollard::image::ListImagesOptions::<String> {
         all: false,
         ..Default::default()
@@ -720,9 +785,55 @@ async fn list_images() -> Result<Value> {
             "tag": tag,
             "size": human_size(img.size.max(0) as u64),
             "created": human_since(img.created),
+            "managed": managed_images.contains(&name) || managed_images.contains(&short_id),
         }));
     }
     Ok(json!({ "images": items }))
+}
+
+/// The set of image refs (repo:tag) + short ids used by TeaOps-managed service
+/// containers (nginx / mysql). Used to mark those images "内置" and protect
+/// them from removal.
+async fn managed_image_refs(dkr: &Docker) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let opts = bollard::container::ListContainersOptions::<String> {
+        all: true,
+        ..Default::default()
+    };
+    let containers = match dkr.list_containers(Some(opts)).await {
+        Ok(c) => c,
+        Err(_) => return out,
+    };
+    for c in containers {
+        let name = c
+            .names
+            .as_ref()
+            .and_then(|n| n.first())
+            .map(|s| s.trim_start_matches('/').to_string())
+            .unwrap_or_default();
+        let has_mysql_label = c
+            .labels
+            .as_ref()
+            .map(|l| l.contains_key("teaops.mysql"))
+            .unwrap_or(false);
+        let managed =
+            name == crate::nginx::CONTAINER || name == crate::mysql::CONTAINER || has_mysql_label;
+        if managed {
+            if let Some(image) = c.image.clone() {
+                out.insert(image);
+            }
+            if let Some(iid) = c.image_id.clone() {
+                let short = iid
+                    .strip_prefix("sha256:")
+                    .unwrap_or(&iid)
+                    .chars()
+                    .take(12)
+                    .collect::<String>();
+                out.insert(short);
+            }
+        }
+    }
+    out
 }
 
 /// Format a byte count like docker's human sizes (e.g. "12.3MB").
@@ -802,6 +913,16 @@ async fn list_containers() -> Result<Value> {
             .map(|s| s.trim_start_matches('/').to_string())
             .unwrap_or_default();
         let state = c.state.clone().unwrap_or_default();
+        // TeaOps-managed service containers (nginx / mysql) are marked so the UI
+        // can show "内置" and hide direct controls (the agent also refuses ops
+        // on them — see `managed_container_guard`).
+        let has_mysql_label = c
+            .labels
+            .as_ref()
+            .map(|l| l.contains_key("teaops.mysql"))
+            .unwrap_or(false);
+        let managed =
+            name == crate::nginx::CONTAINER || name == crate::mysql::CONTAINER || has_mysql_label;
         items.push(json!({
             "id": short_id,
             "name": name,
@@ -810,6 +931,7 @@ async fn list_containers() -> Result<Value> {
             "status": c.status.clone().unwrap_or_default(),
             "ports": fmt_ports(&c.ports),
             "has_shell": has_shell,
+            "managed": managed,
         }));
     }
     Ok(json!({ "containers": items }))

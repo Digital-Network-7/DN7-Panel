@@ -92,6 +92,9 @@
   aside .ver b { color:var(--fg); font-weight:600; }
 
   .content { flex:1; min-width:0; display:flex; flex-direction:column; min-height:100vh; }
+  /* One-screen tabs (dashboard/terminal): cap content to the viewport so the
+     body never scrolls; inner regions scroll instead. */
+  .content.fillmode { height:100vh; min-height:0; overflow:hidden; }
   .topbar { display:flex; align-items:center; gap:14px; padding:13px 22px; border-bottom:1px solid var(--line);
     background:var(--panel2); backdrop-filter:blur(8px); position:sticky; top:0; z-index:5; }
   .topbar h2 { margin:0; font-size:16px; font-weight:600; letter-spacing:.4px; }
@@ -114,26 +117,24 @@
   .bar > i { display:block; height:100%; border-radius:99px; background:linear-gradient(90deg,var(--cy),var(--vio)); transition:width .4s; }
 
   /* ---- Dashboard one-screen layout ---- */
-  .dash { display:flex; flex-direction:column; gap:14px; flex:1 1 auto; min-height:0; width:100%; padding:18px 24px; box-sizing:border-box; }
-  .dash .grid { flex:0 0 auto; }
+  .dash { display:flex; flex-direction:column; gap:14px; flex:1 1 auto; min-height:0; width:100%; padding:18px 24px; box-sizing:border-box; overflow:hidden; }
+  /* 4 equal stat cards in one row (CPU / mem / disk / network). */
+  .statrow { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; flex:0 0 auto; }
+  @media (max-width:860px){ .statrow { grid-template-columns:repeat(2,1fr); } }
   .dash .card { padding:15px 18px; }
+  .dash .statrow .card { display:flex; flex-direction:column; min-height:128px; }
   .dash .card .big { font-size:24px; }
-  .dash .netwrap { flex:0 0 auto; }
   .dash .procwrap { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
   .dash .procwrap .scroll { flex:1 1 auto; min-height:0; overflow-y:auto; }
-  /* Network throughput: left/right split */
-  .netsplit { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
-  @media (max-width:640px){ .netsplit { grid-template-columns:1fr; } }
-  .netcell { position:relative; border-radius:12px; overflow:hidden; padding:14px 16px 0; background:var(--panel2); border:1px solid var(--line); }
-  .netcell .lab { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:600; }
-  .netcell .val { font-size:26px; font-weight:700; margin-top:2px; font-variant-numeric:tabular-nums; }
-  .netcell .val s { font-size:13px; color:var(--mut); font-weight:400; text-decoration:none; margin-left:3px; }
-  .netcell .arrow { width:22px; height:22px; border-radius:7px; display:flex; align-items:center; justify-content:center; font-size:13px; color:#fff; }
-  .netcell .chart { margin:6px -16px 0; height:74px; }
-  .netcell.rx .arrow { background:linear-gradient(135deg,#22d3ee,#3b82f6); }
-  .netcell.tx .arrow { background:linear-gradient(135deg,#8b5cf6,#d946ef); }
-  .netcell.rx .lab { color:var(--cy); }
-  .netcell.tx .lab { color:var(--vio); }
+  /* Network stat card: two rows + a compact dual sparkline at the bottom. */
+  .netcard .netrows { display:flex; flex-direction:column; gap:3px; margin-top:2px; }
+  .netcard .netrow { display:flex; align-items:baseline; gap:6px; font-variant-numeric:tabular-nums; }
+  .netcard .netrow b { font-size:17px; font-weight:650; }
+  .netcard .netrow s { font-size:11px; color:var(--mut); text-decoration:none; }
+  .netcard .netrow .arrow { font-size:13px; font-weight:700; width:14px; }
+  .netcard .netrow.rx .arrow { color:var(--cy); }
+  .netcard .netrow.tx .arrow { color:#a855f7; }
+  .netcard .netchart { margin:8px -18px -15px; height:40px; }
   .sechead { display:flex; align-items:center; gap:10px; margin:22px 0 12px; }
   .sechead h3 { margin:0; font-size:14px; font-weight:600; } .sechead .sp { flex:1; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
@@ -396,15 +397,28 @@ function logout() {
 // =========================================================================
 // Shell + tabs
 // =========================================================================
-const FOLDER_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" style="vertical-align:-3px"><path d="M3 6.5C3 5.7 3.7 5 4.5 5H9l2 2h8.5c.8 0 1.5.7 1.5 1.5v9c0 .8-.7 1.5-1.5 1.5h-15C3.7 19 3 18.3 3 17.5v-11Z"/></svg>';
+// Monochrome line/solid icons (inherit currentColor). Kept inline so the
+// console stays a single self-contained file with no icon-font/CDN dependency.
+const IC = {
+  dash: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M3 12h3l2.5 6 4-13L18 12h3"/></svg>',
+  term: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><path d="M13 15h4"/></svg>',
+  // Docker: the stacked containers + whale-back silhouette, simplified, solid.
+  docker: '<svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor" style="vertical-align:-3px"><path d="M4 10h2.4v2.2H4V10Zm2.9 0h2.4v2.2H6.9V10Zm2.9 0h2.4v2.2H9.8V10Zm2.9 0h2.4v2.2h-2.4V10ZM6.9 7.1h2.4v2.2H6.9V7.1Zm2.9 0h2.4v2.2H9.8V7.1Zm2.9 0h2.4v2.2h-2.4V7.1Zm0-2.9h2.4v2.2h-2.4V4.2Z"/><path d="M22 11.2c-.5-.35-1.7-.48-2.6-.3-.12-.83-.6-1.55-1.43-2.2l-.48-.32-.32.48c-.42.64-.56 1.7-.13 2.42.18.3.46.55.8.72-.4.22-1.18.3-1.36.3H2.5c-.36 2 .26 4.5 1.86 6 1.5 1.42 3.74 2.1 6.66 2.1 6.33 0 11.02-2.92 13.2-8.24.86.02 2.02-.01 2.62-1.16l.16-.3-.28-.2c-.62-.4-1.62-.5-2.38-.3Z" transform="translate(-1.5 0)"/></svg>',
+  // Nginx: stylized "N" inside a rounded square (official wordmark feel).
+  nginx: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" style="vertical-align:-3px"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M8.5 16V8.5l7 7V8" stroke-linecap="round"/></svg>',
+  // MySQL: a database cylinder (clean, monochrome).
+  mysql: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><ellipse cx="12" cy="5.5" rx="7" ry="2.8"/><path d="M5 5.5v13c0 1.55 3.13 2.8 7 2.8s7-1.25 7-2.8v-13"/><path d="M5 12c0 1.55 3.13 2.8 7 2.8s7-1.25 7-2.8"/></svg>',
+  files: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" style="vertical-align:-3px"><path d="M3 6.5C3 5.7 3.7 5 4.5 5H9l2 2h8.5c.8 0 1.5.7 1.5 1.5v9c0 .8-.7 1.5-1.5 1.5h-15C3.7 19 3 18.3 3 17.5v-11Z"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>',
+};
 const TABS = [
-  { key: 'dash', label: '监控', ic: '◉' },
-  { key: 'term', label: '终端', ic: '▤' },
-  { key: 'docker', label: 'Docker', ic: '⬢' },
-  { key: 'nginx', label: 'Nginx', ic: '⬡' },
-  { key: 'mysql', label: 'MySQL', ic: '⛁' },
-  { key: 'files', label: '文件', ic: FOLDER_SVG },
-  { key: 'settings', label: '设置', ic: '⚙' },
+  { key: 'dash', label: '监控', ic: IC.dash },
+  { key: 'term', label: '终端', ic: IC.term },
+  { key: 'docker', label: 'Docker', ic: IC.docker },
+  { key: 'nginx', label: 'Nginx', ic: IC.nginx },
+  { key: 'mysql', label: 'MySQL', ic: IC.mysql },
+  { key: 'files', label: '文件', ic: IC.files },
+  { key: 'settings', label: '设置', ic: IC.settings },
 ];
 
 function showApp() {
@@ -444,7 +458,9 @@ function switchTab(k) {
   const v = $('view'); v.innerHTML = '';
   // The dashboard + terminal are fixed one-screen layouts (no body scroll);
   // other tabs scroll normally.
-  v.classList.toggle('fill', k === 'dash' || k === 'term');
+  const fill = (k === 'dash' || k === 'term');
+  v.classList.toggle('fill', fill);
+  document.querySelector('.content').classList.toggle('fillmode', fill);
   if (k === 'dash') renderDash(v);
   else if (k === 'term') renderTerm(v);
   else if (k === 'docker') renderDocker(v);
@@ -460,22 +476,22 @@ function switchTab(k) {
 function renderDash(v) {
   v.innerHTML = `
     <div class="dash">
-      <div class="grid" id="cards"></div>
-      <div class="card netwrap"><h3>网络吞吐</h3><div class="netsplit" id="netcard"></div></div>
+      <div class="statrow" id="cards"></div>
       <div class="card procwrap"><h3>进程 · CPU Top</h3><div class="scroll" id="procs"><div class="mut">加载中…</div></div></div>
     </div>`;
   const hist = { rx: [], tx: [] };
   const refresh = () => {
     api('/api/metrics').then((b) => {
       const m = b.data;
+      hist.rx.push(m.net_rx || 0); hist.tx.push(m.net_tx || 0);
+      if (hist.rx.length > 40) { hist.rx.shift(); hist.tx.shift(); }
+      const coreLabel = m.cpu_virtual ? ' vCPU' : ' 核心';
       $('cards').innerHTML = [
-        card('CPU', (m.cpu_usage || 0).toFixed(1) + '%', (m.cpu_cores || 0) + ' 核心', m.cpu_usage),
+        card('CPU', (m.cpu_usage || 0).toFixed(1) + '%', (m.cpu_cores || 0) + coreLabel, m.cpu_usage),
         card('内存', (m.memory_usage || 0).toFixed(1) + '%', fmtBytes(m.mem_used) + ' / ' + fmtBytes(m.mem_total), m.memory_usage),
         card('磁盘', (m.disk_usage || 0).toFixed(1) + '%', fmtBytes(m.disk_used) + ' / ' + fmtBytes(m.disk_total), m.disk_usage),
+        netCard(m.net_rx || 0, m.net_tx || 0, hist),
       ].join('');
-      hist.rx.push(m.net_rx || 0); hist.tx.push(m.net_tx || 0);
-      if (hist.rx.length > 48) { hist.rx.shift(); hist.tx.shift(); }
-      $('netcard').innerHTML = netCard(m.net_rx || 0, m.net_tx || 0, hist);
     }).catch(() => {});
     api('/api/procs').then((b) => {
       const rows = (b.data.by_cpu || []).slice(0, 20);
@@ -490,56 +506,46 @@ function card(title, big, sub, pct) {
   const bar = pct == null ? '' : `<div class="bar"><i style="width:${Math.min(100, Math.max(0, pct)).toFixed(0)}%"></i></div>`;
   return `<div class="card"><h3>${title}</h3><div class="big">${big}</div><div class="sub">${sub}</div>${bar}</div>`;
 }
-// Network throughput: two cells (left=下行, right=上行), each a polished area
-// chart with its own gradient + glow, normalized to its own recent peak.
+// Network throughput as a single stat card (same size as CPU/mem/disk): two
+// rows (↓ down, ↑ up) over a compact dual sparkline.
 function netCard(rx, tx, hist) {
-  return `
-    <div class="netcell rx">
-      <div class="lab"><span class="arrow">↓</span> 下行</div>
-      <div class="val">${fmtBytes(rx)}<s>/s</s></div>
-      <div class="chart">${areaChart(hist.rx, 'rx')}</div>
+  return `<div class="card netcard">
+    <h3>网络吞吐</h3>
+    <div class="netrows">
+      <div class="netrow rx"><span class="arrow">↓</span><b>${fmtBytes(rx)}</b><s>/s</s></div>
+      <div class="netrow tx"><span class="arrow">↑</span><b>${fmtBytes(tx)}</b><s>/s</s></div>
     </div>
-    <div class="netcell tx">
-      <div class="lab"><span class="arrow">↑</span> 上行</div>
-      <div class="val">${fmtBytes(tx)}<s>/s</s></div>
-      <div class="chart">${areaChart(hist.tx, 'tx')}</div>
-    </div>`;
+    <div class="netchart">${dualChart(hist.rx, hist.tx)}</div>
+  </div>`;
 }
-// A smooth, filled area chart (single series) with a gradient fill, a soft
-// glow on the stroke, and a highlighted leading dot. `kind` picks the palette.
-function areaChart(data, kind) {
-  const W = 300, H = 74, pad = 4;
-  const n = data.length;
-  if (n < 2) return '<div style="height:74px;display:flex;align-items:center;justify-content:center;color:var(--mut);font-size:12px">采集中…</div>';
-  const max = Math.max(1, ...data);
-  const stroke = kind === 'rx' ? '#22d3ee' : '#a855f7';
-  const gid = 'g_' + kind, glow = 'gl_' + kind;
-  const xs = (i) => (i * (W / (n - 1)));
-  const ys = (val) => (H - pad - (val / max) * (H - pad * 2 - 2));
-  // Smooth path via Catmull-Rom → cubic Bézier for a clean curve (no jitter).
-  const pts = data.map((val, i) => [xs(i), ys(val)]);
-  let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
-    const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
-    const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
-    d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
-  }
-  const area = `${d} L${W},${H} L0,${H} Z`;
-  const last = pts[pts.length - 1];
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="74" preserveAspectRatio="none">
+// Compact dual area chart (rx + tx) sharing one viewbox, normalized together.
+function dualChart(rxData, txData) {
+  const W = 260, H = 40, pad = 3;
+  const n = Math.max(rxData.length, txData.length);
+  if (n < 2) return '<div style="height:40px"></div>';
+  const max = Math.max(1, ...rxData, ...txData);
+  const path = (data, kind) => {
+    const m = data.length;
+    if (m < 2) return '';
+    const xs = (i) => (i * (W / (m - 1)));
+    const ys = (val) => (H - pad - (val / max) * (H - pad * 2));
+    const pts = data.map((val, i) => [xs(i), ys(val)]);
+    let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+      const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
+      const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
+      d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+    }
+    const stroke = kind === 'rx' ? '#22d3ee' : '#a855f7';
+    return `<path d="${d} L${W},${H} L0,${H} Z" fill="url(#dg_${kind})"/><path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.6"/>`;
+  };
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="40" preserveAspectRatio="none">
     <defs>
-      <linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="${stroke}" stop-opacity="0.42"/>
-        <stop offset="1" stop-color="${stroke}" stop-opacity="0.02"/>
-      </linearGradient>
-      <filter id="${glow}" x="-20%" y="-40%" width="140%" height="180%">
-        <feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-      </filter>
+      <linearGradient id="dg_rx" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22d3ee" stop-opacity="0.35"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0.02"/></linearGradient>
+      <linearGradient id="dg_tx" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a855f7" stop-opacity="0.30"/><stop offset="1" stop-color="#a855f7" stop-opacity="0.02"/></linearGradient>
     </defs>
-    <path d="${area}" fill="url(#${gid})"/>
-    <path d="${d}" fill="none" stroke="${stroke}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" filter="url(#${glow})"/>
-    <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.6" fill="${stroke}"/>
+    ${path(rxData, 'rx')}${path(txData, 'tx')}
   </svg>`;
 }
 
@@ -865,7 +871,7 @@ function dkContainers() {
         <td class="mono" style="font-size:12px">${esc(c.image)}</td>
         <td><span class="chip ${running ? 'on' : 'off'}"><span class="dot-s ${running ? 'on' : ''}"></span>${esc(c.status || c.state)}</span></td>
         <td class="mono" style="font-size:11.5px">${esc(c.ports || '-')}</td>
-        <td class="act"><div class="actions" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-shell="${c.has_shell ? 1 : 0}" data-running="${running ? 1 : 0}"></div></td>
+        <td class="act"><div class="actions" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-shell="${c.has_shell ? 1 : 0}" data-running="${running ? 1 : 0}" data-managed="${c.managed ? 1 : 0}"></div></td>
       </tr>`;
     });
     $('dkCList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
@@ -875,7 +881,10 @@ function dkContainers() {
 
 function buildContainerActions(holder, reload) {
   const id = holder.dataset.id, name = holder.dataset.name, hasShell = holder.dataset.shell === '1', running = holder.dataset.running === '1';
-  const managed = name === 'teaops-mysql' || name === 'teaops-nginx';
+  const managed = holder.dataset.managed === '1';
+  // TeaOps-managed service containers (nginx / mysql) are operated only from
+  // their own pages — show a plain "内置" tag, no action buttons.
+  if (managed) { holder.innerHTML = '<span class="chip">内置</span>'; return; }
   const mk = (label, cls, fn) => { const b = el('button', { class: 'btn sm ' + (cls || 'sec') }, label); b.onclick = fn; holder.appendChild(b); };
   if (running) {
     mk('停止', 'sec', () => doCAction('stop_container', id, reload));
@@ -887,10 +896,7 @@ function buildContainerActions(holder, reload) {
   }
   mk('日志', 'sec', () => dkLogs(id, name));
   mk('网络', 'sec', () => dkContainerNetworks(id, name));
-  // TeaOps-managed service containers (mysql/nginx) can't be deleted here —
-  // they're managed from their own pages.
-  if (managed) mk('受管', 'sec', () => toast(name === 'teaops-mysql' ? '请在「MySQL」页面删除实例' : '请在「Nginx」页面操作', 'err'));
-  else mk('删除', 'danger', async () => { if (await confirmDanger(`删除容器 ${name}？`)) doCAction('remove_container', id, reload); });
+  mk('删除', 'danger', async () => { if (await confirmDanger(`删除容器 ${name}？`)) doCAction('remove_container', id, reload); });
 }
 function doCAction(o, id, reload) { op('docker', { op: o, ref: id }).then(() => { toast('操作成功', 'ok'); reload && reload(); }).catch((e) => toast(e.message, 'err')); }
 
@@ -925,8 +931,11 @@ function dkImages(info) {
     if (!list.length) { $('dkIList').innerHTML = '<div class="empty">暂无镜像</div>'; return; }
     let h = '<table class="optable"><tr><th>镜像</th><th>大小</th><th>创建</th><th class="act">操作</th></tr>';
     list.forEach((im) => {
+      const acts = im.managed
+        ? '<span class="chip">内置</span>'
+        : `<div class="actions"><button class="btn sm" data-run="${esc(im.name)}">创建容器</button><button class="btn sm danger" data-rm="${esc(im.name)}">删除</button></div>`;
       h += `<tr><td class="mono" style="font-size:12px">${esc(im.name)}</td><td>${esc(im.size)}</td><td class="mut">${esc(im.created)}</td>
-        <td class="act"><div class="actions"><button class="btn sm" data-run="${esc(im.name)}">创建容器</button><button class="btn sm danger" data-rm="${esc(im.name)}">删除</button></div></td></tr>`;
+        <td class="act">${acts}</td></tr>`;
     });
     $('dkIList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
     document.querySelectorAll('#dkIList [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(`删除镜像 ${b.dataset.rm}？`)) op('docker', { op: 'remove_image', ref: b.dataset.rm }).then(() => { toast('已删除', 'ok'); dkImages(info); }).catch((e) => toast(e.message, 'err')); });
@@ -990,9 +999,9 @@ function dkNetworks() {
   $('dkRefN').onclick = dkNetworks;
   $('dkNetNew').onclick = () => modal('创建网络', '<label class="lbl">网络名</label><input id="nnName" class="field" style="margin-bottom:16px" /><div class="row" style="justify-content:flex-end"><button class="btn" id="nnGo">创建</button></div>', (close) => { $('nnGo').onclick = () => op('docker', { op: 'create_network', name: $('nnName').value.trim() }).then(() => { close(); toast('已创建', 'ok'); dkNetworks(); }).catch((e) => toast(e.message, 'err')); });
   op('docker', { op: 'list_networks' }).then((d) => {
-    let h = '<table><tr><th>名称</th><th>驱动</th><th>范围</th><th style="width:1%">操作</th></tr>';
-    (d.networks || []).forEach((n) => { h += `<tr><td>${esc(n.name)}</td><td class="mut">${esc(n.driver)}</td><td class="mut">${esc(n.scope)}</td><td>${['bridge', 'host', 'none'].includes(n.name) ? '<span class="mut" style="font-size:12px">内置</span>' : `<button class="btn sm danger" data-rm="${esc(n.name)}">删除</button>`}</td></tr>`; });
-    $('dkNList').innerHTML = h + '</table>';
+    let h = '<table class="optable"><tr><th>名称</th><th>驱动</th><th>范围</th><th class="act">操作</th></tr>';
+    (d.networks || []).forEach((n) => { h += `<tr><td>${esc(n.name)}</td><td class="mut">${esc(n.driver)}</td><td class="mut">${esc(n.scope)}</td><td class="act">${['bridge', 'host', 'none'].includes(n.name) ? '<span class="mut" style="font-size:12px">内置</span>' : `<button class="btn sm danger" data-rm="${esc(n.name)}">删除</button>`}</td></tr>`; });
+    $('dkNList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
     document.querySelectorAll('#dkNList [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(`删除网络 ${b.dataset.rm}？`)) op('docker', { op: 'remove_network', ref: b.dataset.rm }).then(() => { toast('已删除', 'ok'); dkNetworks(); }).catch((e) => toast(e.message, 'err')); });
   }).catch((e) => { $('dkNList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
@@ -1237,38 +1246,43 @@ function renderMysql(v) {
     }
     op('mysql', { op: 'list' }).then((d) => {
       const arr = d.instances || [];
-      const hasInst = arr.length > 0;
-      // Single instance: only offer 新建 when none exists.
-      v.innerHTML = `<div class="row" style="margin-bottom:14px"><span class="sp" style="flex:1"></span>${hasInst ? '' : '<button class="btn sm" id="myNew">创建数据库</button>'}<button class="btn sec sm" id="myRef">刷新</button></div><div id="myList" class="mut">加载中…</div>`;
-      $('myRef').onclick = () => renderMysql(v);
-      if (!hasInst) $('myNew').onclick = () => myInstall(() => renderMysql(v));
-      if (!hasInst) { $('myList').innerHTML = '<div class="empty">尚未创建数据库，点击「创建数据库」开始（一台主机一个实例，可在其中创建多个库）</div>'; return; }
-      let h = '<table class="optable"><tr><th>引擎</th><th>端口</th><th>状态</th><th class="act">操作</th></tr>';
-      arr.forEach((m) => {
-        const running = m.running;
-        const phase = m.phase === 'initializing' ? '初始化中' : (running ? '运行中' : '已停止');
-        const cls = m.phase === 'initializing' ? 'warn' : (running ? 'on' : 'off');
-        h += `<tr><td><b>${esc(m.engine)}</b> <span class="mut">${esc(m.version || '')}</span></td><td class="mono">${m.port ? m.port : '未映射'}</td><td><span class="chip ${cls}"><span class="dot-s ${running ? 'on' : ''}"></span>${phase}</span></td><td class="act"><div class="actions" data-id="${esc(m.id)}" data-running="${running ? 1 : 0}"></div></td></tr>`;
-      });
-      $('myList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
-      document.querySelectorAll('#myList .actions').forEach((a) => buildMyActions(a, () => renderMysql(v)));
+      const m = arr[0];
+      if (!m) {
+        v.innerHTML = `<div class="card"><h3>MySQL / MariaDB</h3><p class="mut">尚未创建数据库。一台主机由 TeaOps 托管一个实例，可在其中创建多个库。</p><button class="btn" id="myNew">创建数据库</button></div>`;
+        $('myNew').onclick = () => myInstall(() => renderMysql(v));
+        return;
+      }
+      // Single-instance layout: a header card with status + lifecycle actions,
+      // then the management panel (databases / accounts / SQL / settings) inline.
+      const running = m.running;
+      const phase = m.phase === 'initializing' ? '初始化中' : (running ? '运行中' : '已停止');
+      const cls = m.phase === 'initializing' ? 'warn' : (running ? 'on' : 'off');
+      v.innerHTML = `
+        <div class="card" style="margin-bottom:16px">
+          <div class="row" style="align-items:center">
+            <div style="flex:1">
+              <div style="font-size:18px;font-weight:650">${esc(m.engine)} <span class="mut" style="font-size:14px;font-weight:400">${esc(m.version || '')}</span></div>
+              <div class="mut" style="font-size:12.5px;margin-top:3px">端口 ${m.port ? m.port : '未映射'} · <span class="chip ${cls}"><span class="dot-s ${running ? 'on' : ''}"></span>${phase}</span></div>
+            </div>
+            <div class="actions" id="myLifecycle"></div>
+          </div>
+        </div>
+        <div id="myPanel"></div>`;
+      const reload = () => renderMysql(v);
+      const lc = $('myLifecycle');
+      const mk = (label, klass, fn) => { const b = el('button', { class: 'btn sm ' + (klass || 'sec') }, label); b.onclick = fn; lc.appendChild(b); };
+      if (running) {
+        mk('停止', 'sec', () => op('mysql', { op: 'stop', inst: m.id }).then(() => { toast('已停止', 'ok'); reload(); }).catch((e) => toast(e.message, 'err')));
+        mk('重启', 'sec', () => op('mysql', { op: 'restart', inst: m.id }).then(() => { toast('已重启', 'ok'); reload(); }).catch((e) => toast(e.message, 'err')));
+      } else {
+        mk('启动', '', () => op('mysql', { op: 'start', inst: m.id }).then(() => { toast('已启动', 'ok'); reload(); }).catch((e) => toast(e.message, 'err')));
+      }
+      mk('删除', 'danger', async () => { const keep = await confirmKeepData(); if (keep === null) return; op('mysql', { op: 'remove', inst: m.id, keep_data: keep }).then(() => { toast('已删除', 'ok'); reload(); }).catch((e) => toast(e.message, 'err')); });
+      // Management panel — only meaningful when the instance can serve queries.
+      if (running) myPanel($('myPanel'), m.id, reload);
+      else $('myPanel').innerHTML = '<div class="empty">实例未运行，启动后可管理数据库与账号</div>';
     }).catch((e) => { v.innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; });
   }).catch((e) => { v.innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; });
-}
-function buildMyActions(holder, reload) {
-  const id = holder.dataset.id, running = holder.dataset.running === '1';
-  const mk = (label, cls, fn) => { const b = el('button', { class: 'btn sm ' + (cls || 'sec') }, label); b.onclick = fn; holder.appendChild(b); };
-  if (running) {
-    mk('管理', '', () => myManage(id, reload));
-    mk('停止', 'sec', () => op('mysql', { op: 'stop', inst: id }).then(() => { toast('已停止', 'ok'); reload(); }).catch((e) => toast(e.message, 'err')));
-    mk('重启', 'sec', () => op('mysql', { op: 'restart', inst: id }).then(() => { toast('已重启', 'ok'); reload(); }).catch((e) => toast(e.message, 'err')));
-  } else {
-    mk('启动', '', () => op('mysql', { op: 'start', inst: id }).then(() => { toast('已启动', 'ok'); reload(); }).catch((e) => toast(e.message, 'err')));
-  }
-  mk('删除', 'danger', async () => {
-    const keep = await confirmKeepData(); if (keep === null) return;
-    op('mysql', { op: 'remove', inst: id, keep_data: keep }).then(() => { toast('已删除', 'ok'); reload(); }).catch((e) => toast(e.message, 'err'));
-  });
 }
 function confirmKeepData() { return new Promise((res) => { modal('删除数据库', '<p style="margin:0 0 16px">删除将移除数据库容器。是否保留数据卷（其中的所有库和数据）？</p><div class="row" style="justify-content:flex-end"><button class="btn sec" id="kdCancel">取消</button><button class="btn sec" id="kdKeep">保留数据</button><button class="btn danger" id="kdDrop">连同数据删除</button></div>', (close) => { $('kdCancel').onclick = () => { close(); res(null); }; $('kdKeep').onclick = () => { close(); res(true); }; $('kdDrop').onclick = () => { close(); res(false); }; }); }); }
 
@@ -1296,15 +1310,14 @@ function myInstall(reload) {
   });
 }
 
-function myManage(id, reload) {
-  modal('MySQL · ' + id, `
-    <div class="subtabs" id="myTabs"><button data-t="info" class="on">连接信息</button><button data-t="users">账号</button><button data-t="query">SQL</button><button data-t="more">更多</button></div>
-    <div id="myMBody"></div>`, (close) => {
-    const tabs = $('myTabs');
-    const sel = (t) => { tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === t)); if (t === 'info') myInfo(id); else if (t === 'users') myUsers(id); else if (t === 'query') myQuery(id); else myMore(id, close, reload); };
-    tabs.querySelectorAll('button').forEach((b) => b.onclick = () => sel(b.dataset.t));
-    sel('info');
-  }, true);
+function myPanel(host, id, reload) {
+  host.innerHTML = `
+    <div class="subtabs" id="myTabs"><button data-t="info" class="on">数据库</button><button data-t="users">账号</button><button data-t="query">SQL</button><button data-t="more">设置</button></div>
+    <div id="myMBody"></div>`;
+  const tabs = host.querySelector('#myTabs');
+  const sel = (t) => { tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === t)); if (t === 'info') myInfo(id); else if (t === 'users') myUsers(id); else if (t === 'query') myQuery(id); else myMore(id, () => {}, reload); };
+  tabs.querySelectorAll('button').forEach((b) => b.onclick = () => sel(b.dataset.t));
+  sel('info');
 }
 function myInfo(id) {
   const b = $('myMBody'); b.innerHTML = '<div class="mut">加载中…</div>';
