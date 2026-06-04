@@ -520,7 +520,7 @@ async fn list_instances() -> Result<Value> {
         let mut ready = false;
         if state == "running" {
             let pwd = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
-            ready = is_ready(&m.container, &pwd).await;
+            ready = is_ready_cached(&m.container, &pwd).await;
             if !ready {
                 phase = "initializing".to_string();
             }
@@ -1593,6 +1593,31 @@ async fn is_ready(container: &str, password: &str) -> bool {
         Ok((code, _)) => code == 0,
         Err(_) => false,
     }
+}
+
+/// Cached readiness check for the polled `list` path: the client polls `list`
+/// (e.g. every 1.5s) and probing every running instance with an exec each time
+/// is wasteful. Cache the result briefly so repeated list calls don't re-exec.
+/// `wait_ready` deliberately bypasses this and probes fresh.
+async fn is_ready_cached(container: &str, password: &str) -> bool {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static CACHE: OnceLock<Mutex<HashMap<String, (bool, Instant)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    const TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
+    if let Ok(m) = cache.lock() {
+        if let Some((ready, at)) = m.get(container) {
+            if at.elapsed() < TTL {
+                return *ready;
+            }
+        }
+    }
+    let ready = is_ready(container, password).await;
+    if let Ok(mut m) = cache.lock() {
+        m.insert(container.to_string(), (ready, Instant::now()));
+    }
+    ready
 }
 
 /// Poll `is_ready` until it returns true or the timeout elapses. Pushes a few

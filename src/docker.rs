@@ -674,8 +674,26 @@ async fn list_containers() -> Result<Value> {
         .list_containers(Some(opts))
         .await
         .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+
+    // Probe shell availability for all running containers concurrently rather
+    // than sequentially — each probe waits up to ~500ms, so for N running
+    // containers this turns ~N*500ms into ~500ms total.
+    let shell_futs = containers.iter().map(|c| {
+        let dkr = dkr.clone();
+        let id = c.id.clone().unwrap_or_default();
+        let running = c.state.as_deref() == Some("running");
+        async move {
+            if running {
+                container_has_shell(&dkr, &id).await
+            } else {
+                false
+            }
+        }
+    });
+    let shells = futures_util::future::join_all(shell_futs).await;
+
     let mut items = Vec::new();
-    for c in containers {
+    for (c, has_shell) in containers.into_iter().zip(shells) {
         let id = c.id.clone().unwrap_or_default();
         let short_id = id.chars().take(12).collect::<String>();
         let name = c
@@ -685,12 +703,6 @@ async fn list_containers() -> Result<Value> {
             .map(|s| s.trim_start_matches('/').to_string())
             .unwrap_or_default();
         let state = c.state.clone().unwrap_or_default();
-        let running = state == "running";
-        let has_shell = if running {
-            container_has_shell(&dkr, &id).await
-        } else {
-            false
-        };
         items.push(json!({
             "id": short_id,
             "name": name,
