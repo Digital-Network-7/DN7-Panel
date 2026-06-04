@@ -189,6 +189,61 @@ fn op_finish(op_id: &str, status: &str, error: &str, result_image: &str) {
     }
 }
 
+/// Estimate 0..100 progress from pull/install log lines (counts layers that
+/// reached a terminal state vs total seen). Returns -1 when indeterminate. The
+/// web/mini-program render an indeterminate bar for -1.
+fn pull_pct(lines: &[String], status: &str) -> i64 {
+    if status == "done" {
+        return 100;
+    }
+    use std::collections::HashMap;
+    let mut seen: HashMap<String, bool> = HashMap::new();
+    let mut total = 0i64;
+    let mut done = 0i64;
+    let mut saw = false;
+    for ln in lines {
+        let l = ln.as_str();
+        if l.contains("Pulling from") || l.contains("Digest:") || l.contains("Status:") {
+            continue;
+        }
+        let is_layer = l.contains("Downloading")
+            || l.contains("Extracting")
+            || l.contains("Waiting")
+            || l.contains("Verifying")
+            || l.contains("Pull complete")
+            || l.contains("Already exists");
+        if !is_layer {
+            continue;
+        }
+        saw = true;
+        let complete = l.contains("Pull complete") || l.contains("Already exists");
+        // Key by the leading hex id when present, else the whole line.
+        let key: String = l
+            .split_whitespace()
+            .next()
+            .map(|s| s.trim_end_matches(':').to_string())
+            .unwrap_or_else(|| l.to_string());
+        match seen.get(&key).copied() {
+            None => {
+                seen.insert(key, complete);
+                total += 1;
+                if complete {
+                    done += 1;
+                }
+            }
+            Some(false) if complete => {
+                seen.insert(key, true);
+                done += 1;
+            }
+            _ => {}
+        }
+    }
+    if !saw || total == 0 {
+        return -1;
+    }
+    ((done as f64 / total as f64) * 100.0).min(98.0) as i64
+}
+
 /// Snapshot of all operations (without the full log) for `list_ops`.
 fn ops_snapshot() -> Value {
     let m = match ops().lock() {
@@ -205,6 +260,7 @@ fn ops_snapshot() -> Value {
                 "status": o.status,
                 "error": o.error,
                 "result_image": o.result_image,
+                "pct": pull_pct(&o.lines, &o.status),
                 // The latest line gives the list a one-line progress hint.
                 "last_line": o.lines.last().cloned().unwrap_or_default(),
             })
@@ -226,6 +282,7 @@ fn op_log(op_id: &str) -> Value {
             "result_image": o.result_image,
             "kind": o.kind,
             "target": o.target,
+            "pct": pull_pct(&o.lines, &o.status),
         }),
         None => json!({ "lines": [], "status": "gone", "error": "" }),
     }
@@ -364,6 +421,12 @@ async fn handle(req: &Req) -> Result<Value> {
         }
         "remove_container" => {
             let r = need_ref(req)?;
+            // Protect TeaOps-managed service containers (nginx / mysql) from
+            // deletion here — they must be removed from their own pages so the
+            // associated state/volumes are handled correctly.
+            if let Some(why) = managed_container_guard(&r).await {
+                return Err(anyhow!(why));
+            }
             let opts = bollard::container::RemoveContainerOptions {
                 force: true,
                 ..Default::default()
@@ -440,6 +503,33 @@ async fn handle(req: &Req) -> Result<Value> {
             Ok(json!({ "disconnected": net }))
         }
         other => Err(anyhow!("unsupported op: {other}")),
+    }
+}
+
+/// TeaOps-managed service containers (nginx / mysql) must not be removed from
+/// the generic Docker page — they have their own management pages that also
+/// clean up the associated state/volumes. Returns `Some(reason)` to block the
+/// removal, `None` to allow it. Identifies the target by inspecting its real
+/// name + labels (the UI passes a short id, so a name string match isn't
+/// enough). Inspect failures don't block (fail-open: a normal container).
+async fn managed_container_guard(reference: &str) -> Option<String> {
+    let dkr = dkr().ok()?;
+    let c = dkr.inspect_container(reference, None).await.ok()?;
+    let name = c.name.unwrap_or_default();
+    let name = name.trim_start_matches('/');
+    let labels = c
+        .config
+        .as_ref()
+        .and_then(|cf| cf.labels.clone())
+        .unwrap_or_default();
+    let is_mysql = name == crate::mysql::CONTAINER || labels.contains_key("teaops.mysql");
+    let is_nginx = name == crate::nginx::CONTAINER;
+    if is_mysql {
+        Some("该容器由 TeaOps MySQL 管理，请在「MySQL」页面删除实例".to_string())
+    } else if is_nginx {
+        Some("该容器由 TeaOps Nginx 管理，请在「Nginx」页面操作".to_string())
+    } else {
+        None
     }
 }
 

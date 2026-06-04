@@ -137,9 +137,11 @@ embedded page (`web/ui/index.html`) is a left-right sci-fi UI with:
 - **Nginx**: Docker-mode setup (TeaOps creates/manages an nginx container),
   add/remove sites (proxy-host / proxy-container / static), HTTPS via Let's
   Encrypt / self-signed / manual, reload.
-- **MySQL**: create/manage TeaOps-provisioned MySQL/MariaDB instances —
-  start/stop/restart/remove, connection info, account management, a SQL runner,
-  port remap and mysqldump backup.
+- **MySQL**: create/manage ONE TeaOps-provisioned MySQL/MariaDB instance
+  (fixed container `teaops-mysql`) — start/stop/restart/remove, connection info,
+  multiple databases (create/drop), account management, a SQL runner, port remap
+  and mysqldump backup. Version switching isn't offered because the data
+  directory isn't portable across major versions.
 - **文件**: a host file browser (list / mkdir / delete / upload / download); the
   same browser is reused scoped to a container from the Docker page.
 

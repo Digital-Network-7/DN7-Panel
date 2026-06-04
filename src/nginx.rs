@@ -47,7 +47,7 @@ use crate::config::AgentConfig;
 
 /// The container name we create + manage in docker mode. We never adopt a
 /// container we didn't create with this exact name.
-const CONTAINER: &str = "teaops-nginx";
+pub const CONTAINER: &str = "teaops-nginx";
 
 #[derive(Debug, Deserialize)]
 struct Req {
@@ -167,6 +167,58 @@ fn op_finish(op_id: &str, status: &str, error: &str) {
     }
 }
 
+/// Estimate 0..100 progress from docker pull log lines during setup (the nginx
+/// container image pull). Returns -1 when indeterminate.
+fn pull_pct(lines: &[String], status: &str) -> i64 {
+    if status == "done" {
+        return 100;
+    }
+    let mut seen: HashMap<String, bool> = HashMap::new();
+    let mut total = 0i64;
+    let mut done = 0i64;
+    let mut saw = false;
+    for ln in lines {
+        let l = ln.as_str();
+        if l.contains("Pulling from") || l.contains("Digest:") || l.contains("Status:") {
+            continue;
+        }
+        let is_layer = l.contains("Downloading")
+            || l.contains("Extracting")
+            || l.contains("Waiting")
+            || l.contains("Verifying")
+            || l.contains("Pull complete")
+            || l.contains("Already exists");
+        if !is_layer {
+            continue;
+        }
+        saw = true;
+        let complete = l.contains("Pull complete") || l.contains("Already exists");
+        let key: String = l
+            .split_whitespace()
+            .next()
+            .map(|s| s.trim_end_matches(':').to_string())
+            .unwrap_or_else(|| l.to_string());
+        match seen.get(&key).copied() {
+            None => {
+                seen.insert(key, complete);
+                total += 1;
+                if complete {
+                    done += 1;
+                }
+            }
+            Some(false) if complete => {
+                seen.insert(key, true);
+                done += 1;
+            }
+            _ => {}
+        }
+    }
+    if !saw || total == 0 {
+        return -1;
+    }
+    ((done as f64 / total as f64) * 100.0).min(98.0) as i64
+}
+
 fn ops_snapshot() -> Value {
     let m = match ops().lock() {
         Ok(m) => m,
@@ -181,6 +233,7 @@ fn ops_snapshot() -> Value {
                 "target": o.target,
                 "status": o.status,
                 "error": o.error,
+                "pct": pull_pct(&o.lines, &o.status),
                 "last_line": o.lines.last().cloned().unwrap_or_default(),
             })
         })
@@ -200,6 +253,7 @@ fn op_log(op_id: &str) -> Value {
             "error": o.error,
             "kind": o.kind,
             "target": o.target,
+            "pct": pull_pct(&o.lines, &o.status),
         }),
         None => json!({ "lines": [], "status": "gone", "error": "" }),
     }

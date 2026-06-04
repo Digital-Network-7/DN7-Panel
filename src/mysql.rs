@@ -21,8 +21,9 @@
 //!   {"id","op":"remove","inst","keep_data"?}
 //!   {"id","op":"reset_password","inst"}                 -> {password}
 //!   {"id","op":"change_port","inst","port"?,"expose"}   -> recreate, keep volume
-//!   {"id","op":"switch_version","inst","version"}       -> {op_id} (detached)
 //!   {"id","op":"databases","inst"}                      -> [{name,tables,size}]
+//!   {"id","op":"create_database","inst","database"}     create a new schema
+//!   {"id","op":"drop_database","inst","database"}       drop a (non-system) schema
 //!   {"id","op":"credentials","inst"}                    -> {host,port,user,password}
 //!   {"id","op":"list_users","inst"}                     -> [{user,host,system}]
 //!   {"id","op":"create_user","inst","username","host","password"}
@@ -31,6 +32,11 @@
 //!   {"id","op":"query","inst","sql"}                     -> {columns,rows,truncated}
 //!   {"id","op":"backup","inst"}                          -> {op_id} (detached dump)
 //!   {"id","op":"list_ops"} / {"op_log","op_id"} / {"dismiss_op","op_id"}
+//!
+//! Only ONE instance is supported (fixed container `teaops-mysql`); create
+//! multiple databases inside it. Version switching is intentionally NOT offered
+//! because MySQL/MariaDB data directories aren't portable across major versions
+//! (downgrades are unsupported and would corrupt data).
 //! Responses: {"id","ok":true,"data":..} / {"id","ok":false,"error":".."}
 
 use std::collections::HashMap;
@@ -56,6 +62,14 @@ const LABEL_MANAGED: &str = "teaops.mysql";
 const LABEL_ID: &str = "teaops.mysql.id";
 /// Label carrying the engine ("mysql"|"mariadb").
 const LABEL_ENGINE: &str = "teaops.mysql.engine";
+
+/// Single-instance model: one TeaOps MySQL/MariaDB per host with stable names
+/// (no random suffix). Create multiple databases inside it instead of multiple
+/// instances. These are also used to protect the container from deletion in the
+/// Docker page.
+pub const INSTANCE_ID: &str = "default";
+pub const CONTAINER: &str = "teaops-mysql";
+const VOLUME: &str = "teaops-mysql-data";
 
 /// Connect to the local Docker daemon (or fail with a friendly hint).
 fn dkr() -> Result<Docker> {
@@ -217,15 +231,8 @@ fn gen_password() -> String {
         .collect()
 }
 
-/// A short instance id (8 hex chars).
-fn new_inst_id() -> String {
-    let mut rng = rand::thread_rng();
-    let n: u64 = rng.gen();
-    format!("{:08x}", (n & 0xffff_ffff) as u32)
-}
-
 // ---------------------------------------------------------------------------
-// Detached op registry (install / switch_version): the client starts an op and
+// Detached op registry (install): the client starts an op and
 // polls list_ops / op_log so a long image pull survives leaving the page.
 // ---------------------------------------------------------------------------
 
@@ -290,6 +297,58 @@ fn op_finish(op_id: &str, status: &str, error: &str, inst_id: &str) {
     }
 }
 
+/// Estimate 0..100 progress from install/backup log lines (counts layers that
+/// reached a terminal state vs total seen). Returns -1 when indeterminate.
+fn pull_pct(lines: &[String], status: &str) -> i64 {
+    if status == "done" {
+        return 100;
+    }
+    let mut seen: HashMap<String, bool> = HashMap::new();
+    let mut total = 0i64;
+    let mut done = 0i64;
+    let mut saw = false;
+    for ln in lines {
+        let l = ln.as_str();
+        if l.contains("Pulling from") || l.contains("Digest:") || l.contains("Status:") {
+            continue;
+        }
+        let is_layer = l.contains("Downloading")
+            || l.contains("Extracting")
+            || l.contains("Waiting")
+            || l.contains("Verifying")
+            || l.contains("Pull complete")
+            || l.contains("Already exists");
+        if !is_layer {
+            continue;
+        }
+        saw = true;
+        let complete = l.contains("Pull complete") || l.contains("Already exists");
+        let key: String = l
+            .split_whitespace()
+            .next()
+            .map(|s| s.trim_end_matches(':').to_string())
+            .unwrap_or_else(|| l.to_string());
+        match seen.get(&key).copied() {
+            None => {
+                seen.insert(key, complete);
+                total += 1;
+                if complete {
+                    done += 1;
+                }
+            }
+            Some(false) if complete => {
+                seen.insert(key, true);
+                done += 1;
+            }
+            _ => {}
+        }
+    }
+    if !saw || total == 0 {
+        return -1;
+    }
+    ((done as f64 / total as f64) * 100.0).min(98.0) as i64
+}
+
 fn ops_snapshot() -> Value {
     let m = match ops().lock() {
         Ok(m) => m,
@@ -305,6 +364,7 @@ fn ops_snapshot() -> Value {
                 "status": o.status,
                 "error": o.error,
                 "inst_id": o.inst_id,
+                "pct": pull_pct(&o.lines, &o.status),
                 "last_line": o.lines.last().cloned().unwrap_or_default(),
             })
         })
@@ -325,6 +385,7 @@ fn op_log(op_id: &str) -> Value {
             "inst_id": o.inst_id,
             "kind": o.kind,
             "target": o.target,
+            "pct": pull_pct(&o.lines, &o.status),
         }),
         None => json!({ "lines": [], "status": "gone", "error": "" }),
     }
@@ -409,7 +470,6 @@ async fn handle(req: &Req) -> Result<Value> {
         "info" => info().await,
         "list" => list_instances().await,
         "install" => start_install(req),
-        "switch_version" => start_switch(req),
         "start" => {
             let m = load_manifest(need_inst(req)?)?;
             dkr()?
@@ -443,6 +503,8 @@ async fn handle(req: &Req) -> Result<Value> {
         "reset_password" => reset_password(req).await,
         "change_port" => change_port(req).await,
         "databases" => databases(req).await,
+        "create_database" => create_database(req).await,
+        "drop_database" => drop_database(req).await,
         "credentials" => credentials(req).await,
         "list_users" => list_users(req).await,
         "create_user" => create_user(req).await,
@@ -604,7 +666,15 @@ fn start_install(req: &Req) -> Result<Value> {
         None
     };
 
-    let inst_id = new_inst_id();
+    // Single-instance: refuse if one already exists (the user manages multiple
+    // databases inside it, not multiple instances).
+    if load_manifest(INSTANCE_ID).is_ok() {
+        return Err(anyhow!(
+            "已存在一个数据库实例，无法重复创建（可在实例中创建多个数据库）"
+        ));
+    }
+
+    let inst_id = INSTANCE_ID.to_string();
     let op_id = new_op_id();
     op_create(&op_id, "install", &inst_id);
 
@@ -647,7 +717,7 @@ async fn run_install_detached(
     pull_image(&dkr, &image, op_id).await?;
 
     // 2. Create a named data volume so the data survives container recreation.
-    let volume = format!("teaops-mysql-{inst_id}-data");
+    let volume = VOLUME.to_string();
     op_push(op_id, "正在创建数据卷 …");
     create_volume(&dkr, &volume, inst_id, engine).await?;
 
@@ -656,7 +726,7 @@ async fn run_install_detached(
     let root_enc = crate::crypto::encrypt(&password);
 
     // 4. Create + start the container.
-    let container = format!("teaops-mysql-{inst_id}");
+    let container = CONTAINER.to_string();
     op_push(op_id, "正在创建容器 …");
     create_mysql_container(
         &dkr, &container, &image, engine, inst_id, &volume, port, &password,
@@ -981,95 +1051,6 @@ async fn change_port(req: &Req) -> Result<Value> {
     Ok(json!({ "id": m.id, "port": new_port, "exposed": new_port.is_some() }))
 }
 
-/// Switch an instance to a different version (detached). Pulls the new image,
-/// removes the old container (keeping the data volume), and recreates against
-/// the new image. A downgrade across major versions can fail to start — the op
-/// log surfaces the engine's error.
-fn start_switch(req: &Req) -> Result<Value> {
-    let inst = need_inst(req)?.to_string();
-    let m = load_manifest(&inst)?;
-    let version = req
-        .version
-        .as_deref()
-        .map(str::trim)
-        .unwrap_or("")
-        .to_string();
-    if !valid_version(&m.engine, &version) {
-        return Err(anyhow!("不支持的版本"));
-    }
-    if version == m.version {
-        return Err(anyhow!("已是该版本"));
-    }
-
-    let op_id = new_op_id();
-    op_create(&op_id, "switch", &inst);
-    let op_t = op_id.clone();
-    let inst_t = inst.clone();
-    tokio::spawn(async move {
-        match run_switch_detached(&op_t, &inst_t, &version).await {
-            Ok(()) => op_finish(&op_t, "done", "", &inst_t),
-            Err(e) => op_finish(&op_t, "error", &e.to_string(), ""),
-        }
-    });
-    Ok(json!({ "op_id": op_id, "inst_id": inst }))
-}
-
-async fn run_switch_detached(op_id: &str, inst: &str, version: &str) -> Result<()> {
-    let mut m = load_manifest(inst)?;
-    let dkr = dkr()?;
-    let image = image_ref(&m.engine, version);
-
-    op_push(op_id, &format!("正在拉取镜像 {image} …"));
-    pull_image(&dkr, &image, op_id).await?;
-
-    // Remove the old container (keep the data volume!).
-    op_push(op_id, "正在停止旧容器 …");
-    let opts = bollard::container::RemoveContainerOptions {
-        force: true,
-        v: false,
-        ..Default::default()
-    };
-    if let Err(e) = dkr.remove_container(&m.container, Some(opts)).await {
-        let s = e.to_string();
-        if !s.contains("No such container") && !s.contains("404") {
-            return Err(anyhow!(friendly(&e)));
-        }
-    }
-
-    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
-    op_push(op_id, "正在用新版本重建容器 …");
-    create_mysql_container(
-        &dkr,
-        &m.container,
-        &image,
-        &m.engine,
-        &m.id,
-        &m.volume,
-        m.port,
-        &password,
-    )
-    .await?;
-    dkr.start_container(
-        &m.container,
-        None::<bollard::container::StartContainerOptions<String>>,
-    )
-    .await
-    .map_err(|e| anyhow!(friendly(&e)))?;
-
-    m.version = version.to_string();
-    save_manifest(&m)?;
-    op_push(op_id, "等待数据库就绪 …");
-    if wait_ready(&m.container, &password, op_id, 180).await {
-        op_push(op_id, "版本切换完成，数据库已就绪");
-    } else {
-        op_push(
-            op_id,
-            "切换后数据库初始化超时，可能与目标版本不兼容（尤其是降级），请在实例详情中查看状态",
-        );
-    }
-    Ok(())
-}
-
 /// Remove + recreate the container with the same labels/volume/password but a
 /// new port mapping. Used by change_port.
 async fn recreate_container(
@@ -1155,6 +1136,44 @@ async fn databases(req: &Req) -> Result<Value> {
         }));
     }
     Ok(json!({ "databases": dbs }))
+}
+
+/// Create a new (non-system) database/schema in the single instance.
+async fn create_database(req: &Req) -> Result<Value> {
+    let m = load_manifest(need_inst(req)?)?;
+    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let db = req.database.as_deref().map(str::trim).unwrap_or("");
+    if !valid_ident(db, false) {
+        return Err(anyhow!("库名只能包含字母、数字、_ - . 且不超过 64 字符"));
+    }
+    const SYS: [&str; 4] = ["information_schema", "performance_schema", "mysql", "sys"];
+    if SYS.contains(&db) {
+        return Err(anyhow!("不允许使用系统库名"));
+    }
+    // Backtick-quote the identifier; valid_ident already restricts the charset.
+    let sql = format!(
+        "CREATE DATABASE IF NOT EXISTS `{}` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;",
+        db
+    );
+    run_stmt(&m.container, &password, &sql).await?;
+    Ok(json!({ "created": db }))
+}
+
+/// Drop a (non-system) database/schema.
+async fn drop_database(req: &Req) -> Result<Value> {
+    let m = load_manifest(need_inst(req)?)?;
+    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let db = req.database.as_deref().map(str::trim).unwrap_or("");
+    if !valid_ident(db, false) {
+        return Err(anyhow!("库名不合法"));
+    }
+    const SYS: [&str; 4] = ["information_schema", "performance_schema", "mysql", "sys"];
+    if SYS.contains(&db) {
+        return Err(anyhow!("不允许删除系统库"));
+    }
+    let sql = format!("DROP DATABASE `{}`;", db);
+    run_stmt(&m.container, &password, &sql).await?;
+    Ok(json!({ "dropped": db }))
 }
 
 // ---------------------------------------------------------------------------
