@@ -78,13 +78,9 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
         .route("/api/nginx", post(nginx_op))
         .route("/api/mysql", post(mysql_op))
         .route("/api/terminal", get(terminal_ws))
-        // WeChat bind/login proxied to the backend (NAT-safe via this agent).
-        .route("/api/wx/status", get(wx_status))
-        .route("/api/wx/bind/start", post(wx_bind_start))
-        .route("/api/wx/bind/poll", get(wx_bind_poll))
+        // WeChat scan login proxied to the backend (NAT-safe via this agent).
         .route("/api/wx/login/start", post(wx_login_start))
         .route("/api/wx/login/poll", get(wx_login_poll))
-        .route("/api/wx/unbind", post(wx_unbind))
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -377,51 +373,23 @@ async fn backend_call(state: &Shared, path: &str, extra: Value) -> anyhow::Resul
     }
 }
 
-fn ok_data(data: Value) -> Response {
-    Json(json!({ "ok": true, "data": data })).into_response()
-}
 fn err_msg(e: impl std::fmt::Display) -> Response {
     Json(json!({ "ok": false, "error": e.to_string() })).into_response()
 }
 
-/// GET /api/wx/status — bound? (auth required; shown on settings page)
-async fn wx_status(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
-        return r;
-    }
-    match backend_call(&state, "/agent/wx/status", json!({})).await {
-        Ok(d) => ok_data(d),
-        Err(e) => err_msg(e),
-    }
-}
-
-/// POST /api/wx/bind/start — auth required; returns ticket + QR svg.
-async fn wx_bind_start(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
-        return r;
-    }
-    start_scan(&state, "/agent/wx/bind/start").await
-}
-
-/// GET /api/wx/bind/poll?ticket= — auth required.
-async fn wx_bind_poll(
-    State(state): State<Shared>,
-    headers: header::HeaderMap,
-    Query(q): Query<PollQuery>,
-) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
-        return r;
-    }
-    match backend_call(&state, "/agent/wx/bind/poll", json!({ "ticket": q.ticket })).await {
-        Ok(d) => ok_data(d),
-        Err(e) => err_msg(e),
-    }
-}
-
-/// POST /api/wx/login/start — PUBLIC (pre-auth login page). Returns whether the
-/// server is bound, plus ticket + QR svg when it is.
+/// POST /api/wx/login/start — PUBLIC (pre-auth login page). Calls the backend
+/// to mint a login ticket, then renders the QR payload to an inline SVG so the
+/// browser needs no QR JS library.
 async fn wx_login_start(State(state): State<Shared>) -> Response {
-    start_scan(&state, "/agent/wx/login/start").await
+    match backend_call(&state, "/agent/wx/login/start", json!({})).await {
+        Ok(d) => {
+            let payload = d.get("payload").and_then(|p| p.as_str()).unwrap_or("");
+            let ticket = d.get("ticket").and_then(|t| t.as_str()).unwrap_or("");
+            let svg = super::qr::svg(payload, 220).unwrap_or_default();
+            Json(json!({ "ticket": ticket, "payload": payload, "svg": svg })).into_response()
+        }
+        Err(e) => err_msg(e),
+    }
 }
 
 /// GET /api/wx/login/poll?ticket= — PUBLIC. On confirmation, mint a local
@@ -450,40 +418,10 @@ async fn wx_login_poll(State(state): State<Shared>, Query(q): Query<PollQuery>) 
     }
 }
 
-/// POST /api/wx/unbind — auth required.
-async fn wx_unbind(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
-        return r;
-    }
-    match backend_call(&state, "/agent/wx/unbind", json!({})).await {
-        Ok(d) => ok_data(d),
-        Err(e) => err_msg(e),
-    }
-}
-
 #[derive(serde::Deserialize)]
 struct PollQuery {
     #[serde(default)]
     ticket: String,
-}
-
-/// Shared start logic: call the backend start endpoint, then render the QR
-/// payload to an inline SVG so the browser needs no QR JS library.
-async fn start_scan(state: &Shared, path: &str) -> Response {
-    match backend_call(state, path, json!({})).await {
-        Ok(d) => {
-            // login/start may report bound:false (no ticket).
-            if d.get("bound").and_then(|b| b.as_bool()) == Some(false) {
-                return Json(json!({ "bound": false })).into_response();
-            }
-            let payload = d.get("payload").and_then(|p| p.as_str()).unwrap_or("");
-            let ticket = d.get("ticket").and_then(|t| t.as_str()).unwrap_or("");
-            let svg = super::qr::svg(payload, 220).unwrap_or_default();
-            Json(json!({ "bound": true, "ticket": ticket, "payload": payload, "svg": svg }))
-                .into_response()
-        }
-        Err(e) => err_msg(e),
-    }
 }
 
 // ---------------------------------------------------------------------------

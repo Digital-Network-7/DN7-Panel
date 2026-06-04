@@ -171,17 +171,16 @@ function doLogin() {
     .catch((e) => { document.getElementById('loginErr').textContent = e.message; });
 }
 
-// ---- WeChat scan login ----
+// ---- WeChat scan login (server owner scans with mini-program 扫一扫) ----
 function startWxLogin() {
   stopWxLogin();
   document.getElementById('qrstate').textContent = '正在生成二维码…';
   document.getElementById('qrbox').innerHTML = '';
   fetch('/api/wx/login/start', { method: 'POST' })
-    .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(b.error || '无法发起'); return b; })
+    .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok || b.ok === false) throw new Error(b.error || '无法发起'); return b; })
     .then((b) => {
-      if (!b.bound) { document.getElementById('qrstate').textContent = '本机未绑定微信，请用账号密码登录后在「设置」中绑定'; return; }
       document.getElementById('qrbox').innerHTML = b.svg || '';
-      document.getElementById('qrstate').textContent = '等待扫码确认…';
+      document.getElementById('qrstate').textContent = '请用小程序首页「扫一扫」，由服务器所有者确认';
       pollWx(b.ticket);
     })
     .catch((e) => { document.getElementById('qrstate').textContent = e.message; });
@@ -313,30 +312,21 @@ function renderOp(v, kind, title) {
 
 function renderSettings(v) {
   v.innerHTML = '<div class="card">加载中…</div>';
-  Promise.all([api('/api/settings'), api('/api/wx/status').catch(() => ({ data: { bound: false } }))]).then(([sb, wb]) => {
-    const s = sb.data; const wx = wb.data || {};
+  api('/api/settings').then((sb) => {
+    const s = sb.data;
     v.innerHTML = `
-    <div class="warn">本机管理通过明文 HTTP 暴露在 0.0.0.0:${s.port}，登录凭证以明文传输，强烈建议用防火墙仅放行可信 IP。</div>
-    <div class="grid" style="align-items:start">
-      <div class="card">
-        <h3>登录账号</h3>
-        <label class="lbl">账号</label>
-        <input id="setUser" class="field" style="margin-bottom:12px" value="${esc(s.username)}" />
-        <label class="lbl">密码</label>
-        <input id="setPw" class="field" type="text" value="${esc(s.password)}" />
-        <h3 style="margin-top:16px">端口（改后重启 Agent 生效）</h3>
-        <input id="setPort" class="field" type="number" value="${s.port}" />
-        <label style="display:flex;gap:8px;align-items:center;margin:14px 0"><input type="checkbox" id="setEnabled" ${s.enabled ? 'checked' : ''}/> 启用本机管理（关闭后需重启生效）</label>
-        <button class="btn" id="setSave">保存</button>
-        <div class="err ok" id="setMsg" style="margin-top:10px"></div>
-      </div>
-      <div class="card">
-        <h3>微信绑定</h3>
-        <div id="wxState" style="margin-bottom:14px">${wx.bound ? '已绑定微信：<b class="ok">' + esc(wx.nickname || '已绑定') + '</b>' : '未绑定。绑定后可用微信扫码登录本控制台。'}</div>
-        <div id="wxBind"></div>
-        ${wx.bound ? '<button class="btn sec" id="wxUnbind">解除绑定</button>' : '<button class="btn" id="wxStartBind">绑定微信</button>'}
-        <div class="err" id="wxMsg" style="margin-top:10px"></div>
-      </div>
+    <div class="warn">本机管理通过明文 HTTP 暴露在 0.0.0.0:${s.port}，登录凭证以明文传输，强烈建议用防火墙仅放行可信 IP。微信扫码登录无需密码，由服务器所有者在小程序确认。</div>
+    <div class="card" style="max-width:480px">
+      <h3>登录账号</h3>
+      <label class="lbl">账号</label>
+      <input id="setUser" class="field" style="margin-bottom:12px" value="${esc(s.username)}" />
+      <label class="lbl">密码</label>
+      <input id="setPw" class="field" type="text" value="${esc(s.password)}" />
+      <h3 style="margin-top:16px">端口（改后重启 Agent 生效）</h3>
+      <input id="setPort" class="field" type="number" value="${s.port}" />
+      <label style="display:flex;gap:8px;align-items:center;margin:14px 0"><input type="checkbox" id="setEnabled" ${s.enabled ? 'checked' : ''}/> 启用本机管理（关闭后需重启生效）</label>
+      <button class="btn" id="setSave">保存</button>
+      <div class="err ok" id="setMsg" style="margin-top:10px"></div>
     </div>`;
     document.getElementById('setSave').onclick = () => {
       const body = { username: document.getElementById('setUser').value, password: document.getElementById('setPw').value, port: Number(document.getElementById('setPort').value), enabled: document.getElementById('setEnabled').checked };
@@ -344,27 +334,7 @@ function renderSettings(v) {
         .then((b) => { const m = document.getElementById('setMsg'); m.className = 'err ok'; m.textContent = '已保存' + (b.needs_restart ? '（端口/开关改动需重启 Agent 生效）' : ''); document.getElementById('whoName').textContent = body.username; })
         .catch((e) => { const m = document.getElementById('setMsg'); m.className = 'err'; m.textContent = e.message; });
     };
-    const sb2 = document.getElementById('wxStartBind');
-    if (sb2) sb2.onclick = () => startWxBind();
-    const ub = document.getElementById('wxUnbind');
-    if (ub) ub.onclick = () => { api('/api/wx/unbind', { method: 'POST' }).then(() => switchTab('settings')).catch((e) => { document.getElementById('wxMsg').textContent = e.message; }); };
   }).catch((e) => { v.innerHTML = '<div class="card">加载失败：' + esc(e.message) + '</div>'; });
-}
-
-function startWxBind() {
-  const box = document.getElementById('wxBind');
-  box.innerHTML = '<div class="qrwrap"><div id="bindQr"></div><div class="tip">用微信扫描，在小程序首页「扫一扫」确认绑定</div><div class="qrstate" id="bindState">生成中…</div></div>';
-  api('/api/wx/bind/start', { method: 'POST' }).then((b) => {
-    document.getElementById('bindQr').innerHTML = b.data.svg || '';
-    document.getElementById('bindState').textContent = '等待扫码确认…';
-    const ticket = b.data.ticket;
-    const t = setInterval(() => {
-      api('/api/wx/bind/poll?ticket=' + encodeURIComponent(ticket)).then((p) => {
-        if (p.data.status === 'confirmed') { clearInterval(t); switchTab('settings'); }
-        else if (p.data.status === 'expired') { clearInterval(t); document.getElementById('bindState').textContent = '已过期，请重试'; }
-      }).catch(() => {});
-    }, 1500);
-  }).catch((e) => { document.getElementById('bindState').textContent = e.message; });
 }
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
