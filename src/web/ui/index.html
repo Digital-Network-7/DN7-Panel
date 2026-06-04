@@ -117,6 +117,13 @@
   th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
   th { color:var(--mut); font-weight:500; font-size:12px; }
   tr:hover td { background:var(--hov); }
+  th.num,td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  /* Fixed-layout process table: stable columns that don't reflow each refresh. */
+  table.proctable { table-layout:fixed; }
+  table.proctable col.c-pid { width:84px; }
+  table.proctable col.c-cpu { width:84px; }
+  table.proctable col.c-mem { width:104px; }
+  table.proctable td.nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .actions { display:flex; gap:6px; flex-wrap:wrap; }
   .subtabs { display:flex; gap:4px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:4px; margin-bottom:16px; width:fit-content; }
@@ -425,8 +432,8 @@ function renderDash(v) {
     }).catch(() => {});
     api('/api/procs').then((b) => {
       const rows = (b.data.by_cpu || []).slice(0, 12);
-      let h = '<table><tr><th>进程</th><th>PID</th><th>CPU</th><th>内存</th></tr>';
-      rows.forEach((p) => { h += `<tr><td class="mono">${esc(p.name)}</td><td>${p.pid}</td><td>${(p.cpu || 0).toFixed(1)}%</td><td>${fmtBytes(p.mem)}</td></tr>`; });
+      let h = '<table class="proctable"><colgroup><col class="c-name"/><col class="c-pid"/><col class="c-cpu"/><col class="c-mem"/></colgroup><tr><th>进程</th><th class="num">PID</th><th class="num">CPU</th><th class="num">内存</th></tr>';
+      rows.forEach((p) => { h += `<tr><td class="mono nm" title="${esc(p.name)}">${esc(p.name)}</td><td class="num">${p.pid}</td><td class="num">${(p.cpu || 0).toFixed(1)}%</td><td class="num">${fmtBytes(p.mem)}</td></tr>`; });
       $('procs').innerHTML = h + '</table>';
     }).catch(() => {});
   };
