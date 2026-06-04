@@ -1127,7 +1127,7 @@ async fn add_site(req: &Req) -> Result<Value> {
     }
 
     // Generate + validate.
-    write_site_conf(&lo, &site)?;
+    write_site_conf(&lo, &site).await?;
     if let Err(e) = validate_and_reload(&lo).await {
         // Roll back the conf we just wrote.
         let _ = std::fs::remove_file(conf_path(&lo, &site.id));
@@ -1278,13 +1278,94 @@ async fn ensure_shared_network(target: &str) {
     }
 }
 
+/// Resolve a container's first reachable IPv4 address from the Docker daemon
+/// (used in **host mode**, where the host's nginx can't resolve a container
+/// *name* — only an IP works). Returns the IP from a user-defined network if
+/// present, else the default bridge IP, else None.
+async fn container_ip(target: &str) -> Option<String> {
+    let dkr = crate::docker::dkr().ok()?;
+    let inspect = dkr.inspect_container(target, None).await.ok()?;
+    let networks = inspect.network_settings.and_then(|n| n.networks)?;
+    // Prefer a user-defined network's IP; fall back to the bridge.
+    let mut bridge_ip: Option<String> = None;
+    for (name, ep) in networks {
+        let ip = ep.ip_address.filter(|s| !s.is_empty());
+        match ip {
+            Some(ip) if name == "bridge" => bridge_ip = Some(ip),
+            Some(ip) => return Some(ip), // user-defined network IP preferred
+            None => {}
+        }
+    }
+    bridge_ip
+}
+
+/// In **host mode**, find the host port that publishes the container's
+/// `container_port` (so the host's nginx can proxy to `127.0.0.1:<host_port>`,
+/// which is stable across container restarts — unlike the container IP). Returns
+/// None when that port isn't published to the host.
+async fn published_host_port(target: &str, container_port: i64) -> Option<u16> {
+    let dkr = crate::docker::dkr().ok()?;
+    let inspect = dkr.inspect_container(target, None).await.ok()?;
+    let ports = inspect.network_settings.and_then(|n| n.ports)?;
+    // Docker keys ports like "3000/tcp" -> [{HostIp, HostPort}, ...].
+    let key_tcp = format!("{container_port}/tcp");
+    let key_udp = format!("{container_port}/udp");
+    for (key, binds) in ports {
+        if key != key_tcp && key != key_udp {
+            continue;
+        }
+        if let Some(binds) = binds {
+            for b in binds {
+                if let Some(hp) = b.host_port.and_then(|p| p.parse::<u16>().ok()) {
+                    return Some(hp);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Resolve the proxy upstream (`host:port`) for a site, accounting for mode:
+///  - **docker mode + proxy_container**: use the container *name* (teaops-nginx
+///    is joined to its network, so Docker DNS resolves it).
+///  - **host mode + proxy_container**: the host's nginx can't resolve a
+///    container name. Prefer the published host port (`127.0.0.1:<hostport>`,
+///    stable across restarts); otherwise fall back to the container's bridge IP.
+///  - **proxy_host**: the user-supplied host[:port] as-is.
+async fn resolve_upstream(lo: &Layout, site: &Site) -> Result<String> {
+    match site.kind.as_str() {
+        "proxy_host" => Ok(with_port(&site.target_url)),
+        "proxy_container" => {
+            if lo.mode == "docker" {
+                Ok(format!("{}:{}", site.container, site.container_port))
+            } else if let Some(hp) = published_host_port(&site.container, site.container_port).await
+            {
+                // Reachable + restart-stable via the host's published port.
+                Ok(format!("127.0.0.1:{hp}"))
+            } else {
+                // Not published — fall back to the container's bridge IP (the
+                // host can route to docker0). Less stable, but works.
+                let ip = container_ip(&site.container).await.ok_or_else(|| {
+                    anyhow!(
+                        "容器 {} 未映射端口 {} 到宿主机，且无法解析其 IP；请为容器发布该端口后重试",
+                        site.container,
+                        site.container_port
+                    )
+                })?;
+                Ok(format!("{}:{}", ip, site.container_port))
+            }
+        }
+        _ => Ok(String::new()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Config generation. All values are pre-validated, so they're safe to embed.
 // ---------------------------------------------------------------------------
 
 /// Generate the nginx server block(s) for a site and write the conf file.
-fn write_site_conf(lo: &Layout, site: &Site) -> Result<()> {
-    let body = render_location(lo, site);
+async fn write_site_conf(lo: &Layout, site: &Site) -> Result<()> {
+    let body = render_location(lo, site).await?;
     let server_name = &site.server_name;
 
     let mut conf = String::new();
@@ -1315,24 +1396,22 @@ fn write_site_conf(lo: &Layout, site: &Site) -> Result<()> {
     Ok(())
 }
 
-/// The location block(s) for a site's forwarding kind.
-fn render_location(lo: &Layout, site: &Site) -> String {
+/// The location block(s) for a site's forwarding kind. Async because a
+/// `proxy_container` site in host mode must resolve the container's IP (the
+/// host's nginx can't resolve a container name).
+async fn render_location(lo: &Layout, site: &Site) -> Result<String> {
     match site.kind.as_str() {
-        "proxy_host" => {
-            let upstream = with_port(&site.target_url);
-            proxy_block(&upstream)
-        }
-        "proxy_container" => {
-            let upstream = format!("{}:{}", site.container, site.container_port);
-            proxy_block(&upstream)
+        "proxy_host" | "proxy_container" => {
+            let upstream = resolve_upstream(lo, site).await?;
+            Ok(proxy_block(&upstream))
         }
         "static" => {
             let root = format!("{}/{}", lo.www_ref, site.root);
-            format!(
+            Ok(format!(
                 "    location / {{\n        root {root};\n        index index.html index.htm;\n        try_files $uri $uri/ =404;\n    }}\n"
-            )
+            ))
         }
-        _ => String::new(),
+        _ => Ok(String::new()),
     }
 }
 
@@ -1457,7 +1536,7 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
     op_push(op_id, "准备 HTTP 验证站点 …");
     let mut http_site = site.clone();
     http_site.ssl = false;
-    write_site_conf(lo, &http_site)?;
+    write_site_conf(lo, &http_site).await?;
     if let Err(e) = validate_and_reload(lo).await {
         let _ = std::fs::remove_file(conf_path(lo, &site.id));
         return Err(e);
@@ -1580,7 +1659,7 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
 
     // Step 6: rewrite with SSL + persist + reload.
     op_push(op_id, "启用 HTTPS 配置 …");
-    write_site_conf(lo, site)?;
+    write_site_conf(lo, site).await?;
     validate_and_reload(lo).await?;
     let mut sites = load_sites();
     sites.retain(|s| s.id != site.id);
@@ -1675,28 +1754,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn renders_proxy_host() {
+    #[tokio::test]
+    async fn renders_proxy_host() {
         let lo = lo_docker();
         let site = mk_site("proxy_host", false);
-        let body = render_location(&lo, &site);
+        let body = render_location(&lo, &site).await.unwrap();
         assert!(body.contains("proxy_pass http://10.0.0.5:8080;"));
         assert!(body.contains("Upgrade $http_upgrade"));
     }
 
-    #[test]
-    fn renders_proxy_container() {
+    #[tokio::test]
+    async fn renders_proxy_container() {
+        // Docker mode resolves the container by name (no daemon call needed).
         let lo = lo_docker();
         let site = mk_site("proxy_container", false);
-        let body = render_location(&lo, &site);
+        let body = render_location(&lo, &site).await.unwrap();
         assert!(body.contains("proxy_pass http://app:3000;"));
     }
 
-    #[test]
-    fn renders_static_root() {
+    #[tokio::test]
+    async fn renders_static_root() {
         let lo = lo_docker();
         let site = mk_site("static", false);
-        let body = render_location(&lo, &site);
+        let body = render_location(&lo, &site).await.unwrap();
         assert!(body.contains("root /usr/share/nginx/html/site1;"));
     }
 }
