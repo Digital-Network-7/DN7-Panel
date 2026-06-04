@@ -396,6 +396,13 @@ pub async fn run_mysql_channel(cfg: &AgentConfig, agent_token: &str, session: &s
     Ok(())
 }
 
+/// Public entrypoint for the local web console: parse a JSON request and run it.
+pub async fn web_dispatch(req: &Value) -> Result<Value> {
+    let r: Req =
+        serde_json::from_value(req.clone()).map_err(|e| anyhow!("bad mysql request: {e}"))?;
+    handle(&r).await
+}
+
 /// Dispatch one request.
 async fn handle(req: &Req) -> Result<Value> {
     match req.op.as_str() {

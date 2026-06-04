@@ -292,6 +292,15 @@ pub async fn run_docker_channel(
     Ok(())
 }
 
+/// Public entrypoint for the local web console: parse a JSON request object
+/// (same `{op, ...}` shape used over the backend relay) and run it. Returns the
+/// op result `data` on success.
+pub async fn web_dispatch(req: &Value) -> Result<Value> {
+    let r: Req =
+        serde_json::from_value(req.clone()).map_err(|e| anyhow!("bad docker request: {e}"))?;
+    handle(&r).await
+}
+
 /// Dispatch one request. Long ops (`pull_image`, `install`) start a detached
 /// task and return an `op_id` immediately.
 async fn handle(req: &Req) -> Result<Value> {

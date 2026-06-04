@@ -84,6 +84,12 @@ pub async fn run_procs_channel(cfg: &AgentConfig, agent_token: &str, session: &s
     Ok(())
 }
 
+/// Public entrypoint for the local web console: a one-shot process snapshot.
+pub async fn web_snapshot(limit: usize) -> Value {
+    let mut sys = System::new();
+    snapshot(&mut sys, limit.clamp(1, 50)).await
+}
+
 /// Take a process snapshot: refresh CPU twice (so CPU% is meaningful), then
 /// return the union of the Top-`limit` by CPU and Top-`limit` by memory, each
 /// list pre-sorted, plus the host's total memory for percentage display.

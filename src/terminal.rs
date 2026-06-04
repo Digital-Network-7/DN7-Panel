@@ -324,6 +324,102 @@ fn parse_frame(text: &str) -> Frame {
     Frame::Data(text.as_bytes().to_vec())
 }
 
+/// Bridge an **axum** WebSocket (from the local web console) to a host PTY
+/// shell. Mirrors `run_pty` but speaks axum's `Message` type and has no
+/// outbound backend connection — the browser is the client directly.
+pub async fn run_web_pty(socket: axum::extract::ws::WebSocket) -> Result<()> {
+    use axum::extract::ws::Message as AxumMsg;
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    let mut cmd = CommandBuilder::new(&shell);
+    cmd.arg("-i");
+    cmd.env("TERM", "xterm-256color");
+
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| anyhow!("openpty: {e}"))?;
+
+    let mut child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| anyhow!("spawn command: {e}"))?;
+    drop(pair.slave);
+
+    let mut writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| anyhow!("pty writer: {e}"))?;
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| anyhow!("pty reader: {e}"))?;
+    let master = pair.master;
+
+    let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(256);
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if out_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    loop {
+        tokio::select! {
+            chunk = out_rx.recv() => {
+                match chunk {
+                    Some(bytes) => {
+                        if ws_tx.send(AxumMsg::Binary(bytes)).await.is_err() { break; }
+                    }
+                    None => break,
+                }
+            }
+            msg = ws_rx.next() => {
+                match msg {
+                    Some(Ok(AxumMsg::Text(t))) => match parse_frame(&t) {
+                        Frame::Resize { cols, rows } => {
+                            let _ = master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+                        }
+                        Frame::Data(bytes) => {
+                            if writer.write_all(&bytes).is_err() { break; }
+                            let _ = writer.flush();
+                        }
+                        Frame::Ping(t) => {
+                            let pong = format!("{{\"type\":\"pong\",\"t\":{t}}}");
+                            if ws_tx.send(AxumMsg::Text(pong)).await.is_err() { break; }
+                        }
+                    },
+                    Some(Ok(AxumMsg::Binary(b))) => {
+                        if writer.write_all(&b).is_err() { break; }
+                        let _ = writer.flush();
+                    }
+                    Some(Ok(AxumMsg::Ping(_))) | Some(Ok(AxumMsg::Pong(_))) => {}
+                    Some(Ok(AxumMsg::Close(_))) | None => break,
+                    Some(Err(_)) => break,
+                }
+            }
+        }
+    }
+
+    let _ = child.kill();
+    let _ = ws_tx.close().await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::valid_container_ref;

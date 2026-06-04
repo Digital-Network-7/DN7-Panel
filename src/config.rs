@@ -24,6 +24,11 @@ pub struct AgentConfig {
     pub supervise_interval_secs: u64,
     /// Supervisor: minimum delay between agent restarts (seconds).
     pub restart_backoff_secs: u64,
+    /// Local web management: whether to serve the on-box web console.
+    pub web_enabled: bool,
+    /// Local web management: TCP port to bind (default 1080). The bind address
+    /// is 0.0.0.0 so it's reachable off-box (per product decision).
+    pub web_port: u16,
 }
 
 impl AgentConfig {
@@ -63,6 +68,17 @@ impl AgentConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(2);
+        // Local web console. Default ON, port 1080. Env vars set the initial
+        // defaults; the web module persists user changes in `<data>/web.json`
+        // which take precedence at runtime.
+        let web_enabled = env::var("TEAOPS_WEB_ENABLED")
+            .ok()
+            .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+            .unwrap_or(true);
+        let web_port = env::var("TEAOPS_WEB_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1080);
 
         AgentConfig {
             backend_url: backend_url.trim_end_matches('/').to_string(),
@@ -75,6 +91,8 @@ impl AgentConfig {
             heartbeat_timeout_secs,
             supervise_interval_secs,
             restart_backoff_secs,
+            web_enabled,
+            web_port,
         }
     }
 

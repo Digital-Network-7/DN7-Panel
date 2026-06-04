@@ -60,6 +60,10 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
     // it can never stall reporting.
     spawn_traffic_reporter(client.clone(), agent_token.clone());
 
+    // On-box web management console (default on, port 1080). Runs in its own
+    // task; no-op when disabled in settings. Independent of the report loop.
+    crate::web::spawn(cfg.clone());
+
     loop {
         interval.tick().await;
         let snapshot = collector.collect();

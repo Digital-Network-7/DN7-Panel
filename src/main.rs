@@ -21,6 +21,7 @@ mod supervisor;
 mod terminal;
 mod traffic;
 mod update;
+mod web;
 mod ws;
 
 use anyhow::Result;

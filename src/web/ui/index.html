@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>TeaOps 本机管理</title>
+<style>
+  :root { --bg:#0f1115; --panel:#181b22; --line:#262b35; --fg:#e6e8ec; --mut:#9aa3b2; --br:#3b82f6; --ok:#2ba471; --err:#e5534b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 -apple-system,Segoe UI,Roboto,"PingFang SC",sans-serif; }
+  a { color:var(--br); }
+  .hidden { display:none !important; }
+  /* Login */
+  #login { max-width:360px; margin:14vh auto; padding:28px; background:var(--panel); border:1px solid var(--line); border-radius:14px; }
+  #login h1 { font-size:20px; margin:0 0 4px; }
+  #login .sub { color:var(--mut); font-size:13px; margin-bottom:20px; }
+  input,select,textarea,button { font:inherit; }
+  .field { width:100%; padding:11px 12px; background:#0f1218; border:1px solid var(--line); border-radius:9px; color:var(--fg); margin-bottom:12px; }
+  .btn { background:var(--br); color:#fff; border:none; padding:11px 16px; border-radius:9px; cursor:pointer; }
+  .btn.sec { background:#2a2f3a; }
+  .btn:active { opacity:.85; }
+  .err { color:var(--err); font-size:13px; min-height:18px; }
+  /* App shell */
+  header { display:flex; align-items:center; gap:14px; padding:12px 18px; background:var(--panel); border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }
+  header .brand { font-weight:600; }
+  nav { display:flex; gap:4px; flex-wrap:wrap; }
+  nav button { background:none; border:none; color:var(--mut); padding:8px 12px; border-radius:8px; cursor:pointer; }
+  nav button.active { background:#23callout; color:var(--fg); background:#23272f; }
+  header .sp { flex:1; }
+  main { padding:18px; max-width:1100px; margin:0 auto; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  .card h3 { margin:0 0 8px; font-size:13px; color:var(--mut); font-weight:500; }
+  .card .big { font-size:26px; font-weight:600; }
+  .card .sub { color:var(--mut); font-size:12px; margin-top:4px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); }
+  th { color:var(--mut); font-weight:500; }
+  td.mono,.mono { font-family:ui-monospace,Menlo,Consolas,monospace; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+  #term { background:#000; color:#ddd; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; white-space:pre-wrap; word-break:break-all; padding:12px; height:60vh; overflow-y:auto; border-radius:10px; }
+  #terminput { width:100%; }
+  pre.out { background:#0b0d11; border:1px solid var(--line); border-radius:8px; padding:12px; max-height:50vh; overflow:auto; white-space:pre-wrap; word-break:break-all; }
+  .warn { background:#2a1f12; border:1px solid #5a3a16; color:#e0a96d; padding:10px 12px; border-radius:9px; font-size:12px; margin-bottom:14px; }
+</style>
+</head>
+<body>
+
+<!-- Login -->
+<div id="login">
+  <h1>TeaOps 本机管理</h1>
+  <div class="sub">请输入访问密码</div>
+  <input id="pw" class="field" type="password" placeholder="访问密码" autocomplete="current-password" />
+  <button class="btn" style="width:100%" onclick="doLogin()">登录</button>
+  <div class="err" id="loginErr"></div>
+</div>
+
+<!-- App -->
+<div id="app" class="hidden">
+  <header>
+    <span class="brand">TeaOps</span>
+    <nav id="nav"></nav>
+    <span class="sp"></span>
+    <button class="btn sec" onclick="logout()">退出</button>
+  </header>
+  <main id="view"></main>
+</div>
+
+<script>
+const S = { token: localStorage.getItem('teaops_web_token') || '', tab: 'dash', timer: null };
+
+function api(path, opts = {}) {
+  opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+  if (S.token) opts.headers['Authorization'] = 'Bearer ' + S.token;
+  return fetch(path, opts).then(async (r) => {
+    if (r.status === 401) { logout(); throw new Error('未授权'); }
+    const txt = await r.text();
+    let body; try { body = JSON.parse(txt); } catch (e) { body = txt; }
+    if (!r.ok) throw new Error((body && body.error) || body || ('HTTP ' + r.status));
+    return body;
+  });
+}
+
+function doLogin() {
+  const pw = document.getElementById('pw').value;
+  document.getElementById('loginErr').textContent = '';
+  fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) })
+    .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(b.error || '登录失败'); return b; })
+    .then((b) => { S.token = b.token; localStorage.setItem('teaops_web_token', S.token); showApp(); })
+    .catch((e) => { document.getElementById('loginErr').textContent = e.message; });
+}
+
+function logout() {
+  if (S.token) api('/api/logout', { method: 'POST' }).catch(() => {});
+  S.token = ''; localStorage.removeItem('teaops_web_token');
+  if (S.timer) clearInterval(S.timer);
+  document.getElementById('app').classList.add('hidden');
+  document.getElementById('login').classList.remove('hidden');
+}
+
+const TABS = [
+  { key: 'dash', label: '监控' },
+  { key: 'term', label: '终端' },
+  { key: 'docker', label: 'Docker' },
+  { key: 'nginx', label: 'Nginx' },
+  { key: 'mysql', label: 'MySQL' },
+  { key: 'settings', label: '设置' },
+];
+
+function showApp() {
+  document.getElementById('login').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  const nav = document.getElementById('nav');
+  nav.innerHTML = '';
+  TABS.forEach((t) => {
+    const b = document.createElement('button');
+    b.textContent = t.label; b.dataset.k = t.key;
+    b.className = S.tab === t.key ? 'active' : '';
+    b.onclick = () => switchTab(t.key);
+    nav.appendChild(b);
+  });
+  switchTab(S.tab);
+}
+
+function switchTab(k) {
+  S.tab = k;
+  if (S.timer) { clearInterval(S.timer); S.timer = null; }
+  document.querySelectorAll('#nav button').forEach((b) => b.className = b.dataset.k === k ? 'active' : '');
+  const v = document.getElementById('view');
+  v.innerHTML = '';
+  if (k === 'dash') renderDash(v);
+  else if (k === 'term') renderTerm(v);
+  else if (k === 'docker') renderOp(v, 'docker', 'Docker 管理');
+  else if (k === 'nginx') renderOp(v, 'nginx', 'Nginx 管理');
+  else if (k === 'mysql') renderOp(v, 'mysql', 'MySQL 管理');
+  else if (k === 'settings') renderSettings(v);
+}
+
+function fmtBytes(n) {
+  n = Number(n) || 0;
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + ' ' + u[i];
+}
+
+// ---- Dashboard ----
+function renderDash(v) {
+  v.innerHTML = '<div class="grid" id="cards"></div><div class="card" style="margin-top:14px"><h3>进程 (Top by CPU/内存)</h3><div id="procs">加载中…</div></div>';
+  const refresh = () => {
+    api('/api/metrics').then((b) => {
+      const m = b.data;
+      document.getElementById('cards').innerHTML = [
+        card('CPU', (m.cpu_usage || 0).toFixed(1) + '%', (m.cpu_cores || 0) + ' 核'),
+        card('内存', (m.memory_usage || 0).toFixed(1) + '%', fmtBytes(m.mem_used) + ' / ' + fmtBytes(m.mem_total)),
+        card('磁盘', (m.disk_usage || 0).toFixed(1) + '%', fmtBytes(m.disk_used) + ' / ' + fmtBytes(m.disk_total)),
+        card('网络', '↓' + fmtBytes(m.net_rx) + '/s', '↑' + fmtBytes(m.net_tx) + '/s'),
+      ].join('');
+    }).catch(() => {});
+    api('/api/procs').then((b) => {
+      const d = b.data || {}; const rows = (d.by_cpu || []).slice(0, 12);
+      let h = '<table><tr><th>进程</th><th>PID</th><th>CPU</th><th>内存</th></tr>';
+      rows.forEach((p) => { h += `<tr><td class="mono">${esc(p.name)}</td><td>${p.pid}</td><td>${(p.cpu || 0).toFixed(1)}%</td><td>${fmtBytes(p.mem)}</td></tr>`; });
+      document.getElementById('procs').innerHTML = h + '</table>';
+    }).catch(() => {});
+  };
+  refresh();
+  S.timer = setInterval(refresh, 2000);
+}
+function card(title, big, sub) {
+  return `<div class="card"><h3>${title}</h3><div class="big">${big}</div><div class="sub">${sub}</div></div>`;
+}
+
+// ---- Terminal ----
+function renderTerm(v) {
+  v.innerHTML = '<div id="term"></div><div class="row" style="margin-top:10px"><input id="terminput" class="field" placeholder="输入命令后回车，Ctrl 组合键请用下方按钮" autocomplete="off" /></div>';
+  const term = document.getElementById('term');
+  const inp = document.getElementById('terminput');
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/api/terminal?token=${encodeURIComponent(S.token)}`);
+  ws.binaryType = 'arraybuffer';
+  const dec = new TextDecoder();
+  ws.onmessage = (e) => {
+    const text = typeof e.data === 'string' ? e.data : dec.decode(e.data);
+    term.textContent += text;
+    term.scrollTop = term.scrollHeight;
+  };
+  ws.onclose = () => { term.textContent += '\n[连接已关闭]\n'; };
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      ws.send(JSON.stringify({ type: 'data', data: inp.value + '\n' }));
+      inp.value = '';
+      e.preventDefault();
+    }
+  });
+  S._ws = ws;
+}
+
+// ---- Generic op panel (docker / nginx / mysql) ----
+function renderOp(v, kind, title) {
+  v.innerHTML = `<div class="card"><h3>${title}</h3>
+    <div class="row"><button class="btn sec" id="opInfo">状态 (info)</button>
+      <input id="opJson" class="field" style="flex:1;margin:0" placeholder='高级：JSON 请求，如 {"op":"list_containers"}' />
+      <button class="btn" id="opSend">发送</button></div>
+    <pre class="out" id="opOut">点击「状态」查看，或输入操作 JSON 发送。</pre></div>`;
+  const out = document.getElementById('opOut');
+  const send = (obj) => {
+    out.textContent = '请求中…';
+    api('/api/' + kind, { method: 'POST', body: JSON.stringify(obj) })
+      .then((b) => { out.textContent = JSON.stringify(b.data, null, 2); })
+      .catch((e) => { out.textContent = '错误：' + e.message; });
+  };
+  document.getElementById('opInfo').onclick = () => send({ op: 'info' });
+  document.getElementById('opSend').onclick = () => {
+    let obj; try { obj = JSON.parse(document.getElementById('opJson').value); } catch (e) { out.textContent = 'JSON 格式错误'; return; }
+    send(obj);
+  };
+}
+
+// ---- Settings ----
+function renderSettings(v) {
+  v.innerHTML = '<div class="card">加载中…</div>';
+  api('/api/settings').then((b) => {
+    const s = b.data;
+    v.innerHTML = `<div class="warn">本机管理通过明文 HTTP 暴露在 0.0.0.0:${s.port}，登录密码与会话以明文传输，强烈建议用防火墙仅放行可信 IP。</div>
+    <div class="card" style="max-width:480px">
+      <h3>访问密码</h3>
+      <input id="setPw" class="field" type="text" value="${esc(s.password)}" />
+      <h3>端口（修改后需重启 Agent 生效）</h3>
+      <input id="setPort" class="field" type="number" value="${s.port}" />
+      <label style="display:flex;gap:8px;align-items:center;margin:8px 0 14px"><input type="checkbox" id="setEnabled" ${s.enabled ? 'checked' : ''}/> 启用本机管理（关闭后需重启生效）</label>
+      <button class="btn" id="setSave">保存</button>
+      <div class="err" id="setMsg" style="color:var(--ok)"></div>
+    </div>`;
+    document.getElementById('setSave').onclick = () => {
+      const body = { password: document.getElementById('setPw').value, port: Number(document.getElementById('setPort').value), enabled: document.getElementById('setEnabled').checked };
+      api('/api/settings', { method: 'POST', body: JSON.stringify(body) })
+        .then((b) => { document.getElementById('setMsg').textContent = '已保存' + (b.needs_restart ? '（端口/开关改动需重启 Agent 生效）' : ''); })
+        .catch((e) => { const m = document.getElementById('setMsg'); m.style.color = 'var(--err)'; m.textContent = e.message; });
+    };
+  }).catch((e) => { v.innerHTML = '<div class="card">加载失败：' + esc(e.message) + '</div>'; });
+}
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+document.getElementById('pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+
+// Auto-enter the app if we already hold a token (validated lazily by the first call).
+if (S.token) showApp();
+</script>
+</body>
+</html>
+

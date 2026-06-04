@@ -113,6 +113,26 @@ read and are re-encrypted on the next write.
 | `TEAOPS_HEARTBEAT_TIMEOUT_SECS` | `15` | peer liveness threshold |
 | `TEAOPS_SUPERVISE_INTERVAL_SECS` | `3` | supervisor child-check interval |
 | `TEAOPS_RESTART_BACKOFF_SECS` | `2` | delay between agent restarts |
+| `TEAOPS_WEB_ENABLED` | `1` | serve the on-box web console (set `0`/`false` to disable) |
+| `TEAOPS_WEB_PORT` | `1080` | web console TCP port (initial default; user changes persist in `<data>/web.json`) |
+
+## On-box web console
+
+The agent serves a local management console (default **on**, `0.0.0.0:1080`)
+that exposes the same capabilities (monitoring, terminal, Docker, Nginx, MySQL,
+processes) directly on the host — no backend round-trip. It reuses the same
+per-capability JSON dispatchers as the relay path.
+
+Auth: an access **password is auto-generated on first run** and logged once (and
+viewable on the settings page); login mints an in-memory bearer session. Login
+attempts are rate-limited. Port, password and the enabled flag are editable on
+the settings page and persisted in `<data>/web.json` (0600); changing the port
+or disabling the console takes effect after an agent restart.
+
+> ⚠️ Security: the console binds to all interfaces over **plain HTTP** by
+> product decision, so the password and session token travel unencrypted.
+> Restrict the port with a firewall to trusted sources; anyone who can reach it
+> and brute-force/observe the password gains full control of the host.
 
 ## Transport
 
