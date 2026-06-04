@@ -14,9 +14,16 @@ pub struct WebSettings {
     pub enabled: bool,
     /// TCP port to bind (0.0.0.0:<port>).
     pub port: u16,
+    /// Login account name (default "admin"; user-editable).
+    #[serde(default = "default_username")]
+    pub username: String,
     /// Auto-generated access password (shown once in the daemon log; the user
     /// can also read it via an authenticated settings call).
     pub password: String,
+}
+
+fn default_username() -> String {
+    "admin".to_string()
 }
 
 fn settings_path() -> std::path::PathBuf {
@@ -44,6 +51,7 @@ pub fn load_or_init(default_enabled: bool, default_port: u16) -> WebSettings {
     let s = WebSettings {
         enabled: default_enabled,
         port: default_port,
+        username: default_username(),
         password: gen_password(),
     };
     if let Err(e) = save(&s) {
@@ -51,8 +59,9 @@ pub fn load_or_init(default_enabled: bool, default_port: u16) -> WebSettings {
     }
     tracing::info!(
         port = s.port,
+        username = %s.username,
         password = %s.password,
-        "web console initialized (access password generated)"
+        "web console initialized (account + password generated)"
     );
     s
 }

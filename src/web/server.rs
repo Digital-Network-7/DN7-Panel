@@ -23,6 +23,11 @@ use crate::metrics::Collector;
 
 /// Shared web-console state.
 pub struct WebState {
+    cfg: AgentConfig,
+    /// This server's agent token (to authenticate backend wx calls).
+    agent_token: String,
+    /// HTTP client for backend wx bind/login calls.
+    http: reqwest::Client,
     auth: AuthState,
     settings: std::sync::Mutex<WebSettings>,
     /// Reused metrics collector (CPU% needs a persistent handle across reads).
@@ -33,14 +38,21 @@ type Shared = Arc<WebState>;
 
 /// Start the web console in a background task (no-op when disabled). Returns
 /// immediately; the server runs for the process lifetime.
-pub fn spawn(cfg: AgentConfig) {
+pub fn spawn(cfg: AgentConfig, agent_token: String) {
     let s = settings::load_or_init(cfg.web_enabled, cfg.web_port);
     if !s.enabled {
         tracing::info!("web console disabled; not starting");
         return;
     }
     let port = s.port;
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap_or_default();
     let state: Shared = Arc::new(WebState {
+        cfg,
+        agent_token,
+        http,
         auth: AuthState::new(),
         settings: std::sync::Mutex::new(s),
         collector: Mutex::new(Collector::new()),
@@ -66,6 +78,13 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
         .route("/api/nginx", post(nginx_op))
         .route("/api/mysql", post(mysql_op))
         .route("/api/terminal", get(terminal_ws))
+        // WeChat bind/login proxied to the backend (NAT-safe via this agent).
+        .route("/api/wx/status", get(wx_status))
+        .route("/api/wx/bind/start", post(wx_bind_start))
+        .route("/api/wx/bind/poll", get(wx_bind_poll))
+        .route("/api/wx/login/start", post(wx_login_start))
+        .route("/api/wx/login/poll", get(wx_login_poll))
+        .route("/api/wx/unbind", post(wx_unbind))
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -108,6 +127,8 @@ fn require_auth(state: &Shared, headers: &header::HeaderMap) -> Option<Response>
 
 #[derive(serde::Deserialize)]
 struct LoginReq {
+    #[serde(default)]
+    username: String,
     password: String,
 }
 
@@ -120,14 +141,19 @@ async fn login(
     if !state.auth.login_allowed(&source) {
         return (StatusCode::TOO_MANY_REQUESTS, "尝试过于频繁，请稍后再试").into_response();
     }
-    let expected = state.settings.lock().unwrap().password.clone();
-    if password_matches(&expected, &req.password) {
+    let (exp_user, exp_pw) = {
+        let s = state.settings.lock().unwrap();
+        (s.username.clone(), s.password.clone())
+    };
+    // Account name must match (case-sensitive) and the password must match.
+    let user_ok = req.username == exp_user;
+    if user_ok && password_matches(&exp_pw, &req.password) {
         state.auth.clear_failures(&source);
         let token = state.auth.issue();
         Json(json!({ "ok": true, "token": token })).into_response()
     } else {
         state.auth.record_failure(&source);
-        (StatusCode::UNAUTHORIZED, "密码错误").into_response()
+        (StatusCode::UNAUTHORIZED, "账号或密码错误").into_response()
     }
 }
 
@@ -216,7 +242,7 @@ async fn get_settings(State(state): State<Shared>, headers: header::HeaderMap) -
     let s = state.settings.lock().unwrap().clone();
     Json(json!({
         "ok": true,
-        "data": { "enabled": s.enabled, "port": s.port, "password": s.password }
+        "data": { "enabled": s.enabled, "port": s.port, "username": s.username, "password": s.password }
     }))
     .into_response()
 }
@@ -225,6 +251,8 @@ async fn get_settings(State(state): State<Shared>, headers: header::HeaderMap) -
 struct SettingsReq {
     #[serde(default)]
     port: Option<u16>,
+    #[serde(default)]
+    username: Option<String>,
     #[serde(default)]
     password: Option<String>,
     #[serde(default)]
@@ -257,6 +285,18 @@ async fn put_settings(
                 return (StatusCode::BAD_REQUEST, "密码长度需为 6-128").into_response();
             }
             s.password = pw.to_string();
+        }
+        if let Some(un) = req.username {
+            let un = un.trim();
+            if un.len() < 2
+                || un.len() > 32
+                || !un
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                return (StatusCode::BAD_REQUEST, "账号需为 2-32 位字母/数字/_/-").into_response();
+            }
+            s.username = un.to_string();
         }
         if let Some(en) = req.enabled {
             if en != s.enabled {
@@ -298,6 +338,151 @@ async fn terminal_ws(
 async fn handle_terminal(socket: WebSocket) {
     if let Err(e) = crate::terminal::run_web_pty(socket).await {
         tracing::debug!("web terminal ended: {e}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WeChat bind/login (proxied to the backend via this agent's token)
+// ---------------------------------------------------------------------------
+
+/// Call a backend wx endpoint with the agent token in the JSON body. Returns
+/// the parsed `data` object on `{ok:true}`.
+async fn backend_call(state: &Shared, path: &str, extra: Value) -> anyhow::Result<Value> {
+    let mut body = serde_json::Map::new();
+    body.insert(
+        "agent_token".into(),
+        Value::String(state.agent_token.clone()),
+    );
+    if let Value::Object(m) = extra {
+        for (k, v) in m {
+            body.insert(k, v);
+        }
+    }
+    let url = format!("{}{}", state.cfg.backend_url, path);
+    let resp = state
+        .http
+        .post(&url)
+        .json(&Value::Object(body))
+        .send()
+        .await?;
+    let v: Value = resp.json().await?;
+    if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
+        Ok(v.get("data").cloned().unwrap_or(Value::Null))
+    } else {
+        anyhow::bail!(v
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("backend error")
+            .to_string())
+    }
+}
+
+fn ok_data(data: Value) -> Response {
+    Json(json!({ "ok": true, "data": data })).into_response()
+}
+fn err_msg(e: impl std::fmt::Display) -> Response {
+    Json(json!({ "ok": false, "error": e.to_string() })).into_response()
+}
+
+/// GET /api/wx/status — bound? (auth required; shown on settings page)
+async fn wx_status(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    match backend_call(&state, "/agent/wx/status", json!({})).await {
+        Ok(d) => ok_data(d),
+        Err(e) => err_msg(e),
+    }
+}
+
+/// POST /api/wx/bind/start — auth required; returns ticket + QR svg.
+async fn wx_bind_start(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    start_scan(&state, "/agent/wx/bind/start").await
+}
+
+/// GET /api/wx/bind/poll?ticket= — auth required.
+async fn wx_bind_poll(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Query(q): Query<PollQuery>,
+) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    match backend_call(&state, "/agent/wx/bind/poll", json!({ "ticket": q.ticket })).await {
+        Ok(d) => ok_data(d),
+        Err(e) => err_msg(e),
+    }
+}
+
+/// POST /api/wx/login/start — PUBLIC (pre-auth login page). Returns whether the
+/// server is bound, plus ticket + QR svg when it is.
+async fn wx_login_start(State(state): State<Shared>) -> Response {
+    start_scan(&state, "/agent/wx/login/start").await
+}
+
+/// GET /api/wx/login/poll?ticket= — PUBLIC. On confirmation, mint a local
+/// session token (this is the actual login).
+async fn wx_login_poll(State(state): State<Shared>, Query(q): Query<PollQuery>) -> Response {
+    match backend_call(
+        &state,
+        "/agent/wx/login/poll",
+        json!({ "ticket": q.ticket }),
+    )
+    .await
+    {
+        Ok(d) => {
+            let status = d
+                .get("status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("pending");
+            if status == "confirmed" {
+                let token = state.auth.issue();
+                Json(json!({ "status": "confirmed", "token": token })).into_response()
+            } else {
+                Json(json!({ "status": status })).into_response()
+            }
+        }
+        Err(e) => err_msg(e),
+    }
+}
+
+/// POST /api/wx/unbind — auth required.
+async fn wx_unbind(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    match backend_call(&state, "/agent/wx/unbind", json!({})).await {
+        Ok(d) => ok_data(d),
+        Err(e) => err_msg(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PollQuery {
+    #[serde(default)]
+    ticket: String,
+}
+
+/// Shared start logic: call the backend start endpoint, then render the QR
+/// payload to an inline SVG so the browser needs no QR JS library.
+async fn start_scan(state: &Shared, path: &str) -> Response {
+    match backend_call(state, path, json!({})).await {
+        Ok(d) => {
+            // login/start may report bound:false (no ticket).
+            if d.get("bound").and_then(|b| b.as_bool()) == Some(false) {
+                return Json(json!({ "bound": false })).into_response();
+            }
+            let payload = d.get("payload").and_then(|p| p.as_str()).unwrap_or("");
+            let ticket = d.get("ticket").and_then(|t| t.as_str()).unwrap_or("");
+            let svg = super::qr::svg(payload, 220).unwrap_or_default();
+            Json(json!({ "bound": true, "ticket": ticket, "payload": payload, "svg": svg }))
+                .into_response()
+        }
+        Err(e) => err_msg(e),
     }
 }
 

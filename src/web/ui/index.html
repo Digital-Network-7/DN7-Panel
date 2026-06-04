@@ -5,69 +5,140 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>TeaOps 本机管理</title>
 <style>
-  :root { --bg:#0f1115; --panel:#181b22; --line:#262b35; --fg:#e6e8ec; --mut:#9aa3b2; --br:#3b82f6; --ok:#2ba471; --err:#e5534b; }
+  :root {
+    --bg:#070b14; --bg2:#0b1220; --panel:rgba(18,26,42,0.72); --panel2:#0e1626;
+    --line:rgba(90,120,180,0.18); --fg:#dbe6f5; --mut:#7d8aa3;
+    --cy:#22d3ee; --br:#3b82f6; --vio:#8b5cf6; --ok:#34d399; --err:#fb7185; --warn:#fbbf24;
+    --glow:0 0 24px rgba(34,211,238,0.18);
+  }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 -apple-system,Segoe UI,Roboto,"PingFang SC",sans-serif; }
-  a { color:var(--br); }
+  html,body { height:100%; }
+  body {
+    margin:0; color:var(--fg); font:14px/1.55 -apple-system,Segoe UI,Roboto,"PingFang SC",sans-serif;
+    background:
+      radial-gradient(1200px 700px at 85% -10%, rgba(59,130,246,0.16), transparent 60%),
+      radial-gradient(900px 600px at -10% 110%, rgba(139,92,246,0.14), transparent 55%),
+      var(--bg);
+    background-attachment:fixed;
+  }
+  a { color:var(--cy); }
   .hidden { display:none !important; }
-  /* Login */
-  #login { max-width:360px; margin:14vh auto; padding:28px; background:var(--panel); border:1px solid var(--line); border-radius:14px; }
-  #login h1 { font-size:20px; margin:0 0 4px; }
-  #login .sub { color:var(--mut); font-size:13px; margin-bottom:20px; }
-  input,select,textarea,button { font:inherit; }
-  .field { width:100%; padding:11px 12px; background:#0f1218; border:1px solid var(--line); border-radius:9px; color:var(--fg); margin-bottom:12px; }
-  .btn { background:var(--br); color:#fff; border:none; padding:11px 16px; border-radius:9px; cursor:pointer; }
-  .btn.sec { background:#2a2f3a; }
-  .btn:active { opacity:.85; }
+  .mono { font-family:ui-monospace,Menlo,Consolas,monospace; }
+  input,select,textarea,button { font:inherit; color:var(--fg); }
+  .field { width:100%; padding:11px 13px; background:rgba(8,13,24,0.85); border:1px solid var(--line); border-radius:10px; outline:none; transition:border-color .15s,box-shadow .15s; }
+  .field:focus { border-color:var(--cy); box-shadow:0 0 0 3px rgba(34,211,238,0.12); }
+  .btn { background:linear-gradient(135deg,var(--br),var(--vio)); color:#fff; border:none; padding:11px 18px; border-radius:10px; cursor:pointer; font-weight:500; letter-spacing:.3px; }
+  .btn.sec { background:rgba(60,80,120,0.25); border:1px solid var(--line); }
+  .btn:active { transform:translateY(1px); }
   .err { color:var(--err); font-size:13px; min-height:18px; }
-  /* App shell */
-  header { display:flex; align-items:center; gap:14px; padding:12px 18px; background:var(--panel); border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }
-  header .brand { font-weight:600; }
-  nav { display:flex; gap:4px; flex-wrap:wrap; }
-  nav button { background:none; border:none; color:var(--mut); padding:8px 12px; border-radius:8px; cursor:pointer; }
-  nav button.active { background:#23callout; color:var(--fg); background:#23272f; }
-  header .sp { flex:1; }
-  main { padding:18px; max-width:1100px; margin:0 auto; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
-  .card h3 { margin:0 0 8px; font-size:13px; color:var(--mut); font-weight:500; }
-  .card .big { font-size:26px; font-weight:600; }
-  .card .sub { color:var(--mut); font-size:12px; margin-top:4px; }
+
+  /* ---- Login ---- */
+  #login { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+  .login-card { width:380px; max-width:100%; padding:34px 30px; background:var(--panel); backdrop-filter:blur(14px);
+    border:1px solid var(--line); border-radius:18px; box-shadow:var(--glow); }
+  .logo { display:flex; align-items:center; gap:11px; margin-bottom:6px; }
+  .logo .dot { width:34px; height:34px; border-radius:10px; background:linear-gradient(135deg,var(--cy),var(--vio)); box-shadow:var(--glow); }
+  .logo h1 { font-size:19px; margin:0; letter-spacing:.5px; }
+  .login-card .sub { color:var(--mut); font-size:13px; margin:2px 0 22px; }
+  .seg { display:flex; gap:6px; background:rgba(8,13,24,0.6); border:1px solid var(--line); border-radius:10px; padding:4px; margin-bottom:18px; }
+  .seg button { flex:1; background:none; border:none; color:var(--mut); padding:8px; border-radius:7px; cursor:pointer; }
+  .seg button.on { background:linear-gradient(135deg,rgba(59,130,246,.35),rgba(139,92,246,.35)); color:#fff; }
+  label.lbl { display:block; font-size:12px; color:var(--mut); margin:0 0 6px; }
+  .qrwrap { text-align:center; padding:8px 0 4px; }
+  .qrwrap canvas, .qrwrap img { background:#fff; padding:12px; border-radius:14px; }
+  .qrwrap .tip { color:var(--mut); font-size:12px; margin-top:12px; }
+  .qrstate { font-size:12px; margin-top:8px; color:var(--cy); }
+
+  /* ---- App shell: left-right ---- */
+  #app { display:flex; min-height:100vh; }
+  aside { width:230px; flex-shrink:0; background:linear-gradient(180deg,rgba(13,20,36,0.9),rgba(7,11,20,0.9));
+    border-right:1px solid var(--line); display:flex; flex-direction:column; padding:18px 14px; position:sticky; top:0; height:100vh; }
+  aside .logo { padding:4px 8px 18px; }
+  nav { display:flex; flex-direction:column; gap:4px; flex:1; }
+  nav button { display:flex; align-items:center; gap:11px; background:none; border:none; color:var(--mut); padding:11px 13px;
+    border-radius:11px; cursor:pointer; text-align:left; font-size:14px; transition:background .15s,color .15s; }
+  nav button:hover { color:var(--fg); background:rgba(60,80,120,0.12); }
+  nav button.active { color:#fff; background:linear-gradient(135deg,rgba(59,130,246,.28),rgba(139,92,246,.22)); box-shadow:inset 0 0 0 1px var(--line); }
+  nav button .ic { width:18px; text-align:center; opacity:.9; }
+  aside .foot { border-top:1px solid var(--line); padding-top:14px; }
+  .who { font-size:12px; color:var(--mut); padding:0 8px 10px; }
+  .who b { color:var(--fg); font-weight:600; }
+
+  .content { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .topbar { display:flex; align-items:center; gap:12px; padding:16px 24px; border-bottom:1px solid var(--line);
+    background:rgba(8,13,24,0.4); backdrop-filter:blur(8px); position:sticky; top:0; z-index:3; }
+  .topbar h2 { margin:0; font-size:16px; font-weight:600; letter-spacing:.4px; }
+  .topbar .sp { flex:1; }
+  main { padding:22px 24px; }
+
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; }
+  .card { background:var(--panel); backdrop-filter:blur(10px); border:1px solid var(--line); border-radius:14px; padding:18px; }
+  .card h3 { margin:0 0 10px; font-size:12px; color:var(--mut); font-weight:500; letter-spacing:.5px; text-transform:uppercase; }
+  .card .big { font-size:28px; font-weight:650; background:linear-gradient(135deg,#fff,#9fc4ff); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  .card .sub { color:var(--mut); font-size:12px; margin-top:5px; }
+  .bar { height:6px; border-radius:99px; background:rgba(90,120,180,0.16); margin-top:12px; overflow:hidden; }
+  .bar > i { display:block; height:100%; border-radius:99px; background:linear-gradient(90deg,var(--cy),var(--vio)); }
   table { width:100%; border-collapse:collapse; font-size:13px; }
-  th,td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
   th { color:var(--mut); font-weight:500; }
-  td.mono,.mono { font-family:ui-monospace,Menlo,Consolas,monospace; }
-  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
-  #term { background:#000; color:#ddd; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; white-space:pre-wrap; word-break:break-all; padding:12px; height:60vh; overflow-y:auto; border-radius:10px; }
-  #terminput { width:100%; }
-  pre.out { background:#0b0d11; border:1px solid var(--line); border-radius:8px; padding:12px; max-height:50vh; overflow:auto; white-space:pre-wrap; word-break:break-all; }
-  .warn { background:#2a1f12; border:1px solid #5a3a16; color:#e0a96d; padding:10px 12px; border-radius:9px; font-size:12px; margin-bottom:14px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
+  #term { background:#04070d; border:1px solid var(--line); color:#cfe3ff; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px;
+    white-space:pre-wrap; word-break:break-all; padding:14px; height:58vh; overflow-y:auto; border-radius:12px; }
+  pre.out { background:#04070d; border:1px solid var(--line); border-radius:10px; padding:14px; max-height:52vh; overflow:auto; white-space:pre-wrap; word-break:break-all; font-size:12.5px; }
+  .warn { background:rgba(251,191,36,0.08); border:1px solid rgba(251,191,36,0.3); color:#f4c869; padding:11px 13px; border-radius:11px; font-size:12px; margin-bottom:16px; }
+  .ok { color:var(--ok); }
+  @media (max-width:720px){ aside{width:64px;} nav button span.t{display:none;} aside .logo h1,.who{display:none;} }
 </style>
 </head>
 <body>
 
 <!-- Login -->
 <div id="login">
-  <h1>TeaOps 本机管理</h1>
-  <div class="sub">请输入访问密码</div>
-  <input id="pw" class="field" type="password" placeholder="访问密码" autocomplete="current-password" />
-  <button class="btn" style="width:100%" onclick="doLogin()">登录</button>
-  <div class="err" id="loginErr"></div>
+  <div class="login-card">
+    <div class="logo"><span class="dot"></span><h1>TeaOps 本机管理</h1></div>
+    <div class="sub">安全登录到本机控制台</div>
+    <div class="seg">
+      <button id="tabPw" class="on" onclick="loginMode('pw')">账号密码</button>
+      <button id="tabWx" onclick="loginMode('wx')">微信扫码</button>
+    </div>
+
+    <div id="panewPw">
+      <label class="lbl">账号</label>
+      <input id="user" class="field" style="margin-bottom:12px" value="admin" autocomplete="username" />
+      <label class="lbl">密码</label>
+      <input id="pw" class="field" type="password" placeholder="访问密码" autocomplete="current-password" style="margin-bottom:16px" />
+      <button class="btn" style="width:100%" onclick="doLogin()">登 录</button>
+      <div class="err" id="loginErr" style="margin-top:10px"></div>
+    </div>
+
+    <div id="paneWx" class="hidden">
+      <div class="qrwrap">
+        <div id="qrbox"></div>
+        <div class="tip">用微信扫描，在小程序首页「扫一扫」确认登录</div>
+        <div class="qrstate" id="qrstate"></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- App -->
 <div id="app" class="hidden">
-  <header>
-    <span class="brand">TeaOps</span>
+  <aside>
+    <div class="logo"><span class="dot"></span><h1>TeaOps</h1></div>
     <nav id="nav"></nav>
-    <span class="sp"></span>
-    <button class="btn sec" onclick="logout()">退出</button>
-  </header>
-  <main id="view"></main>
+    <div class="foot">
+      <div class="who">已登录 <b id="whoName">admin</b></div>
+      <button class="btn sec" style="width:100%" onclick="logout()">退出登录</button>
+    </div>
+  </aside>
+  <div class="content">
+    <div class="topbar"><h2 id="title">监控</h2><span class="sp"></span><span class="mono" id="clock" style="color:var(--mut);font-size:12px"></span></div>
+    <main id="view"></main>
+  </div>
 </div>
 
 <script>
-const S = { token: localStorage.getItem('teaops_web_token') || '', tab: 'dash', timer: null };
+const S = { token: localStorage.getItem('teaops_web_token') || '', tab: 'dash', timer: null, ws: null, wxTimer: null };
 
 function api(path, opts = {}) {
   opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
@@ -81,53 +152,100 @@ function api(path, opts = {}) {
   });
 }
 
+// ---- Login mode switch ----
+function loginMode(m) {
+  document.getElementById('tabPw').classList.toggle('on', m === 'pw');
+  document.getElementById('tabWx').classList.toggle('on', m === 'wx');
+  document.getElementById('panewPw').classList.toggle('hidden', m !== 'pw');
+  document.getElementById('paneWx').classList.toggle('hidden', m === 'pw');
+  if (m === 'wx') startWxLogin(); else stopWxLogin();
+}
+
 function doLogin() {
-  const pw = document.getElementById('pw').value;
+  const username = document.getElementById('user').value.trim();
+  const password = document.getElementById('pw').value;
   document.getElementById('loginErr').textContent = '';
-  fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) })
+  fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) })
     .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(b.error || '登录失败'); return b; })
     .then((b) => { S.token = b.token; localStorage.setItem('teaops_web_token', S.token); showApp(); })
     .catch((e) => { document.getElementById('loginErr').textContent = e.message; });
 }
 
+// ---- WeChat scan login ----
+function startWxLogin() {
+  stopWxLogin();
+  document.getElementById('qrstate').textContent = '正在生成二维码…';
+  document.getElementById('qrbox').innerHTML = '';
+  fetch('/api/wx/login/start', { method: 'POST' })
+    .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(b.error || '无法发起'); return b; })
+    .then((b) => {
+      if (!b.bound) { document.getElementById('qrstate').textContent = '本机未绑定微信，请用账号密码登录后在「设置」中绑定'; return; }
+      document.getElementById('qrbox').innerHTML = b.svg || '';
+      document.getElementById('qrstate').textContent = '等待扫码确认…';
+      pollWx(b.ticket);
+    })
+    .catch((e) => { document.getElementById('qrstate').textContent = e.message; });
+}
+function pollWx(ticket) {
+  S.wxTimer = setInterval(() => {
+    fetch('/api/wx/login/poll?ticket=' + encodeURIComponent(ticket))
+      .then((r) => r.json()).then((b) => {
+        if (b.status === 'confirmed' && b.token) {
+          stopWxLogin(); S.token = b.token; localStorage.setItem('teaops_web_token', S.token); showApp();
+        } else if (b.status === 'expired') {
+          document.getElementById('qrstate').textContent = '二维码已过期，正在刷新…'; startWxLogin();
+        }
+      }).catch(() => {});
+  }, 1500);
+}
+function stopWxLogin() { if (S.wxTimer) { clearInterval(S.wxTimer); S.wxTimer = null; } }
+
 function logout() {
   if (S.token) api('/api/logout', { method: 'POST' }).catch(() => {});
   S.token = ''; localStorage.removeItem('teaops_web_token');
   if (S.timer) clearInterval(S.timer);
+  if (S.ws) { try { S.ws.close(); } catch (e) {} }
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login').classList.remove('hidden');
 }
 
 const TABS = [
-  { key: 'dash', label: '监控' },
-  { key: 'term', label: '终端' },
-  { key: 'docker', label: 'Docker' },
-  { key: 'nginx', label: 'Nginx' },
-  { key: 'mysql', label: 'MySQL' },
-  { key: 'settings', label: '设置' },
+  { key: 'dash', label: '监控', ic: '◉' },
+  { key: 'term', label: '终端', ic: '▮' },
+  { key: 'docker', label: 'Docker', ic: '⬢' },
+  { key: 'nginx', label: 'Nginx', ic: '⬡' },
+  { key: 'mysql', label: 'MySQL', ic: '⛁' },
+  { key: 'settings', label: '设置', ic: '⚙' },
 ];
 
 function showApp() {
   document.getElementById('login').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
-  const nav = document.getElementById('nav');
-  nav.innerHTML = '';
+  const nav = document.getElementById('nav'); nav.innerHTML = '';
   TABS.forEach((t) => {
     const b = document.createElement('button');
-    b.textContent = t.label; b.dataset.k = t.key;
-    b.className = S.tab === t.key ? 'active' : '';
+    b.dataset.k = t.key; b.className = S.tab === t.key ? 'active' : '';
+    b.innerHTML = `<span class="ic">${t.ic}</span><span class="t">${t.label}</span>`;
     b.onclick = () => switchTab(t.key);
     nav.appendChild(b);
   });
+  startClock();
   switchTab(S.tab);
+}
+
+function startClock() {
+  const el = document.getElementById('clock');
+  const tick = () => { el.textContent = new Date().toLocaleString('zh-CN'); };
+  tick(); setInterval(tick, 1000);
 }
 
 function switchTab(k) {
   S.tab = k;
   if (S.timer) { clearInterval(S.timer); S.timer = null; }
+  if (S.ws) { try { S.ws.close(); } catch (e) {} S.ws = null; }
   document.querySelectorAll('#nav button').forEach((b) => b.className = b.dataset.k === k ? 'active' : '');
-  const v = document.getElementById('view');
-  v.innerHTML = '';
+  document.getElementById('title').textContent = (TABS.find((t) => t.key === k) || {}).label || '';
+  const v = document.getElementById('view'); v.innerHTML = '';
   if (k === 'dash') renderDash(v);
   else if (k === 'term') renderTerm(v);
   else if (k === 'docker') renderOp(v, 'docker', 'Docker 管理');
@@ -137,65 +255,49 @@ function switchTab(k) {
 }
 
 function fmtBytes(n) {
-  n = Number(n) || 0;
-  const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
+  n = Number(n) || 0; const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return n.toFixed(i ? 1 : 0) + ' ' + u[i];
 }
 
-// ---- Dashboard ----
 function renderDash(v) {
-  v.innerHTML = '<div class="grid" id="cards"></div><div class="card" style="margin-top:14px"><h3>进程 (Top by CPU/内存)</h3><div id="procs">加载中…</div></div>';
+  v.innerHTML = '<div class="grid" id="cards"></div><div class="card" style="margin-top:16px"><h3>进程 · CPU Top</h3><div id="procs">加载中…</div></div>';
   const refresh = () => {
     api('/api/metrics').then((b) => {
       const m = b.data;
       document.getElementById('cards').innerHTML = [
-        card('CPU', (m.cpu_usage || 0).toFixed(1) + '%', (m.cpu_cores || 0) + ' 核'),
-        card('内存', (m.memory_usage || 0).toFixed(1) + '%', fmtBytes(m.mem_used) + ' / ' + fmtBytes(m.mem_total)),
-        card('磁盘', (m.disk_usage || 0).toFixed(1) + '%', fmtBytes(m.disk_used) + ' / ' + fmtBytes(m.disk_total)),
-        card('网络', '↓' + fmtBytes(m.net_rx) + '/s', '↑' + fmtBytes(m.net_tx) + '/s'),
+        card('CPU', (m.cpu_usage || 0).toFixed(1) + '%', (m.cpu_cores || 0) + ' 核', m.cpu_usage),
+        card('内存', (m.memory_usage || 0).toFixed(1) + '%', fmtBytes(m.mem_used) + ' / ' + fmtBytes(m.mem_total), m.memory_usage),
+        card('磁盘', (m.disk_usage || 0).toFixed(1) + '%', fmtBytes(m.disk_used) + ' / ' + fmtBytes(m.disk_total), m.disk_usage),
+        card('网络', '↓' + fmtBytes(m.net_rx) + '/s', '↑' + fmtBytes(m.net_tx) + '/s', null),
       ].join('');
     }).catch(() => {});
     api('/api/procs').then((b) => {
-      const d = b.data || {}; const rows = (d.by_cpu || []).slice(0, 12);
+      const rows = (b.data.by_cpu || []).slice(0, 12);
       let h = '<table><tr><th>进程</th><th>PID</th><th>CPU</th><th>内存</th></tr>';
       rows.forEach((p) => { h += `<tr><td class="mono">${esc(p.name)}</td><td>${p.pid}</td><td>${(p.cpu || 0).toFixed(1)}%</td><td>${fmtBytes(p.mem)}</td></tr>`; });
       document.getElementById('procs').innerHTML = h + '</table>';
     }).catch(() => {});
   };
-  refresh();
-  S.timer = setInterval(refresh, 2000);
+  refresh(); S.timer = setInterval(refresh, 2000);
 }
-function card(title, big, sub) {
-  return `<div class="card"><h3>${title}</h3><div class="big">${big}</div><div class="sub">${sub}</div></div>`;
+function card(title, big, sub, pct) {
+  const bar = pct == null ? '' : `<div class="bar"><i style="width:${Math.min(100, Math.max(0, pct)).toFixed(0)}%"></i></div>`;
+  return `<div class="card"><h3>${title}</h3><div class="big">${big}</div><div class="sub">${sub}</div>${bar}</div>`;
 }
 
-// ---- Terminal ----
 function renderTerm(v) {
-  v.innerHTML = '<div id="term"></div><div class="row" style="margin-top:10px"><input id="terminput" class="field" placeholder="输入命令后回车，Ctrl 组合键请用下方按钮" autocomplete="off" /></div>';
-  const term = document.getElementById('term');
-  const inp = document.getElementById('terminput');
+  v.innerHTML = '<div id="term"></div><div class="row" style="margin-top:12px"><input id="terminput" class="field" placeholder="输入命令后回车" autocomplete="off" /></div>';
+  const term = document.getElementById('term'); const inp = document.getElementById('terminput');
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}/api/terminal?token=${encodeURIComponent(S.token)}`);
-  ws.binaryType = 'arraybuffer';
-  const dec = new TextDecoder();
-  ws.onmessage = (e) => {
-    const text = typeof e.data === 'string' ? e.data : dec.decode(e.data);
-    term.textContent += text;
-    term.scrollTop = term.scrollHeight;
-  };
+  ws.binaryType = 'arraybuffer'; const dec = new TextDecoder();
+  ws.onmessage = (e) => { term.textContent += (typeof e.data === 'string' ? e.data : dec.decode(e.data)); term.scrollTop = term.scrollHeight; };
   ws.onclose = () => { term.textContent += '\n[连接已关闭]\n'; };
-  inp.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      ws.send(JSON.stringify({ type: 'data', data: inp.value + '\n' }));
-      inp.value = '';
-      e.preventDefault();
-    }
-  });
-  S._ws = ws;
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { ws.send(JSON.stringify({ type: 'data', data: inp.value + '\n' })); inp.value = ''; e.preventDefault(); } });
+  S.ws = ws;
 }
 
-// ---- Generic op panel (docker / nginx / mysql) ----
 function renderOp(v, kind, title) {
   v.innerHTML = `<div class="card"><h3>${title}</h3>
     <div class="row"><button class="btn sec" id="opInfo">状态 (info)</button>
@@ -203,50 +305,72 @@ function renderOp(v, kind, title) {
       <button class="btn" id="opSend">发送</button></div>
     <pre class="out" id="opOut">点击「状态」查看，或输入操作 JSON 发送。</pre></div>`;
   const out = document.getElementById('opOut');
-  const send = (obj) => {
-    out.textContent = '请求中…';
-    api('/api/' + kind, { method: 'POST', body: JSON.stringify(obj) })
-      .then((b) => { out.textContent = JSON.stringify(b.data, null, 2); })
-      .catch((e) => { out.textContent = '错误：' + e.message; });
-  };
+  const send = (obj) => { out.textContent = '请求中…'; api('/api/' + kind, { method: 'POST', body: JSON.stringify(obj) })
+    .then((b) => { out.textContent = JSON.stringify(b.data, null, 2); }).catch((e) => { out.textContent = '错误：' + e.message; }); };
   document.getElementById('opInfo').onclick = () => send({ op: 'info' });
-  document.getElementById('opSend').onclick = () => {
-    let obj; try { obj = JSON.parse(document.getElementById('opJson').value); } catch (e) { out.textContent = 'JSON 格式错误'; return; }
-    send(obj);
-  };
+  document.getElementById('opSend').onclick = () => { let o; try { o = JSON.parse(document.getElementById('opJson').value); } catch (e) { out.textContent = 'JSON 格式错误'; return; } send(o); };
 }
 
-// ---- Settings ----
 function renderSettings(v) {
   v.innerHTML = '<div class="card">加载中…</div>';
-  api('/api/settings').then((b) => {
-    const s = b.data;
-    v.innerHTML = `<div class="warn">本机管理通过明文 HTTP 暴露在 0.0.0.0:${s.port}，登录密码与会话以明文传输，强烈建议用防火墙仅放行可信 IP。</div>
-    <div class="card" style="max-width:480px">
-      <h3>访问密码</h3>
-      <input id="setPw" class="field" type="text" value="${esc(s.password)}" />
-      <h3>端口（修改后需重启 Agent 生效）</h3>
-      <input id="setPort" class="field" type="number" value="${s.port}" />
-      <label style="display:flex;gap:8px;align-items:center;margin:8px 0 14px"><input type="checkbox" id="setEnabled" ${s.enabled ? 'checked' : ''}/> 启用本机管理（关闭后需重启生效）</label>
-      <button class="btn" id="setSave">保存</button>
-      <div class="err" id="setMsg" style="color:var(--ok)"></div>
+  Promise.all([api('/api/settings'), api('/api/wx/status').catch(() => ({ data: { bound: false } }))]).then(([sb, wb]) => {
+    const s = sb.data; const wx = wb.data || {};
+    v.innerHTML = `
+    <div class="warn">本机管理通过明文 HTTP 暴露在 0.0.0.0:${s.port}，登录凭证以明文传输，强烈建议用防火墙仅放行可信 IP。</div>
+    <div class="grid" style="align-items:start">
+      <div class="card">
+        <h3>登录账号</h3>
+        <label class="lbl">账号</label>
+        <input id="setUser" class="field" style="margin-bottom:12px" value="${esc(s.username)}" />
+        <label class="lbl">密码</label>
+        <input id="setPw" class="field" type="text" value="${esc(s.password)}" />
+        <h3 style="margin-top:16px">端口（改后重启 Agent 生效）</h3>
+        <input id="setPort" class="field" type="number" value="${s.port}" />
+        <label style="display:flex;gap:8px;align-items:center;margin:14px 0"><input type="checkbox" id="setEnabled" ${s.enabled ? 'checked' : ''}/> 启用本机管理（关闭后需重启生效）</label>
+        <button class="btn" id="setSave">保存</button>
+        <div class="err ok" id="setMsg" style="margin-top:10px"></div>
+      </div>
+      <div class="card">
+        <h3>微信绑定</h3>
+        <div id="wxState" style="margin-bottom:14px">${wx.bound ? '已绑定微信：<b class="ok">' + esc(wx.nickname || '已绑定') + '</b>' : '未绑定。绑定后可用微信扫码登录本控制台。'}</div>
+        <div id="wxBind"></div>
+        ${wx.bound ? '<button class="btn sec" id="wxUnbind">解除绑定</button>' : '<button class="btn" id="wxStartBind">绑定微信</button>'}
+        <div class="err" id="wxMsg" style="margin-top:10px"></div>
+      </div>
     </div>`;
     document.getElementById('setSave').onclick = () => {
-      const body = { password: document.getElementById('setPw').value, port: Number(document.getElementById('setPort').value), enabled: document.getElementById('setEnabled').checked };
+      const body = { username: document.getElementById('setUser').value, password: document.getElementById('setPw').value, port: Number(document.getElementById('setPort').value), enabled: document.getElementById('setEnabled').checked };
       api('/api/settings', { method: 'POST', body: JSON.stringify(body) })
-        .then((b) => { document.getElementById('setMsg').textContent = '已保存' + (b.needs_restart ? '（端口/开关改动需重启 Agent 生效）' : ''); })
-        .catch((e) => { const m = document.getElementById('setMsg'); m.style.color = 'var(--err)'; m.textContent = e.message; });
+        .then((b) => { const m = document.getElementById('setMsg'); m.className = 'err ok'; m.textContent = '已保存' + (b.needs_restart ? '（端口/开关改动需重启 Agent 生效）' : ''); document.getElementById('whoName').textContent = body.username; })
+        .catch((e) => { const m = document.getElementById('setMsg'); m.className = 'err'; m.textContent = e.message; });
     };
+    const sb2 = document.getElementById('wxStartBind');
+    if (sb2) sb2.onclick = () => startWxBind();
+    const ub = document.getElementById('wxUnbind');
+    if (ub) ub.onclick = () => { api('/api/wx/unbind', { method: 'POST' }).then(() => switchTab('settings')).catch((e) => { document.getElementById('wxMsg').textContent = e.message; }); };
   }).catch((e) => { v.innerHTML = '<div class="card">加载失败：' + esc(e.message) + '</div>'; });
+}
+
+function startWxBind() {
+  const box = document.getElementById('wxBind');
+  box.innerHTML = '<div class="qrwrap"><div id="bindQr"></div><div class="tip">用微信扫描，在小程序首页「扫一扫」确认绑定</div><div class="qrstate" id="bindState">生成中…</div></div>';
+  api('/api/wx/bind/start', { method: 'POST' }).then((b) => {
+    document.getElementById('bindQr').innerHTML = b.data.svg || '';
+    document.getElementById('bindState').textContent = '等待扫码确认…';
+    const ticket = b.data.ticket;
+    const t = setInterval(() => {
+      api('/api/wx/bind/poll?ticket=' + encodeURIComponent(ticket)).then((p) => {
+        if (p.data.status === 'confirmed') { clearInterval(t); switchTab('settings'); }
+        else if (p.data.status === 'expired') { clearInterval(t); document.getElementById('bindState').textContent = '已过期，请重试'; }
+      }).catch(() => {});
+    }, 1500);
+  }).catch((e) => { document.getElementById('bindState').textContent = e.message; });
 }
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
 document.getElementById('pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
-
-// Auto-enter the app if we already hold a token (validated lazily by the first call).
 if (S.token) showApp();
 </script>
 </body>
 </html>
-

@@ -62,7 +62,7 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
 
     // On-box web management console (default on, port 1080). Runs in its own
     // task; no-op when disabled in settings. Independent of the report loop.
-    crate::web::spawn(cfg.clone());
+    crate::web::spawn(cfg.clone(), agent_token.clone());
 
     loop {
         interval.tick().await;

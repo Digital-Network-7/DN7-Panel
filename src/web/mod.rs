@@ -17,6 +17,7 @@
 //! persisted; a restart applies a new port.
 
 mod auth;
+mod qr;
 mod server;
 mod settings;
 
