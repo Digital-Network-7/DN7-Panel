@@ -917,6 +917,219 @@ fn friendly_archive_err(e: &bollard::errors::Error) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Web console (axum) file operations — plain request/response over HTTP, no
+// WebSocket relay. Host paths use tokio::fs directly; container paths reuse the
+// daemon exec / archive helpers above. Used by `web::server`.
+// ---------------------------------------------------------------------------
+
+/// List a host directory → `{ path, entries:[{name,is_dir,size}] }`.
+pub async fn web_host_list(path: &str) -> Result<serde_json::Value> {
+    let dir = if path.trim().is_empty() { "/" } else { path };
+    let mut entries = Vec::new();
+    let mut rd = tokio::fs::read_dir(dir).await?;
+    while let Some(ent) = rd.next_entry().await? {
+        let name = ent.file_name().to_string_lossy().to_string();
+        let md = ent.metadata().await.ok();
+        let is_dir = md.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        let size = md.as_ref().map(|m| m.len()).unwrap_or(0);
+        entries.push(serde_json::json!({ "name": name, "is_dir": is_dir, "size": size }));
+    }
+    entries.sort_by(|a, b| {
+        let ad = a["is_dir"].as_bool().unwrap_or(false);
+        let bd = b["is_dir"].as_bool().unwrap_or(false);
+        bd.cmp(&ad).then_with(|| {
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["name"].as_str().unwrap_or(""))
+        })
+    });
+    Ok(serde_json::json!({ "path": dir, "entries": entries }))
+}
+
+/// Create a host directory (recursive).
+pub async fn web_host_mkdir(path: &str) -> Result<()> {
+    if path.trim().is_empty() {
+        return Err(anyhow!("路径不能为空"));
+    }
+    tokio::fs::create_dir_all(path).await?;
+    Ok(())
+}
+
+/// Delete a host path (file or directory), refusing protected system dirs.
+pub async fn web_host_delete(path: &str) -> Result<()> {
+    if is_protected_path(path) {
+        return Err(anyhow!("该系统目录受保护，禁止删除"));
+    }
+    let p = Path::new(path);
+    if p.is_dir() {
+        tokio::fs::remove_dir_all(path).await?;
+    } else {
+        tokio::fs::remove_file(path).await?;
+    }
+    Ok(())
+}
+
+/// Read a whole host file → (file name, bytes). Refuses directories.
+pub async fn web_host_read(path: &str) -> Result<(String, Vec<u8>)> {
+    let md = tokio::fs::metadata(path).await?;
+    if md.is_dir() {
+        return Err(anyhow!("不能下载目录"));
+    }
+    let name = Path::new(path)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "download".to_string());
+    let bytes = tokio::fs::read(path).await?;
+    Ok((name, bytes))
+}
+
+/// Write bytes to a host file (overwrite/create).
+pub async fn web_host_write(path: &str, bytes: &[u8]) -> Result<()> {
+    if path.trim().is_empty() {
+        return Err(anyhow!("路径不能为空"));
+    }
+    tokio::fs::write(path, bytes).await?;
+    Ok(())
+}
+
+/// List a container directory → `{ path, entries:[{name,is_dir,size}] }`.
+pub async fn web_ctn_list(container: &str, path: &str) -> Result<serde_json::Value> {
+    if !valid_container_ref(container) {
+        return Err(anyhow!("invalid container reference"));
+    }
+    let dir = if path.trim().is_empty() { "/" } else { path };
+    check_abs(dir)?;
+    let script = r#"cd "$1" 2>/dev/null || exit 7
+for name in * .[!.]* ..?*; do
+  [ -e "$name" ] || [ -L "$name" ] || continue
+  if [ -d "$name" ]; then
+    printf 'd\t0\t%s\n' "$name"
+  else
+    sz=$(stat -c %s "$name" 2>/dev/null || stat -f %z "$name" 2>/dev/null || echo 0)
+    printf 'f\t%s\t%s\n' "$sz" "$name"
+  fi
+done"#;
+    let (code, stdout) = ctn_exec_collect(container, script, dir).await?;
+    if code != 0 {
+        return Err(anyhow!("目录不存在或无权限"));
+    }
+    let mut entries = Vec::new();
+    for line in stdout.lines() {
+        let mut it = line.splitn(3, '\t');
+        let t = it.next().unwrap_or("");
+        let sz = it.next().unwrap_or("0");
+        let name = match it.next() {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        let is_dir = t == "d";
+        let size: u64 = sz.trim().parse().unwrap_or(0);
+        entries.push(serde_json::json!({ "name": name, "is_dir": is_dir, "size": size }));
+    }
+    entries.sort_by(|a, b| {
+        let ad = a["is_dir"].as_bool().unwrap_or(false);
+        let bd = b["is_dir"].as_bool().unwrap_or(false);
+        bd.cmp(&ad).then_with(|| {
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["name"].as_str().unwrap_or(""))
+        })
+    });
+    Ok(serde_json::json!({ "path": dir, "entries": entries }))
+}
+
+/// Create a directory inside a container.
+pub async fn web_ctn_mkdir(container: &str, path: &str) -> Result<()> {
+    if !valid_container_ref(container) {
+        return Err(anyhow!("invalid container reference"));
+    }
+    ctn_exec_ok(container, "mkdir -p \"$1\"", path).await
+}
+
+/// Delete a path inside a container (refusing protected system dirs).
+pub async fn web_ctn_delete(container: &str, path: &str) -> Result<()> {
+    if !valid_container_ref(container) {
+        return Err(anyhow!("invalid container reference"));
+    }
+    if is_protected_path(path) {
+        return Err(anyhow!("该系统目录受保护，禁止删除"));
+    }
+    ctn_exec_ok(container, "rm -rf \"$1\"", path).await
+}
+
+/// Read a whole file out of a container → (file name, bytes), via the archive
+/// (tar) API. Buffers the file in memory (web console transfers are modest).
+pub async fn web_ctn_read(container: &str, path: &str) -> Result<(String, Vec<u8>)> {
+    use futures::StreamExt;
+
+    if !valid_container_ref(container) {
+        return Err(anyhow!("invalid container reference"));
+    }
+    check_abs(path)?;
+    let dkr = crate::docker::dkr()?;
+    let opts = bollard::container::DownloadFromContainerOptions {
+        path: path.to_string(),
+    };
+    let mut stream = dkr.download_from_container(container, Some(opts));
+
+    let mut header: Vec<u8> = Vec::with_capacity(512);
+    let mut begun = false;
+    let mut remaining: u64 = 0;
+    let mut name = String::from("download");
+    let mut content: Vec<u8> = Vec::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| anyhow!(friendly_archive_err(&e)))?;
+        let mut data: &[u8] = &chunk;
+        if !begun {
+            let need = 512 - header.len();
+            let take = need.min(data.len());
+            header.extend_from_slice(&data[..take]);
+            data = &data[take..];
+            if header.len() < 512 {
+                continue;
+            }
+            let (n, size) =
+                parse_tar_header(&header).ok_or_else(|| anyhow!("不能下载目录或空文件"))?;
+            if size == 0 {
+                return Err(anyhow!("不能下载目录或空文件"));
+            }
+            name = n;
+            remaining = size;
+            begun = true;
+        }
+        if remaining > 0 && !data.is_empty() {
+            let content_len = (remaining as usize).min(data.len());
+            content.extend_from_slice(&data[..content_len]);
+            remaining -= content_len as u64;
+        }
+        if begun && remaining == 0 {
+            break;
+        }
+    }
+    if !begun {
+        return Err(anyhow!("文件不存在"));
+    }
+    Ok((name, content))
+}
+
+/// Write bytes into a container at `dest_path` (via a host temp file + the
+/// archive API). Works on shell-less images.
+pub async fn web_ctn_write(container: &str, dest_path: &str, bytes: &[u8]) -> Result<()> {
+    if !valid_container_ref(container) {
+        return Err(anyhow!("invalid container reference"));
+    }
+    check_abs(dest_path)?;
+    let temp_path = std::env::temp_dir().join(format!("teaops-ctn-web-{}", unique_suffix()));
+    tokio::fs::write(&temp_path, bytes).await?;
+    let res = ctn_upload_file(container, &temp_path, dest_path).await;
+    let _ = tokio::fs::remove_file(&temp_path).await;
+    res
+}
+
 #[cfg(test)]
 mod tests {
     use super::{is_protected_path, parse_tar_header, valid_container_ref};

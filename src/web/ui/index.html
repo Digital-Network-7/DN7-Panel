@@ -1,93 +1,161 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-mode="auto">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>TeaOps 本机管理</title>
 <style>
+  /* ---- Theme tokens: dark (default) ---- */
   :root {
-    --bg:#070b14; --bg2:#0b1220; --panel:rgba(18,26,42,0.72); --panel2:#0e1626;
-    --line:rgba(90,120,180,0.18); --fg:#dbe6f5; --mut:#7d8aa3;
+    --bg:#070b14; --panel:rgba(18,26,42,0.72); --panel-solid:#0e1626; --panel2:rgba(8,13,24,0.85);
+    --line:rgba(90,120,180,0.18); --line2:rgba(90,120,180,0.30); --fg:#dbe6f5; --mut:#8294b0;
     --cy:#22d3ee; --br:#3b82f6; --vio:#8b5cf6; --ok:#34d399; --err:#fb7185; --warn:#fbbf24;
-    --glow:0 0 24px rgba(34,211,238,0.18);
+    --glow:0 0 24px rgba(34,211,238,0.18); --shadow:0 10px 40px rgba(0,0,0,0.4);
+    --hov:rgba(60,80,120,0.14); --acc-soft:rgba(59,130,246,0.14);
+    --app-bg:
+      radial-gradient(1200px 700px at 85% -10%, rgba(59,130,246,0.16), transparent 60%),
+      radial-gradient(900px 600px at -10% 110%, rgba(139,92,246,0.14), transparent 55%),
+      var(--bg);
+  }
+  /* ---- Light theme overrides ---- */
+  html[data-theme="light"] {
+    --bg:#eef2f8; --panel:rgba(255,255,255,0.82); --panel-solid:#ffffff; --panel2:rgba(255,255,255,0.92);
+    --line:rgba(40,70,120,0.14); --line2:rgba(40,70,120,0.24); --fg:#1b2536; --mut:#5d6b85;
+    --cy:#0891b2; --br:#2563eb; --vio:#7c3aed; --ok:#059669; --err:#e11d48; --warn:#d97706;
+    --glow:0 0 24px rgba(37,99,235,0.10); --shadow:0 10px 30px rgba(30,50,90,0.12);
+    --hov:rgba(40,70,120,0.07); --acc-soft:rgba(37,99,235,0.10);
+    --app-bg:
+      radial-gradient(1100px 650px at 88% -12%, rgba(37,99,235,0.10), transparent 60%),
+      radial-gradient(820px 560px at -8% 112%, rgba(124,58,237,0.08), transparent 55%),
+      var(--bg);
   }
   * { box-sizing:border-box; }
   html,body { height:100%; }
   body {
     margin:0; color:var(--fg); font:14px/1.55 -apple-system,Segoe UI,Roboto,"PingFang SC",sans-serif;
-    background:
-      radial-gradient(1200px 700px at 85% -10%, rgba(59,130,246,0.16), transparent 60%),
-      radial-gradient(900px 600px at -10% 110%, rgba(139,92,246,0.14), transparent 55%),
-      var(--bg);
-    background-attachment:fixed;
+    background:var(--app-bg); background-attachment:fixed; transition:background .25s,color .25s;
   }
   a { color:var(--cy); }
   .hidden { display:none !important; }
   .mono { font-family:ui-monospace,Menlo,Consolas,monospace; }
+  .mut { color:var(--mut); }
   input,select,textarea,button { font:inherit; color:var(--fg); }
-  .field { width:100%; padding:11px 13px; background:rgba(8,13,24,0.85); border:1px solid var(--line); border-radius:10px; outline:none; transition:border-color .15s,box-shadow .15s; }
-  .field:focus { border-color:var(--cy); box-shadow:0 0 0 3px rgba(34,211,238,0.12); }
-  .btn { background:linear-gradient(135deg,var(--br),var(--vio)); color:#fff; border:none; padding:11px 18px; border-radius:10px; cursor:pointer; font-weight:500; letter-spacing:.3px; }
-  .btn.sec { background:rgba(60,80,120,0.25); border:1px solid var(--line); }
-  .btn:active { transform:translateY(1px); }
+  .field { width:100%; padding:10px 12px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; outline:none; transition:border-color .15s,box-shadow .15s; }
+  .field:focus { border-color:var(--cy); box-shadow:0 0 0 3px var(--acc-soft); }
+  select.field { appearance:none; cursor:pointer; }
+  .btn { background:linear-gradient(135deg,var(--br),var(--vio)); color:#fff; border:none; padding:10px 16px; border-radius:10px; cursor:pointer; font-weight:500; letter-spacing:.3px; transition:transform .08s,opacity .15s; }
+  .btn:hover { opacity:.92; } .btn:active { transform:translateY(1px); }
+  .btn.sec { background:var(--hov); border:1px solid var(--line); color:var(--fg); }
+  .btn.sm { padding:6px 11px; border-radius:8px; font-size:12.5px; }
+  .btn.danger { background:linear-gradient(135deg,#e11d48,#fb7185); }
+  .btn[disabled] { opacity:.5; cursor:not-allowed; }
   .err { color:var(--err); font-size:13px; min-height:18px; }
+  .ok { color:var(--ok); }
+  .chip { display:inline-flex; align-items:center; gap:5px; padding:2px 9px; border-radius:99px; font-size:11.5px; border:1px solid var(--line2); color:var(--mut); }
+  .chip.on { color:var(--ok); border-color:rgba(52,211,153,.4); background:rgba(52,211,153,.10); }
+  .chip.off { color:var(--mut); }
+  .chip.warn { color:var(--warn); border-color:rgba(251,191,36,.4); background:rgba(251,191,36,.10); }
+  .dot-s { width:7px; height:7px; border-radius:99px; background:var(--mut); display:inline-block; }
+  .dot-s.on { background:var(--ok); box-shadow:0 0 8px rgba(52,211,153,.7); }
 
   /* ---- Login ---- */
   #login { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
   .login-card { width:380px; max-width:100%; padding:34px 30px; background:var(--panel); backdrop-filter:blur(14px);
-    border:1px solid var(--line); border-radius:18px; box-shadow:var(--glow); }
-  .logo { display:flex; align-items:center; gap:11px; margin-bottom:6px; }
-  .logo .dot { width:34px; height:34px; border-radius:10px; background:linear-gradient(135deg,var(--cy),var(--vio)); box-shadow:var(--glow); }
-  .logo h1 { font-size:19px; margin:0; letter-spacing:.5px; }
-  .login-card .sub { color:var(--mut); font-size:13px; margin:2px 0 22px; }
-  .seg { display:flex; gap:6px; background:rgba(8,13,24,0.6); border:1px solid var(--line); border-radius:10px; padding:4px; margin-bottom:18px; }
+    border:1px solid var(--line); border-radius:18px; box-shadow:var(--shadow); }
+  .logo { display:flex; align-items:center; gap:11px; }
+  .logo .dot { width:32px; height:32px; border-radius:9px; background:linear-gradient(135deg,var(--cy),var(--vio)); box-shadow:var(--glow); flex-shrink:0; }
+  .logo h1 { font-size:18px; margin:0; letter-spacing:.5px; }
+  .login-card .sub { color:var(--mut); font-size:13px; margin:8px 0 22px; }
+  .seg { display:flex; gap:6px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:4px; margin-bottom:18px; }
   .seg button { flex:1; background:none; border:none; color:var(--mut); padding:8px; border-radius:7px; cursor:pointer; }
-  .seg button.on { background:linear-gradient(135deg,rgba(59,130,246,.35),rgba(139,92,246,.35)); color:#fff; }
+  .seg button.on { background:linear-gradient(135deg,rgba(59,130,246,.32),rgba(139,92,246,.32)); color:#fff; }
   label.lbl { display:block; font-size:12px; color:var(--mut); margin:0 0 6px; }
   .qrwrap { text-align:center; padding:8px 0 4px; }
-  .qrwrap canvas, .qrwrap img { background:#fff; padding:12px; border-radius:14px; }
+  .qrwrap svg, .qrwrap img { background:#fff; padding:12px; border-radius:14px; width:200px; height:200px; }
   .qrwrap .tip { color:var(--mut); font-size:12px; margin-top:12px; }
   .qrstate { font-size:12px; margin-top:8px; color:var(--cy); }
 
-  /* ---- App shell: left-right ---- */
+  /* ---- App shell ---- */
   #app { display:flex; min-height:100vh; }
-  aside { width:230px; flex-shrink:0; background:linear-gradient(180deg,rgba(13,20,36,0.9),rgba(7,11,20,0.9));
+  aside { width:228px; flex-shrink:0; background:linear-gradient(180deg,var(--panel),var(--panel));
     border-right:1px solid var(--line); display:flex; flex-direction:column; padding:18px 14px; position:sticky; top:0; height:100vh; }
   aside .logo { padding:4px 8px 18px; }
-  nav { display:flex; flex-direction:column; gap:4px; flex:1; }
-  nav button { display:flex; align-items:center; gap:11px; background:none; border:none; color:var(--mut); padding:11px 13px;
-    border-radius:11px; cursor:pointer; text-align:left; font-size:14px; transition:background .15s,color .15s; }
-  nav button:hover { color:var(--fg); background:rgba(60,80,120,0.12); }
-  nav button.active { color:#fff; background:linear-gradient(135deg,rgba(59,130,246,.28),rgba(139,92,246,.22)); box-shadow:inset 0 0 0 1px var(--line); }
-  nav button .ic { width:18px; text-align:center; opacity:.9; }
-  aside .foot { border-top:1px solid var(--line); padding-top:14px; }
-  .who { font-size:12px; color:var(--mut); padding:0 8px 10px; }
-  .who b { color:var(--fg); font-weight:600; }
+  nav { display:flex; flex-direction:column; gap:4px; flex:1; overflow-y:auto; }
+  nav button { display:flex; align-items:center; gap:11px; background:none; border:none; color:var(--mut); padding:10px 13px;
+    border-radius:10px; cursor:pointer; text-align:left; font-size:14px; transition:background .15s,color .15s; }
+  nav button:hover { color:var(--fg); background:var(--hov); }
+  nav button.active { color:#fff; background:linear-gradient(135deg,rgba(59,130,246,.30),rgba(139,92,246,.24)); box-shadow:inset 0 0 0 1px var(--line2); }
+  html[data-theme="light"] nav button.active { color:#fff; }
+  nav button .ic { width:18px; text-align:center; opacity:.95; font-size:15px; }
+  aside .foot { border-top:1px solid var(--line); padding-top:12px; }
+  aside .ver { font-size:11.5px; color:var(--mut); padding:0 8px; display:flex; align-items:center; gap:7px; }
+  aside .ver b { color:var(--fg); font-weight:600; }
 
   .content { flex:1; min-width:0; display:flex; flex-direction:column; }
-  .topbar { display:flex; align-items:center; gap:12px; padding:16px 24px; border-bottom:1px solid var(--line);
-    background:rgba(8,13,24,0.4); backdrop-filter:blur(8px); position:sticky; top:0; z-index:3; }
+  .topbar { display:flex; align-items:center; gap:14px; padding:13px 22px; border-bottom:1px solid var(--line);
+    background:var(--panel2); backdrop-filter:blur(8px); position:sticky; top:0; z-index:5; }
   .topbar h2 { margin:0; font-size:16px; font-weight:600; letter-spacing:.4px; }
   .topbar .sp { flex:1; }
+  .iconbtn { width:34px; height:34px; border-radius:9px; border:1px solid var(--line); background:var(--hov); color:var(--fg);
+    cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:16px; transition:border-color .15s,background .15s; }
+  .iconbtn:hover { border-color:var(--line2); }
+  .userbox { display:flex; align-items:center; gap:9px; padding:5px 6px 5px 12px; border:1px solid var(--line); border-radius:99px; background:var(--hov); }
+  .userbox .av { width:24px; height:24px; border-radius:99px; background:linear-gradient(135deg,var(--cy),var(--vio)); display:flex; align-items:center; justify-content:center; font-size:12px; color:#fff; font-weight:600; }
+  .userbox b { font-size:13px; font-weight:600; }
   main { padding:22px 24px; }
 
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; }
   .card { background:var(--panel); backdrop-filter:blur(10px); border:1px solid var(--line); border-radius:14px; padding:18px; }
   .card h3 { margin:0 0 10px; font-size:12px; color:var(--mut); font-weight:500; letter-spacing:.5px; text-transform:uppercase; }
-  .card .big { font-size:28px; font-weight:650; background:linear-gradient(135deg,#fff,#9fc4ff); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  .card .big { font-size:27px; font-weight:650; background:linear-gradient(135deg,var(--fg),var(--br)); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
   .card .sub { color:var(--mut); font-size:12px; margin-top:5px; }
-  .bar { height:6px; border-radius:99px; background:rgba(90,120,180,0.16); margin-top:12px; overflow:hidden; }
-  .bar > i { display:block; height:100%; border-radius:99px; background:linear-gradient(90deg,var(--cy),var(--vio)); }
+  .bar { height:6px; border-radius:99px; background:var(--hov); margin-top:12px; overflow:hidden; }
+  .bar > i { display:block; height:100%; border-radius:99px; background:linear-gradient(90deg,var(--cy),var(--vio)); transition:width .4s; }
+  .sechead { display:flex; align-items:center; gap:10px; margin:22px 0 12px; }
+  .sechead h3 { margin:0; font-size:14px; font-weight:600; } .sechead .sp { flex:1; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
-  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
-  th { color:var(--mut); font-weight:500; }
-  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
-  #term { background:#04070d; border:1px solid var(--line); color:#cfe3ff; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px;
-    white-space:pre-wrap; word-break:break-all; padding:14px; height:58vh; overflow-y:auto; border-radius:12px; }
-  pre.out { background:#04070d; border:1px solid var(--line); border-radius:10px; padding:14px; max-height:52vh; overflow:auto; white-space:pre-wrap; word-break:break-all; font-size:12.5px; }
-  .warn { background:rgba(251,191,36,0.08); border:1px solid rgba(251,191,36,0.3); color:#f4c869; padding:11px 13px; border-radius:11px; font-size:12px; margin-bottom:16px; }
-  .ok { color:var(--ok); }
-  @media (max-width:720px){ aside{width:64px;} nav button span.t{display:none;} aside .logo h1,.who{display:none;} }
+  th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { color:var(--mut); font-weight:500; font-size:12px; }
+  tr:hover td { background:var(--hov); }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .actions { display:flex; gap:6px; flex-wrap:wrap; }
+  .subtabs { display:flex; gap:4px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:4px; margin-bottom:16px; width:fit-content; }
+  .subtabs button { background:none; border:none; color:var(--mut); padding:7px 15px; border-radius:7px; cursor:pointer; font-size:13px; }
+  .subtabs button.on { background:var(--acc-soft); color:var(--fg); }
+  pre.out { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:13px; max-height:50vh; overflow:auto; white-space:pre-wrap; word-break:break-all; font-size:12.5px; }
+  .warn { background:rgba(251,191,36,0.08); border:1px solid rgba(251,191,36,0.3); color:var(--warn); padding:11px 13px; border-radius:11px; font-size:12.5px; margin-bottom:16px; }
+  .empty { color:var(--mut); text-align:center; padding:30px; font-size:13px; }
+  .formgrid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .formgrid .full { grid-column:1 / -1; }
+  @media (max-width:680px){ .formgrid{grid-template-columns:1fr;} }
+
+  /* ---- Modal ---- */
+  .mask { position:fixed; inset:0; background:rgba(4,7,13,0.62); backdrop-filter:blur(3px); z-index:50; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .modal { background:var(--panel-solid); border:1px solid var(--line2); border-radius:16px; box-shadow:var(--shadow); width:760px; max-width:100%; max-height:88vh; display:flex; flex-direction:column; overflow:hidden; }
+  .modal.big { width:1000px; height:80vh; }
+  .modal-h { display:flex; align-items:center; gap:12px; padding:15px 18px; border-bottom:1px solid var(--line); }
+  .modal-h h3 { margin:0; font-size:15px; flex:1; }
+  .modal-b { padding:18px; overflow:auto; flex:1; }
+  .x { cursor:pointer; color:var(--mut); font-size:20px; line-height:1; background:none; border:none; }
+
+  /* ---- Terminal ---- */
+  .term-wrap { background:#05080f; border:1px solid var(--line2); border-radius:12px; overflow:hidden; display:flex; flex-direction:column; }
+  .term-bar { display:flex; align-items:center; gap:10px; padding:8px 12px; background:rgba(255,255,255,0.03); border-bottom:1px solid var(--line); font-size:12px; color:var(--mut); }
+  .term-bar .sp { flex:1; }
+  .vterm { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; line-height:1.3; padding:10px 12px; color:#cfe3ff; background:#05080f;
+    white-space:pre; overflow-y:auto; overflow-x:hidden; outline:none; cursor:text; flex:1; min-height:200px; }
+  .vterm .cur { background:#cfe3ff; color:#05080f; }
+  .vterm:focus { box-shadow:inset 0 0 0 1px rgba(34,211,238,0.4); }
+  /* ---- File browser ---- */
+  .fb-path { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:12.5px; margin-bottom:12px; }
+  .fb-path .seg2 { cursor:pointer; color:var(--cy); }
+  .fb-list { border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .fb-row { display:flex; align-items:center; gap:10px; padding:9px 12px; border-bottom:1px solid var(--line); cursor:default; }
+  .fb-row:last-child { border-bottom:none; }
+  .fb-row:hover { background:var(--hov); }
+  .fb-row .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fb-row .nm.dir { color:var(--cy); cursor:pointer; }
+  .fb-row .sz { color:var(--mut); font-size:12px; }
 </style>
 </head>
 <body>
@@ -101,7 +169,6 @@
       <button id="tabPw" class="on" onclick="loginMode('pw')">账号密码</button>
       <button id="tabWx" onclick="loginMode('wx')">微信扫码</button>
     </div>
-
     <div id="panewPw">
       <label class="lbl">账号</label>
       <input id="user" class="field" style="margin-bottom:12px" value="admin" autocomplete="username" />
@@ -110,7 +177,6 @@
       <button class="btn" style="width:100%" onclick="doLogin()">登 录</button>
       <div class="err" id="loginErr" style="margin-top:10px"></div>
     </div>
-
     <div id="paneWx" class="hidden">
       <div class="qrwrap">
         <div id="qrbox"></div>
@@ -127,18 +193,35 @@
     <div class="logo"><span class="dot"></span><h1>TeaOps</h1></div>
     <nav id="nav"></nav>
     <div class="foot">
-      <div class="who">已登录 <b id="whoName">admin</b></div>
-      <button class="btn sec" style="width:100%" onclick="logout()">退出登录</button>
+      <div class="ver">Agent <b id="agentVer">…</b></div>
     </div>
   </aside>
   <div class="content">
-    <div class="topbar"><h2 id="title">监控</h2><span class="sp"></span><span class="mono" id="clock" style="color:var(--mut);font-size:12px"></span></div>
+    <div class="topbar">
+      <h2 id="title">监控</h2>
+      <span class="sp"></span>
+      <button class="iconbtn" id="themeBtn" title="主题：跟随系统" onclick="cycleTheme()">◑</button>
+      <div class="userbox">
+        <span class="av" id="userAv">A</span>
+        <b id="whoName">admin</b>
+        <button class="iconbtn" style="width:28px;height:28px;font-size:13px" title="退出登录" onclick="logout()">⏻</button>
+      </div>
+    </div>
     <main id="view"></main>
   </div>
 </div>
 
+<div id="modalRoot"></div>
+
 <script>
+// =========================================================================
+// Core state + helpers
+// =========================================================================
 const S = { token: localStorage.getItem('teaops_web_token') || '', tab: 'dash', timer: null, ws: null, wxTimer: null };
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function $(id) { return document.getElementById(id); }
+function el(tag, attrs, html) { const e = document.createElement(tag); if (attrs) for (const k in attrs) e.setAttribute(k, attrs[k]); if (html != null) e.innerHTML = html; return e; }
 
 function api(path, opts = {}) {
   opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
@@ -147,53 +230,107 @@ function api(path, opts = {}) {
     if (r.status === 401) { logout(); throw new Error('未授权'); }
     const txt = await r.text();
     let body; try { body = JSON.parse(txt); } catch (e) { body = txt; }
-    if (!r.ok) throw new Error((body && body.error) || body || ('HTTP ' + r.status));
+    if (!r.ok || (body && body.ok === false)) throw new Error((body && body.error) || body || ('HTTP ' + r.status));
     return body;
   });
 }
+// Capability op (docker/nginx/mysql): POST {op,...} → data.
+function op(kind, obj) { return api('/api/' + kind, { method: 'POST', body: JSON.stringify(obj) }).then((b) => b.data); }
 
-// ---- Login mode switch ----
-function loginMode(m) {
-  document.getElementById('tabPw').classList.toggle('on', m === 'pw');
-  document.getElementById('tabWx').classList.toggle('on', m === 'wx');
-  document.getElementById('panewPw').classList.toggle('hidden', m !== 'pw');
-  document.getElementById('paneWx').classList.toggle('hidden', m === 'pw');
-  if (m === 'wx') startWxLogin(); else stopWxLogin();
+function fmtBytes(n) {
+  n = Number(n) || 0; const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i ? (n < 10 ? 2 : 1) : 0) + ' ' + u[i];
+}
+function toast(msg, kind) {
+  const t = el('div', { style: 'position:fixed;left:50%;top:22px;transform:translateX(-50%);z-index:99;padding:10px 18px;border-radius:10px;font-size:13px;box-shadow:var(--shadow);background:var(--panel-solid);border:1px solid var(--line2);color:var(--fg)' });
+  if (kind === 'err') t.style.borderColor = 'var(--err)';
+  if (kind === 'ok') t.style.borderColor = 'var(--ok)';
+  t.textContent = msg; document.body.appendChild(t);
+  setTimeout(() => { t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2200);
+}
+function confirmDanger(msg) { return new Promise((res) => { modal('请确认', `<p style="margin:0 0 18px">${esc(msg)}</p><div class="row" style="justify-content:flex-end"><button class="btn sec" id="cdNo">取消</button><button class="btn danger" id="cdYes">确定</button></div>`, (close) => { $('cdNo').onclick = () => { close(); res(false); }; $('cdYes').onclick = () => { close(); res(true); }; }); }); }
+
+// ---- Modal ----
+function modal(title, bodyHtml, onMount, big) {
+  const root = $('modalRoot');
+  const mask = el('div', { class: 'mask' });
+  mask.innerHTML = `<div class="modal ${big ? 'big' : ''}"><div class="modal-h"><h3>${esc(title)}</h3><button class="x">&times;</button></div><div class="modal-b">${bodyHtml}</div></div>`;
+  root.appendChild(mask);
+  const close = () => { mask.remove(); };
+  mask.querySelector('.x').onclick = close;
+  mask.addEventListener('mousedown', (e) => { if (e.target === mask) close(); });
+  if (onMount) onMount(close, mask);
+  return close;
 }
 
+// =========================================================================
+// Theme: auto (follow OS) | light | dark — single icon cycles the 3 states.
+// =========================================================================
+const THEME_ICONS = { auto: '◑', light: '☀', dark: '☾' };
+const THEME_LABELS = { auto: '跟随系统', light: '浅色', dark: '深色' };
+function applyTheme() {
+  const m = localStorage.getItem('teaops_theme') || 'auto';
+  let eff = m;
+  if (m === 'auto') eff = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', eff);
+  document.documentElement.setAttribute('data-mode', m);
+  const btn = $('themeBtn');
+  if (btn) { btn.textContent = THEME_ICONS[m]; btn.title = '主题：' + THEME_LABELS[m]; }
+}
+function cycleTheme() {
+  const order = ['auto', 'light', 'dark'];
+  const m = localStorage.getItem('teaops_theme') || 'auto';
+  const next = order[(order.indexOf(m) + 1) % order.length];
+  localStorage.setItem('teaops_theme', next);
+  applyTheme();
+}
+if (window.matchMedia) {
+  const mq = window.matchMedia('(prefers-color-scheme: light)');
+  (mq.addEventListener ? mq.addEventListener.bind(mq, 'change') : mq.addListener.bind(mq))(() => {
+    if ((localStorage.getItem('teaops_theme') || 'auto') === 'auto') applyTheme();
+  });
+}
+applyTheme();
+
+// =========================================================================
+// Login
+// =========================================================================
+function loginMode(m) {
+  $('tabPw').classList.toggle('on', m === 'pw');
+  $('tabWx').classList.toggle('on', m === 'wx');
+  $('panewPw').classList.toggle('hidden', m !== 'pw');
+  $('paneWx').classList.toggle('hidden', m === 'pw');
+  if (m === 'wx') startWxLogin(); else stopWxLogin();
+}
 function doLogin() {
-  const username = document.getElementById('user').value.trim();
-  const password = document.getElementById('pw').value;
-  document.getElementById('loginErr').textContent = '';
+  const username = $('user').value.trim();
+  const password = $('pw').value;
+  $('loginErr').textContent = '';
   fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) })
     .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(b.error || '登录失败'); return b; })
     .then((b) => { S.token = b.token; localStorage.setItem('teaops_web_token', S.token); showApp(); })
-    .catch((e) => { document.getElementById('loginErr').textContent = e.message; });
+    .catch((e) => { $('loginErr').textContent = e.message; });
 }
-
-// ---- WeChat scan login (server owner scans with mini-program 扫一扫) ----
 function startWxLogin() {
   stopWxLogin();
-  document.getElementById('qrstate').textContent = '正在生成二维码…';
-  document.getElementById('qrbox').innerHTML = '';
+  $('qrstate').textContent = '正在生成二维码…';
+  $('qrbox').innerHTML = '';
   fetch('/api/wx/login/start', { method: 'POST' })
     .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok || b.ok === false) throw new Error(b.error || '无法发起'); return b; })
     .then((b) => {
-      document.getElementById('qrbox').innerHTML = b.svg || '';
-      document.getElementById('qrstate').textContent = '请用小程序首页「扫一扫」，由服务器所有者确认';
+      $('qrbox').innerHTML = b.svg || '';
+      $('qrstate').textContent = '请用小程序首页「扫一扫」，由服务器所有者确认';
       pollWx(b.ticket);
     })
-    .catch((e) => { document.getElementById('qrstate').textContent = e.message; });
+    .catch((e) => { $('qrstate').textContent = e.message; });
 }
 function pollWx(ticket) {
   S.wxTimer = setInterval(() => {
     fetch('/api/wx/login/poll?ticket=' + encodeURIComponent(ticket))
       .then((r) => r.json()).then((b) => {
-        if (b.status === 'confirmed' && b.token) {
-          stopWxLogin(); S.token = b.token; localStorage.setItem('teaops_web_token', S.token); showApp();
-        } else if (b.status === 'expired') {
-          document.getElementById('qrstate').textContent = '二维码已过期，正在刷新…'; startWxLogin();
-        }
+        if (b.status === 'confirmed' && b.token) { stopWxLogin(); S.token = b.token; localStorage.setItem('teaops_web_token', S.token); showApp(); }
+        else if (b.status === 'expired') { $('qrstate').textContent = '二维码已过期，正在刷新…'; startWxLogin(); }
       }).catch(() => {});
   }, 1500);
 }
@@ -202,80 +339,95 @@ function stopWxLogin() { if (S.wxTimer) { clearInterval(S.wxTimer); S.wxTimer = 
 function logout() {
   if (S.token) api('/api/logout', { method: 'POST' }).catch(() => {});
   S.token = ''; localStorage.removeItem('teaops_web_token');
-  if (S.timer) clearInterval(S.timer);
-  if (S.ws) { try { S.ws.close(); } catch (e) {} }
-  document.getElementById('app').classList.add('hidden');
-  document.getElementById('login').classList.remove('hidden');
+  stopTab();
+  $('app').classList.add('hidden');
+  $('login').classList.remove('hidden');
 }
 
+// =========================================================================
+// Shell + tabs
+// =========================================================================
 const TABS = [
   { key: 'dash', label: '监控', ic: '◉' },
-  { key: 'term', label: '终端', ic: '▮' },
+  { key: 'term', label: '终端', ic: '▤' },
   { key: 'docker', label: 'Docker', ic: '⬢' },
   { key: 'nginx', label: 'Nginx', ic: '⬡' },
   { key: 'mysql', label: 'MySQL', ic: '⛁' },
+  { key: 'files', label: '文件', ic: '🗀' },
   { key: 'settings', label: '设置', ic: '⚙' },
 ];
 
 function showApp() {
-  document.getElementById('login').classList.add('hidden');
-  document.getElementById('app').classList.remove('hidden');
-  const nav = document.getElementById('nav'); nav.innerHTML = '';
+  $('login').classList.add('hidden');
+  $('app').classList.remove('hidden');
+  const nav = $('nav'); nav.innerHTML = '';
   TABS.forEach((t) => {
-    const b = document.createElement('button');
-    b.dataset.k = t.key; b.className = S.tab === t.key ? 'active' : '';
+    const b = el('button', { 'data-k': t.key });
+    b.className = S.tab === t.key ? 'active' : '';
     b.innerHTML = `<span class="ic">${t.ic}</span><span class="t">${t.label}</span>`;
     b.onclick = () => switchTab(t.key);
     nav.appendChild(b);
   });
-  startClock();
+  api('/api/info').then((b) => {
+    $('agentVer').textContent = 'v' + (b.data.version || '?');
+    if (b.data.hostname) $('agentVer').title = b.data.hostname;
+  }).catch(() => {});
+  api('/api/settings').then((b) => { setUser(b.data.username || 'admin'); }).catch(() => {});
   switchTab(S.tab);
 }
+function setUser(name) { $('whoName').textContent = name; $('userAv').textContent = (name[0] || 'A').toUpperCase(); }
 
-function startClock() {
-  const el = document.getElementById('clock');
-  const tick = () => { el.textContent = new Date().toLocaleString('zh-CN'); };
-  tick(); setInterval(tick, 1000);
+function stopTab() {
+  if (S.timer) { clearInterval(S.timer); S.timer = null; }
+  if (S.ws) { try { S.ws.close(); } catch (e) {} S.ws = null; }
+  if (window._termCleanup) { try { window._termCleanup(); } catch (e) {} window._termCleanup = null; }
+  if (window._modalTermCleanup) { try { window._modalTermCleanup(); } catch (e) {} window._modalTermCleanup = null; }
+  // Close any open modal (and its live sockets) when leaving a tab.
+  const root = $('modalRoot'); if (root) root.innerHTML = '';
 }
 
 function switchTab(k) {
   S.tab = k;
-  if (S.timer) { clearInterval(S.timer); S.timer = null; }
-  if (S.ws) { try { S.ws.close(); } catch (e) {} S.ws = null; }
+  stopTab();
   document.querySelectorAll('#nav button').forEach((b) => b.className = b.dataset.k === k ? 'active' : '');
-  document.getElementById('title').textContent = (TABS.find((t) => t.key === k) || {}).label || '';
-  const v = document.getElementById('view'); v.innerHTML = '';
+  $('title').textContent = (TABS.find((t) => t.key === k) || {}).label || '';
+  const v = $('view'); v.innerHTML = '';
   if (k === 'dash') renderDash(v);
   else if (k === 'term') renderTerm(v);
-  else if (k === 'docker') renderOp(v, 'docker', 'Docker 管理');
-  else if (k === 'nginx') renderOp(v, 'nginx', 'Nginx 管理');
-  else if (k === 'mysql') renderOp(v, 'mysql', 'MySQL 管理');
+  else if (k === 'docker') renderDocker(v);
+  else if (k === 'nginx') renderNginx(v);
+  else if (k === 'mysql') renderMysql(v);
+  else if (k === 'files') renderFiles(v);
   else if (k === 'settings') renderSettings(v);
 }
 
-function fmtBytes(n) {
-  n = Number(n) || 0; const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
-  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-  return n.toFixed(i ? 1 : 0) + ' ' + u[i];
-}
-
+// =========================================================================
+// Dashboard — improved network up/down card with sparkline
+// =========================================================================
 function renderDash(v) {
-  v.innerHTML = '<div class="grid" id="cards"></div><div class="card" style="margin-top:16px"><h3>进程 · CPU Top</h3><div id="procs">加载中…</div></div>';
+  v.innerHTML = `
+    <div class="grid" id="cards"></div>
+    <div class="card" style="margin-top:16px"><h3>网络吞吐</h3><div id="netcard"></div></div>
+    <div class="card" style="margin-top:16px"><h3>进程 · CPU Top</h3><div id="procs" class="mut">加载中…</div></div>`;
+  const hist = { rx: [], tx: [] };
   const refresh = () => {
     api('/api/metrics').then((b) => {
       const m = b.data;
-      document.getElementById('cards').innerHTML = [
-        card('CPU', (m.cpu_usage || 0).toFixed(1) + '%', (m.cpu_cores || 0) + ' 核', m.cpu_usage),
+      $('cards').innerHTML = [
+        card('CPU', (m.cpu_usage || 0).toFixed(1) + '%', (m.cpu_cores || 0) + ' 核心', m.cpu_usage),
         card('内存', (m.memory_usage || 0).toFixed(1) + '%', fmtBytes(m.mem_used) + ' / ' + fmtBytes(m.mem_total), m.memory_usage),
         card('磁盘', (m.disk_usage || 0).toFixed(1) + '%', fmtBytes(m.disk_used) + ' / ' + fmtBytes(m.disk_total), m.disk_usage),
-        card('网络', '↓' + fmtBytes(m.net_rx) + '/s', '↑' + fmtBytes(m.net_tx) + '/s', null),
+        card('运行时长', fmtUptime(m.uptime), esc(m.hostname || ''), null),
       ].join('');
+      hist.rx.push(m.net_rx || 0); hist.tx.push(m.net_tx || 0);
+      if (hist.rx.length > 60) { hist.rx.shift(); hist.tx.shift(); }
+      $('netcard').innerHTML = netCard(m.net_rx || 0, m.net_tx || 0, hist);
     }).catch(() => {});
     api('/api/procs').then((b) => {
       const rows = (b.data.by_cpu || []).slice(0, 12);
       let h = '<table><tr><th>进程</th><th>PID</th><th>CPU</th><th>内存</th></tr>';
       rows.forEach((p) => { h += `<tr><td class="mono">${esc(p.name)}</td><td>${p.pid}</td><td>${(p.cpu || 0).toFixed(1)}%</td><td>${fmtBytes(p.mem)}</td></tr>`; });
-      document.getElementById('procs').innerHTML = h + '</table>';
+      $('procs').innerHTML = h + '</table>';
     }).catch(() => {});
   };
   refresh(); S.timer = setInterval(refresh, 2000);
@@ -284,62 +436,817 @@ function card(title, big, sub, pct) {
   const bar = pct == null ? '' : `<div class="bar"><i style="width:${Math.min(100, Math.max(0, pct)).toFixed(0)}%"></i></div>`;
   return `<div class="card"><h3>${title}</h3><div class="big">${big}</div><div class="sub">${sub}</div>${bar}</div>`;
 }
+function fmtUptime(s) {
+  s = Number(s) || 0; const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  if (d > 0) return d + '天' + h + '时'; if (h > 0) return h + '时' + m + '分'; return m + '分';
+}
+// Network card: two big arrowed readouts (down/up) + a dual sparkline.
+function netCard(rx, tx, hist) {
+  const spark = sparkline(hist.rx, hist.tx);
+  return `
+  <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center">
+    <div style="display:flex;gap:24px;flex:1;min-width:240px">
+      <div>
+        <div style="display:flex;align-items:center;gap:7px;color:var(--cy);font-size:12px;font-weight:600"><span style="font-size:15px">↓</span> 下行</div>
+        <div style="font-size:24px;font-weight:650;margin-top:3px">${fmtBytes(rx)}<span style="font-size:13px;color:var(--mut);font-weight:400">/s</span></div>
+      </div>
+      <div>
+        <div style="display:flex;align-items:center;gap:7px;color:var(--vio);font-size:12px;font-weight:600"><span style="font-size:15px">↑</span> 上行</div>
+        <div style="font-size:24px;font-weight:650;margin-top:3px">${fmtBytes(tx)}<span style="font-size:13px;color:var(--mut);font-weight:400">/s</span></div>
+      </div>
+    </div>
+    <div style="flex:2;min-width:260px">${spark}</div>
+  </div>`;
+}
+// Inline SVG dual sparkline (rx cyan, tx violet), normalized to the window max.
+function sparkline(rx, tx) {
+  const W = 380, H = 64, n = Math.max(rx.length, tx.length);
+  if (n < 2) return '<div style="height:64px;display:flex;align-items:center;justify-content:center;color:var(--mut);font-size:12px">采集中…</div>';
+  const max = Math.max(1, ...rx, ...tx);
+  const path = (arr) => {
+    const step = W / (n - 1);
+    return arr.map((val, i) => `${i === 0 ? 'M' : 'L'}${(i * step).toFixed(1)},${(H - (val / max) * (H - 6) - 3).toFixed(1)}`).join(' ');
+  };
+  const area = (arr) => `${path(arr)} L${W},${H} L0,${H} Z`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="64" preserveAspectRatio="none">
+    <defs>
+      <linearGradient id="gr" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--cy)" stop-opacity="0.35"/><stop offset="1" stop-color="var(--cy)" stop-opacity="0"/></linearGradient>
+      <linearGradient id="gt" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--vio)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--vio)" stop-opacity="0"/></linearGradient>
+    </defs>
+    <path d="${area(rx)}" fill="url(#gr)"/><path d="${path(rx)}" fill="none" stroke="var(--cy)" stroke-width="1.6"/>
+    <path d="${area(tx)}" fill="url(#gt)"/><path d="${path(tx)}" fill="none" stroke="var(--vio)" stroke-width="1.6"/>
+  </svg>`;
+}
 
+// =========================================================================
+// VTerm — a compact VT100/ANSI terminal emulator that renders to a focusable
+// <div>. Click the screen to type directly (no separate input box). Handles
+// backspace/erase, cursor movement, colors (SGR), scroll region, and the
+// alt-screen so full-screen apps (top/vim) behave. Encodes keystrokes to the
+// proper byte sequences and sends them via the supplied `send(str)`.
+// =========================================================================
+function VTerm(host, send) {
+  const COLORS = ['#1c2533', '#fb7185', '#34d399', '#fbbf24', '#60a5fa', '#c084fc', '#22d3ee', '#dbe6f5',
+                  '#5b6b86', '#fda4af', '#6ee7b7', '#fde68a', '#93c5fd', '#d8b4fe', '#67e8f9', '#ffffff'];
+  const DEF_FG = 7, DEF_BG = -1;
+  let cols = 80, rows = 24;
+  const blank = () => ({ ch: ' ', fg: DEF_FG, bg: DEF_BG, bold: false, inv: false });
+  let grid, alt = null, cx = 0, cy = 0, sgr = { fg: DEF_FG, bg: DEF_BG, bold: false, inv: false };
+  let top = 0, bot = rows - 1, curVisible = true;
+  let saved = null;
+
+  function makeGrid() { const g = []; for (let r = 0; r < rows; r++) { const row = []; for (let c = 0; c < cols; c++) row.push(blank()); g.push(row); } return g; }
+  grid = makeGrid();
+
+  function resizeTo(nc, nr) {
+    nc = Math.max(8, Math.min(400, nc)); nr = Math.max(4, Math.min(200, nr));
+    if (nc === cols && nr === rows) return;
+    cols = nc; rows = nr; top = 0; bot = rows - 1;
+    grid = makeGrid(); if (alt) alt = makeGrid();
+    cx = Math.min(cx, cols - 1); cy = Math.min(cy, rows - 1);
+    send(JSON.stringify({ type: 'resize', cols, rows }));
+    schedule();
+  }
+
+  function scrollUp(n) { for (let k = 0; k < n; k++) { grid.splice(top, 1); const row = []; for (let c = 0; c < cols; c++) row.push(blank()); grid.splice(bot, 0, row); } }
+  function lineFeed() { if (cy === bot) scrollUp(1); else cy = Math.min(rows - 1, cy + 1); }
+  function putChar(ch) {
+    if (cx >= cols) { cx = 0; lineFeed(); }
+    const cell = grid[cy][cx];
+    cell.ch = ch; cell.fg = sgr.fg; cell.bg = sgr.bg; cell.bold = sgr.bold; cell.inv = sgr.inv;
+    cx++;
+  }
+  function eraseInLine(mode) {
+    const row = grid[cy];
+    if (mode === 0) for (let c = cx; c < cols; c++) row[c] = blank();
+    else if (mode === 1) for (let c = 0; c <= cx && c < cols; c++) row[c] = blank();
+    else for (let c = 0; c < cols; c++) row[c] = blank();
+  }
+  function eraseInDisplay(mode) {
+    if (mode === 2 || mode === 3) { grid = makeGrid(); cx = 0; cy = 0; return; }
+    if (mode === 0) { eraseInLine(0); for (let r = cy + 1; r < rows; r++) grid[r] = grid[r].map(blank); }
+    else if (mode === 1) { for (let r = 0; r < cy; r++) grid[r] = grid[r].map(blank); eraseInLine(1); }
+  }
+  function applySGR(params) {
+    if (params.length === 0) params = [0];
+    for (let i = 0; i < params.length; i++) {
+      const p = params[i];
+      if (p === 0) { sgr = { fg: DEF_FG, bg: DEF_BG, bold: false, inv: false }; }
+      else if (p === 1) sgr.bold = true;
+      else if (p === 22) sgr.bold = false;
+      else if (p === 7) sgr.inv = true;
+      else if (p === 27) sgr.inv = false;
+      else if (p >= 30 && p <= 37) sgr.fg = p - 30;
+      else if (p === 39) sgr.fg = DEF_FG;
+      else if (p >= 40 && p <= 47) sgr.bg = p - 40;
+      else if (p === 49) sgr.bg = DEF_BG;
+      else if (p >= 90 && p <= 97) sgr.fg = p - 90 + 8;
+      else if (p >= 100 && p <= 107) sgr.bg = p - 100 + 8;
+      else if (p === 38 || p === 48) {
+        // 256/truecolor — collapse to nearest basic for our 16-color palette.
+        const target = p === 38 ? 'fg' : 'bg';
+        if (params[i + 1] === 5) { const idx = params[i + 2] || 0; sgr[target] = idx < 16 ? idx : DEF_FG; i += 2; }
+        else if (params[i + 1] === 2) { sgr[target] = DEF_FG; i += 4; }
+      }
+    }
+  }
+
+  // ---- ANSI parser state machine ----
+  let st = 'gnd', buf = '', oscBuf = '';
+  function feed(bytes) {
+    for (let i = 0; i < bytes.length; i++) {
+      const ch = bytes[i], code = ch.charCodeAt(0);
+      if (st === 'gnd') {
+        if (code === 0x1b) { st = 'esc'; }
+        else if (ch === '\r') cx = 0;
+        else if (ch === '\n') lineFeed();
+        else if (ch === '\b') { cx = Math.max(0, cx - 1); }
+        else if (ch === '\t') { cx = Math.min(cols - 1, (Math.floor(cx / 8) + 1) * 8); }
+        else if (code === 7) { /* bell */ }
+        else if (code >= 32) putChar(ch);
+      } else if (st === 'esc') {
+        if (ch === '[') { buf = ''; st = 'csi'; }
+        else if (ch === ']') { oscBuf = ''; st = 'osc'; }
+        else if (ch === '(' || ch === ')') { st = 'charset'; }
+        else if (ch === '=' || ch === '>') { st = 'gnd'; }
+        else if (ch === 'M') { if (cy === top) { grid.splice(bot, 1); const row = []; for (let c = 0; c < cols; c++) row.push(blank()); grid.splice(top, 0, row); } else cy = Math.max(0, cy - 1); st = 'gnd'; }
+        else if (ch === '7') { saved = { cx, cy, sgr: Object.assign({}, sgr) }; st = 'gnd'; }
+        else if (ch === '8') { if (saved) { cx = saved.cx; cy = saved.cy; sgr = Object.assign({}, saved.sgr); } st = 'gnd'; }
+        else st = 'gnd';
+      } else if (st === 'charset') { st = 'gnd'; }
+      else if (st === 'csi') {
+        if ((code >= 0x40 && code <= 0x7e)) { handleCSI(ch, buf); st = 'gnd'; }
+        else buf += ch;
+      } else if (st === 'osc') {
+        if (code === 7) { st = 'gnd'; }
+        else if (code === 0x1b) { st = 'oscEsc'; }
+        else oscBuf += ch;
+      } else if (st === 'oscEsc') { st = 'gnd'; }
+    }
+    schedule();
+  }
+
+  function handleCSI(final, raw) {
+    let priv = '';
+    if (raw[0] === '?' || raw[0] === '>') { priv = raw[0]; raw = raw.slice(1); }
+    const params = raw.split(';').map((x) => (x === '' ? 0 : parseInt(x, 10)));
+    const p0 = params[0] || 0;
+    switch (final) {
+      case 'A': cy = Math.max(top, cy - Math.max(1, p0)); break;
+      case 'B': cy = Math.min(bot, cy + Math.max(1, p0)); break;
+      case 'C': cx = Math.min(cols - 1, cx + Math.max(1, p0)); break;
+      case 'D': cx = Math.max(0, cx - Math.max(1, p0)); break;
+      case 'E': cx = 0; cy = Math.min(bot, cy + Math.max(1, p0)); break;
+      case 'F': cx = 0; cy = Math.max(top, cy - Math.max(1, p0)); break;
+      case 'G': cx = Math.min(cols - 1, Math.max(0, (p0 || 1) - 1)); break;
+      case 'H': case 'f': cy = Math.min(rows - 1, Math.max(0, (params[0] || 1) - 1)); cx = Math.min(cols - 1, Math.max(0, (params[1] || 1) - 1)); break;
+      case 'J': eraseInDisplay(p0); break;
+      case 'K': eraseInLine(p0); break;
+      case 'L': { const n = Math.max(1, p0); for (let k = 0; k < n; k++) { grid.splice(bot, 1); const row = []; for (let c = 0; c < cols; c++) row.push(blank()); grid.splice(cy, 0, row); } break; }
+      case 'M': { const n = Math.max(1, p0); for (let k = 0; k < n; k++) { grid.splice(cy, 1); const row = []; for (let c = 0; c < cols; c++) row.push(blank()); grid.splice(bot, 0, row); } break; }
+      case 'P': { const n = Math.max(1, p0); const row = grid[cy]; row.splice(cx, n); while (row.length < cols) row.push(blank()); break; }
+      case '@': { const n = Math.max(1, p0); const row = grid[cy]; for (let k = 0; k < n; k++) row.splice(cx, 0, blank()); row.length = cols; break; }
+      case 'X': { const n = Math.max(1, p0); for (let c = cx; c < cx + n && c < cols; c++) grid[cy][c] = blank(); break; }
+      case 'd': cy = Math.min(rows - 1, Math.max(0, (p0 || 1) - 1)); break;
+      case 'm': applySGR(params); break;
+      case 'r': top = Math.max(0, (params[0] || 1) - 1); bot = Math.min(rows - 1, (params[1] || rows) - 1); cx = 0; cy = top; break;
+      case 'h': case 'l': handleMode(priv, params, final === 'h'); break;
+      case 's': saved = { cx, cy, sgr: Object.assign({}, sgr) }; break;
+      case 'u': if (saved) { cx = saved.cx; cy = saved.cy; sgr = Object.assign({}, saved.sgr); } break;
+      default: break;
+    }
+  }
+  function handleMode(priv, params, set) {
+    if (priv !== '?') return;
+    for (const p of params) {
+      if (p === 25) curVisible = set;
+      else if (p === 1049 || p === 1047 || p === 47) {
+        if (set && !alt) { alt = grid; grid = makeGrid(); saved = { cx, cy, sgr: Object.assign({}, sgr) }; cx = 0; cy = 0; }
+        else if (!set && alt) { grid = alt; alt = null; if (saved) { cx = saved.cx; cy = saved.cy; sgr = Object.assign({}, saved.sgr); } }
+      }
+    }
+  }
+
+  // ---- Render (rAF-batched) ----
+  let raf = 0;
+  function schedule() { if (!raf) raf = requestAnimationFrame(render); }
+  function render() {
+    raf = 0;
+    let html = '';
+    for (let r = 0; r < rows; r++) {
+      const row = grid[r];
+      let line = '', curStyle = null, span = '';
+      const flush = () => { if (span) { line += `<span style="${curStyle}">${span}</span>`; span = ''; } };
+      for (let c = 0; c < cols; c++) {
+        const cell = row[c];
+        const isCur = curVisible && r === cy && c === cx;
+        let fg = cell.fg < 0 ? DEF_FG : cell.fg, bg = cell.bg;
+        if (cell.inv) { const t = fg; fg = bg < 0 ? DEF_BG : bg; bg = t < 0 ? DEF_FG : t; }
+        let style = `color:${isCur ? '#05080f' : (COLORS[fg] || COLORS[DEF_FG])}`;
+        const bgc = isCur ? '#cfe3ff' : (bg >= 0 ? COLORS[bg] : '');
+        if (bgc) style += `;background:${bgc}`;
+        if (cell.bold) style += ';font-weight:700';
+        if (style !== curStyle) { flush(); curStyle = style; }
+        span += cell.ch === ' ' ? '\u00a0' : esc(cell.ch);
+      }
+      flush();
+      html += line + '\n';
+    }
+    host.innerHTML = html;
+  }
+
+  // ---- Input ----
+  function keyToBytes(e) {
+    const k = e.key;
+    if (e.altKey && k.length === 1) return '\x1b' + k;
+    if (e.ctrlKey && k.length === 1) {
+      const u = k.toUpperCase();
+      if (u >= 'A' && u <= 'Z') return String.fromCharCode(u.charCodeAt(0) - 64);
+      if (k === ' ') return '\x00';
+    }
+    switch (k) {
+      case 'Enter': return '\r';
+      case 'Backspace': return '\x7f';
+      case 'Tab': return '\t';
+      case 'Escape': return '\x1b';
+      case 'ArrowUp': return '\x1b[A'; case 'ArrowDown': return '\x1b[B';
+      case 'ArrowRight': return '\x1b[C'; case 'ArrowLeft': return '\x1b[D';
+      case 'Home': return '\x1b[H'; case 'End': return '\x1b[F';
+      case 'PageUp': return '\x1b[5~'; case 'PageDown': return '\x1b[6~';
+      case 'Insert': return '\x1b[2~'; case 'Delete': return '\x1b[3~';
+      default: return k.length === 1 ? k : '';
+    }
+  }
+  const onKey = (e) => {
+    if (e.metaKey && (e.key === 'c' || e.key === 'v')) return; // allow copy/paste
+    const bytes = keyToBytes(e);
+    if (bytes !== '') { e.preventDefault(); send(JSON.stringify({ type: 'data', data: bytes })); }
+  };
+  const onPaste = (e) => { e.preventDefault(); const t = (e.clipboardData || window.clipboardData).getData('text'); if (t) send(JSON.stringify({ type: 'data', data: t })); };
+  host.setAttribute('tabindex', '0');
+  host.addEventListener('keydown', onKey);
+  host.addEventListener('paste', onPaste);
+
+  // Measure char cell to fit cols/rows to the element.
+  function fit() {
+    const probe = el('span', { style: 'visibility:hidden;position:absolute;white-space:pre' }, 'M'.repeat(10));
+    host.appendChild(probe);
+    const cw = probe.getBoundingClientRect().width / 10 || 8;
+    probe.remove();
+    const styles = getComputedStyle(host);
+    const lh = parseFloat(styles.lineHeight) || 17;
+    const padX = parseFloat(styles.paddingLeft) + parseFloat(styles.paddingRight);
+    const padY = parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
+    const nc = Math.floor((host.clientWidth - padX) / cw);
+    const nr = Math.floor((host.clientHeight - padY) / lh);
+    if (nc > 0 && nr > 0) resizeTo(nc, nr);
+  }
+
+  render();
+  return {
+    feed,
+    fit,
+    focus: () => host.focus(),
+    dispose: () => { host.removeEventListener('keydown', onKey); host.removeEventListener('paste', onPaste); if (raf) cancelAnimationFrame(raf); },
+  };
+}
+
+// =========================================================================
+// Terminal tab (host shell) + reusable terminal launcher
+// =========================================================================
 function renderTerm(v) {
-  v.innerHTML = '<div id="term"></div><div class="row" style="margin-top:12px"><input id="terminput" class="field" placeholder="输入命令后回车" autocomplete="off" /></div>';
-  const term = document.getElementById('term'); const inp = document.getElementById('terminput');
+  v.innerHTML = `<div class="term-wrap" style="height:64vh"><div class="term-bar"><span class="dot-s on" id="tStatus"></span><span id="tLabel">主机终端</span><span class="sp"></span><span class="mut">点击下方区域即可输入</span></div><div class="vterm" id="vterm"></div></div>`;
+  mountTerminal($('vterm'), $('tStatus'), `/api/terminal?token=${encodeURIComponent(S.token)}`);
+}
+// Open a terminal in the given host element against a WS path; returns cleanup.
+function mountTerminal(hostEl, statusDot, wsPath) {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/api/terminal?token=${encodeURIComponent(S.token)}`);
-  ws.binaryType = 'arraybuffer'; const dec = new TextDecoder();
-  ws.onmessage = (e) => { term.textContent += (typeof e.data === 'string' ? e.data : dec.decode(e.data)); term.scrollTop = term.scrollHeight; };
-  ws.onclose = () => { term.textContent += '\n[连接已关闭]\n'; };
-  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { ws.send(JSON.stringify({ type: 'data', data: inp.value + '\n' })); inp.value = ''; e.preventDefault(); } });
-  S.ws = ws;
+  const ws = new WebSocket(`${proto}://${location.host}${wsPath}`);
+  ws.binaryType = 'arraybuffer';
+  const dec = new TextDecoder();
+  const term = VTerm(hostEl, (s) => { if (ws.readyState === 1) ws.send(s); });
+  ws.onopen = () => { if (statusDot) statusDot.className = 'dot-s on'; setTimeout(() => { term.fit(); term.focus(); }, 30); };
+  ws.onmessage = (e) => { term.feed(typeof e.data === 'string' ? e.data : dec.decode(e.data, { stream: true })); };
+  ws.onclose = () => { if (statusDot) statusDot.className = 'dot-s'; term.feed('\r\n\x1b[90m[连接已关闭]\x1b[0m\r\n'); };
+  ws.onerror = () => { if (statusDot) statusDot.className = 'dot-s'; };
+  hostEl.addEventListener('click', () => term.focus());
+  const onResize = () => term.fit();
+  window.addEventListener('resize', onResize);
+  const cleanup = () => { window.removeEventListener('resize', onResize); term.dispose(); try { ws.close(); } catch (e) {} };
+  window._termCleanup = cleanup;
+  return cleanup;
+}
+// Open a terminal inside a modal (used by Docker container exec).
+function openTerminalModal(title, wsPath) {
+  let cleanup = null;
+  modal(title, `<div class="term-wrap" style="height:62vh"><div class="term-bar"><span class="dot-s" id="mtStatus"></span><span>${esc(title)}</span><span class="sp"></span><span class="mut">点击区域输入</span></div><div class="vterm" id="mvterm"></div></div>`, (close, mask) => {
+    cleanup = mountTerminal(mask.querySelector('#mvterm'), mask.querySelector('#mtStatus'), wsPath);
+    // Replace global cleanup hook with modal-local so tab switches don't kill it twice.
+    window._termCleanup = null;
+    window._modalTermCleanup = cleanup;
+    mask.querySelector('.x').addEventListener('click', () => { cleanup && cleanup(); window._modalTermCleanup = null; });
+    mask.addEventListener('mousedown', (e) => { if (e.target === mask && cleanup) { cleanup(); window._modalTermCleanup = null; } });
+  }, true);
 }
 
-function renderOp(v, kind, title) {
-  v.innerHTML = `<div class="card"><h3>${title}</h3>
-    <div class="row"><button class="btn sec" id="opInfo">状态 (info)</button>
-      <input id="opJson" class="field" style="flex:1;margin:0" placeholder='高级：JSON 请求，如 {"op":"list_containers"}' />
-      <button class="btn" id="opSend">发送</button></div>
-    <pre class="out" id="opOut">点击「状态」查看，或输入操作 JSON 发送。</pre></div>`;
-  const out = document.getElementById('opOut');
-  const send = (obj) => { out.textContent = '请求中…'; api('/api/' + kind, { method: 'POST', body: JSON.stringify(obj) })
-    .then((b) => { out.textContent = JSON.stringify(b.data, null, 2); }).catch((e) => { out.textContent = '错误：' + e.message; }); };
-  document.getElementById('opInfo').onclick = () => send({ op: 'info' });
-  document.getElementById('opSend').onclick = () => { let o; try { o = JSON.parse(document.getElementById('opJson').value); } catch (e) { out.textContent = 'JSON 格式错误'; return; } send(o); };
+// =========================================================================
+// Docker management
+// =========================================================================
+function renderDocker(v) {
+  v.innerHTML = '<div class="mut" style="padding:18px">检测 Docker…</div>';
+  op('docker', { op: 'info' }).then((info) => {
+    if (!info.installed) {
+      v.innerHTML = `<div class="card"><h3>Docker</h3><p class="mut">本机未检测到 Docker 守护进程。</p><button class="btn" id="dkInstall">一键安装 Docker</button><pre class="out hidden" id="dkInstallOut" style="margin-top:12px"></pre></div>`;
+      $('dkInstall').onclick = () => {
+        $('dkInstall').disabled = true; $('dkInstallOut').classList.remove('hidden'); $('dkInstallOut').textContent = '正在安装…';
+        op('docker', { op: 'install' }).then((r) => watchOp('docker', r.op_id, $('dkInstallOut'), () => renderDocker(v))).catch((e) => { $('dkInstallOut').textContent = '错误：' + e.message; });
+      };
+      return;
+    }
+    v.innerHTML = `
+      <div class="subtabs" id="dkTabs">
+        <button data-t="containers" class="on">容器</button>
+        <button data-t="images">镜像</button>
+        <button data-t="networks">网络</button>
+      </div>
+      <div class="row" style="margin-bottom:14px"><span class="chip">Docker ${esc(info.server_version || '')}</span><span class="chip">API ${esc(info.client_version || '')}</span><span class="sp" style="flex:1"></span></div>
+      <div id="dkBody"></div>`;
+    const tabs = $('dkTabs');
+    const sel = (t) => { tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === t)); if (t === 'containers') dkContainers(); else if (t === 'images') dkImages(info); else dkNetworks(); };
+    tabs.querySelectorAll('button').forEach((b) => b.onclick = () => sel(b.dataset.t));
+    sel('containers');
+  }).catch((e) => { v.innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; });
 }
 
+function dkContainers() {
+  const body = $('dkBody');
+  body.innerHTML = '<div class="sechead"><h3>容器</h3><span class="sp"></span><button class="btn sm" id="dkNew">创建容器</button><button class="btn sec sm" id="dkRefC">刷新</button></div><div id="dkCList" class="mut">加载中…</div>';
+  $('dkRefC').onclick = dkContainers;
+  $('dkNew').onclick = dkCreateForm;
+  op('docker', { op: 'list_containers' }).then((d) => {
+    const list = d.containers || [];
+    if (!list.length) { $('dkCList').innerHTML = '<div class="empty">暂无容器</div>'; return; }
+    let h = '<table><tr><th>名称</th><th>镜像</th><th>状态</th><th>端口</th><th style="width:1%">操作</th></tr>';
+    list.forEach((c) => {
+      const running = c.state === 'running';
+      h += `<tr>
+        <td><b>${esc(c.name)}</b><div class="mut mono" style="font-size:11px">${esc(c.id)}</div></td>
+        <td class="mono" style="font-size:12px">${esc(c.image)}</td>
+        <td><span class="chip ${running ? 'on' : 'off'}"><span class="dot-s ${running ? 'on' : ''}"></span>${esc(c.status || c.state)}</span></td>
+        <td class="mono" style="font-size:11.5px">${esc(c.ports || '-')}</td>
+        <td><div class="actions" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-shell="${c.has_shell ? 1 : 0}" data-running="${running ? 1 : 0}"></div></td>
+      </tr>`;
+    });
+    $('dkCList').innerHTML = h + '</table>';
+    document.querySelectorAll('#dkCList .actions').forEach((a) => buildContainerActions(a, dkContainers));
+  }).catch((e) => { $('dkCList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+}
+
+function buildContainerActions(holder, reload) {
+  const id = holder.dataset.id, name = holder.dataset.name, hasShell = holder.dataset.shell === '1', running = holder.dataset.running === '1';
+  const mk = (label, cls, fn) => { const b = el('button', { class: 'btn sm ' + (cls || 'sec') }, label); b.onclick = fn; holder.appendChild(b); };
+  if (running) {
+    mk('停止', 'sec', () => doCAction('stop_container', id, reload));
+    mk('重启', 'sec', () => doCAction('restart_container', id, reload));
+    if (hasShell) mk('终端', '', () => openTerminalModal('容器终端 · ' + name, `/api/container/terminal?token=${encodeURIComponent(S.token)}&container=${encodeURIComponent(id)}`));
+    mk('文件', 'sec', () => openFileBrowser('容器文件 · ' + name, id));
+  } else {
+    mk('启动', '', () => doCAction('start_container', id, reload));
+  }
+  mk('日志', 'sec', () => dkLogs(id, name));
+  mk('网络', 'sec', () => dkContainerNetworks(id, name));
+  mk('删除', 'danger', async () => { if (await confirmDanger(`删除容器 ${name}？`)) doCAction('remove_container', id, reload); });
+}
+function doCAction(o, id, reload) { op('docker', { op: o, ref: id }).then(() => { toast('操作成功', 'ok'); reload && reload(); }).catch((e) => toast(e.message, 'err')); }
+
+function dkLogs(id, name) {
+  modal('日志 · ' + name, '<pre class="out" id="dkLogOut" style="max-height:64vh">加载中…</pre>', () => {
+    op('docker', { op: 'logs', ref: id, tail: 400 }).then((d) => { $('dkLogOut').textContent = d.logs || '(空)'; $('dkLogOut').scrollTop = $('dkLogOut').scrollHeight; }).catch((e) => { $('dkLogOut').textContent = '错误：' + e.message; });
+  });
+}
+
+function dkContainerNetworks(id, name) {
+  modal('网络 · ' + name, '<div id="cnBody" class="mut">加载中…</div>', () => {
+    const load = () => op('docker', { op: 'inspect_container_networks', ref: id }).then((d) => {
+      let h = '<h3 style="font-size:13px;margin:0 0 8px">已连接</h3>';
+      h += (d.attached || []).map((n) => `<div class="row" style="margin-bottom:6px"><span class="chip on">${esc(n)}</span><button class="btn sm sec" data-dis="${esc(n)}">断开</button></div>`).join('') || '<div class="mut" style="margin-bottom:10px">无</div>';
+      h += '<h3 style="font-size:13px;margin:14px 0 8px">可连接</h3>';
+      h += (d.available || []).map((n) => `<div class="row" style="margin-bottom:6px"><span class="chip">${esc(n.name)}</span><button class="btn sm" data-con="${esc(n.name)}">连接</button></div>`).join('') || '<div class="mut">无</div>';
+      $('cnBody').innerHTML = h;
+      document.querySelectorAll('#cnBody [data-con]').forEach((b) => b.onclick = () => op('docker', { op: 'connect_network', ref: id, network: b.dataset.con }).then(load).catch((e) => toast(e.message, 'err')));
+      document.querySelectorAll('#cnBody [data-dis]').forEach((b) => b.onclick = () => op('docker', { op: 'disconnect_network', ref: id, network: b.dataset.dis }).then(load).catch((e) => toast(e.message, 'err')));
+    }).catch((e) => { $('cnBody').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+    load();
+  });
+}
+
+function dkImages(info) {
+  const body = $('dkBody');
+  body.innerHTML = '<div class="sechead"><h3>镜像</h3><span class="sp"></span><button class="btn sm" id="dkPull">拉取镜像</button><button class="btn sec sm" id="dkRefI">刷新</button></div><div id="dkIList" class="mut">加载中…</div>';
+  $('dkRefI').onclick = () => dkImages(info);
+  $('dkPull').onclick = dkPullForm;
+  op('docker', { op: 'list_images' }).then((d) => {
+    const list = d.images || [];
+    if (!list.length) { $('dkIList').innerHTML = '<div class="empty">暂无镜像</div>'; return; }
+    let h = '<table><tr><th>镜像</th><th>大小</th><th>创建</th><th style="width:1%">操作</th></tr>';
+    list.forEach((im) => {
+      h += `<tr><td class="mono" style="font-size:12px">${esc(im.name)}</td><td>${esc(im.size)}</td><td class="mut">${esc(im.created)}</td>
+        <td><div class="actions"><button class="btn sm" data-run="${esc(im.name)}">创建容器</button><button class="btn sm danger" data-rm="${esc(im.name)}">删除</button></div></td></tr>`;
+    });
+    $('dkIList').innerHTML = h + '</table>';
+    document.querySelectorAll('#dkIList [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(`删除镜像 ${b.dataset.rm}？`)) op('docker', { op: 'remove_image', ref: b.dataset.rm }).then(() => { toast('已删除', 'ok'); dkImages(info); }).catch((e) => toast(e.message, 'err')); });
+    document.querySelectorAll('#dkIList [data-run]').forEach((b) => b.onclick = () => dkCreateForm(b.dataset.run, info));
+  }).catch((e) => { $('dkIList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+}
+
+function dkPullForm() {
+  modal('拉取镜像', `
+    <label class="lbl">镜像名（如 nginx:latest）</label>
+    <input id="plImg" class="field" placeholder="nginx:latest" style="margin-bottom:12px" />
+    <label class="lbl">加速镜像源（可选）</label>
+    <select id="plMirror" class="field" style="margin-bottom:16px">
+      <option value="">不使用</option>
+      <option value="m.daocloud.io">m.daocloud.io</option>
+      <option value="docker.m.daocloud.io">docker.m.daocloud.io</option>
+      <option value="docker.1panel.live">docker.1panel.live</option>
+      <option value="hub.rat.dev">hub.rat.dev</option>
+    </select>
+    <div class="row" style="justify-content:flex-end"><button class="btn" id="plGo">开始拉取</button></div>
+    <pre class="out hidden" id="plOut" style="margin-top:14px"></pre>`, (close) => {
+    $('plGo').onclick = () => {
+      const image = $('plImg').value.trim(); if (!image) return toast('请输入镜像名', 'err');
+      $('plGo').disabled = true; $('plOut').classList.remove('hidden'); $('plOut').textContent = '开始…';
+      op('docker', { op: 'pull_image', image, mirror: $('plMirror').value || undefined }).then((r) => watchOp('docker', r.op_id, $('plOut'), () => { toast('拉取完成', 'ok'); })).catch((e) => { $('plOut').textContent = '错误：' + e.message; $('plGo').disabled = false; });
+    };
+  });
+}
+
+function dkCreateForm(image, info) {
+  const cap = info || {};
+  modal('创建容器', `
+    <div class="formgrid">
+      <div class="full"><label class="lbl">镜像</label><input id="ccImg" class="field" value="${esc(image || '')}" placeholder="nginx:latest" /></div>
+      <div><label class="lbl">容器名（可选）</label><input id="ccName" class="field" placeholder="my-app" /></div>
+      <div><label class="lbl">重启策略</label><select id="ccRestart" class="field"><option value="unless-stopped">unless-stopped</option><option value="always">always</option><option value="no">no</option></select></div>
+      <div class="full"><label class="lbl">端口映射（每行 host:container，可加 /udp）</label><textarea id="ccPorts" class="field" rows="2" placeholder="8080:80"></textarea></div>
+      <div class="full"><label class="lbl">环境变量（每行 KEY=VALUE）</label><textarea id="ccEnv" class="field" rows="2" placeholder="TZ=Asia/Shanghai"></textarea></div>
+      <div class="full"><label class="lbl">挂载卷（每行 host:container[:ro]）</label><textarea id="ccVol" class="field" rows="2" placeholder="/data/app:/app"></textarea></div>
+      <div><label class="lbl">启动命令（可选）</label><input id="ccCmd" class="field" placeholder="留空用镜像默认" /></div>
+      <div style="display:flex;align-items:flex-end;gap:16px"><label style="display:flex;gap:7px;align-items:center"><input type="checkbox" id="ccTty" /> 分配终端</label><label style="display:flex;gap:7px;align-items:center"><input type="checkbox" id="ccStart" checked /> 创建后启动</label></div>
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="ccGo">创建</button></div>
+    <pre class="out hidden" id="ccOut" style="margin-top:14px"></pre>`, (close) => {
+    $('ccGo').onclick = () => {
+      const image = $('ccImg').value.trim(); if (!image) return toast('请输入镜像', 'err');
+      const ports = parseLines($('ccPorts').value).map((l) => { const [hp, rest] = l.split(':'); const [cp, proto] = (rest || '').split('/'); return { host: Number(hp), container: Number(cp), proto: proto || 'tcp' }; }).filter((p) => p.host && p.container);
+      const volumes = parseLines($('ccVol').value).map((l) => { const parts = l.split(':'); return { host: parts[0], container: parts[1], readonly: parts[2] === 'ro' }; }).filter((vv) => vv.host && vv.container);
+      const env = parseLines($('ccEnv').value);
+      const body = { op: 'create_container', image, name: $('ccName').value.trim() || undefined, restart: $('ccRestart').value, ports, env, volumes, command: $('ccCmd').value.trim() || undefined, tty: $('ccTty').checked, start: $('ccStart').checked };
+      $('ccGo').disabled = true; $('ccOut').classList.remove('hidden'); $('ccOut').textContent = '创建中…';
+      op('docker', body).then((r) => watchOp('docker', r.op_id, $('ccOut'), () => { toast('容器已创建', 'ok'); close(); switchTab('docker'); })).catch((e) => { $('ccOut').textContent = '错误：' + e.message; $('ccGo').disabled = false; });
+    };
+  });
+}
+function parseLines(s) { return String(s || '').split('\n').map((x) => x.trim()).filter(Boolean); }
+
+function dkNetworks() {
+  const body = $('dkBody');
+  body.innerHTML = '<div class="sechead"><h3>网络</h3><span class="sp"></span><button class="btn sm" id="dkNetNew">创建网络</button><button class="btn sec sm" id="dkRefN">刷新</button></div><div id="dkNList" class="mut">加载中…</div>';
+  $('dkRefN').onclick = dkNetworks;
+  $('dkNetNew').onclick = () => modal('创建网络', '<label class="lbl">网络名</label><input id="nnName" class="field" style="margin-bottom:16px" /><div class="row" style="justify-content:flex-end"><button class="btn" id="nnGo">创建</button></div>', (close) => { $('nnGo').onclick = () => op('docker', { op: 'create_network', name: $('nnName').value.trim() }).then(() => { close(); toast('已创建', 'ok'); dkNetworks(); }).catch((e) => toast(e.message, 'err')); });
+  op('docker', { op: 'list_networks' }).then((d) => {
+    let h = '<table><tr><th>名称</th><th>驱动</th><th>范围</th><th style="width:1%">操作</th></tr>';
+    (d.networks || []).forEach((n) => { h += `<tr><td>${esc(n.name)}</td><td class="mut">${esc(n.driver)}</td><td class="mut">${esc(n.scope)}</td><td>${['bridge', 'host', 'none'].includes(n.name) ? '<span class="mut" style="font-size:12px">内置</span>' : `<button class="btn sm danger" data-rm="${esc(n.name)}">删除</button>`}</td></tr>`; });
+    $('dkNList').innerHTML = h + '</table>';
+    document.querySelectorAll('#dkNList [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(`删除网络 ${b.dataset.rm}？`)) op('docker', { op: 'remove_network', ref: b.dataset.rm }).then(() => { toast('已删除', 'ok'); dkNetworks(); }).catch((e) => toast(e.message, 'err')); });
+  }).catch((e) => { $('dkNList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+}
+
+// Poll a detached op (docker/nginx/mysql) into a <pre>; calls onDone on success.
+function watchOp(kind, opId, outEl, onDone) {
+  if (!opId) { if (onDone) onDone(); return; }
+  const tick = () => op(kind, { op: 'op_log', op_id: opId }).then((d) => {
+    outEl.textContent = (d.lines || []).join('\n');
+    outEl.scrollTop = outEl.scrollHeight;
+    if (d.status === 'done') { op(kind, { op: 'dismiss_op', op_id: opId }).catch(() => {}); if (onDone) onDone(); }
+    else if (d.status === 'error') { outEl.textContent += '\n错误：' + (d.error || '失败'); op(kind, { op: 'dismiss_op', op_id: opId }).catch(() => {}); }
+    else if (d.status === 'gone') { /* stop */ }
+    else setTimeout(tick, 1000);
+  }).catch(() => setTimeout(tick, 1500));
+  tick();
+}
+
+// =========================================================================
+// File browser (host + container). Reused as a tab and as a Docker modal.
+// =========================================================================
+function renderFiles(v) {
+  v.innerHTML = '<div class="card" id="fbCard"></div>';
+  fileBrowser($('fbCard'), null, '/');
+}
+function openFileBrowser(title, container) {
+  modal(title, '<div id="fbModal"></div>', (close, mask) => { fileBrowser(mask.querySelector('#fbModal'), container, '/'); }, true);
+}
+// Render an interactive file browser into `mount`. container=null → host.
+function fileBrowser(mount, container, startPath) {
+  let path = startPath || '/';
+  mount.innerHTML = `
+    <div class="row" style="margin-bottom:12px">
+      <div class="fb-path" id="fbPath" style="flex:1"></div>
+      <button class="btn sm sec" id="fbMkdir">新建目录</button>
+      <label class="btn sm" style="position:relative;overflow:hidden">上传<input type="file" id="fbUp" style="position:absolute;inset:0;opacity:0;cursor:pointer" /></label>
+      <button class="btn sm sec" id="fbRef">刷新</button>
+    </div>
+    <div class="fb-list" id="fbList"><div class="empty">加载中…</div></div>`;
+  const scope = () => (container ? { container } : {});
+  const renderPath = () => {
+    const parts = path.split('/').filter(Boolean);
+    let acc = '', h = `<span class="seg2" data-p="/">/</span>`;
+    parts.forEach((seg) => { acc += '/' + seg; h += `<span class="seg2" data-p="${esc(acc)}">${esc(seg)}</span><span class="mut">/</span>`; });
+    $('fbPath').innerHTML = h;
+    document.querySelectorAll('#fbPath .seg2').forEach((s) => s.onclick = () => { path = s.dataset.p; load(); });
+  };
+  const load = () => {
+    renderPath();
+    api('/api/files/list', { method: 'POST', body: JSON.stringify(Object.assign({ path }, scope())) }).then((b) => {
+      const entries = b.data.entries || []; path = b.data.path || path; renderPath();
+      const list = $('fbList'); list.innerHTML = '';
+      if (path !== '/') { const up = el('div', { class: 'fb-row' }, `<span>↩</span><span class="nm dir">..</span>`); up.querySelector('.nm').onclick = () => { path = path.replace(/\/[^/]+\/?$/, '') || '/'; load(); }; list.appendChild(up); }
+      if (!entries.length && path === '/') { /* keep up row only */ }
+      entries.forEach((e) => {
+        const row = el('div', { class: 'fb-row' });
+        const full = (path === '/' ? '' : path) + '/' + e.name;
+        row.innerHTML = `<span style="width:18px">${e.is_dir ? '📁' : '📄'}</span><span class="nm ${e.is_dir ? 'dir' : ''}">${esc(e.name)}</span><span class="sz">${e.is_dir ? '' : fmtBytes(e.size)}</span>`;
+        const acts = el('div', { class: 'actions', style: 'margin-left:10px' });
+        if (e.is_dir) { row.querySelector('.nm').onclick = () => { path = full; load(); }; }
+        else { const dl = el('button', { class: 'btn sm sec' }, '下载'); dl.onclick = () => downloadFile(full, container); acts.appendChild(dl); }
+        const del = el('button', { class: 'btn sm danger' }, '删除'); del.onclick = async () => { if (await confirmDanger(`删除 ${e.name}？`)) api('/api/files/delete', { method: 'POST', body: JSON.stringify(Object.assign({ path: full }, scope())) }).then(() => { toast('已删除', 'ok'); load(); }).catch((er) => toast(er.message, 'err')); };
+        acts.appendChild(del); row.appendChild(acts); list.appendChild(row);
+      });
+    }).catch((e) => { $('fbList').innerHTML = `<div class="empty err">${esc(e.message)}</div>`; });
+  };
+  $('fbRef').onclick = load;
+  $('fbMkdir').onclick = () => modal('新建目录', '<label class="lbl">目录名</label><input id="mkName" class="field" style="margin-bottom:16px" /><div class="row" style="justify-content:flex-end"><button class="btn" id="mkGo">创建</button></div>', (close) => { $('mkGo').onclick = () => { const name = $('mkName').value.trim(); if (!name) return; const full = (path === '/' ? '' : path) + '/' + name; api('/api/files/mkdir', { method: 'POST', body: JSON.stringify(Object.assign({ path: full }, scope())) }).then(() => { close(); toast('已创建', 'ok'); load(); }).catch((e) => toast(e.message, 'err')); }; });
+  $('fbUp').onchange = (ev) => {
+    const f = ev.target.files[0]; if (!f) return;
+    const full = (path === '/' ? '' : path) + '/' + f.name;
+    const qs = `path=${encodeURIComponent(full)}` + (container ? `&container=${encodeURIComponent(container)}` : '');
+    toast('上传中…');
+    fetch('/api/files/upload?' + qs, { method: 'POST', headers: { 'Authorization': 'Bearer ' + S.token }, body: f })
+      .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok || b.ok === false) throw new Error(b.error || '上传失败'); })
+      .then(() => { toast('已上传', 'ok'); load(); }).catch((e) => toast(e.message, 'err'));
+    ev.target.value = '';
+  };
+  load();
+}
+function downloadFile(full, container) {
+  const qs = `token=${encodeURIComponent(S.token)}&path=${encodeURIComponent(full)}` + (container ? `&container=${encodeURIComponent(container)}` : '');
+  const a = el('a', { href: '/api/files/download?' + qs }); document.body.appendChild(a); a.click(); a.remove();
+}
+
+// =========================================================================
+// Nginx management
+// =========================================================================
+function renderNginx(v) {
+  v.innerHTML = '<div class="mut" style="padding:18px">检测 Nginx…</div>';
+  op('nginx', { op: 'info' }).then((info) => {
+    if (!info.managed_mode) {
+      v.innerHTML = `<div class="card"><h3>Nginx 初始化</h3>
+        <p class="mut">选择 Nginx 运行模式：<b>host</b> 使用本机系统 Nginx；<b>docker</b> 由 TeaOps 创建并管理一个容器。</p>
+        <div class="row" style="margin:14px 0">
+          <select id="ngMode" class="field" style="max-width:200px"><option value="docker">Docker 模式</option><option value="host">主机模式</option></select>
+          <button class="btn" id="ngSetup">初始化</button>
+        </div>
+        <pre class="out hidden" id="ngSetupOut"></pre></div>`;
+      $('ngSetup').onclick = () => { $('ngSetup').disabled = true; $('ngSetupOut').classList.remove('hidden'); $('ngSetupOut').textContent = '初始化中…'; op('nginx', { op: 'setup', mode: $('ngMode').value }).then((r) => watchOp('nginx', r.op_id, $('ngSetupOut'), () => { toast('初始化完成', 'ok'); renderNginx(v); })).catch((e) => { $('ngSetupOut').textContent = '错误：' + e.message; $('ngSetup').disabled = false; }); };
+      return;
+    }
+    v.innerHTML = `<div class="row" style="margin-bottom:14px"><span class="chip on">模式：${esc(info.managed_mode)}</span><span class="sp" style="flex:1"></span><button class="btn sm" id="ngAdd">添加站点</button><button class="btn sec sm" id="ngReload">重载配置</button><button class="btn sec sm" id="ngRef">刷新</button></div><div id="ngSites" class="mut">加载中…</div>`;
+    $('ngRef').onclick = () => renderNginx(v);
+    $('ngReload').onclick = () => op('nginx', { op: 'reload' }).then(() => toast('已重载', 'ok')).catch((e) => toast(e.message, 'err'));
+    $('ngAdd').onclick = () => ngAddSite(() => renderNginx(v));
+    op('nginx', { op: 'list_sites' }).then((d) => {
+      const sites = d.sites || [];
+      if (!sites.length) { $('ngSites').innerHTML = '<div class="empty">暂无站点</div>'; return; }
+      let h = '<table><tr><th>域名</th><th>类型</th><th>目标</th><th>SSL</th><th style="width:1%">操作</th></tr>';
+      sites.forEach((s) => {
+        const target = s.kind === 'proxy_host' ? s.target_url : s.kind === 'proxy_container' ? `${s.container}:${s.container_port}` : s.root;
+        h += `<tr><td><b>${esc(s.server_name)}</b></td><td class="mut">${esc(kindLabel(s.kind))}</td><td class="mono" style="font-size:12px">${esc(target)}</td><td>${s.ssl ? '<span class="chip on">是</span>' : '<span class="chip">否</span>'}</td><td><button class="btn sm danger" data-rm="${esc(s.id)}">删除</button></td></tr>`;
+      });
+      $('ngSites').innerHTML = h + '</table>';
+      document.querySelectorAll('#ngSites [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger('删除该站点？')) op('nginx', { op: 'remove_site', site_id: b.dataset.rm }).then(() => { toast('已删除', 'ok'); renderNginx(v); }).catch((e) => toast(e.message, 'err')); });
+    }).catch((e) => { $('ngSites').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+  }).catch((e) => { v.innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; });
+}
+function kindLabel(k) { return { proxy_host: '反代主机', proxy_container: '反代容器', static: '静态站点' }[k] || k; }
+
+function ngAddSite(reload) {
+  modal('添加站点', `
+    <div class="formgrid">
+      <div class="full"><label class="lbl">域名（server_name）</label><input id="nsName" class="field" placeholder="example.com" /></div>
+      <div class="full"><label class="lbl">类型</label><select id="nsKind" class="field"><option value="proxy_host">反向代理到主机/地址</option><option value="proxy_container">反向代理到容器</option><option value="static">静态站点</option></select></div>
+      <div class="full" id="nsKindFields"></div>
+      <div class="full"><label style="display:flex;gap:7px;align-items:center"><input type="checkbox" id="nsSsl" /> 启用 HTTPS</label></div>
+      <div class="full hidden" id="nsCertWrap"><label class="lbl">证书方式</label><select id="nsCert" class="field"><option value="le">Let's Encrypt 自动签发</option><option value="self">自签名</option><option value="manual">手动粘贴</option></select></div>
+      <div class="full hidden" id="nsManual"><label class="lbl">证书 PEM</label><textarea id="nsCertPem" class="field" rows="3"></textarea><label class="lbl" style="margin-top:8px">私钥 PEM</label><textarea id="nsKeyPem" class="field" rows="3"></textarea></div>
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="nsGo">创建</button></div>
+    <pre class="out hidden" id="nsOut" style="margin-top:14px"></pre>`, (close) => {
+    const kindFields = () => {
+      const k = $('nsKind').value;
+      $('nsKindFields').innerHTML = k === 'proxy_host'
+        ? '<label class="lbl">目标地址（host[:port]）</label><input id="nsTarget" class="field" placeholder="127.0.0.1:3000" />'
+        : k === 'proxy_container'
+        ? '<div class="formgrid"><div><label class="lbl">容器名</label><input id="nsCtn" class="field" placeholder="teaops-webapp" /></div><div><label class="lbl">容器端口</label><input id="nsCtnPort" class="field" type="number" placeholder="80" /></div></div>'
+        : '<label class="lbl">静态目录名（webroot 下子目录）</label><input id="nsRoot" class="field" placeholder="mysite" />';
+    };
+    $('nsKind').onchange = kindFields; kindFields();
+    $('nsSsl').onchange = () => { $('nsCertWrap').classList.toggle('hidden', !$('nsSsl').checked); certFields(); };
+    const certFields = () => { $('nsManual').classList.toggle('hidden', !($('nsSsl').checked && $('nsCert').value === 'manual')); };
+    $('nsCert') && ($('nsCert').onchange = certFields);
+    $('nsGo').onclick = () => {
+      const k = $('nsKind').value;
+      const body = { op: 'add_site', server_name: $('nsName').value.trim(), kind: k, ssl: $('nsSsl').checked };
+      if (!body.server_name) return toast('请输入域名', 'err');
+      if (k === 'proxy_host') body.target_url = $('nsTarget').value.trim();
+      else if (k === 'proxy_container') { body.container = $('nsCtn').value.trim(); body.container_port = Number($('nsCtnPort').value); }
+      else body.root = $('nsRoot').value.trim();
+      if (body.ssl) { body.cert_mode = $('nsCert').value; if (body.cert_mode === 'manual') { body.cert_pem = $('nsCertPem').value; body.key_pem = $('nsKeyPem').value; } }
+      $('nsGo').disabled = true; $('nsOut').classList.remove('hidden'); $('nsOut').textContent = '提交中…';
+      op('nginx', body).then((r) => {
+        if (r.op_id) watchOp('nginx', r.op_id, $('nsOut'), () => { toast('站点已创建', 'ok'); close(); reload(); });
+        else { toast('站点已创建', 'ok'); close(); reload(); }
+      }).catch((e) => { $('nsOut').textContent = '错误：' + e.message; $('nsGo').disabled = false; });
+    };
+  });
+}
+
+// =========================================================================
+// MySQL management (TeaOps-provisioned instances only)
+// =========================================================================
+function renderMysql(v) {
+  v.innerHTML = '<div class="mut" style="padding:18px">检测环境…</div>';
+  op('mysql', { op: 'info' }).then((info) => {
+    if (info && info.docker_ok === false) {
+      v.innerHTML = '<div class="card"><h3>MySQL</h3><p class="mut">需要先安装并启动 Docker（在 Docker 管理中安装）。MySQL 实例由 TeaOps 通过容器管理。</p></div>';
+      return;
+    }
+    v.innerHTML = `<div class="row" style="margin-bottom:14px"><span class="sp" style="flex:1"></span><button class="btn sm" id="myNew">新建实例</button><button class="btn sec sm" id="myRef">刷新</button></div><div id="myList" class="mut">加载中…</div>`;
+    $('myRef').onclick = () => renderMysql(v);
+    $('myNew').onclick = () => myInstall(() => renderMysql(v));
+    op('mysql', { op: 'list' }).then((d) => {
+      const arr = d.instances || [];
+      if (!arr.length) { $('myList').innerHTML = '<div class="empty">暂无实例，点击「新建实例」创建</div>'; return; }
+      let h = '<table><tr><th>实例</th><th>引擎</th><th>端口</th><th>状态</th><th style="width:1%">操作</th></tr>';
+      arr.forEach((m) => {
+        const running = m.running;
+        const phase = m.phase === 'initializing' ? '初始化中' : (running ? '运行中' : '已停止');
+        const cls = m.phase === 'initializing' ? 'warn' : (running ? 'on' : 'off');
+        h += `<tr><td><b>${esc(m.id)}</b></td><td class="mut">${esc(m.engine)} ${esc(m.version || '')}</td><td class="mono">${m.port ? m.port : '未映射'}</td><td><span class="chip ${cls}"><span class="dot-s ${running ? 'on' : ''}"></span>${phase}</span></td><td><div class="actions" data-id="${esc(m.id)}" data-running="${running ? 1 : 0}"></div></td></tr>`;
+      });
+      $('myList').innerHTML = h + '</table>';
+      document.querySelectorAll('#myList .actions').forEach((a) => buildMyActions(a, () => renderMysql(v)));
+    }).catch((e) => { $('myList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+  }).catch((e) => { v.innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; });
+}
+function buildMyActions(holder, reload) {
+  const id = holder.dataset.id, running = holder.dataset.running === '1';
+  const mk = (label, cls, fn) => { const b = el('button', { class: 'btn sm ' + (cls || 'sec') }, label); b.onclick = fn; holder.appendChild(b); };
+  if (running) {
+    mk('管理', '', () => myManage(id, reload));
+    mk('停止', 'sec', () => op('mysql', { op: 'stop', inst: id }).then(() => { toast('已停止', 'ok'); reload(); }).catch((e) => toast(e.message, 'err')));
+    mk('重启', 'sec', () => op('mysql', { op: 'restart', inst: id }).then(() => { toast('已重启', 'ok'); reload(); }).catch((e) => toast(e.message, 'err')));
+  } else {
+    mk('启动', '', () => op('mysql', { op: 'start', inst: id }).then(() => { toast('已启动', 'ok'); reload(); }).catch((e) => toast(e.message, 'err')));
+  }
+  mk('删除', 'danger', async () => {
+    const keep = await confirmKeepData(id); if (keep === null) return;
+    op('mysql', { op: 'remove', inst: id, keep_data: keep }).then(() => { toast('已删除', 'ok'); reload(); }).catch((e) => toast(e.message, 'err'));
+  });
+}
+function confirmKeepData(id) { return new Promise((res) => { modal('删除实例 ' + id, '<p style="margin:0 0 16px">是否保留数据卷？</p><div class="row" style="justify-content:flex-end"><button class="btn sec" id="kdCancel">取消</button><button class="btn sec" id="kdKeep">保留数据</button><button class="btn danger" id="kdDrop">连同数据删除</button></div>', (close) => { $('kdCancel').onclick = () => { close(); res(null); }; $('kdKeep').onclick = () => { close(); res(true); }; $('kdDrop').onclick = () => { close(); res(false); }; }); }); }
+
+function myInstall(reload) {
+  modal('新建 MySQL 实例', `
+    <div class="formgrid">
+      <div><label class="lbl">引擎</label><select id="miEngine" class="field"><option value="mysql">MySQL</option><option value="mariadb">MariaDB</option></select></div>
+      <div><label class="lbl">版本</label><select id="miVer" class="field"></select></div>
+      <div><label class="lbl">对外端口（映射 3306）</label><input id="miPort" class="field" type="number" placeholder="3306" /></div>
+      <div style="display:flex;align-items:flex-end"><label style="display:flex;gap:7px;align-items:center"><input type="checkbox" id="miExpose" checked /> 对外映射端口</label></div>
+    </div>
+    <p class="mut" style="font-size:12px;margin-top:10px">root 密码将自动生成，可在「管理」中查看。</p>
+    <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn" id="miGo">创建</button></div>
+    <pre class="out hidden" id="miOut" style="margin-top:14px"></pre>`, (close) => {
+    const VERS = { mysql: ['8.4', '8.0', '5.7'], mariadb: ['11.4', '10.11', '10.6'] };
+    const fillVers = () => { const e = $('miEngine').value; $('miVer').innerHTML = VERS[e].map((x) => `<option value="${x}"${x === '8.0' || (e === 'mariadb' && x === '11.4') ? ' selected' : ''}>${x}</option>`).join(''); };
+    $('miEngine').onchange = fillVers; fillVers();
+    $('miExpose').onchange = () => { $('miPort').disabled = !$('miExpose').checked; };
+    $('miGo').onclick = () => {
+      const body = { op: 'install', engine: $('miEngine').value, version: $('miVer').value, expose: $('miExpose').checked };
+      if (body.expose && $('miPort').value) body.port = Number($('miPort').value);
+      $('miGo').disabled = true; $('miOut').classList.remove('hidden'); $('miOut').textContent = '创建中…';
+      op('mysql', body).then((r) => watchOp('mysql', r.op_id, $('miOut'), () => { toast('实例已创建', 'ok'); close(); reload(); })).catch((e) => { $('miOut').textContent = '错误：' + e.message; $('miGo').disabled = false; });
+    };
+  });
+}
+
+function myManage(id, reload) {
+  modal('MySQL · ' + id, `
+    <div class="subtabs" id="myTabs"><button data-t="info" class="on">连接信息</button><button data-t="users">账号</button><button data-t="query">SQL</button><button data-t="more">更多</button></div>
+    <div id="myMBody"></div>`, (close) => {
+    const tabs = $('myTabs');
+    const sel = (t) => { tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === t)); if (t === 'info') myInfo(id); else if (t === 'users') myUsers(id); else if (t === 'query') myQuery(id); else myMore(id, close, reload); };
+    tabs.querySelectorAll('button').forEach((b) => b.onclick = () => sel(b.dataset.t));
+    sel('info');
+  }, true);
+}
+function myInfo(id) {
+  const b = $('myMBody'); b.innerHTML = '<div class="mut">加载中…</div>';
+  op('mysql', { op: 'credentials', inst: id }).then((c) => {
+    b.innerHTML = `<table>
+      <tr><th style="width:120px">主机</th><td class="mono">${esc(c.host || '127.0.0.1')}</td></tr>
+      <tr><th>端口</th><td class="mono">${esc(String(c.port || ''))}</td></tr>
+      <tr><th>用户</th><td class="mono">${esc(c.user || 'root')}</td></tr>
+      <tr><th>密码</th><td class="mono">${esc(c.password || '')}</td></tr>
+    </table>
+    <div class="sechead" style="margin-top:18px"><h3>数据库</h3></div><div id="myDbs" class="mut">加载中…</div>`;
+    op('mysql', { op: 'databases', inst: id }).then((d) => {
+      const arr = d.databases || [];
+      $('myDbs').innerHTML = arr.length ? '<table><tr><th>库名</th><th>表数</th><th>大小</th></tr>' + arr.map((x) => `<tr><td>${esc(x.name)}${x.system ? ' <span class="mut" style="font-size:11px">系统</span>' : ''}</td><td>${x.tables != null ? x.tables : '-'}</td><td class="mut">${x.bytes != null ? fmtBytes(x.bytes) : '-'}</td></tr>`).join('') + '</table>' : '<div class="empty">无</div>';
+    }).catch((e) => { $('myDbs').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+  }).catch((e) => { b.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+}
+function myUsers(id) {
+  const b = $('myMBody'); b.innerHTML = '<div class="sechead"><h3>账号</h3><span class="sp"></span><button class="btn sm" id="myAddU">新建账号</button></div><div id="myUList" class="mut">加载中…</div>';
+  $('myAddU').onclick = () => modal('新建账号', `<div class="formgrid"><div><label class="lbl">用户名</label><input id="auU" class="field" /></div><div><label class="lbl">来源主机</label><input id="auH" class="field" value="%" /></div><div class="full"><label class="lbl">密码</label><input id="auP" class="field" /></div></div><div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="auGo">创建</button></div>`, (close) => { $('auGo').onclick = () => op('mysql', { op: 'create_user', inst: id, username: $('auU').value.trim(), host: $('auH').value.trim() || '%', password: $('auP').value }).then(() => { close(); toast('已创建', 'ok'); myUsers(id); }).catch((e) => toast(e.message, 'err')); });
+  op('mysql', { op: 'list_users', inst: id }).then((d) => {
+    const users = d.users || [];
+    if (!users.length) { $('myUList').innerHTML = '<div class="empty">无</div>'; return; }
+    $('myUList').innerHTML = '<table><tr><th>用户</th><th>主机</th><th style="width:1%">操作</th></tr>' + users.map((u) => `<tr><td>${esc(u.user)}</td><td class="mut">${esc(u.host)}</td><td>${u.system ? '<span class="mut" style="font-size:12px">系统</span>' : `<button class="btn sm danger" data-u="${esc(u.user)}" data-h="${esc(u.host)}">删除</button>`}</td></tr>`).join('') + '</table>';
+    document.querySelectorAll('#myUList [data-u]').forEach((btn) => btn.onclick = async () => { if (await confirmDanger(`删除账号 ${btn.dataset.u}@${btn.dataset.h}？`)) op('mysql', { op: 'drop_user', inst: id, username: btn.dataset.u, host: btn.dataset.h }).then(() => { toast('已删除', 'ok'); myUsers(id); }).catch((e) => toast(e.message, 'err')); });
+  }).catch((e) => { $('myUList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+}
+function myQuery(id) {
+  const b = $('myMBody');
+  b.innerHTML = `<label class="lbl">SQL 语句</label><textarea id="sqlIn" class="field mono" rows="4" placeholder="SELECT * FROM mysql.user LIMIT 10;"></textarea><div class="row" style="justify-content:flex-end;margin:10px 0"><button class="btn" id="sqlGo">执行</button></div><div id="sqlOut"></div>`;
+  $('sqlGo').onclick = () => {
+    const sql = $('sqlIn').value.trim(); if (!sql) return;
+    $('sqlOut').innerHTML = '<div class="mut">执行中…</div>';
+    op('mysql', { op: 'query', inst: id, sql }).then((r) => {
+      if (!r.columns || !r.columns.length) { $('sqlOut').innerHTML = `<div class="ok">${esc(r.note || '执行成功')}</div>`; return; }
+      let h = '<div style="overflow:auto"><table><tr>' + r.columns.map((c) => `<th>${esc(c)}</th>`).join('') + '</tr>';
+      (r.rows || []).forEach((row) => { h += '<tr>' + row.map((cell) => `<td class="mono" style="font-size:12px">${esc(cell == null ? 'NULL' : cell)}</td>`).join('') + '</tr>'; });
+      h += '</table></div>' + `<div class="mut" style="margin-top:8px">${r.row_count != null ? r.row_count + ' 行' : ''}${r.truncated ? ' · 结果已截断' : ''}</div>`;
+      $('sqlOut').innerHTML = h;
+    }).catch((e) => { $('sqlOut').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+  };
+}
+function myMore(id, close, reload) {
+  const b = $('myMBody');
+  b.innerHTML = `
+    <div class="sechead"><h3>重置 root 密码</h3></div><div class="row"><button class="btn sec sm" id="myReset">重置并显示新密码</button></div>
+    <div class="sechead" style="margin-top:18px"><h3>端口映射</h3></div><div class="row"><input id="myPort" class="field" type="number" placeholder="3306" style="max-width:160px" /><label style="display:flex;gap:7px;align-items:center"><input type="checkbox" id="myExpose" checked /> 对外映射</label><button class="btn sec sm" id="myPortGo">应用（重建容器）</button></div>
+    <div class="sechead" style="margin-top:18px"><h3>备份</h3></div><div class="row"><button class="btn sec sm" id="myBackup">导出 mysqldump</button></div>
+    <pre class="out hidden" id="myMoreOut" style="margin-top:14px"></pre>`;
+  $('myReset').onclick = () => op('mysql', { op: 'reset_password', inst: id }).then((r) => { $('myMoreOut').classList.remove('hidden'); $('myMoreOut').textContent = '新 root 密码：' + (r.password || ''); }).catch((e) => toast(e.message, 'err'));
+  $('myPortGo').onclick = () => { const body = { op: 'change_port', inst: id, expose: $('myExpose').checked }; if (body.expose && $('myPort').value) body.port = Number($('myPort').value); op('mysql', body).then(() => { toast('已应用', 'ok'); reload(); }).catch((e) => toast(e.message, 'err')); };
+  $('myBackup').onclick = () => { $('myMoreOut').classList.remove('hidden'); $('myMoreOut').textContent = '备份中…'; op('mysql', { op: 'backup', inst: id }).then((r) => watchOp('mysql', r.op_id, $('myMoreOut'), () => toast('备份完成', 'ok'))).catch((e) => { $('myMoreOut').textContent = '错误：' + e.message; }); };
+}
+
+// =========================================================================
+// Settings
+// =========================================================================
 function renderSettings(v) {
   v.innerHTML = '<div class="card">加载中…</div>';
   api('/api/settings').then((sb) => {
     const s = sb.data;
     v.innerHTML = `
     <div class="warn">本机管理通过明文 HTTP 暴露在 0.0.0.0:${s.port}，登录凭证以明文传输，强烈建议用防火墙仅放行可信 IP。微信扫码登录无需密码，由服务器所有者在小程序确认。</div>
-    <div class="card" style="max-width:480px">
+    <div class="card" style="max-width:520px">
       <h3>登录账号</h3>
       <label class="lbl">账号</label>
       <input id="setUser" class="field" style="margin-bottom:12px" value="${esc(s.username)}" />
       <label class="lbl">密码</label>
-      <input id="setPw" class="field" type="text" value="${esc(s.password)}" />
-      <h3 style="margin-top:16px">端口（改后重启 Agent 生效）</h3>
+      <div class="row" style="margin-bottom:4px"><input id="setPw" class="field" type="password" value="${esc(s.password)}" style="flex:1" /><button class="btn sec sm" id="setPwShow" type="button">显示</button></div>
+      <h3 style="margin-top:18px">端口（改后重启 Agent 生效）</h3>
       <input id="setPort" class="field" type="number" value="${s.port}" />
       <label style="display:flex;gap:8px;align-items:center;margin:14px 0"><input type="checkbox" id="setEnabled" ${s.enabled ? 'checked' : ''}/> 启用本机管理（关闭后需重启生效）</label>
       <button class="btn" id="setSave">保存</button>
       <div class="err ok" id="setMsg" style="margin-top:10px"></div>
     </div>`;
-    document.getElementById('setSave').onclick = () => {
-      const body = { username: document.getElementById('setUser').value, password: document.getElementById('setPw').value, port: Number(document.getElementById('setPort').value), enabled: document.getElementById('setEnabled').checked };
+    $('setPwShow').onclick = () => { const i = $('setPw'); const show = i.type === 'password'; i.type = show ? 'text' : 'password'; $('setPwShow').textContent = show ? '隐藏' : '显示'; };
+    $('setSave').onclick = () => {
+      const body = { username: $('setUser').value, password: $('setPw').value, port: Number($('setPort').value), enabled: $('setEnabled').checked };
       api('/api/settings', { method: 'POST', body: JSON.stringify(body) })
-        .then((b) => { const m = document.getElementById('setMsg'); m.className = 'err ok'; m.textContent = '已保存' + (b.needs_restart ? '（端口/开关改动需重启 Agent 生效）' : ''); document.getElementById('whoName').textContent = body.username; })
-        .catch((e) => { const m = document.getElementById('setMsg'); m.className = 'err'; m.textContent = e.message; });
+        .then((b) => { const m = $('setMsg'); m.className = 'err ok'; m.textContent = '已保存' + (b.needs_restart ? '（端口/开关改动需重启 Agent 生效）' : ''); setUser(body.username); })
+        .catch((e) => { const m = $('setMsg'); m.className = 'err'; m.textContent = e.message; });
     };
   }).catch((e) => { v.innerHTML = '<div class="card">加载失败：' + esc(e.message) + '</div>'; });
 }
 
-function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
-
-document.getElementById('pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+// =========================================================================
+// Bootstrap
+// =========================================================================
+$('pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
 if (S.token) showApp();
 </script>
 </body>

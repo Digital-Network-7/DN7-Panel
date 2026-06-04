@@ -71,6 +71,7 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
         .route("/api/login", post(login))
         // Authenticated API.
         .route("/api/logout", post(logout))
+        .route("/api/info", get(agent_info))
         .route("/api/metrics", get(metrics))
         .route("/api/procs", get(procs))
         .route("/api/settings", get(get_settings).post(put_settings))
@@ -78,6 +79,12 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
         .route("/api/nginx", post(nginx_op))
         .route("/api/mysql", post(mysql_op))
         .route("/api/terminal", get(terminal_ws))
+        .route("/api/container/terminal", get(container_terminal_ws))
+        .route("/api/files/list", post(files_list))
+        .route("/api/files/mkdir", post(files_mkdir))
+        .route("/api/files/delete", post(files_delete))
+        .route("/api/files/download", get(files_download))
+        .route("/api/files/upload", post(files_upload))
         // WeChat scan login proxied to the backend (NAT-safe via this agent).
         .route("/api/wx/login/start", post(wx_login_start))
         .route("/api/wx/login/poll", get(wx_login_poll))
@@ -178,6 +185,22 @@ async fn procs(State(state): State<Shared>, headers: header::HeaderMap) -> Respo
     }
     let data = crate::procs::web_snapshot(20).await;
     Json(json!({ "ok": true, "data": data })).into_response()
+}
+
+/// Basic agent identity (version + hostname) for the console footer/topbar.
+async fn agent_info(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    let hostname = sysinfo::System::host_name().unwrap_or_default();
+    Json(json!({
+        "ok": true,
+        "data": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "hostname": hostname,
+        }
+    }))
+    .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +357,202 @@ async fn terminal_ws(
 async fn handle_terminal(socket: WebSocket) {
     if let Err(e) = crate::terminal::run_web_pty(socket).await {
         tracing::debug!("web terminal ended: {e}");
+    }
+}
+
+/// WS query for a container terminal: token + container ref.
+#[derive(serde::Deserialize)]
+struct ContainerWsAuth {
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    container: String,
+}
+
+async fn container_terminal_ws(
+    State(state): State<Shared>,
+    Query(q): Query<ContainerWsAuth>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    if !state.auth.valid(&q.token) {
+        return (StatusCode::UNAUTHORIZED, "未授权").into_response();
+    }
+    let container = q.container.clone();
+    if container.is_empty() {
+        return (StatusCode::BAD_REQUEST, "缺少容器").into_response();
+    }
+    ws.on_upgrade(move |socket| async move {
+        if let Err(e) = crate::terminal::run_web_container_exec(socket, &container).await {
+            tracing::debug!("web container terminal ended: {e}");
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// File transfer (host + container) — plain HTTP request/response.
+// ---------------------------------------------------------------------------
+
+/// Body for list/mkdir/delete: a path, optionally scoped to a container.
+#[derive(serde::Deserialize)]
+struct FileOpReq {
+    #[serde(default)]
+    path: String,
+    /// When set, the operation targets this container's filesystem.
+    #[serde(default)]
+    container: Option<String>,
+}
+
+fn ctn_ref(req: &FileOpReq) -> Option<&str> {
+    req.container
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+async fn files_list(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<FileOpReq>,
+) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    let res = match ctn_ref(&req) {
+        Some(c) => crate::file::web_ctn_list(c, &req.path).await,
+        None => crate::file::web_host_list(&req.path).await,
+    };
+    match res {
+        Ok(data) => Json(json!({ "ok": true, "data": data })).into_response(),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })).into_response(),
+    }
+}
+
+async fn files_mkdir(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<FileOpReq>,
+) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    let res = match ctn_ref(&req) {
+        Some(c) => crate::file::web_ctn_mkdir(c, &req.path).await,
+        None => crate::file::web_host_mkdir(&req.path).await,
+    };
+    match res {
+        Ok(_) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })).into_response(),
+    }
+}
+
+async fn files_delete(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<FileOpReq>,
+) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    let res = match ctn_ref(&req) {
+        Some(c) => crate::file::web_ctn_delete(c, &req.path).await,
+        None => crate::file::web_host_delete(&req.path).await,
+    };
+    match res {
+        Ok(_) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })).into_response(),
+    }
+}
+
+/// Download query: token (browser can't set Authorization on a direct link),
+/// path, optional container.
+#[derive(serde::Deserialize)]
+struct DownloadQuery {
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    container: Option<String>,
+}
+
+async fn files_download(State(state): State<Shared>, Query(q): Query<DownloadQuery>) -> Response {
+    if !state.auth.valid(&q.token) {
+        return (StatusCode::UNAUTHORIZED, "未授权").into_response();
+    }
+    let ctn = q
+        .container
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let res = match ctn {
+        Some(c) => crate::file::web_ctn_read(c, &q.path).await,
+        None => crate::file::web_host_read(&q.path).await,
+    };
+    match res {
+        Ok((name, bytes)) => {
+            let disp = format!("attachment; filename=\"{}\"", sanitize_filename(&name));
+            (
+                [
+                    (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+                    (header::CONTENT_DISPOSITION, disp),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+/// Strip characters that could break the Content-Disposition header / path.
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c == '"' || c == '\\' || c == '\n' || c == '\r' {
+                '_'
+            } else {
+                c
+            }
+        })
+        .take(255)
+        .collect()
+}
+
+/// Upload: multipart-free — the path/container come as query params and the raw
+/// file bytes are the request body (kept simple; the UI sends one file at a
+/// time). Caps the body at 512 MiB to bound memory.
+#[derive(serde::Deserialize)]
+struct UploadQuery {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    container: Option<String>,
+}
+
+async fn files_upload(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Query(q): Query<UploadQuery>,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    if body.len() as u64 > 512 * 1024 * 1024 {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "文件过大（上限 512MiB）").into_response();
+    }
+    let ctn = q
+        .container
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let res = match ctn {
+        Some(c) => crate::file::web_ctn_write(c, &q.path, &body).await,
+        None => crate::file::web_host_write(&q.path, &body).await,
+    };
+    match res {
+        Ok(_) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })).into_response(),
     }
 }
 

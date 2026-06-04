@@ -119,15 +119,37 @@ read and are re-encrypted on the next write.
 ## On-box web console
 
 The agent serves a local management console (default **on**, `0.0.0.0:1080`)
-that exposes the same capabilities (monitoring, terminal, Docker, Nginx, MySQL,
-processes) directly on the host — no backend round-trip. It reuses the same
-per-capability JSON dispatchers as the relay path.
+that exposes the same capabilities directly on the host — no backend round-trip.
+It reuses the same per-capability JSON dispatchers as the relay path. The single
+embedded page (`web/ui/index.html`) is a left-right sci-fi UI with:
+
+- **主题**: dark / light / follow-system, cycled by one icon in the top-right.
+  The logged-in account + logout live in the top-right; the agent version sits
+  in the bottom-left of the sidebar.
+- **监控**: CPU/memory/disk/uptime cards plus a network card with big up/down
+  readouts and a live dual sparkline, and a Top-CPU process table.
+- **终端**: a built-in VT100/ANSI terminal emulator (no library/CDN). Click the
+  screen to type directly — proper backspace/erase, cursor movement, colors,
+  scroll region and alt-screen so `top`/`vim` work; window-resize aware.
+- **Docker**: image / container / network management — pull (with mirror),
+  create, start/stop/restart/remove, logs, connect/disconnect networks, an
+  **in-container terminal** (`docker exec`), and **container file transfer**.
+- **Nginx**: host/docker setup, add/remove sites (proxy-host / proxy-container /
+  static), HTTPS via Let's Encrypt / self-signed / manual, reload.
+- **MySQL**: create/manage TeaOps-provisioned MySQL/MariaDB instances —
+  start/stop/restart/remove, connection info, account management, a SQL runner,
+  port remap and mysqldump backup.
+- **文件**: a host file browser (list / mkdir / delete / upload / download); the
+  same browser is reused scoped to a container from the Docker page.
 
 Auth: an access **password is auto-generated on first run** and logged once (and
 viewable on the settings page); login mints an in-memory bearer session. Login
-attempts are rate-limited. Port, password and the enabled flag are editable on
-the settings page and persisted in `<data>/web.json` (0600); changing the port
-or disabling the console takes effect after an agent restart.
+attempts are rate-limited. The **account is `admin` (editable)**. Owners can also
+**log in by WeChat scan** — the page renders a QR the server owner scans with the
+mini-program 扫一扫 (validated against existing server ownership, no separate
+binding). Port, password, account and the enabled flag are editable on the
+settings page and persisted in `<data>/web.json` (0600); changing the port or
+disabling the console takes effect after an agent restart.
 
 > ⚠️ Security: the console binds to all interfaces over **plain HTTP** by
 > product decision, so the password and session token travel unencrypted.
