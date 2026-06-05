@@ -116,9 +116,6 @@ struct Req {
     /// privilege scope: "all" (read+write) | "ro" (read-only) | "custom" later
     #[serde(default)]
     privilege: Option<String>,
-    /// raw SQL for the query runner
-    #[serde(default)]
-    sql: Option<String>,
 }
 
 /// Persisted per-instance manifest (`<data>/mysql/<id>.json`, 0600).
@@ -467,7 +464,6 @@ async fn handle(req: &Req) -> Result<Value> {
         "drop_user" => drop_user(req).await,
         "grant" => grant(req).await,
         "revoke" => revoke(req).await,
-        "query" => query(req).await,
         "backup" => start_backup(req),
         "list_ops" => Ok(ops_snapshot()),
         "op_log" => Ok(op_log(req.op_id.as_deref().unwrap_or(""))),
@@ -1316,57 +1312,6 @@ async fn run_stmt(container: &str, password: &str, sql: &str) -> Result<()> {
 // Query runner (B): run arbitrary SQL, return columns + rows for display.
 // ---------------------------------------------------------------------------
 
-/// Execute a user-supplied SQL statement and return a tabular result. Output is
-/// capped to keep the payload small. This is a power-user tool: writes are
-/// allowed (the UI warns), but the result is always truncated.
-async fn query(req: &Req) -> Result<Value> {
-    let m = load_manifest(need_inst(req)?)?;
-    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
-    let sql = req.sql.as_deref().map(str::trim).unwrap_or("");
-    if sql.is_empty() {
-        return Err(anyhow!("SQL 不能为空"));
-    }
-    if sql.len() > 8192 {
-        return Err(anyhow!("SQL 过长"));
-    }
-
-    // Column-mode (-B) keeps a header row + tab-separated columns; we cap rows.
-    let (code, out) = mysql_exec_columns(&m.container, &password, sql).await?;
-    if code != 0 {
-        return Err(anyhow!(
-            "{}",
-            out.trim().chars().take(300).collect::<String>()
-        ));
-    }
-
-    // Parse: first line = header (column names), rest = rows. NULLs render as
-    // the literal "NULL" from the client; we pass them through.
-    const MAX_ROWS: usize = 200;
-    let mut lines = out.lines();
-    let columns: Vec<String> = match lines.next() {
-        Some(h) if !h.is_empty() => h.split('\t').map(|s| s.to_string()).collect(),
-        _ => {
-            // No result set (e.g. an UPDATE/DDL). Report affected as a note.
-            return Ok(json!({ "columns": [], "rows": [], "note": "执行成功（无结果集）" }));
-        }
-    };
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    let mut truncated = false;
-    for line in lines {
-        if rows.len() >= MAX_ROWS {
-            truncated = true;
-            break;
-        }
-        rows.push(line.split('\t').map(|s| s.to_string()).collect());
-    }
-    Ok(json!({
-        "columns": columns,
-        "rows": rows,
-        "truncated": truncated,
-        "row_count": rows.len(),
-    }))
-}
-
 // ---------------------------------------------------------------------------
 // Backup (B): mysqldump the whole instance to a SQL file, return its text.
 // ---------------------------------------------------------------------------
@@ -1446,23 +1391,6 @@ async fn mysql_exec(container: &str, password: &str, sql: &str) -> Result<(i64, 
 /// (`-N -B`) suitable for parsing query results.
 async fn mysql_exec_query(container: &str, password: &str, sql: &str) -> Result<(i64, String)> {
     exec_client(container, password, sql, true).await
-}
-
-/// Run a SQL statement returning batch/tab-separated output *with* the header
-/// row (`-B`, no `-N`), used by the query runner to render column names.
-async fn mysql_exec_columns(container: &str, password: &str, sql: &str) -> Result<(i64, String)> {
-    exec_argv(
-        container,
-        password,
-        vec![
-            "-uroot".to_string(),
-            "--protocol=socket".to_string(),
-            "-B".to_string(),
-            "-e".to_string(),
-            sql.to_string(),
-        ],
-    )
-    .await
 }
 
 /// Run an arbitrary `/bin/sh -c` script inside the container with `MYSQL_PWD`

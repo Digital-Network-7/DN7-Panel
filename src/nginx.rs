@@ -347,6 +347,8 @@ async fn handle(req: &Req) -> Result<Value> {
         "list_sites" => Ok(json!({ "sites": load_sites(), "mode": read_mode() })),
         "add_site" => add_site(req).await,
         "remove_site" => remove_site(req).await,
+        "list_certs" => list_certs().await,
+        "set_cert" => set_cert(req).await,
         "reload" => {
             reload().await?;
             Ok(json!({ "reloaded": true }))
@@ -1180,6 +1182,182 @@ async fn remove_site(req: &Req) -> Result<Value> {
     save_sites(&sites)?;
     let _ = validate_and_reload(&lo).await;
     Ok(json!({ "removed": site_id }))
+}
+
+// ---------------------------------------------------------------------------
+// SSL certificate management (per-site): list each SSL site's cert status and
+// (re)issue / replace its certificate without recreating the whole site.
+// ---------------------------------------------------------------------------
+
+/// List every managed site's SSL/cert status: { id, server_name, ssl,
+/// cert_mode, has_cert, not_after } so the UI can show a cert management table.
+async fn list_certs() -> Result<Value> {
+    let lo = layout()?;
+    let sites = load_sites();
+    let mut out = Vec::new();
+    for s in &sites {
+        let crt = lo.cert_store.join(format!("{}.crt", s.id));
+        let has_cert = crt.exists();
+        let not_after = if has_cert {
+            std::fs::read_to_string(&crt)
+                .ok()
+                .and_then(|pem| cert_not_after(&pem))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        out.push(json!({
+            "id": s.id,
+            "server_name": s.server_name,
+            "ssl": s.ssl,
+            "cert_mode": s.cert_mode,
+            "has_cert": has_cert,
+            "not_after": not_after,
+        }));
+    }
+    Ok(json!({ "certs": out, "mode": read_mode() }))
+}
+
+/// (Re)issue or replace a site's certificate. `cert_mode` selects:
+///   - "le":     Let's Encrypt (detached → returns {op_id})
+///   - "self":   self-signed
+///   - "manual": cert_pem + key_pem
+///
+/// Enables SSL on the site and persists it.
+async fn set_cert(req: &Req) -> Result<Value> {
+    let lo = layout()?;
+    let site_id = req
+        .site_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("缺少站点 ID"))?;
+    let mode = req.cert_mode.as_deref().unwrap_or("self");
+    if !matches!(mode, "self" | "le" | "manual") {
+        return Err(anyhow!("未知的证书方式"));
+    }
+
+    let mut sites = load_sites();
+    let mut site = sites
+        .iter()
+        .find(|s| s.id == site_id)
+        .cloned()
+        .ok_or_else(|| anyhow!("站点不存在"))?;
+    site.ssl = true;
+    site.cert_mode = mode.to_string();
+
+    match mode {
+        "self" => {
+            gen_self_signed(&lo, &site).await?;
+        }
+        "manual" => {
+            let cert = req.cert_pem.as_deref().unwrap_or("");
+            let key = req.key_pem.as_deref().unwrap_or("");
+            if cert.trim().is_empty() || key.trim().is_empty() {
+                return Err(anyhow!("请粘贴证书和私钥"));
+            }
+            write_cert_files(&lo, &site, cert, key)?;
+        }
+        "le" => {
+            // Detached issuance; issue_le persists the (ssl=true) site on success.
+            return start_cert_issue(lo, site).await;
+        }
+        _ => {}
+    }
+
+    write_site_conf(&lo, &site).await?;
+    validate_and_reload(&lo).await?;
+    sites.retain(|s| s.id != site.id);
+    sites.push(site.clone());
+    save_sites(&sites)?;
+    Ok(json!({ "site": site }))
+}
+
+/// Best-effort parse of a PEM cert's notAfter (expiry) as an ISO date string.
+/// Uses rcgen's dependency `x509-parser`-free approach: we only have rcgen +
+/// instant-acme, so parse the ASN.1 validity minimally. Returns "" on failure.
+fn cert_not_after(pem: &str) -> Option<String> {
+    // Decode the first CERTIFICATE block's DER.
+    let der = pem_first_cert_der(pem)?;
+    parse_not_after(&der)
+}
+
+/// Extract DER bytes of the first PEM "CERTIFICATE" block.
+fn pem_first_cert_der(pem: &str) -> Option<Vec<u8>> {
+    let begin = "-----BEGIN CERTIFICATE-----";
+    let end = "-----END CERTIFICATE-----";
+    let start = pem.find(begin)? + begin.len();
+    let stop = pem[start..].find(end)? + start;
+    let b64: String = pem[start..stop].split_whitespace().collect();
+    base64_decode(&b64)
+}
+
+/// Minimal base64 decoder (standard alphabet) for the cert body.
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::new();
+    let mut buf = 0u32;
+    let mut bits = 0;
+    for &c in s.as_bytes() {
+        if c == b'=' {
+            break;
+        }
+        let v = val(c)?;
+        buf = (buf << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// Walk the DER of an X.509 cert to the Validity.notAfter time and format it as
+/// "YYYY-MM-DD". Best-effort; returns None if the structure isn't as expected.
+fn parse_not_after(der: &[u8]) -> Option<String> {
+    // Find the first UTCTime (0x17) or GeneralizedTime (0x18) that looks like a
+    // validity date. The Validity sequence holds notBefore then notAfter, so we
+    // take the SECOND such time value.
+    let mut times = Vec::new();
+    let mut i = 0;
+    while i + 2 < der.len() {
+        let tag = der[i];
+        if tag == 0x17 || tag == 0x18 {
+            let len = der[i + 1] as usize;
+            if len > 0 && len < 40 && i + 2 + len <= der.len() {
+                if let Ok(s) = std::str::from_utf8(&der[i + 2..i + 2 + len]) {
+                    times.push((tag, s.to_string()));
+                }
+                i += 2 + len;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    let (tag, val) = times.get(1).or_else(|| times.first())?;
+    // UTCTime: YYMMDDHHMMSSZ ; GeneralizedTime: YYYYMMDDHHMMSSZ
+    let (yyyy, rest) = if *tag == 0x17 {
+        // YY -> 20YY (certs are well past 2000).
+        let yy: i32 = val.get(0..2)?.parse().ok()?;
+        let full = if yy < 50 { 2000 + yy } else { 1900 + yy };
+        (full, &val[2..])
+    } else {
+        let y: i32 = val.get(0..4)?.parse().ok()?;
+        (y, &val[4..])
+    };
+    let mm = rest.get(0..2)?;
+    let dd = rest.get(2..4)?;
+    Some(format!("{yyyy}-{mm}-{dd}"))
 }
 
 /// Reload nginx (host: `nginx -s reload`; docker: `docker exec ... nginx -s reload`).

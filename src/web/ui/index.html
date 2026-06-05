@@ -153,10 +153,15 @@
   .tablewrap { overflow-x:auto; }
   /* Fixed-layout process table: stable columns that don't reflow each refresh. */
   table.proctable { table-layout:fixed; }
-  table.proctable col.c-pid { width:84px; }
-  table.proctable col.c-cpu { width:84px; }
-  table.proctable col.c-mem { width:104px; }
+  table.proctable col.c-pid { width:68px; }
+  table.proctable col.c-user { width:96px; }
+  table.proctable col.c-time { width:84px; }
+  table.proctable col.c-cpu { width:74px; }
+  table.proctable col.c-mem { width:92px; }
   table.proctable td.nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  table.proctable th.sortable { cursor:pointer; user-select:none; }
+  table.proctable th.sortable:hover { color:var(--fg); }
+  table.proctable .sortar { font-size:9px; opacity:.8; }
   .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .actions { display:flex; gap:6px; flex-wrap:wrap; }
   .subtabs { display:flex; gap:4px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:4px; margin-bottom:16px; width:fit-content; }
@@ -498,9 +503,10 @@ function renderDash(v) {
   v.innerHTML = `
     <div class="dash">
       <div class="statrow" id="cards"></div>
-      <div class="card procwrap"><h3>进程 · CPU Top</h3><div class="scroll" id="procs"><div class="mut">加载中…</div></div></div>
+      <div class="card procwrap"><div class="scroll" id="procs"><div class="mut">加载中…</div></div></div>
     </div>`;
   const hist = { rx: [], tx: [] };
+  const st = { sort: 'cpu', data: null };
   const refresh = () => {
     api('/api/metrics').then((b) => {
       const m = b.data;
@@ -514,14 +520,38 @@ function renderDash(v) {
         netCard(m.net_rx || 0, m.net_tx || 0, hist),
       ].join('');
     }).catch(() => {});
-    api('/api/procs').then((b) => {
-      const rows = (b.data.by_cpu || []).slice(0, 20);
-      let h = '<table class="proctable"><colgroup><col class="c-name"/><col class="c-pid"/><col class="c-cpu"/><col class="c-mem"/></colgroup><tr><th>进程</th><th class="num">PID</th><th class="num">CPU</th><th class="num">内存</th></tr>';
-      rows.forEach((p) => { h += `<tr><td class="mono nm" title="${esc(p.name)}">${esc(p.name)}</td><td class="num">${p.pid}</td><td class="num">${(p.cpu || 0).toFixed(1)}%</td><td class="num">${fmtBytes(p.mem)}</td></tr>`; });
-      $('procs').innerHTML = h + '</table>';
-    }).catch(() => {});
+    api('/api/procs').then((b) => { st.data = b.data; renderProcs(st); }).catch(() => {});
   };
+  // Clicking the CPU / 内存 header toggles which ranking is shown.
+  $('procs').addEventListener('click', (e) => {
+    const th = e.target.closest('[data-sort]');
+    if (!th) return;
+    st.sort = th.dataset.sort;
+    renderProcs(st);
+  });
   refresh(); S.timer = setInterval(refresh, 2000);
+}
+// Render the process ranking. `st.sort` is 'cpu' | 'mem'; the agent returns both
+// pre-sorted lists (by_cpu / by_mem) so switching is instant + accurate.
+function renderProcs(st) {
+  if (!st.data) return;
+  const rows = ((st.sort === 'mem' ? st.data.by_mem : st.data.by_cpu) || []).slice(0, 30);
+  const arrow = (k) => (st.sort === k ? ' <span class="sortar">▼</span>' : '');
+  let h = '<table class="proctable"><colgroup><col class="c-pid"/><col class="c-name"/><col class="c-user"/><col class="c-time"/><col class="c-cpu"/><col class="c-mem"/></colgroup>' +
+    '<tr><th class="num">PID</th><th>进程</th><th>用户</th><th class="num">TIME</th>' +
+    `<th class="num sortable" data-sort="cpu">CPU${arrow('cpu')}</th>` +
+    `<th class="num sortable" data-sort="mem">内存${arrow('mem')}</th></tr>`;
+  rows.forEach((p) => {
+    h += `<tr><td class="num mono">${p.pid}</td><td class="mono nm" title="${esc(p.name)}">${esc(p.name)}</td><td class="mut nm" title="${esc(p.user || '')}">${esc(p.user || '-')}</td><td class="num mono">${fmtProcTime(p.time)}</td><td class="num">${(p.cpu || 0).toFixed(1)}%</td><td class="num">${fmtBytes(p.mem)}</td></tr>`;
+  });
+  $('procs').innerHTML = h + '</table>';
+}
+// Format cumulative CPU time (seconds) like top: M:SS, or H:MM:SS past an hour.
+function fmtProcTime(sec) {
+  sec = Math.max(0, Math.floor(Number(sec) || 0));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const pad = (n) => (n < 10 ? '0' + n : '' + n);
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 function card(title, big, sub, pct) {
   const bar = pct == null ? '' : `<div class="bar"><i style="width:${Math.min(100, Math.max(0, pct)).toFixed(0)}%"></i></div>`;
@@ -1280,10 +1310,11 @@ function renderNginx(v) {
       $('ngSetup').onclick = () => { $('ngSetup').disabled = true; $('ngSetupJob').classList.remove('hidden'); op('nginx', { op: 'setup', mode: 'docker' }).then((r) => renderJob($('ngSetupJob'), 'nginx', r.op_id, 'nginx:setup', { onDone: () => { toast('初始化完成', 'ok'); setTimeout(() => renderNginx(v), 600); }, onError: () => { $('ngSetup').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ngSetup').disabled = false; }); };
       return;
     }
-    v.innerHTML = `<div class="row" style="margin-bottom:14px"><span class="chip on">运行中</span><span class="sp" style="flex:1"></span><button class="btn sm" id="ngAdd">添加站点</button><button class="btn sec sm" id="ngReload">重载配置</button><button class="btn sec sm" id="ngRef">刷新</button></div><div id="ngSites" class="mut">加载中…</div>`;
+    v.innerHTML = `<div class="row" style="margin-bottom:14px"><span class="chip on">运行中</span><span class="sp" style="flex:1"></span><button class="btn sm" id="ngAdd">添加站点</button><button class="btn sec sm" id="ngCert">SSL 证书</button><button class="btn sec sm" id="ngReload">重载配置</button><button class="btn sec sm" id="ngRef">刷新</button></div><div id="ngSites" class="mut">加载中…</div>`;
     $('ngRef').onclick = () => renderNginx(v);
     $('ngReload').onclick = () => op('nginx', { op: 'reload' }).then(() => toast('已重载', 'ok')).catch((e) => toast(e.message, 'err'));
     $('ngAdd').onclick = () => ngAddSite(() => renderNginx(v));
+    $('ngCert').onclick = () => ngCerts();
     op('nginx', { op: 'list_sites' }).then((d) => {
       const sites = d.sites || [];
       if (!sites.length) { $('ngSites').innerHTML = '<div class="empty">暂无站点</div>'; return; }
@@ -1336,6 +1367,60 @@ function ngAddSite(reload) {
         if (r.op_id) renderJob($('nsJob'), 'nginx', r.op_id, '', { onDone: () => { toast('站点已创建', 'ok'); close(); reload(); }, onError: () => { $('nsGo').disabled = false; } });
         else { toast('站点已创建', 'ok'); close(); reload(); }
       }).catch((e) => { toast(e.message, 'err'); $('nsJob').innerHTML = ''; $('nsGo').disabled = false; });
+    };
+  });
+}
+
+// SSL certificate management: list each site's cert status and (re)issue or
+// replace its certificate (Let's Encrypt / self-signed / manual).
+function ngCerts() {
+  modal('SSL 证书管理', '<div id="ngCertBody" class="mut">加载中…</div>', () => {
+    const load = () => op('nginx', { op: 'list_certs' }).then((d) => {
+      const certs = d.certs || [];
+      if (!certs.length) { $('ngCertBody').innerHTML = '<div class="empty">暂无站点。先在「添加站点」创建站点，再来管理其证书。</div>'; return; }
+      let h = '<table class="optable"><tr><th>域名</th><th>方式</th><th>到期</th><th>状态</th><th class="act">操作</th></tr>';
+      certs.forEach((c) => {
+        const modeLabel = { le: "Let's Encrypt", self: '自签名', manual: '手动' }[c.cert_mode] || (c.ssl ? c.cert_mode : '—');
+        const status = !c.ssl ? '<span class="chip">未启用</span>' : (c.has_cert ? '<span class="chip on">已签发</span>' : '<span class="chip warn">缺失</span>');
+        h += `<tr><td><b>${esc(c.server_name)}</b></td><td class="mut">${esc(modeLabel)}</td><td class="mono" style="font-size:12px">${esc(c.not_after || '-')}</td><td>${status}</td><td class="act"><button class="btn sm" data-id="${esc(c.id)}" data-name="${esc(c.server_name)}">配置证书</button></td></tr>`;
+      });
+      $('ngCertBody').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
+      document.querySelectorAll('#ngCertBody [data-id]').forEach((b) => b.onclick = () => ngSetCert(b.dataset.id, b.dataset.name, load));
+    }).catch((e) => { $('ngCertBody').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+    load();
+  });
+}
+
+// Per-site cert (re)issue dialog.
+function ngSetCert(siteId, name, reload) {
+  modal('配置证书 · ' + name, `
+    <label class="lbl">证书方式</label>
+    <select id="scMode" class="field" style="margin-bottom:14px">
+      <option value="le">Let's Encrypt 自动签发</option>
+      <option value="self">自签名</option>
+      <option value="manual">手动粘贴</option>
+    </select>
+    <div class="hidden" id="scManual"><label class="lbl">证书 PEM</label><textarea id="scCert" class="field" rows="4"></textarea><label class="lbl" style="margin-top:8px">私钥 PEM</label><textarea id="scKey" class="field" rows="4"></textarea></div>
+    <p class="mut" style="font-size:12px;margin-top:6px" id="scHint">Let's Encrypt 需要该域名已解析到本机且 80 端口可被公网访问。</p>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="scGo">应用</button></div>
+    <div class="hidden" id="scJob" style="margin-top:14px"></div>`, (close) => {
+    const sync = () => {
+      const m = $('scMode').value;
+      $('scManual').classList.toggle('hidden', m !== 'manual');
+      $('scHint').textContent = m === 'le'
+        ? "Let's Encrypt 需要该域名已解析到本机且 80 端口可被公网访问。"
+        : m === 'self' ? '自签名证书浏览器会提示不受信任，适合内网/测试。' : '粘贴你已有的证书链和私钥（PEM）。';
+    };
+    $('scMode').onchange = sync; sync();
+    $('scGo').onclick = () => {
+      const mode = $('scMode').value;
+      const body = { op: 'set_cert', site_id: siteId, cert_mode: mode };
+      if (mode === 'manual') { body.cert_pem = $('scCert').value; body.key_pem = $('scKey').value; }
+      $('scGo').disabled = true; $('scJob').classList.remove('hidden'); $('scJob').innerHTML = '<div class="mut">提交中…</div>';
+      op('nginx', body).then((r) => {
+        if (r.op_id) renderJob($('scJob'), 'nginx', r.op_id, '', { onDone: () => { toast('证书已配置', 'ok'); close(); reload(); }, onError: () => { $('scGo').disabled = false; } });
+        else { toast('证书已配置', 'ok'); close(); reload(); }
+      }).catch((e) => { toast(e.message, 'err'); $('scJob').innerHTML = ''; $('scGo').disabled = false; });
     };
   });
 }
@@ -1398,22 +1483,28 @@ function renderMysql(v) {
 function confirmKeepData() { return new Promise((res) => { modal('删除数据库', '<p style="margin:0 0 16px">删除将移除数据库容器。是否保留数据卷（其中的所有库和数据）？</p><div class="row" style="justify-content:flex-end"><button class="btn sec" id="kdCancel">取消</button><button class="btn sec" id="kdKeep">保留数据</button><button class="btn danger" id="kdDrop">连同数据删除</button></div>', (close) => { $('kdCancel').onclick = () => { close(); res(null); }; $('kdKeep').onclick = () => { close(); res(true); }; $('kdDrop').onclick = () => { close(); res(false); }; }); }); }
 
 function myInstall(reload) {
+  // Engine+version merged into one picker; default MariaDB 11.4.
+  const OPTS = [
+    { v: 'mariadb|11.4', label: 'MariaDB 11.4' },
+    { v: 'mariadb|10.11', label: 'MariaDB 10.11' },
+    { v: 'mariadb|10.6', label: 'MariaDB 10.6' },
+    { v: 'mysql|8.4', label: 'MySQL 8.4' },
+    { v: 'mysql|8.0', label: 'MySQL 8.0' },
+    { v: 'mysql|5.7', label: 'MySQL 5.7' },
+  ];
   modal('创建数据库', `
     <div class="formgrid">
-      <div><label class="lbl">引擎</label><select id="miEngine" class="field"><option value="mysql">MySQL</option><option value="mariadb">MariaDB</option></select></div>
-      <div><label class="lbl">版本</label><select id="miVer" class="field"></select></div>
+      <div><label class="lbl">引擎 / 版本</label><select id="miEv" class="field">${OPTS.map((o) => `<option value="${o.v}"${o.v === 'mariadb|11.4' ? ' selected' : ''}>${o.label}</option>`).join('')}</select></div>
       <div><label class="lbl">对外端口（映射 3306）</label><input id="miPort" class="field" type="number" placeholder="3306" /></div>
       <div style="display:flex;align-items:flex-end"><label style="display:flex;gap:7px;align-items:center"><input type="checkbox" id="miExpose" checked /> 对外映射端口</label></div>
     </div>
     <p class="mut" style="font-size:12px;margin-top:10px">root 密码将自动生成，可在「管理」中查看。创建后可在实例中建立多个数据库。</p>
     <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn" id="miGo">创建</button></div>
     <div class="hidden" id="miJob" style="margin-top:14px"></div>`, (close) => {
-    const VERS = { mysql: ['8.4', '8.0', '5.7'], mariadb: ['11.4', '10.11', '10.6'] };
-    const fillVers = () => { const e = $('miEngine').value; $('miVer').innerHTML = VERS[e].map((x) => `<option value="${x}"${x === '8.0' || (e === 'mariadb' && x === '11.4') ? ' selected' : ''}>${x}</option>`).join(''); };
-    $('miEngine').onchange = fillVers; fillVers();
     $('miExpose').onchange = () => { $('miPort').disabled = !$('miExpose').checked; };
     $('miGo').onclick = () => {
-      const body = { op: 'install', engine: $('miEngine').value, version: $('miVer').value, expose: $('miExpose').checked };
+      const [engine, version] = $('miEv').value.split('|');
+      const body = { op: 'install', engine, version, expose: $('miExpose').checked };
       if (body.expose && $('miPort').value) body.port = Number($('miPort').value);
       $('miGo').disabled = true; $('miJob').classList.remove('hidden');
       op('mysql', body).then((r) => renderJob($('miJob'), 'mysql', r.op_id, 'mysql:install', { onDone: () => { toast('数据库已创建', 'ok'); close(); reload(); }, onError: () => { $('miGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('miGo').disabled = false; });
@@ -1423,10 +1514,10 @@ function myInstall(reload) {
 
 function myPanel(host, id, reload) {
   host.innerHTML = `
-    <div class="subtabs" id="myTabs"><button data-t="info" class="on">数据库</button><button data-t="users">账号</button><button data-t="query">SQL</button><button data-t="more">设置</button></div>
+    <div class="subtabs" id="myTabs"><button data-t="info" class="on">数据库</button><button data-t="users">账号</button><button data-t="more">设置</button></div>
     <div id="myMBody"></div>`;
   const tabs = host.querySelector('#myTabs');
-  const sel = (t) => { tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === t)); if (t === 'info') myInfo(id); else if (t === 'users') myUsers(id); else if (t === 'query') myQuery(id); else myMore(id, () => {}, reload); };
+  const sel = (t) => { tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === t)); if (t === 'info') myInfo(id); else if (t === 'users') myUsers(id); else myMore(id, () => {}, reload); };
   tabs.querySelectorAll('button').forEach((b) => b.onclick = () => sel(b.dataset.t));
   sel('info');
 }
@@ -1462,21 +1553,7 @@ function myUsers(id) {
     document.querySelectorAll('#myUList [data-u]').forEach((btn) => btn.onclick = async () => { if (await confirmDanger(`删除账号 ${btn.dataset.u}@${btn.dataset.h}？`)) op('mysql', { op: 'drop_user', inst: id, username: btn.dataset.u, host: btn.dataset.h }).then(() => { toast('已删除', 'ok'); myUsers(id); }).catch((e) => toast(e.message, 'err')); });
   }).catch((e) => { $('myUList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
-function myQuery(id) {
-  const b = $('myMBody');
-  b.innerHTML = `<label class="lbl">SQL 语句</label><textarea id="sqlIn" class="field mono" rows="4" placeholder="SELECT * FROM mysql.user LIMIT 10;"></textarea><div class="row" style="justify-content:flex-end;margin:10px 0"><button class="btn" id="sqlGo">执行</button></div><div id="sqlOut"></div>`;
-  $('sqlGo').onclick = () => {
-    const sql = $('sqlIn').value.trim(); if (!sql) return;
-    $('sqlOut').innerHTML = '<div class="mut">执行中…</div>';
-    op('mysql', { op: 'query', inst: id, sql }).then((r) => {
-      if (!r.columns || !r.columns.length) { $('sqlOut').innerHTML = `<div class="ok">${esc(r.note || '执行成功')}</div>`; return; }
-      let h = '<div style="overflow:auto"><table><tr>' + r.columns.map((c) => `<th>${esc(c)}</th>`).join('') + '</tr>';
-      (r.rows || []).forEach((row) => { h += '<tr>' + row.map((cell) => `<td class="mono" style="font-size:12px">${esc(cell == null ? 'NULL' : cell)}</td>`).join('') + '</tr>'; });
-      h += '</table></div>' + `<div class="mut" style="margin-top:8px">${r.row_count != null ? r.row_count + ' 行' : ''}${r.truncated ? ' · 结果已截断' : ''}</div>`;
-      $('sqlOut').innerHTML = h;
-    }).catch((e) => { $('sqlOut').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
-  };
-}
+function myQuery() { /* SQL runner removed per product decision. */ }
 function myMore(id, close, reload) {
   const b = $('myMBody');
   b.innerHTML = `

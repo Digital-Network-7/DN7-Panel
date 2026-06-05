@@ -26,11 +26,15 @@ use crate::config::AgentConfig;
 struct ProcRow {
     pid: u32,
     name: String,
+    /// Owning user name (resolved from the uid; falls back to the uid number).
+    user: String,
     /// CPU usage percent across all cores summed (sysinfo convention: 100 = one
     /// full core). Rounded to 1 decimal.
     cpu: f64,
     /// Resident memory in bytes.
     mem: u64,
+    /// Cumulative CPU time used by the process, in seconds (like top's TIME).
+    time: i64,
 }
 
 /// Connect to the backend procs relay and serve the protocol until either side
@@ -105,14 +109,32 @@ async fn snapshot(sys: &mut System, limit: usize) -> Value {
 
     let total_mem = sys.total_memory();
 
+    // Resolve uid -> name once (rebuilding the user DB per row is expensive).
+    let users = sysinfo::Users::new_with_refreshed_list();
+
     let mut rows: Vec<ProcRow> = sys
         .processes()
         .values()
+        // Exclude threads: on Linux sysinfo lists a process's threads as
+        // separate entries with the SAME name and (near) identical cpu/mem,
+        // which is what produced the "duplicate" rows. Keep only real
+        // processes (thread_kind() == None).
+        .filter(|p| p.thread_kind().is_none())
         .map(|p| ProcRow {
             pid: p.pid().as_u32(),
             name: proc_name(p),
+            user: p
+                .user_id()
+                .map(|uid| {
+                    users
+                        .get_user_by_id(uid)
+                        .map(|u| u.name().to_string())
+                        .unwrap_or_else(|| uid.to_string())
+                })
+                .unwrap_or_default(),
             cpu: ((p.cpu_usage() as f64) * 10.0).round() / 10.0,
             mem: p.memory(),
+            time: p.run_time() as i64,
         })
         .collect();
 
