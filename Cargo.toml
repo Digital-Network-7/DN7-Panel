@@ -26,6 +26,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bollard = "0.17"
 # Tar streaming for container file transfer via the docker archive API.
 tar = "0.4"
+# Pure-Rust ZIP extraction for static-site uploads (miniz_oxide deflate backend
+# — no zlib C dependency, keeps the musl-static build intact).
+zip = { version = "2", default-features = false, features = ["deflate"] }
 # Pure-Rust certificate generation (self-signed) — replaces the openssl CLI.
 rcgen = "0.13"
 # Pure-Rust ACME (Let's Encrypt) client — replaces acme.sh + curl/wget.

@@ -165,9 +165,13 @@
   table.optable td.act .actions { flex-wrap:nowrap; justify-content:flex-end; }
   .tablewrap { overflow-x:auto; }
   /* Fixed-layout process table: stable columns that don't reflow each refresh. */
-  table.proctable { table-layout:fixed; }
-  /* Sticky header so the columns stay visible while the list scrolls. */
-  table.proctable th { position:sticky; top:0; z-index:2; background:var(--panel-solid); }
+  table.proctable { table-layout:fixed; border-collapse:separate; border-spacing:0; }
+  /* Sticky header that stays put while the list scrolls. With separated borders
+     the header travels cleanly (no row line peeking through / jitter); a
+     box-shadow draws the divider instead of a collapsed border. */
+  table.proctable th { position:sticky; top:0; z-index:2; background:var(--panel-solid);
+    border-bottom:none; box-shadow:inset 0 -1px 0 var(--line); }
+  table.proctable td { border-bottom:1px solid var(--line); }
   table.proctable col.c-pid { width:68px; }
   table.proctable col.c-user { width:96px; }
   table.proctable col.c-time { width:84px; }
@@ -185,13 +189,18 @@
   pre.out { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:13px; max-height:50vh; overflow:auto; white-space:pre-wrap; word-break:break-all; font-size:12.5px; }
   .warn { background:rgba(251,191,36,0.08); border:1px solid rgba(251,191,36,0.3); color:var(--warn); padding:11px 13px; border-radius:11px; font-size:12.5px; margin-bottom:16px; }
   .empty { color:var(--mut); text-align:center; padding:30px; font-size:13px; }
-  /* Loading spinner + skeleton — friendlier than a bare "加载中…" string. */
+  /* Loading skeleton — friendlier than a bare spinner/"加载中…" string. */
   .loading { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:36px; color:var(--mut); font-size:12.5px; }
   .spin { width:26px; height:26px; border-radius:50%; border:2.5px solid var(--line2); border-top-color:var(--cy); animation:spin360 .8s linear infinite; }
   @keyframes spin360 { to { transform:rotate(360deg); } }
-  .skel { background:linear-gradient(90deg,var(--hov) 25%,var(--line) 37%,var(--hov) 63%); background-size:400% 100%; animation:shimmer 1.3s ease-in-out infinite; border-radius:7px; }
+  .skel { background:linear-gradient(90deg,var(--hov) 25%,var(--line2) 37%,var(--hov) 63%); background-size:400% 100%; animation:shimmer 1.3s ease-in-out infinite; border-radius:7px; }
   @keyframes shimmer { 0%{background-position:100% 0;} 100%{background-position:0 0;} }
   .skel-row { height:38px; margin:8px 0; }
+  /* A list of shimmer rows used as the default loading state. */
+  .skel-list { padding:14px 4px; }
+  .skel-list .skel { height:16px; margin:11px 0; }
+  .skel-list .skel:nth-child(3n+1){ width:42%; } .skel-list .skel:nth-child(3n+2){ width:88%; } .skel-list .skel:nth-child(3n){ width:64%; }
+  .skel-cap { text-align:center; color:var(--mut); font-size:12px; padding:4px 0 2px; }
   .formgrid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
   .formgrid .full { grid-column:1 / -1; }
   @media (max-width:680px){ .formgrid{grid-template-columns:1fr;} }
@@ -203,6 +212,33 @@
   .kvrow .rm { flex:0 0 auto; width:30px; height:30px; border-radius:8px; border:1px solid var(--line); background:var(--hov); color:var(--err); cursor:pointer; font-size:16px; line-height:1; }
   .kvrow .ro { flex:0 0 auto; display:flex; align-items:center; gap:5px; font-size:12px; color:var(--mut); white-space:nowrap; }
   .kvadd { align-self:flex-start; font-size:12.5px; color:var(--cy); cursor:pointer; background:none; border:none; padding:2px 0; }
+  /* Toggle switch (single on/off control) — used for site options. */
+  .switch { display:flex; align-items:center; gap:11px; padding:11px 0; }
+  .switch .swbox { position:relative; width:40px; height:22px; flex:0 0 auto; border-radius:99px; background:var(--hov); border:1px solid var(--line2); transition:background .18s; cursor:pointer; }
+  .switch .swbox::after { content:''; position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:var(--mut); transition:transform .18s, background .18s; }
+  .switch input { position:absolute; opacity:0; width:0; height:0; }
+  .switch input:checked + .swbox { background:linear-gradient(135deg,rgba(34,211,238,.6),rgba(139,92,246,.6)); border-color:transparent; }
+  .switch input:checked + .swbox::after { transform:translateX(18px); background:#fff; }
+  .switch .swtxt { display:flex; flex-direction:column; gap:1px; }
+  .switch .swtxt b { font-size:13px; font-weight:550; }
+  .switch .swtxt span { font-size:11.5px; color:var(--mut); }
+  /* Form tabs (segmented control inside a modal). */
+  .ftabs { display:flex; gap:4px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:4px; margin-bottom:16px; }
+  .ftabs button { flex:1; background:none; border:none; color:var(--mut); padding:8px; border-radius:7px; cursor:pointer; font-size:13px; }
+  .ftabs button.on { background:linear-gradient(135deg,rgba(59,130,246,.3),rgba(139,92,246,.3)); color:#fff; }
+  .ftab-pane { display:none; } .ftab-pane.on { display:block; }
+  /* Path-rule cards (NPM-style custom locations). */
+  .locrule { border:1px solid var(--line); border-radius:11px; padding:12px; margin-bottom:10px; background:var(--panel2); }
+  .locrule .lr-head { display:flex; align-items:center; gap:8px; margin-bottom:9px; }
+  .locrule .lr-head .field { flex:1; }
+  .locrule .lr-row { display:flex; align-items:center; gap:8px; }
+  .locrule .lr-row .field.proto { flex:0 0 90px; }
+  .locadd { font-size:12.5px; color:var(--cy); cursor:pointer; background:none; border:none; padding:4px 0; }
+  /* Static-upload dropzone. */
+  .dropz { border:1.5px dashed var(--line2); border-radius:12px; padding:22px; text-align:center; color:var(--mut); font-size:13px; cursor:pointer; transition:border-color .15s,background .15s; }
+  .dropz:hover, .dropz.drag { border-color:var(--cy); background:var(--hov); }
+  .dropz b { color:var(--cy); }
+  .uplist { margin-top:10px; font-size:12px; color:var(--mut); max-height:130px; overflow-y:auto; }
   /* Searchable image picker (create-container form). */
   .imgpick { position:relative; }
   .imgpop { position:absolute; left:0; right:0; top:calc(100% + 4px); z-index:20; max-height:240px; overflow-y:auto;
@@ -334,9 +370,16 @@ function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({
 function $(id) { return document.getElementById(id); }
 function el(tag, attrs, html) { const e = document.createElement(tag); if (attrs) for (const k in attrs) e.setAttribute(k, attrs[k]); if (html != null) e.innerHTML = html; return e; }
 
-// A friendly loading indicator (spinner + optional caption) reused everywhere
-// in place of a bare "加载中…" string.
-function loading(text) { return `<div class="loading"><div class="spin"></div>${text ? `<div>${esc(text)}</div>` : ''}</div>`; }
+// A friendly skeleton loading indicator (shimmer rows + optional caption),
+// reused everywhere in place of a bare spinner / "加载中…" string.
+function loading(text, rows) {
+  const n = rows || 4;
+  let s = '<div class="skel-list">';
+  for (let i = 0; i < n; i++) s += '<div class="skel"></div>';
+  s += '</div>';
+  if (text) s += `<div class="skel-cap">${esc(text)}</div>`;
+  return s;
+}
 
 // Pure-JS SHA-256 (hex). window.crypto.subtle is unavailable on insecure
 // origins (plain HTTP), so we can't rely on it for the login proof.
@@ -1430,8 +1473,10 @@ function renderNginx(v) {
       if (!sites.length) { $('ngSites').innerHTML = '<div class="empty">暂无站点</div>'; return; }
       let h = '<table class="optable"><tr><th>域名</th><th>类型</th><th>目标</th><th>SSL</th><th class="act">操作</th></tr>';
       sites.forEach((s) => {
-        const target = s.kind === 'proxy_host' ? s.target_url : s.kind === 'proxy_container' ? `${s.container}:${s.container_port}` : s.root;
-        h += `<tr><td><b>${esc(s.server_name)}</b></td><td class="mut">${esc(kindLabel(s.kind))}</td><td class="mono" style="font-size:12px">${esc(target)}</td><td>${s.ssl ? '<span class="chip on">是</span>' : '<span class="chip">否</span>'}</td><td class="act"><button class="btn sm danger" data-rm="${esc(s.id)}">删除</button></td></tr>`;
+        const sch = s.scheme === 'https' ? 'https://' : (s.kind === 'static' ? '' : 'http://');
+        let target = s.kind === 'proxy_host' ? esc(sch + s.target_url) : s.kind === 'proxy_container' ? esc(`${sch}${s.container}:${s.container_port}`) : esc('/' + s.root);
+        if (s.locations && s.locations.length) target += ` <span class="mut">+${s.locations.length} 规则</span>`;
+        h += `<tr><td><b>${esc(s.server_name)}</b></td><td class="mut">${esc(kindLabel(s.kind))}</td><td class="mono" style="font-size:12px">${target}</td><td>${s.ssl ? '<span class="chip on">是</span>' : '<span class="chip">否</span>'}</td><td class="act"><button class="btn sm danger" data-rm="${esc(s.id)}">删除</button></td></tr>`;
       });
       $('ngSites').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
       document.querySelectorAll('#ngSites [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger('删除该站点？')) op('nginx', { op: 'remove_site', site_id: b.dataset.rm }).then(() => { toast('已删除', 'ok'); renderNginx(v); }).catch((e) => toast(e.message, 'err')); });
@@ -1442,17 +1487,50 @@ function kindLabel(k) { return { proxy_host: '反代主机', proxy_container: '�
 
 function ngAddSite(reload) {
   modal('添加站点', `
-    <div class="formgrid">
-      <div class="full"><label class="lbl">域名（server_name）</label><input id="nsName" class="field" placeholder="example.com" /></div>
-      <div class="full"><label class="lbl">类型</label><select id="nsKind" class="field"><option value="proxy_host">反向代理到主机/地址</option><option value="proxy_container">反向代理到容器</option><option value="static">静态站点</option></select></div>
-      <div class="full" id="nsKindFields"></div>
-      <div class="full"><label style="display:flex;gap:7px;align-items:center"><input type="checkbox" id="nsSsl" /> 启用 HTTPS</label></div>
-      <div class="full hidden" id="nsCertWrap"><label class="lbl">证书方式</label><select id="nsCert" class="field"><option value="named">引用证书库</option><option value="le">Let's Encrypt 自动签发</option><option value="self">自签名</option><option value="manual">手动粘贴</option></select></div>
-      <div class="full hidden" id="nsNamedWrap"><label class="lbl">选择证书</label><select id="nsNamed" class="field"></select></div>
-      <div class="full hidden" id="nsManual"><label class="lbl">证书 PEM</label><textarea id="nsCertPem" class="field" rows="3"></textarea><label class="lbl" style="margin-top:8px">私钥 PEM</label><textarea id="nsKeyPem" class="field" rows="3"></textarea></div>
+    <div class="ftabs" id="nsTabs">
+      <button class="on" data-t="detail">详情</button>
+      <button data-t="rules">自定义路径规则</button>
+      <button data-t="ssl">SSL</button>
+    </div>
+    <!-- Tab: 详情 -->
+    <div class="ftab-pane on" data-p="detail">
+      <div class="formgrid">
+        <div class="full"><label class="lbl">域名（server_name）</label><input id="nsName" class="field" placeholder="example.com" /></div>
+        <div class="full"><label class="lbl">类型</label><select id="nsKind" class="field">
+          <option value="proxy_host">反向代理到宿主机</option>
+          <option value="proxy_container">反向代理到容器</option>
+          <option value="static">静态文件</option>
+        </select></div>
+        <div class="full" id="nsKindFields"></div>
+      </div>
+      <div style="margin-top:8px">
+        <label class="switch"><input type="checkbox" id="nsCache" /><span class="swbox"></span><span class="swtxt"><b>缓存资源</b><span>对静态资源设置长期缓存</span></span></label>
+        <label class="switch"><input type="checkbox" id="nsBlock" /><span class="swbox"></span><span class="swtxt"><b>阻止常见攻击</b><span>拦截常见的恶意请求特征</span></span></label>
+        <label class="switch"><input type="checkbox" id="nsWs" checked /><span class="swbox"></span><span class="swtxt"><b>Websockets 支持</b><span>转发 Upgrade/Connection 头</span></span></label>
+      </div>
+    </div>
+    <!-- Tab: 自定义路径规则 -->
+    <div class="ftab-pane" data-p="rules">
+      <p class="mut" style="font-size:12.5px;margin:0 0 12px">为特定路径前缀设置独立的转发目标（类似 Nginx Proxy Manager 的自定义 location）。</p>
+      <div id="nsLocs"></div>
+      <button type="button" class="locadd" id="nsLocAdd">+ 添加路径规则</button>
+    </div>
+    <!-- Tab: SSL -->
+    <div class="ftab-pane" data-p="ssl">
+      <label class="switch"><input type="checkbox" id="nsSsl" /><span class="swbox"></span><span class="swtxt"><b>启用 HTTPS</b><span>为该站点配置 SSL 证书</span></span></label>
+      <div class="hidden" id="nsCertWrap" style="margin-top:12px"><label class="lbl">证书方式</label><select id="nsCert" class="field"><option value="named">引用证书库</option><option value="le">Let's Encrypt 自动签发</option><option value="self">自签名</option><option value="manual">手动粘贴</option></select></div>
+      <div class="full hidden" id="nsNamedWrap" style="margin-top:10px"><label class="lbl">选择证书</label><select id="nsNamed" class="field"></select></div>
+      <div class="full hidden" id="nsManual" style="margin-top:10px"><label class="lbl">证书 PEM</label><textarea id="nsCertPem" class="field" rows="3"></textarea><label class="lbl" style="margin-top:8px">私钥 PEM</label><textarea id="nsKeyPem" class="field" rows="3"></textarea></div>
     </div>
     <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="nsGo">创建</button></div>
     <div class="hidden" id="nsJob" style="margin-top:14px"></div>`, (close) => {
+    // Tab switching.
+    document.querySelectorAll('#nsTabs button').forEach((b) => b.onclick = () => {
+      document.querySelectorAll('#nsTabs button').forEach((x) => x.className = x === b ? 'on' : '');
+      document.querySelectorAll('.ftab-pane').forEach((p) => p.className = 'ftab-pane' + (p.dataset.p === b.dataset.t ? ' on' : ''));
+    });
+
+    // SSL cert library options.
     let named = [];
     op('nginx', { op: 'list_named_certs' }).then((d) => {
       named = (d.certs || []).filter((c) => c.has_cert);
@@ -1460,15 +1538,64 @@ function ngAddSite(reload) {
         ? named.map((c) => `<option value="${esc(c.name)}">${esc(c.name)}${c.domain ? '（' + esc(c.domain) + '）' : ''}</option>`).join('')
         : '<option value="">证书库为空，请先在「SSL 证书」创建</option>';
     }).catch(() => {});
+
+    // Available containers (for the proxy_container picker).
+    let containers = [];
+    op('nginx', { op: 'list_containers' }).then((d) => { containers = d.containers || []; if ($('nsKind').value === 'proxy_container') kindFields(); }).catch(() => {});
+
+    // Static-upload state: collected files (zip or folder) staged client-side,
+    // uploaded after the site is created (so the webroot name is known).
+    const staticUpload = { mode: null, zip: null, files: [] };
+
     const kindFields = () => {
       const k = $('nsKind').value;
-      $('nsKindFields').innerHTML = k === 'proxy_host'
-        ? '<label class="lbl">目标地址（host[:port]）</label><input id="nsTarget" class="field" placeholder="127.0.0.1:3000" />'
-        : k === 'proxy_container'
-        ? '<div class="formgrid"><div><label class="lbl">容器名</label><input id="nsCtn" class="field" placeholder="teaops-webapp" /></div><div><label class="lbl">容器端口</label><input id="nsCtnPort" class="field" type="number" placeholder="80" /></div></div>'
-        : '<label class="lbl">静态目录名（webroot 下子目录）</label><input id="nsRoot" class="field" placeholder="mysite" />';
+      if (k === 'proxy_host') {
+        $('nsKindFields').innerHTML = '<div class="formgrid"><div><label class="lbl">协议</label><select id="nsScheme" class="field"><option value="http">HTTP</option><option value="https">HTTPS</option></select></div><div><label class="lbl">宿主机端口</label><input id="nsTarget" class="field" placeholder="3000 或 127.0.0.1:3000" /></div></div>';
+      } else if (k === 'proxy_container') {
+        const opts = containers.length
+          ? containers.map((c) => `<option value="${esc(c.name)}">${esc(c.name)}${c.ports ? ' · ' + esc(c.ports) : ''}</option>`).join('')
+          : '<option value="">未发现运行中的容器</option>';
+        $('nsKindFields').innerHTML = `<div class="formgrid"><div><label class="lbl">协议</label><select id="nsScheme" class="field"><option value="http">HTTP</option><option value="https">HTTPS</option></select></div><div><label class="lbl">容器</label><select id="nsCtn" class="field">${opts}</select></div><div><label class="lbl">容器端口</label><input id="nsCtnPort" class="field" type="number" placeholder="80" /></div></div>`;
+      } else {
+        $('nsKindFields').innerHTML = `
+          <label class="lbl">静态站点目录名</label><input id="nsRoot" class="field" placeholder="mysite" style="margin-bottom:10px" />
+          <label class="lbl">上传内容</label>
+          <div class="dropz" id="nsDrop"><b>点击选择</b> ZIP 压缩包，或拖拽文件夹到此处<br/><span style="font-size:11.5px">支持上传 .zip，或选择整个文件夹逐文件上传</span></div>
+          <input type="file" id="nsZip" accept=".zip" class="hidden" />
+          <input type="file" id="nsDir" webkitdirectory multiple class="hidden" />
+          <div class="row" style="gap:8px;margin-top:8px"><button type="button" class="btn sm sec" id="nsPickZip">选择 ZIP</button><button type="button" class="btn sm sec" id="nsPickDir">选择文件夹</button></div>
+          <div class="uplist" id="nsUpList"></div>`;
+        wireStaticPickers();
+      }
+    };
+    const wireStaticPickers = () => {
+      const drop = $('nsDrop');
+      $('nsPickZip').onclick = () => $('nsZip').click();
+      $('nsPickDir').onclick = () => $('nsDir').click();
+      drop.onclick = () => $('nsZip').click();
+      $('nsZip').onchange = (e) => { const f = e.target.files[0]; if (!f) return; staticUpload.mode = 'zip'; staticUpload.zip = f; staticUpload.files = []; $('nsUpList').innerHTML = `已选择 ZIP：${esc(f.name)}（${fmtBytes(f.size)}）`; };
+      $('nsDir').onchange = (e) => { const fs = Array.from(e.target.files || []); if (!fs.length) return; staticUpload.mode = 'dir'; staticUpload.zip = null; staticUpload.files = fs; $('nsUpList').innerHTML = `已选择 ${fs.length} 个文件：<br/>` + fs.slice(0, 20).map((f) => esc(f.webkitRelativePath || f.name)).join('<br/>') + (fs.length > 20 ? '<br/>…' : ''); };
+      ['dragover', 'dragenter'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('drag'); }));
+      ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('drag'); }));
+      drop.addEventListener('drop', (e) => { const f = (e.dataTransfer.files || [])[0]; if (f && /\.zip$/i.test(f.name)) { staticUpload.mode = 'zip'; staticUpload.zip = f; staticUpload.files = []; $('nsUpList').innerHTML = `已选择 ZIP：${esc(f.name)}（${fmtBytes(f.size)}）`; } });
     };
     $('nsKind').onchange = kindFields; kindFields();
+
+    // Path-rule rows.
+    const locRow = (v) => {
+      v = v || {};
+      const wrap = el('div', { class: 'locrule' });
+      wrap.innerHTML = `
+        <div class="lr-head"><input class="field lr-path" placeholder="/api" value="${esc(v.path || '')}" /><button type="button" class="rm">×</button></div>
+        <div class="lr-row"><select class="field proto lr-scheme"><option value="http">HTTP</option><option value="https">HTTPS</option></select><input class="field lr-target" placeholder="127.0.0.1:3001" value="${esc(v.target || '')}" /></div>
+        <label class="switch" style="padding:8px 0 2px"><input type="checkbox" class="lr-ws"${v.websockets ? ' checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>Websockets 支持</b></span></label>`;
+      if (v.scheme === 'https') wrap.querySelector('.lr-scheme').value = 'https';
+      wrap.querySelector('.rm').onclick = () => wrap.remove();
+      $('nsLocs').appendChild(wrap);
+    };
+    $('nsLocAdd').onclick = () => locRow();
+
+    // SSL toggles.
     $('nsSsl').onchange = () => { $('nsCertWrap').classList.toggle('hidden', !$('nsSsl').checked); certFields(); };
     const certFields = () => {
       const on = $('nsSsl').checked;
@@ -1477,25 +1604,63 @@ function ngAddSite(reload) {
       $('nsNamedWrap').classList.toggle('hidden', !(on && m === 'named'));
     };
     $('nsCert') && ($('nsCert').onchange = certFields);
-    $('nsGo').onclick = () => {
+
+    const collectLocs = () => Array.from($('nsLocs').querySelectorAll('.locrule')).map((w) => ({
+      path: w.querySelector('.lr-path').value.trim(),
+      scheme: w.querySelector('.lr-scheme').value,
+      target: w.querySelector('.lr-target').value.trim(),
+      websockets: w.querySelector('.lr-ws').checked,
+    })).filter((l) => l.path || l.target);
+
+    $('nsGo').onclick = async () => {
       const k = $('nsKind').value;
-      const body = { op: 'add_site', server_name: $('nsName').value.trim(), kind: k, ssl: $('nsSsl').checked };
+      const body = { op: 'add_site', server_name: $('nsName').value.trim(), kind: k, ssl: $('nsSsl').checked, cache: $('nsCache').checked, block_attacks: $('nsBlock').checked, websockets: $('nsWs').checked, locations: collectLocs() };
       if (!body.server_name) return toast('请输入域名', 'err');
-      if (k === 'proxy_host') body.target_url = $('nsTarget').value.trim();
-      else if (k === 'proxy_container') { body.container = $('nsCtn').value.trim(); body.container_port = Number($('nsCtnPort').value); }
-      else body.root = $('nsRoot').value.trim();
+      if (k === 'proxy_host') { body.scheme = $('nsScheme').value; const p = $('nsTarget').value.trim(); if (!p) return toast('请输入宿主机端口', 'err'); body.target_url = /^\d+$/.test(p) ? '127.0.0.1:' + p : p; }
+      else if (k === 'proxy_container') { body.scheme = $('nsScheme').value; body.container = $('nsCtn').value.trim(); body.container_port = Number($('nsCtnPort').value); if (!body.container) return toast('请选择容器', 'err'); }
+      else { body.root = $('nsRoot').value.trim(); if (!body.root) return toast('请输入静态站点目录名', 'err'); if (!staticUpload.mode) return toast('请选择要上传的 ZIP 或文件夹', 'err'); }
       if (body.ssl) {
         body.cert_mode = $('nsCert').value;
         if (body.cert_mode === 'manual') { body.cert_pem = $('nsCertPem').value; body.key_pem = $('nsKeyPem').value; }
         else if (body.cert_mode === 'named') { body.cert_name = $('nsNamed').value; if (!body.cert_name) return toast('请先在 SSL 证书库创建证书', 'err'); }
       }
       $('nsGo').disabled = true; $('nsJob').classList.remove('hidden'); $('nsJob').innerHTML = '<div class="mut">提交中…</div>';
+      // For static sites, upload content first so the webroot exists before the
+      // site is generated (nginx -t needs the root to exist for some checks).
+      try {
+        if (k === 'static') { $('nsJob').innerHTML = '<div class="mut">上传站点内容…</div>'; await uploadStatic(body.root, staticUpload); }
+      } catch (e) { toast('上传失败：' + e.message, 'err'); $('nsJob').innerHTML = ''; $('nsGo').disabled = false; return; }
       op('nginx', body).then((r) => {
         if (r.op_id) renderJob($('nsJob'), 'nginx', r.op_id, '', { onDone: () => { toast('站点已创建', 'ok'); close(); reload(); }, onError: () => { $('nsGo').disabled = false; } });
         else { toast('站点已创建', 'ok'); close(); reload(); }
       }).catch((e) => { toast(e.message, 'err'); $('nsJob').innerHTML = ''; $('nsGo').disabled = false; });
     };
   });
+}
+
+// Upload staged static content to a site's webroot. ZIP → one extract request;
+// folder → per-file requests (first file clears the webroot).
+async function uploadStatic(root, su) {
+  if (su.mode === 'zip' && su.zip) {
+    const qs = `root=${encodeURIComponent(root)}&mode=zip&clear=1`;
+    const r = await fetch('/api/nginx/static-upload?' + qs, { method: 'POST', headers: { 'Authorization': 'Bearer ' + S.token }, body: su.zip });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok || b.ok === false) throw new Error(b.error || '上传失败');
+    return;
+  }
+  if (su.mode === 'dir' && su.files.length) {
+    for (let i = 0; i < su.files.length; i++) {
+      const f = su.files[i];
+      // Strip the leading top-level folder so files land at the webroot root.
+      let rel = f.webkitRelativePath || f.name;
+      const slash = rel.indexOf('/');
+      if (slash > 0) rel = rel.slice(slash + 1);
+      const qs = `root=${encodeURIComponent(root)}&mode=file&rel=${encodeURIComponent(rel)}` + (i === 0 ? '&clear=1' : '');
+      const r = await fetch('/api/nginx/static-upload?' + qs, { method: 'POST', headers: { 'Authorization': 'Bearer ' + S.token }, body: f });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok || b.ok === false) throw new Error(b.error || ('上传失败：' + rel));
+    }
+  }
 }
 
 // SSL certificate management. Two sections:

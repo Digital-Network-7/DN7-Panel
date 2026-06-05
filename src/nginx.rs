@@ -85,6 +85,17 @@ struct Req {
     key_pem: Option<String>, // manual
     #[serde(default)]
     cert_name: Option<String>, // standalone cert name (create_cert / reference)
+    // New add-site fields (NPM-style options + custom path rules).
+    #[serde(default)]
+    scheme: Option<String>, // proxy upstream scheme "http"|"https"
+    #[serde(default)]
+    cache: Option<bool>,
+    #[serde(default)]
+    block_attacks: Option<bool>,
+    #[serde(default)]
+    websockets: Option<bool>,
+    #[serde(default)]
+    locations: Option<Vec<Location>>, // custom path rules
 }
 
 /// A managed site, persisted in the manifest and regenerated into one conf file.
@@ -109,6 +120,38 @@ struct Site {
     /// instead of a per-site `<id>.crt/.key`. Empty means per-site (legacy).
     #[serde(default)]
     cert_name: String,
+    /// Upstream scheme for proxy kinds ("http" | "https"). Empty == http.
+    #[serde(default)]
+    scheme: String,
+    /// Behaviour toggles (NPM-style): long-cache static assets, block common
+    /// exploit patterns, and enable WebSocket upgrade headers on proxies.
+    #[serde(default)]
+    cache: bool,
+    #[serde(default)]
+    block_attacks: bool,
+    #[serde(default)]
+    websockets: bool,
+    /// Extra path rules layered on top of the main location (NPM "custom
+    /// locations"): each forwards a path prefix to a host[:port].
+    #[serde(default)]
+    locations: Vec<Location>,
+}
+
+/// A custom path rule (NPM-style "custom location"): forward a path prefix to a
+/// host[:port] over http/https. Form-driven (no raw nginx config).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct Location {
+    /// The location prefix, e.g. "/api". Must start with '/'.
+    path: String,
+    /// Upstream scheme: "http" | "https". Empty == http.
+    #[serde(default)]
+    scheme: String,
+    /// Upstream host[:port].
+    #[serde(default)]
+    target: String,
+    /// Enable WebSocket upgrade headers for this path.
+    #[serde(default)]
+    websockets: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +380,122 @@ fn named_crt_file(lo: &Layout, name: &str) -> std::path::PathBuf {
 }
 fn named_key_file(lo: &Layout, name: &str) -> std::path::PathBuf {
     lo.cert_store.join(format!("cert-{name}.key"))
+}
+
+// ---------------------------------------------------------------------------
+// Static-site content upload (ZIP extraction / per-file), used by the web
+// console's "static" site type. Writes into <www_store>/<root>/.
+// ---------------------------------------------------------------------------
+
+/// Public entrypoint for the web console's static-site upload. `mode` is "zip"
+/// (extract `body` as a ZIP archive) or "file" (write `body` as a single file
+/// at `rel` within the webroot). `clear` wipes the webroot first. Returns the
+/// number of files written.
+pub async fn web_static_upload(
+    root: &str,
+    mode: &str,
+    rel: Option<&str>,
+    clear: bool,
+    body: &[u8],
+) -> Result<usize> {
+    let lo = layout()?;
+    if !valid_root_segment(root) {
+        return Err(anyhow!("站点目录名不合法"));
+    }
+    let dest = lo.www_store.join(root);
+    std::fs::create_dir_all(&dest)?;
+    if clear {
+        // Wipe contents but keep the directory itself.
+        if let Ok(entries) = std::fs::read_dir(&dest) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    let _ = std::fs::remove_dir_all(&p);
+                } else {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+        }
+    }
+    match mode {
+        "zip" => extract_zip(body, &dest),
+        "file" => {
+            let rel = rel.ok_or_else(|| anyhow!("缺少文件路径"))?;
+            let safe = sanitize_rel(rel).ok_or_else(|| anyhow!("文件路径不合法"))?;
+            let target = dest.join(&safe);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&target, body)?;
+            Ok(1)
+        }
+        _ => Err(anyhow!("未知的上传方式")),
+    }
+}
+
+/// Sanitize a relative path from an upload: reject absolute paths, `..`
+/// traversal, and empty/oversized names. Returns a safe relative PathBuf.
+fn sanitize_rel(rel: &str) -> Option<std::path::PathBuf> {
+    let rel = rel.trim().replace('\\', "/");
+    if rel.is_empty() || rel.len() > 1024 {
+        return None;
+    }
+    let mut out = std::path::PathBuf::new();
+    for seg in rel.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg == ".." {
+            return None; // no traversal
+        }
+        // Reject NUL and control chars; allow normal filename characters.
+        if seg.chars().any(|c| c.is_control()) {
+            return None;
+        }
+        out.push(seg);
+    }
+    if out.as_os_str().is_empty() {
+        return None;
+    }
+    Some(out)
+}
+
+/// Extract a ZIP archive (pure-Rust `zip` crate) into `dest`, guarding against
+/// path traversal. Returns the number of files written.
+fn extract_zip(body: &[u8], dest: &std::path::Path) -> Result<usize> {
+    let reader = std::io::Cursor::new(body);
+    let mut zip = zip::ZipArchive::new(reader).map_err(|e| anyhow!("无法读取 ZIP：{e}"))?;
+    let mut count = 0usize;
+    for i in 0..zip.len() {
+        let mut entry = zip
+            .by_index(i)
+            .map_err(|e| anyhow!("读取 ZIP 条目失败：{e}"))?;
+        // Use the archive's declared name; sanitize against traversal.
+        let name = match entry.enclosed_name() {
+            Some(p) => p.to_string_lossy().to_string(),
+            None => continue,
+        };
+        if entry.is_dir() {
+            let safe = match sanitize_rel(&name) {
+                Some(p) => p,
+                None => continue,
+            };
+            std::fs::create_dir_all(dest.join(safe))?;
+            continue;
+        }
+        let safe = match sanitize_rel(&name) {
+            Some(p) => p,
+            None => continue,
+        };
+        let target = dest.join(&safe);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut out = std::fs::File::create(&target)?;
+        std::io::copy(&mut entry, &mut out)?;
+        count += 1;
+    }
+    Ok(count)
 }
 
 // ---------------------------------------------------------------------------
@@ -1120,6 +1279,11 @@ fn site_from_req(req: &Req) -> Result<Site> {
         ssl,
         cert_mode: cert_mode.clone(),
         cert_name: cert_name.clone(),
+        scheme: norm_scheme(req.scheme.as_deref()),
+        cache: req.cache.unwrap_or(false),
+        block_attacks: req.block_attacks.unwrap_or(false),
+        websockets: req.websockets.unwrap_or(true),
+        locations: Vec::new(),
     };
 
     match kind.as_str() {
@@ -1167,10 +1331,63 @@ fn site_from_req(req: &Req) -> Result<Site> {
         _ => return Err(anyhow!("未知的站点类型")),
     }
 
+    // Validate + normalize any custom path rules.
+    if let Some(locs) = &req.locations {
+        site.locations = validate_locations(locs)?;
+    }
+
     if ssl && !matches!(cert_mode.as_str(), "self" | "le" | "manual") {
         return Err(anyhow!("未知的证书方式"));
     }
     Ok(site)
+}
+
+/// Normalize an upstream scheme to "http" or "https" (default http).
+fn norm_scheme(s: Option<&str>) -> String {
+    match s.map(str::trim) {
+        Some("https") => "https".to_string(),
+        _ => "http".to_string(),
+    }
+}
+
+/// A location prefix: starts with '/', no spaces or shell metacharacters, and
+/// stays within a sane length. We embed it literally into a `location` block.
+fn valid_location_path(s: &str) -> bool {
+    let s = s.trim();
+    s.starts_with('/')
+        && s.len() <= 200
+        && s.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '~' | ':' | '@')
+        })
+}
+
+/// Validate + normalize a list of custom path rules.
+fn validate_locations(locs: &[Location]) -> Result<Vec<Location>> {
+    let mut out = Vec::new();
+    for l in locs {
+        let path = l.path.trim();
+        let target = l.target.trim();
+        // Skip fully-empty rows (UI may submit blank trailing rows).
+        if path.is_empty() && target.is_empty() {
+            continue;
+        }
+        if !valid_location_path(path) {
+            return Err(anyhow!("路径规则需以 / 开头且不含空格等特殊字符：{path}"));
+        }
+        if !valid_host_token(target) {
+            return Err(anyhow!("路径规则目标格式不正确（host[:port]）：{target}"));
+        }
+        out.push(Location {
+            path: path.to_string(),
+            scheme: norm_scheme(Some(&l.scheme)),
+            target: target.to_string(),
+            websockets: l.websockets,
+        });
+    }
+    if out.len() > 50 {
+        return Err(anyhow!("路径规则过多"));
+    }
+    Ok(out)
 }
 
 fn new_site_id() -> String {
@@ -1776,7 +1993,7 @@ async fn published_host_port(target: &str, container_port: i64) -> Option<u16> {
 ///  - **proxy_host**: the user-supplied host[:port] as-is.
 async fn resolve_upstream(lo: &Layout, site: &Site) -> Result<String> {
     match site.kind.as_str() {
-        "proxy_host" => Ok(with_port(&site.target_url)),
+        "proxy_host" => Ok(with_scheme_port(&site.target_url, &site.scheme)),
         "proxy_container" => {
             if lo.mode == "docker" {
                 Ok(format!("{}:{}", site.container, site.container_port))
@@ -1848,36 +2065,123 @@ async fn write_site_conf(lo: &Layout, site: &Site) -> Result<()> {
     Ok(())
 }
 
-/// The location block(s) for a site's forwarding kind. Async because a
-/// `proxy_container` site in host mode must resolve the container's IP (the
-/// host's nginx can't resolve a container name).
+/// The location block(s) for a site's forwarding kind, plus any NPM-style
+/// options (block-exploits / asset caching / websockets) and custom path rules.
+/// Async because a `proxy_container` site in host mode must resolve the
+/// container's IP (the host's nginx can't resolve a container name).
 async fn render_location(lo: &Layout, site: &Site) -> Result<String> {
+    let mut out = String::new();
+
+    // Optional: block common exploit patterns (server-scoped, before locations).
+    if site.block_attacks {
+        out.push_str(BLOCK_EXPLOITS);
+    }
+
+    let is_proxy = matches!(site.kind.as_str(), "proxy_host" | "proxy_container");
     match site.kind.as_str() {
         "proxy_host" | "proxy_container" => {
             let upstream = resolve_upstream(lo, site).await?;
-            Ok(proxy_block(&upstream))
+            out.push_str(&proxy_location(
+                "/",
+                &site.scheme,
+                &upstream,
+                site.websockets,
+                false,
+            ));
+            // Optional: long-cache static assets (still proxied upstream).
+            if site.cache {
+                out.push_str(&proxy_location(
+                    &format!("~* \\.({ASSET_EXT})$"),
+                    &site.scheme,
+                    &upstream,
+                    site.websockets,
+                    true,
+                ));
+            }
         }
         "static" => {
             let root = format!("{}/{}", lo.www_ref, site.root);
-            Ok(format!(
-                "    location / {{\n        root {root};\n        index index.html index.htm;\n        try_files $uri $uri/ =404;\n    }}\n"
-            ))
+            out.push_str(&format!(
+                "    root {root};\n    index index.html index.htm;\n\n    location / {{\n        try_files $uri $uri/ =404;\n    }}\n"
+            ));
+            if site.cache {
+                out.push_str(&format!(
+                    "    location ~* \\.({ASSET_EXT})$ {{\n        expires 7d;\n        add_header Cache-Control \"public, max-age=604800\";\n        try_files $uri =404;\n    }}\n"
+                ));
+            }
         }
-        _ => Ok(String::new()),
+        _ => {}
     }
+
+    // Custom path rules (NPM-style custom locations): forward a prefix upstream.
+    // Skip a rule whose path is "/" when the main block already serves "/" as a
+    // proxy (it would duplicate the location and fail `nginx -t`).
+    for l in &site.locations {
+        if l.path == "/" && is_proxy {
+            continue;
+        }
+        let upstream = with_scheme_port(&l.target, &l.scheme);
+        out.push_str(&proxy_location(
+            &l.path,
+            &l.scheme,
+            &upstream,
+            l.websockets,
+            false,
+        ));
+    }
+
+    Ok(out)
 }
 
-/// A reverse-proxy location with sane forwarded headers + websocket upgrade.
-fn proxy_block(upstream: &str) -> String {
-    format!(
-        "    location / {{\n        proxy_pass http://{upstream};\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection \"upgrade\";\n    }}\n"
-    )
+/// Common static-asset extensions for the "cache assets" option.
+const ASSET_EXT: &str =
+    "css|js|jpe?g|png|gif|ico|svg|webp|avif|woff2?|ttf|otf|eot|mp4|webm|mp3|map";
+
+/// A modest set of "block common exploits" rules (query-string based), placed
+/// at the top of the server block. Returns 403 on obvious probing patterns.
+const BLOCK_EXPLOITS: &str = "    # block common exploits\n\
+    if ($query_string ~* \"(<|%3C).*script.*(>|%3E)\") { return 403; }\n\
+    if ($query_string ~* \"GLOBALS(=|\\[|%[0-9A-Z]{0,2})\") { return 403; }\n\
+    if ($query_string ~* \"_REQUEST(=|\\[|%[0-9A-Z]{0,2})\") { return 403; }\n\
+    if ($query_string ~* \"proc/self/environ\") { return 403; }\n\
+    if ($query_string ~* \"base64_(en|de)code\\(.*\\)\") { return 403; }\n\n";
+
+/// A reverse-proxy location with sane forwarded headers. `cache` adds long
+/// expires for static assets; `websockets` adds the upgrade headers.
+fn proxy_location(
+    path: &str,
+    scheme: &str,
+    upstream: &str,
+    websockets: bool,
+    cache: bool,
+) -> String {
+    let mut b = String::new();
+    b.push_str(&format!("    location {path} {{\n"));
+    b.push_str(&format!("        proxy_pass {scheme}://{upstream};\n"));
+    b.push_str("        proxy_set_header Host $host;\n");
+    b.push_str("        proxy_set_header X-Real-IP $remote_addr;\n");
+    b.push_str("        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n");
+    b.push_str("        proxy_set_header X-Forwarded-Proto $scheme;\n");
+    if websockets {
+        b.push_str("        proxy_http_version 1.1;\n");
+        b.push_str("        proxy_set_header Upgrade $http_upgrade;\n");
+        b.push_str("        proxy_set_header Connection \"upgrade\";\n");
+    }
+    if cache {
+        b.push_str("        expires 7d;\n");
+        b.push_str("        add_header Cache-Control \"public\";\n");
+    }
+    b.push_str("    }\n");
+    b
 }
 
-/// Default a bare host to :80 for proxy_pass.
-fn with_port(host: &str) -> String {
+/// Build `host:port` from a host token + scheme, defaulting the port to 80
+/// (http) or 443 (https) when none is given.
+fn with_scheme_port(host: &str, scheme: &str) -> String {
     if host.contains(':') {
         host.to_string()
+    } else if scheme == "https" {
+        format!("{host}:443")
     } else {
         format!("{host}:80")
     }
@@ -2286,8 +2590,9 @@ mod tests {
 
     #[test]
     fn with_port_defaults_80() {
-        assert_eq!(with_port("host"), "host:80");
-        assert_eq!(with_port("host:8080"), "host:8080");
+        assert_eq!(with_scheme_port("host", "http"), "host:80");
+        assert_eq!(with_scheme_port("host:8080", "http"), "host:8080");
+        assert_eq!(with_scheme_port("host", "https"), "host:443");
     }
 
     fn lo_docker() -> Layout {
@@ -2313,6 +2618,11 @@ mod tests {
             ssl,
             cert_mode: "self".into(),
             cert_name: String::new(),
+            scheme: "http".into(),
+            cache: false,
+            block_attacks: false,
+            websockets: true,
+            locations: Vec::new(),
         }
     }
 
@@ -2340,5 +2650,58 @@ mod tests {
         let site = mk_site("static", false);
         let body = render_location(&lo, &site).await.unwrap();
         assert!(body.contains("root /usr/share/nginx/html/site1;"));
+    }
+
+    #[tokio::test]
+    async fn renders_https_scheme_and_options() {
+        let lo = lo_docker();
+        let mut site = mk_site("proxy_host", false);
+        site.scheme = "https".into();
+        site.cache = true;
+        site.block_attacks = true;
+        site.websockets = false;
+        let body = render_location(&lo, &site).await.unwrap();
+        // https upstream, asset-cache location, exploit block, no ws headers.
+        assert!(body.contains("proxy_pass https://10.0.0.5:8080;"));
+        assert!(body.contains("location ~* \\.("));
+        assert!(body.contains("block common exploits"));
+        assert!(!body.contains("Upgrade $http_upgrade"));
+    }
+
+    #[tokio::test]
+    async fn renders_custom_locations() {
+        let lo = lo_docker();
+        let mut site = mk_site("proxy_host", false);
+        site.locations = vec![Location {
+            path: "/api".into(),
+            scheme: "http".into(),
+            target: "127.0.0.1:3001".into(),
+            websockets: true,
+        }];
+        let body = render_location(&lo, &site).await.unwrap();
+        assert!(body.contains("location /api {"));
+        assert!(body.contains("proxy_pass http://127.0.0.1:3001;"));
+    }
+
+    #[test]
+    fn location_path_validation() {
+        assert!(valid_location_path("/api"));
+        assert!(valid_location_path("/"));
+        assert!(valid_location_path("/a/b-c_d"));
+        assert!(!valid_location_path("api")); // must start with /
+        assert!(!valid_location_path("/a b"));
+        assert!(!valid_location_path("/a;b"));
+    }
+
+    #[test]
+    fn sanitize_rel_rejects_traversal() {
+        assert!(sanitize_rel("a/b/c.html").is_some());
+        assert!(sanitize_rel("../etc/passwd").is_none());
+        assert!(sanitize_rel("a/../../b").is_none());
+        assert!(sanitize_rel("").is_none());
+        assert_eq!(
+            sanitize_rel("./x/./y.js").unwrap(),
+            std::path::PathBuf::from("x/y.js")
+        );
     }
 }

@@ -86,6 +86,7 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
         .route("/api/files/delete", post(files_delete))
         .route("/api/files/download", get(files_download))
         .route("/api/files/upload", post(files_upload))
+        .route("/api/nginx/static-upload", post(nginx_static_upload))
         // WeChat scan login proxied to the backend (NAT-safe via this agent).
         .route("/api/wx/status", get(wx_status))
         .route("/api/wx/login/start", post(wx_login_start))
@@ -588,9 +589,44 @@ async fn files_upload(
     }
 }
 
-// ---------------------------------------------------------------------------
-// WeChat bind/login (proxied to the backend via this agent's token)
-// ---------------------------------------------------------------------------
+/// Static-site upload: extract an uploaded ZIP, or write a single file, into a
+/// managed static webroot. Query params:
+///   root  — the static site's webroot subdirectory name (validated agent-side)
+///   mode  — "zip" (body is a .zip to extract) | "file" (body is one file)
+///   rel   — for mode=file: the file's relative path within the webroot
+///   clear — "1" to wipe the webroot first (fresh upload)
+/// Body is the raw bytes (capped at 512 MiB), mirroring files_upload.
+#[derive(serde::Deserialize)]
+struct StaticUploadQuery {
+    root: String,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    rel: Option<String>,
+    #[serde(default)]
+    clear: Option<String>,
+}
+
+async fn nginx_static_upload(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Query(q): Query<StaticUploadQuery>,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    if body.len() as u64 > 512 * 1024 * 1024 {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "文件过大（上限 512MiB）").into_response();
+    }
+    let mode = q.mode.as_deref().unwrap_or("zip");
+    let clear = q.clear.as_deref() == Some("1");
+    let res = crate::nginx::web_static_upload(&q.root, mode, q.rel.as_deref(), clear, &body).await;
+    match res {
+        Ok(n) => Json(json!({ "ok": true, "files": n })).into_response(),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })).into_response(),
+    }
+}
 
 /// Call a backend wx endpoint with the agent token in the JSON body. Returns
 /// the parsed `data` object on `{ok:true}`.
