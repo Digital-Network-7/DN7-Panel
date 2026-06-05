@@ -2023,7 +2023,9 @@ function renderSettings(v) {
 // =========================================================================
 const SELX = { sel: null, pop: null };
 function selxClose() {
-  if (SELX.pop) { SELX.pop.remove(); SELX.pop = null; }
+  // Remove the tracked popup AND any stray ones (defensive against desync).
+  document.querySelectorAll('.selx-pop').forEach((p) => p.remove());
+  SELX.pop = null;
   SELX.sel = null;
 }
 function selxOpen(sel) {
@@ -2043,6 +2045,7 @@ function selxOpen(sel) {
     pop.appendChild(opt);
   });
   document.body.appendChild(pop);
+  SELX.pop = pop;
   // Position under (or above, if no room) the select, matching its width.
   const r = sel.getBoundingClientRect();
   pop.style.left = r.left + 'px';
@@ -2050,7 +2053,7 @@ function selxOpen(sel) {
   const below = window.innerHeight - r.bottom;
   if (below < 280 && r.top > below) { pop.style.bottom = (window.innerHeight - r.top + 4) + 'px'; }
   else { pop.style.top = (r.bottom + 4) + 'px'; }
-  // Scroll the selected option into view.
+  // Scroll the selected option into view within the popup only.
   const selOpt = pop.querySelector('.selx-opt.sel');
   if (selOpt) selOpt.scrollIntoView({ block: 'nearest' });
 }
