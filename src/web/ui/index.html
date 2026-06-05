@@ -172,6 +172,13 @@
   pre.out { background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:13px; max-height:50vh; overflow:auto; white-space:pre-wrap; word-break:break-all; font-size:12.5px; }
   .warn { background:rgba(251,191,36,0.08); border:1px solid rgba(251,191,36,0.3); color:var(--warn); padding:11px 13px; border-radius:11px; font-size:12.5px; margin-bottom:16px; }
   .empty { color:var(--mut); text-align:center; padding:30px; font-size:13px; }
+  /* Loading spinner + skeleton — friendlier than a bare "加载中…" string. */
+  .loading { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:36px; color:var(--mut); font-size:12.5px; }
+  .spin { width:26px; height:26px; border-radius:50%; border:2.5px solid var(--line2); border-top-color:var(--cy); animation:spin360 .8s linear infinite; }
+  @keyframes spin360 { to { transform:rotate(360deg); } }
+  .skel { background:linear-gradient(90deg,var(--hov) 25%,var(--line) 37%,var(--hov) 63%); background-size:400% 100%; animation:shimmer 1.3s ease-in-out infinite; border-radius:7px; }
+  @keyframes shimmer { 0%{background-position:100% 0;} 100%{background-position:0 0;} }
+  .skel-row { height:38px; margin:8px 0; }
   .formgrid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
   .formgrid .full { grid-column:1 / -1; }
   @media (max-width:680px){ .formgrid{grid-template-columns:1fr;} }
@@ -205,6 +212,13 @@
   .term-wrap { background:#05080f; border:1px solid var(--line2); border-radius:12px; overflow:hidden; display:flex; flex-direction:column; }
   .term-bar { display:flex; align-items:center; gap:10px; padding:8px 12px; background:rgba(255,255,255,0.03); border-bottom:1px solid var(--line); font-size:12px; color:var(--mut); }
   .term-bar .sp { flex:1; }
+  .term-bar .term-x { background:none; border:none; color:var(--mut); font-size:20px; line-height:1; cursor:pointer; padding:0 4px; transition:color .15s; }
+  .term-bar .term-x:hover { color:var(--err); }
+  /* Docked container-terminal overlay (no modal mask): a panel pinned over the
+     content area with a close button in the bar's top-right. */
+  .term-overlay { position:fixed; z-index:60; top:64px; left:24px; right:24px; bottom:24px; box-shadow:var(--shadow); border-radius:12px; }
+  .term-overlay .term-wrap { height:100%; }
+  @media (max-width:720px){ .term-overlay { top:8px; left:8px; right:8px; bottom:8px; } }
   .vterm { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; line-height:1.3; padding:10px 12px; color:#cfe3ff; background:#05080f;
     white-space:pre; overflow-y:auto; overflow-x:hidden; outline:none; cursor:text; flex:1; min-height:200px; }
   .vterm .cur { background:#cfe3ff; color:#05080f; }
@@ -300,6 +314,10 @@ const S = { token: localStorage.getItem('teaops_web_token') || '', tab: 'dash', 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function $(id) { return document.getElementById(id); }
 function el(tag, attrs, html) { const e = document.createElement(tag); if (attrs) for (const k in attrs) e.setAttribute(k, attrs[k]); if (html != null) e.innerHTML = html; return e; }
+
+// A friendly loading indicator (spinner + optional caption) reused everywhere
+// in place of a bare "加载中…" string.
+function loading(text) { return `<div class="loading"><div class="spin"></div>${text ? `<div>${esc(text)}</div>` : ''}</div>`; }
 
 // Pure-JS SHA-256 (hex). window.crypto.subtle is unavailable on insecure
 // origins (plain HTTP), so we can't rely on it for the login proof.
@@ -569,7 +587,7 @@ function renderDash(v) {
   v.innerHTML = `
     <div class="dash">
       <div class="statrow" id="cards"></div>
-      <div class="card procwrap"><div class="scroll" id="procs"><div class="mut">加载中…</div></div></div>
+      <div class="card procwrap"><div class="scroll" id="procs">${loading()}</div></div>
     </div>`;
   const hist = { rx: [], tx: [] };
   const st = { sort: 'cpu', data: null };
@@ -929,24 +947,30 @@ function mountTerminal(hostEl, statusDot, wsPath) {
   window._termCleanup = cleanup;
   return cleanup;
 }
-// Open a terminal inside a modal (used by Docker container exec).
+// Open a container/exec terminal as a docked overlay panel (no modal mask) —
+// just the terminal, with a close (×) button in the top-right of the bar where
+// the hint text used to be.
 function openTerminalModal(title, wsPath) {
-  let cleanup = null;
-  modal(title, `<div class="term-wrap" style="height:62vh"><div class="term-bar"><span class="dot-s" id="mtStatus"></span><span>${esc(title)}</span><span class="sp"></span><span class="mut">点击区域输入</span></div><div class="vterm" id="mvterm"></div></div>`, (close, mask) => {
-    cleanup = mountTerminal(mask.querySelector('#mvterm'), mask.querySelector('#mtStatus'), wsPath);
-    // Replace global cleanup hook with modal-local so tab switches don't kill it twice.
-    window._termCleanup = null;
-    window._modalTermCleanup = cleanup;
-    mask.querySelector('.x').addEventListener('click', () => { cleanup && cleanup(); window._modalTermCleanup = null; });
-    mask.addEventListener('mousedown', (e) => { if (e.target === mask && cleanup) { cleanup(); window._modalTermCleanup = null; } });
-  }, true);
+  const root = $('modalRoot');
+  const panel = el('div', { class: 'term-overlay' });
+  panel.innerHTML = `<div class="term-wrap" style="height:100%"><div class="term-bar"><span class="dot-s" id="mtStatus"></span><span>${esc(title)}</span><span class="sp"></span><button class="term-x" title="关闭">&times;</button></div><div class="vterm" id="mvterm"></div></div>`;
+  root.appendChild(panel);
+  const cleanup = mountTerminal(panel.querySelector('#mvterm'), panel.querySelector('#mtStatus'), wsPath);
+  // Use a panel-local cleanup hook (so a tab switch closes it too via stopTab).
+  window._termCleanup = null;
+  window._modalTermCleanup = () => { cleanup(); panel.remove(); };
+  const close = () => { cleanup(); panel.remove(); window._modalTermCleanup = null; };
+  panel.querySelector('.term-x').addEventListener('click', close);
+  // Esc closes the terminal panel.
+  const onKey = (e) => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey, true); } };
+  document.addEventListener('keydown', onKey, true);
 }
 
 // =========================================================================
 // Docker management
 // =========================================================================
 function renderDocker(v) {
-  v.innerHTML = '<div class="mut" style="padding:18px">检测 Docker…</div>';
+  v.innerHTML = `<div style="padding:8px">${loading('正在检测 Docker')}</div>`;
   // If an install job is still running (user left + came back), re-attach.
   if (getJob('docker:install')) {
     v.innerHTML = `<div class="card"><h3>正在安装 Docker</h3><div id="dkInstallJob"></div></div>`;
@@ -979,7 +1003,7 @@ function renderDocker(v) {
 
 function dkContainers() {
   const body = $('dkBody');
-  body.innerHTML = '<div class="sechead"><h3>容器</h3><span class="sp"></span><button class="btn sm" id="dkNew">创建容器</button><button class="btn sec sm" id="dkRefC">刷新</button></div><div id="dkCList" class="mut">加载中…</div>';
+  body.innerHTML = '<div class="sechead"><h3>容器</h3><span class="sp"></span><button class="btn sm" id="dkNew">创建容器</button><button class="btn sec sm" id="dkRefC">刷新</button></div><div id="dkCList">' + loading() + '</div>';
   $('dkRefC').onclick = dkContainers;
   $('dkNew').onclick = dkCreateForm;
   op('docker', { op: 'list_containers' }).then((d) => {
@@ -1023,13 +1047,13 @@ function buildContainerActions(holder, reload) {
 function doCAction(o, id, reload) { op('docker', { op: o, ref: id }).then(() => { toast('操作成功', 'ok'); reload && reload(); }).catch((e) => toast(e.message, 'err')); }
 
 function dkLogs(id, name) {
-  modal('日志 · ' + name, '<pre class="out" id="dkLogOut" style="max-height:64vh">加载中…</pre>', () => {
-    op('docker', { op: 'logs', ref: id, tail: 400 }).then((d) => { $('dkLogOut').textContent = d.logs || '(空)'; $('dkLogOut').scrollTop = $('dkLogOut').scrollHeight; }).catch((e) => { $('dkLogOut').textContent = '错误：' + e.message; });
+  modal('日志 · ' + name, '<div id="dkLogWrap">' + loading() + '</div>', () => {
+    op('docker', { op: 'logs', ref: id, tail: 400 }).then((d) => { $('dkLogWrap').innerHTML = '<pre class="out" id="dkLogOut" style="max-height:64vh"></pre>'; $('dkLogOut').textContent = d.logs || '(空)'; $('dkLogOut').scrollTop = $('dkLogOut').scrollHeight; }).catch((e) => { $('dkLogWrap').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
   });
 }
 
 function dkContainerNetworks(id, name) {
-  modal('网络 · ' + name, '<div id="cnBody" class="mut">加载中…</div>', () => {
+  modal('网络 · ' + name, '<div id="cnBody">' + loading() + '</div>', () => {
     const load = () => op('docker', { op: 'inspect_container_networks', ref: id }).then((d) => {
       let h = '<h3 style="font-size:13px;margin:0 0 8px">已连接</h3>';
       h += (d.attached || []).map((n) => `<div class="row" style="margin-bottom:6px"><span class="chip on">${esc(n)}</span><button class="btn sm sec" data-dis="${esc(n)}">断开</button></div>`).join('') || '<div class="mut" style="margin-bottom:10px">无</div>';
@@ -1045,7 +1069,7 @@ function dkContainerNetworks(id, name) {
 
 function dkImages(info) {
   const body = $('dkBody');
-  body.innerHTML = '<div class="sechead"><h3>镜像</h3><span class="sp"></span><button class="btn sm" id="dkPull">拉取镜像</button><button class="btn sec sm" id="dkRefI">刷新</button></div><div id="dkIList" class="mut">加载中…</div>';
+  body.innerHTML = '<div class="sechead"><h3>镜像</h3><span class="sp"></span><button class="btn sm" id="dkPull">拉取镜像</button><button class="btn sec sm" id="dkRefI">刷新</button></div><div id="dkIList">' + loading() + '</div>';
   $('dkRefI').onclick = () => dkImages(info);
   $('dkPull').onclick = dkPullForm;
   op('docker', { op: 'list_images' }).then((d) => {
@@ -1202,7 +1226,7 @@ function readKv(id) {
 
 function dkNetworks() {
   const body = $('dkBody');
-  body.innerHTML = '<div class="sechead"><h3>网络</h3><span class="sp"></span><button class="btn sm" id="dkNetNew">创建网络</button><button class="btn sec sm" id="dkRefN">刷新</button></div><div id="dkNList" class="mut">加载中…</div>';
+  body.innerHTML = '<div class="sechead"><h3>网络</h3><span class="sp"></span><button class="btn sm" id="dkNetNew">创建网络</button><button class="btn sec sm" id="dkRefN">刷新</button></div><div id="dkNList">' + loading() + '</div>';
   $('dkRefN').onclick = dkNetworks;
   $('dkNetNew').onclick = () => modal('创建网络', '<label class="lbl">网络名</label><input id="nnName" class="field" style="margin-bottom:16px" /><div class="row" style="justify-content:flex-end"><button class="btn" id="nnGo">创建</button></div>', (close) => { $('nnGo').onclick = () => op('docker', { op: 'create_network', name: $('nnName').value.trim() }).then(() => { close(); toast('已创建', 'ok'); dkNetworks(); }).catch((e) => toast(e.message, 'err')); });
   op('docker', { op: 'list_networks' }).then((d) => {
@@ -1308,7 +1332,7 @@ function fileBrowser(mount, container, startPath) {
       <label class="btn sm" style="position:relative;overflow:hidden">上传<input type="file" id="fbUp" style="position:absolute;inset:0;opacity:0;cursor:pointer" /></label>
       <button class="btn sm sec" id="fbRef">刷新</button>
     </div>
-    <div class="fb-list fb-scroll" id="fbList"><div class="empty">加载中…</div></div>`;
+    <div class="fb-list fb-scroll" id="fbList">${loading()}</div>`;
   const scope = () => (container ? { container } : {});
   const renderPath = () => {
     const parts = path.split('/').filter(Boolean);
@@ -1359,7 +1383,7 @@ function downloadFile(full, container) {
 // Nginx management
 // =========================================================================
 function renderNginx(v) {
-  v.innerHTML = '<div class="mut" style="padding:18px">检测 Nginx…</div>';
+  v.innerHTML = `<div style="padding:8px">${loading('正在检测 Nginx')}</div>`;
   if (getJob('nginx:setup')) {
     v.innerHTML = `<div class="card"><h3>正在初始化 Nginx</h3><div id="ngSetupJob"></div></div>`;
     reattachJob($('ngSetupJob'), 'nginx:setup', { onDone: () => setTimeout(() => renderNginx(v), 800) });
@@ -1376,7 +1400,7 @@ function renderNginx(v) {
       $('ngSetup').onclick = () => { $('ngSetup').disabled = true; $('ngSetupJob').classList.remove('hidden'); op('nginx', { op: 'setup', mode: 'docker' }).then((r) => renderJob($('ngSetupJob'), 'nginx', r.op_id, 'nginx:setup', { onDone: () => { toast('初始化完成', 'ok'); setTimeout(() => renderNginx(v), 600); }, onError: () => { $('ngSetup').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ngSetup').disabled = false; }); };
       return;
     }
-    v.innerHTML = `<div class="row" style="margin-bottom:14px"><span class="chip on">运行中</span><span class="sp" style="flex:1"></span><button class="btn sm" id="ngAdd">添加站点</button><button class="btn sec sm" id="ngCert">SSL 证书</button><button class="btn sec sm" id="ngReload">重载配置</button><button class="btn sec sm" id="ngRef">刷新</button></div><div id="ngSites" class="mut">加载中…</div>`;
+    v.innerHTML = `<div class="row" style="margin-bottom:14px"><span class="chip on">运行中</span><span class="sp" style="flex:1"></span><button class="btn sm" id="ngAdd">添加站点</button><button class="btn sec sm" id="ngCert">SSL 证书</button><button class="btn sec sm" id="ngReload">重载配置</button><button class="btn sec sm" id="ngRef">刷新</button></div><div id="ngSites">${loading()}</div>`;
     $('ngRef').onclick = () => renderNginx(v);
     $('ngReload').onclick = () => op('nginx', { op: 'reload' }).then(() => toast('已重载', 'ok')).catch((e) => toast(e.message, 'err'));
     $('ngAdd').onclick = () => ngAddSite(() => renderNginx(v));
@@ -1440,7 +1464,7 @@ function ngAddSite(reload) {
 // SSL certificate management: list each site's cert status and (re)issue or
 // replace its certificate (Let's Encrypt / self-signed / manual).
 function ngCerts() {
-  modal('SSL 证书管理', '<div id="ngCertBody" class="mut">加载中…</div>', () => {
+  modal('SSL 证书管理', '<div id="ngCertBody">' + loading() + '</div>', () => {
     const load = () => op('nginx', { op: 'list_certs' }).then((d) => {
       const certs = d.certs || [];
       if (!certs.length) { $('ngCertBody').innerHTML = '<div class="empty">暂无站点。先在「添加站点」创建站点，再来管理其证书。</div>'; return; }
@@ -1495,7 +1519,7 @@ function ngSetCert(siteId, name, reload) {
 // MySQL management (TeaOps-provisioned instances only)
 // =========================================================================
 function renderMysql(v) {
-  v.innerHTML = '<div class="mut" style="padding:18px">检测环境…</div>';
+  v.innerHTML = `<div style="padding:8px">${loading('正在检测环境')}</div>`;
   if (getJob('mysql:install')) {
     v.innerHTML = `<div class="card"><h3>正在创建数据库</h3><div id="myInstallJob"></div></div>`;
     reattachJob($('myInstallJob'), 'mysql:install', { onDone: () => setTimeout(() => renderMysql(v), 800) });
@@ -1588,7 +1612,7 @@ function myPanel(host, id, reload) {
   sel('info');
 }
 function myInfo(id) {
-  const b = $('myMBody'); b.innerHTML = '<div class="mut">加载中…</div>';
+  const b = $('myMBody'); b.innerHTML = loading();
   op('mysql', { op: 'credentials', inst: id }).then((c) => {
     b.innerHTML = `<table>
       <tr><th style="width:120px">主机</th><td class="mono">${esc(c.host || '127.0.0.1')}</td></tr>
@@ -1596,7 +1620,7 @@ function myInfo(id) {
       <tr><th>用户</th><td class="mono">${esc(c.user || 'root')}</td></tr>
       <tr><th>密码</th><td class="mono">${esc(c.password || '')}</td></tr>
     </table>
-    <div class="sechead" style="margin-top:18px"><h3>数据库</h3><span class="sp"></span><button class="btn sm" id="myAddDb">新建数据库</button></div><div id="myDbs" class="mut">加载中…</div>`;
+    <div class="sechead" style="margin-top:18px"><h3>数据库</h3><span class="sp"></span><button class="btn sm" id="myAddDb">新建数据库</button></div><div id="myDbs">${loading()}</div>`;
     $('myAddDb').onclick = () => modal('新建数据库', `<label class="lbl">库名</label><input id="cdbName" class="field" placeholder="myapp" style="margin-bottom:16px" /><div class="row" style="justify-content:flex-end"><button class="btn" id="cdbGo">创建</button></div>`, (close) => { $('cdbGo').onclick = () => { const name = $('cdbName').value.trim(); if (!name) return; op('mysql', { op: 'create_database', inst: id, database: name }).then(() => { close(); toast('已创建', 'ok'); myInfo(id); }).catch((e) => toast(e.message, 'err')); }; });
     loadMyDbs(id);
   }).catch((e) => { b.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
@@ -1610,7 +1634,7 @@ function loadMyDbs(id) {
   }).catch((e) => { $('myDbs').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
 function myUsers(id) {
-  const b = $('myMBody'); b.innerHTML = '<div class="sechead"><h3>账号</h3><span class="sp"></span><button class="btn sm" id="myAddU">新建账号</button></div><div id="myUList" class="mut">加载中…</div>';
+  const b = $('myMBody'); b.innerHTML = '<div class="sechead"><h3>账号</h3><span class="sp"></span><button class="btn sm" id="myAddU">新建账号</button></div><div id="myUList">' + loading() + '</div>';
   $('myAddU').onclick = () => modal('新建账号', `<div class="formgrid"><div><label class="lbl">用户名</label><input id="auU" class="field" /></div><div><label class="lbl">来源主机</label><input id="auH" class="field" value="%" /></div><div class="full"><label class="lbl">密码</label><input id="auP" class="field" /></div></div><div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="auGo">创建</button></div>`, (close) => { $('auGo').onclick = () => op('mysql', { op: 'create_user', inst: id, username: $('auU').value.trim(), host: $('auH').value.trim() || '%', password: $('auP').value }).then(() => { close(); toast('已创建', 'ok'); myUsers(id); }).catch((e) => toast(e.message, 'err')); });
   op('mysql', { op: 'list_users', inst: id }).then((d) => {
     const users = d.users || [];
@@ -1637,7 +1661,7 @@ function myMore(id, close, reload) {
 // Settings
 // =========================================================================
 function renderSettings(v) {
-  v.innerHTML = '<div class="card">加载中…</div>';
+  v.innerHTML = '<div class="card">' + loading() + '</div>';
   api('/api/settings').then((sb) => {
     const s = sb.data;
     v.innerHTML = `

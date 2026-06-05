@@ -22,7 +22,7 @@ const CHALLENGE_TTL: Duration = Duration::from_secs(120);
 
 #[derive(Default)]
 pub struct AuthState {
-    sessions: Mutex<HashMap<String, Instant>>, // token -> created
+    sessions: Mutex<HashMap<String, Instant>>, // token -> last access (sliding)
     fails: Mutex<HashMap<String, Vec<Instant>>>, // source -> failure times
     challenges: Mutex<HashMap<String, Instant>>, // login nonce -> issued (single use)
 }
@@ -64,15 +64,21 @@ impl AuthState {
         token
     }
 
-    /// Validate a bearer token (unexpired).
+    /// Validate a bearer token. Uses a **sliding** expiry: a valid access
+    /// refreshes the session's timestamp, so an active user is never logged out
+    /// mid-session — only genuine inactivity past `SESSION_TTL` expires it.
     pub fn valid(&self, token: &str) -> bool {
         if token.is_empty() {
             return false;
         }
-        let m = self.sessions.lock().unwrap();
+        let mut m = self.sessions.lock().unwrap();
+        let now = Instant::now();
         match m.get(token) {
-            Some(created) => Instant::now().duration_since(*created) <= SESSION_TTL,
-            None => false,
+            Some(last) if now.duration_since(*last) <= SESSION_TTL => {
+                m.insert(token.to_string(), now); // slide the window
+                true
+            }
+            _ => false,
         }
     }
 
