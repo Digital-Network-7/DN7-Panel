@@ -83,6 +83,8 @@ struct Req {
     cert_pem: Option<String>, // manual
     #[serde(default)]
     key_pem: Option<String>, // manual
+    #[serde(default)]
+    cert_name: Option<String>, // standalone cert name (create_cert / reference)
 }
 
 /// A managed site, persisted in the manifest and regenerated into one conf file.
@@ -103,6 +105,10 @@ struct Site {
     ssl: bool,
     #[serde(default)]
     cert_mode: String,
+    /// When set, this site uses a standalone named cert from the cert manifest
+    /// instead of a per-site `<id>.crt/.key`. Empty means per-site (legacy).
+    #[serde(default)]
+    cert_name: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +285,61 @@ fn save_sites(sites: &[Site]) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Standalone named-certificate store.
+//
+// Certs can be created independently of any site (manifest `certs.json`) and
+// then referenced by one or more sites. Each named cert is stored as
+//   <cert_store>/cert-<name>.crt   and   cert-<name>.key
+// so a site that references it just points its conf at those files.
+// ---------------------------------------------------------------------------
+
+/// A standalone, named certificate. The PEM files live in the cert store; this
+/// manifest just records its name, the domain it was issued for, and how.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NamedCert {
+    name: String,
+    #[serde(default)]
+    domain: String,
+    #[serde(default)]
+    cert_mode: String, // "self" | "le" | "manual"
+}
+
+fn certs_manifest_file() -> std::path::PathBuf {
+    base_dir().join("certs.json")
+}
+
+fn load_named_certs() -> Vec<NamedCert> {
+    std::fs::read_to_string(certs_manifest_file())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<NamedCert>>(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_named_certs(certs: &[NamedCert]) -> Result<()> {
+    std::fs::create_dir_all(base_dir())?;
+    std::fs::write(certs_manifest_file(), serde_json::to_string_pretty(certs)?)?;
+    Ok(())
+}
+
+/// A cert name: a single filesystem-safe token (letters/digits/_-.), 1..=64.
+fn valid_cert_name(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty()
+        && s.len() <= 64
+        && s != "."
+        && s != ".."
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+fn named_crt_file(lo: &Layout, name: &str) -> std::path::PathBuf {
+    lo.cert_store.join(format!("cert-{name}.crt"))
+}
+fn named_key_file(lo: &Layout, name: &str) -> std::path::PathBuf {
+    lo.cert_store.join(format!("cert-{name}.key"))
+}
+
+// ---------------------------------------------------------------------------
 // Channel runner + dispatch.
 // ---------------------------------------------------------------------------
 
@@ -349,6 +410,9 @@ async fn handle(req: &Req) -> Result<Value> {
         "remove_site" => remove_site(req).await,
         "list_certs" => list_certs().await,
         "set_cert" => set_cert(req).await,
+        "list_named_certs" => list_named_certs().await,
+        "create_cert" => create_cert(req).await,
+        "delete_cert" => delete_cert(req).await,
         "reload" => {
             reload().await?;
             Ok(json!({ "reloaded": true }))
@@ -1035,6 +1099,15 @@ fn site_from_req(req: &Req) -> Result<Site> {
     let kind = req.kind.as_deref().unwrap_or("proxy_host").to_string();
     let ssl = req.ssl.unwrap_or(false);
     let cert_mode = req.cert_mode.as_deref().unwrap_or("self").to_string();
+    let cert_name = req
+        .cert_name
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+    if !cert_name.is_empty() && !valid_cert_name(&cert_name) {
+        return Err(anyhow!("证书名称不正确"));
+    }
 
     let mut site = Site {
         id: new_site_id(),
@@ -1046,6 +1119,7 @@ fn site_from_req(req: &Req) -> Result<Site> {
         root: String::new(),
         ssl,
         cert_mode: cert_mode.clone(),
+        cert_name: cert_name.clone(),
     };
 
     match kind.as_str() {
@@ -1123,24 +1197,31 @@ async fn add_site(req: &Req) -> Result<Value> {
 
     // Prepare certs.
     if site.ssl {
-        match site.cert_mode.as_str() {
-            "self" => {
-                gen_self_signed(&lo, &site).await?;
+        if !site.cert_name.is_empty() {
+            // Reference an existing standalone named cert — must already exist.
+            if !named_crt_file(&lo, &site.cert_name).exists() {
+                return Err(anyhow!("引用的证书「{}」不存在", site.cert_name));
             }
-            "manual" => {
-                let cert = req.cert_pem.as_deref().unwrap_or("");
-                let key = req.key_pem.as_deref().unwrap_or("");
-                if cert.trim().is_empty() || key.trim().is_empty() {
-                    return Err(anyhow!("请粘贴证书和私钥"));
+        } else {
+            match site.cert_mode.as_str() {
+                "self" => {
+                    gen_self_signed(&lo, &site).await?;
                 }
-                write_cert_files(&lo, &site, cert, key)?;
+                "manual" => {
+                    let cert = req.cert_pem.as_deref().unwrap_or("");
+                    let key = req.key_pem.as_deref().unwrap_or("");
+                    if cert.trim().is_empty() || key.trim().is_empty() {
+                        return Err(anyhow!("请粘贴证书和私钥"));
+                    }
+                    write_cert_files(&lo, &site, cert, key)?;
+                }
+                "le" => {
+                    // Detached: write an HTTP-only site first so the ACME http-01
+                    // challenge can be served, then issue, then rewrite with SSL.
+                    return start_cert_issue(lo, site).await;
+                }
+                _ => {}
             }
-            "le" => {
-                // Detached: write an HTTP-only site first so the ACME http-01
-                // challenge can be served, then issue, then rewrite with SSL.
-                return start_cert_issue(lo, site).await;
-            }
-            _ => {}
         }
     }
 
@@ -1196,7 +1277,11 @@ async fn list_certs() -> Result<Value> {
     let sites = load_sites();
     let mut out = Vec::new();
     for s in &sites {
-        let crt = lo.cert_store.join(format!("{}.crt", s.id));
+        let crt = if s.cert_name.is_empty() {
+            lo.cert_store.join(format!("{}.crt", s.id))
+        } else {
+            named_crt_file(&lo, &s.cert_name)
+        };
         let has_cert = crt.exists();
         let not_after = if has_cert {
             std::fs::read_to_string(&crt)
@@ -1211,6 +1296,7 @@ async fn list_certs() -> Result<Value> {
             "server_name": s.server_name,
             "ssl": s.ssl,
             "cert_mode": s.cert_mode,
+            "cert_name": s.cert_name,
             "has_cert": has_cert,
             "not_after": not_after,
         }));
@@ -1233,7 +1319,7 @@ async fn set_cert(req: &Req) -> Result<Value> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow!("缺少站点 ID"))?;
     let mode = req.cert_mode.as_deref().unwrap_or("self");
-    if !matches!(mode, "self" | "le" | "manual") {
+    if !matches!(mode, "self" | "le" | "manual" | "named") {
         return Err(anyhow!("未知的证书方式"));
     }
 
@@ -1246,23 +1332,38 @@ async fn set_cert(req: &Req) -> Result<Value> {
     site.ssl = true;
     site.cert_mode = mode.to_string();
 
-    match mode {
-        "self" => {
-            gen_self_signed(&lo, &site).await?;
+    // "named" references an existing standalone cert; the others are per-site.
+    if mode == "named" {
+        let name = req
+            .cert_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow!("请选择证书"))?;
+        if !named_crt_file(&lo, name).exists() {
+            return Err(anyhow!("证书「{name}」不存在"));
         }
-        "manual" => {
-            let cert = req.cert_pem.as_deref().unwrap_or("");
-            let key = req.key_pem.as_deref().unwrap_or("");
-            if cert.trim().is_empty() || key.trim().is_empty() {
-                return Err(anyhow!("请粘贴证书和私钥"));
+        site.cert_name = name.to_string();
+    } else {
+        site.cert_name = String::new();
+        match mode {
+            "self" => {
+                gen_self_signed(&lo, &site).await?;
             }
-            write_cert_files(&lo, &site, cert, key)?;
+            "manual" => {
+                let cert = req.cert_pem.as_deref().unwrap_or("");
+                let key = req.key_pem.as_deref().unwrap_or("");
+                if cert.trim().is_empty() || key.trim().is_empty() {
+                    return Err(anyhow!("请粘贴证书和私钥"));
+                }
+                write_cert_files(&lo, &site, cert, key)?;
+            }
+            "le" => {
+                // Detached issuance; issue_le persists the (ssl=true) site on success.
+                return start_cert_issue(lo, site).await;
+            }
+            _ => {}
         }
-        "le" => {
-            // Detached issuance; issue_le persists the (ssl=true) site on success.
-            return start_cert_issue(lo, site).await;
-        }
-        _ => {}
     }
 
     write_site_conf(&lo, &site).await?;
@@ -1271,6 +1372,153 @@ async fn set_cert(req: &Req) -> Result<Value> {
     sites.push(site.clone());
     save_sites(&sites)?;
     Ok(json!({ "site": site }))
+}
+
+// ---------------------------------------------------------------------------
+// Standalone named certificates: create / list / delete, independent of sites.
+// ---------------------------------------------------------------------------
+
+/// List standalone certs from the manifest, with on-disk presence + expiry.
+async fn list_named_certs() -> Result<Value> {
+    let lo = layout()?;
+    let certs = load_named_certs();
+    let in_use = sites_using_certs();
+    let mut out = Vec::new();
+    for c in &certs {
+        let crt = named_crt_file(&lo, &c.name);
+        let has_cert = crt.exists();
+        let not_after = if has_cert {
+            std::fs::read_to_string(&crt)
+                .ok()
+                .and_then(|pem| cert_not_after(&pem))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        out.push(json!({
+            "name": c.name,
+            "domain": c.domain,
+            "cert_mode": c.cert_mode,
+            "has_cert": has_cert,
+            "not_after": not_after,
+            "used_by": in_use.get(&c.name).cloned().unwrap_or_default(),
+        }));
+    }
+    Ok(json!({ "certs": out, "mode": read_mode() }))
+}
+
+/// server_names of sites currently referencing each named cert.
+fn sites_using_certs() -> HashMap<String, Vec<String>> {
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for s in load_sites() {
+        if !s.cert_name.is_empty() {
+            map.entry(s.cert_name).or_default().push(s.server_name);
+        }
+    }
+    map
+}
+
+/// Create a standalone named certificate. Modes:
+///   - "self":   self-signed for `domain` (synchronous)
+///   - "manual": cert_pem + key_pem (synchronous)
+///   - "le":     Let's Encrypt for `domain` (detached → returns {op_id})
+async fn create_cert(req: &Req) -> Result<Value> {
+    let lo = layout()?;
+    let name = req
+        .cert_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("请填写证书名称"))?
+        .to_string();
+    if !valid_cert_name(&name) {
+        return Err(anyhow!("证书名称只能包含字母、数字、_ - .（最多 64 字符）"));
+    }
+    let mode = req.cert_mode.as_deref().unwrap_or("self");
+    if !matches!(mode, "self" | "le" | "manual") {
+        return Err(anyhow!("未知的证书方式"));
+    }
+    let mut certs = load_named_certs();
+    if certs.iter().any(|c| c.name == name) {
+        return Err(anyhow!("已存在同名证书"));
+    }
+    let domain = req
+        .server_name
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+
+    match mode {
+        "self" => {
+            if domain.is_empty() {
+                return Err(anyhow!("请填写证书域名"));
+            }
+            if !valid_server_name(&domain) {
+                return Err(anyhow!("域名格式不正确"));
+            }
+            let host = primary_host(&domain);
+            gen_self_signed_to(
+                &named_crt_file(&lo, &name),
+                &named_key_file(&lo, &name),
+                &host,
+            )
+            .await?;
+        }
+        "manual" => {
+            let cert = req.cert_pem.as_deref().unwrap_or("");
+            let key = req.key_pem.as_deref().unwrap_or("");
+            if cert.trim().is_empty() || key.trim().is_empty() {
+                return Err(anyhow!("请粘贴证书和私钥"));
+            }
+            std::fs::create_dir_all(&lo.cert_store)?;
+            std::fs::write(named_crt_file(&lo, &name), cert)?;
+            std::fs::write(named_key_file(&lo, &name), key)?;
+            set_key_perms(&named_key_file(&lo, &name));
+        }
+        "le" => {
+            if domain.is_empty() || !valid_server_name(&domain) {
+                return Err(anyhow!("Let's Encrypt 需要一个具体域名"));
+            }
+            return start_named_cert_issue(lo, name, domain);
+        }
+        _ => {}
+    }
+
+    certs.push(NamedCert {
+        name: name.clone(),
+        domain,
+        cert_mode: mode.to_string(),
+    });
+    save_named_certs(&certs)?;
+    Ok(json!({ "name": name }))
+}
+
+/// Delete a standalone named certificate. Refuses while a site still uses it.
+async fn delete_cert(req: &Req) -> Result<Value> {
+    let lo = layout()?;
+    let name = req
+        .cert_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("缺少证书名称"))?;
+    let in_use = sites_using_certs();
+    if let Some(sites) = in_use.get(name) {
+        if !sites.is_empty() {
+            return Err(anyhow!("证书仍被站点使用：{}", sites.join("、")));
+        }
+    }
+    let mut certs = load_named_certs();
+    let before = certs.len();
+    certs.retain(|c| c.name != name);
+    if certs.len() == before {
+        return Err(anyhow!("证书不存在"));
+    }
+    let _ = std::fs::remove_file(named_crt_file(&lo, name));
+    let _ = std::fs::remove_file(named_key_file(&lo, name));
+    save_named_certs(&certs)?;
+    Ok(json!({ "deleted": name }))
 }
 
 /// Best-effort parse of a PEM cert's notAfter (expiry) as an ISO date string.
@@ -1564,8 +1812,18 @@ async fn write_site_conf(lo: &Layout, site: &Site) -> Result<()> {
 
     let mut conf = String::new();
     if site.ssl {
-        let crt = format!("{}/{}.crt", lo.cert_ref, site.id);
-        let key = format!("{}/{}.key", lo.cert_ref, site.id);
+        let (crt, key) = if site.cert_name.is_empty() {
+            (
+                format!("{}/{}.crt", lo.cert_ref, site.id),
+                format!("{}/{}.key", lo.cert_ref, site.id),
+            )
+        } else {
+            // Referenced standalone named cert.
+            (
+                format!("{}/cert-{}.crt", lo.cert_ref, site.cert_name),
+                format!("{}/cert-{}.key", lo.cert_ref, site.cert_name),
+            )
+        };
         // HTTP -> HTTPS redirect, plus an ACME webroot passthrough so renewals
         // keep working.
         conf.push_str(&format!(
@@ -1642,12 +1900,31 @@ fn write_cert_files(lo: &Layout, site: &Site, cert_pem: &str, key_pem: &str) -> 
 /// cert store; in docker mode that directory is bind-mounted into the nginx
 /// container, so the container reads the very same files.
 async fn gen_self_signed(lo: &Layout, site: &Site) -> Result<()> {
-    std::fs::create_dir_all(&lo.cert_store)?;
     let host = primary_host(&site.server_name);
     let host = if host == "_" {
         "localhost".to_string()
     } else {
         host
+    };
+    let crt_path = lo.cert_store.join(format!("{}.crt", site.id));
+    let key_path = lo.cert_store.join(format!("{}.key", site.id));
+    gen_self_signed_to(&crt_path, &key_path, &host).await
+}
+
+/// Generate a self-signed cert/key pair for `host` and write them to the given
+/// paths. Shared by per-site and standalone-named cert generation.
+async fn gen_self_signed_to(
+    crt_path: &std::path::Path,
+    key_path: &std::path::Path,
+    host: &str,
+) -> Result<()> {
+    if let Some(dir) = crt_path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let host = if host.is_empty() || host == "_" {
+        "localhost".to_string()
+    } else {
+        host.to_string()
     };
 
     let mut params = rcgen::CertificateParams::new(vec![host.clone()])
@@ -1665,12 +1942,10 @@ async fn gen_self_signed(lo: &Layout, site: &Site) -> Result<()> {
         .self_signed(&key_pair)
         .map_err(|e| anyhow!("签发自签证书失败：{e}"))?;
 
-    let crt_path = lo.cert_store.join(format!("{}.crt", site.id));
-    let key_path = lo.cert_store.join(format!("{}.key", site.id));
-    std::fs::write(&crt_path, cert.pem())?;
-    std::fs::write(&key_path, key_pair.serialize_pem())?;
+    std::fs::write(crt_path, cert.pem())?;
+    std::fs::write(key_path, key_pair.serialize_pem())?;
     // Keep the private key readable only by us.
-    set_key_perms(&key_path);
+    set_key_perms(key_path);
     Ok(())
 }
 
@@ -1710,21 +1985,12 @@ async fn start_cert_issue(lo: Layout, site: Site) -> Result<Value> {
 }
 
 async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
-    use instant_acme::{
-        Account, AuthorizationStatus, ChallengeType, Identifier, NewAccount, NewOrder, OrderStatus,
-    };
-
     let host = primary_host(&site.server_name);
     if host.is_empty() || host == "_" || host.contains('*') {
         return Err(anyhow!(
             "Let's Encrypt 需要一个具体域名（不支持通配符/默认站点）"
         ));
     }
-    let acme_root = format!(
-        "{}/_acme/.well-known/acme-challenge",
-        lo.www_store.display()
-    );
-    std::fs::create_dir_all(&acme_root)?;
 
     // Step 1: serve HTTP (no SSL yet) so the http-01 challenge path is reachable.
     op_push(op_id, "准备 HTTP 验证站点 …");
@@ -1736,7 +2002,114 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
         return Err(e);
     }
 
-    // Step 2: create (or implicitly register) an ACME account with Let's Encrypt.
+    // Steps 2-5: the ACME HTTP-01 dance → issued chain + our key.
+    let (cert_chain_pem, key_pem) = acme_http01(op_id, lo, &host).await?;
+
+    // Persist the issued chain + key into the per-site cert store.
+    let crt_path = lo.cert_store.join(format!("{}.crt", site.id));
+    let key_path = lo.cert_store.join(format!("{}.key", site.id));
+    std::fs::write(&crt_path, cert_chain_pem)?;
+    std::fs::write(&key_path, key_pem)?;
+    set_key_perms(&key_path);
+
+    // Step 6: rewrite with SSL + persist + reload.
+    op_push(op_id, "启用 HTTPS 配置 …");
+    write_site_conf(lo, site).await?;
+    validate_and_reload(lo).await?;
+    let mut sites = load_sites();
+    sites.retain(|s| s.id != site.id);
+    sites.push(site.clone());
+    save_sites(&sites)?;
+    Ok(())
+}
+
+/// Issue a standalone Let's Encrypt cert (detached). Serves the HTTP-01
+/// challenge from a temporary HTTP-only conf for `domain`, then writes the
+/// issued chain/key into the named cert store and records the manifest.
+fn start_named_cert_issue(lo: Layout, name: String, domain: String) -> Result<Value> {
+    let op_id = new_op_id();
+    let target = primary_host(&domain);
+    op_create(&op_id, "cert", &target);
+    let op_id_ret = op_id.clone();
+    tokio::spawn(async move {
+        match issue_le_named(&op_id, &lo, &name, &domain).await {
+            Ok(()) => {
+                op_push(&op_id, "证书签发完成");
+                op_finish(&op_id, "done", "");
+            }
+            Err(e) => op_finish(&op_id, "error", &e.to_string()),
+        }
+    });
+    Ok(json!({ "op_id": op_id_ret, "target": target }))
+}
+
+async fn issue_le_named(op_id: &str, lo: &Layout, name: &str, domain: &str) -> Result<()> {
+    let host = primary_host(domain);
+    if host.is_empty() || host == "_" || host.contains('*') {
+        return Err(anyhow!(
+            "Let's Encrypt 需要一个具体域名（不支持通配符/默认站点）"
+        ));
+    }
+
+    // Step 1: write a temporary HTTP-only conf that serves ONLY the ACME
+    // webroot for this domain, so the http-01 challenge is reachable even
+    // before any site references the cert.
+    op_push(op_id, "准备 HTTP 验证站点 …");
+    let conf_id = format!("acme-{name}");
+    let tmp_conf = format!(
+        "server {{\n    listen 80;\n    server_name {host};\n\
+         \n    location ^~ /.well-known/acme-challenge/ {{\n        root {www}/_acme;\n    }}\n\
+         \n    location / {{\n        return 404;\n    }}\n}}\n",
+        www = lo.www_ref
+    );
+    let conf_file = conf_path(lo, &conf_id);
+    std::fs::create_dir_all(&lo.confd)?;
+    std::fs::write(&conf_file, tmp_conf)?;
+    if let Err(e) = validate_and_reload(lo).await {
+        let _ = std::fs::remove_file(&conf_file);
+        return Err(e);
+    }
+
+    // Steps 2-5: the ACME HTTP-01 dance.
+    let dance = acme_http01(op_id, lo, &host).await;
+
+    // Always drop the temporary challenge conf afterwards.
+    let _ = std::fs::remove_file(&conf_file);
+    let _ = validate_and_reload(lo).await;
+
+    let (cert_chain_pem, key_pem) = dance?;
+
+    // Persist into the named cert store + manifest.
+    std::fs::write(named_crt_file(lo, name), cert_chain_pem)?;
+    std::fs::write(named_key_file(lo, name), &key_pem)?;
+    set_key_perms(&named_key_file(lo, name));
+    let mut certs = load_named_certs();
+    certs.retain(|c| c.name != name);
+    certs.push(NamedCert {
+        name: name.to_string(),
+        domain: domain.to_string(),
+        cert_mode: "le".to_string(),
+    });
+    save_named_certs(&certs)?;
+    Ok(())
+}
+
+/// The ACME HTTP-01 issuance dance for `host`, assuming an HTTP server is
+/// already serving `<www_store>/_acme/.well-known/acme-challenge/`. Creates the
+/// account, places + validates the order, finalizes, and returns the issued
+/// `(chain_pem, key_pem)`.
+async fn acme_http01(op_id: &str, lo: &Layout, host: &str) -> Result<(String, String)> {
+    use instant_acme::{
+        Account, AuthorizationStatus, ChallengeType, Identifier, NewAccount, NewOrder, OrderStatus,
+    };
+
+    let acme_root = format!(
+        "{}/_acme/.well-known/acme-challenge",
+        lo.www_store.display()
+    );
+    std::fs::create_dir_all(&acme_root)?;
+
+    // Create (or implicitly register) an ACME account with Let's Encrypt.
     op_push(op_id, "连接 Let's Encrypt 并创建账户 …");
     let (account, _creds) = Account::create(
         &NewAccount {
@@ -1750,9 +2123,9 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
     .await
     .map_err(|e| anyhow!("创建 ACME 账户失败：{e}"))?;
 
-    // Step 3: place an order for the domain.
+    // Place an order for the domain.
     op_push(op_id, &format!("为 {host} 申请证书 …"));
-    let identifier = Identifier::Dns(host.clone());
+    let identifier = Identifier::Dns(host.to_string());
     let mut order = account
         .new_order(&NewOrder {
             identifiers: &[identifier],
@@ -1760,7 +2133,7 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
         .await
         .map_err(|e| anyhow!("创建订单失败：{e}"))?;
 
-    // Step 4: satisfy the HTTP-01 challenge for each authorization.
+    // Satisfy the HTTP-01 challenge for each authorization.
     let authorizations = order
         .authorizations()
         .await
@@ -1789,9 +2162,10 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
             .map_err(|e| anyhow!("提交验证失败：{e}"))?;
     }
 
-    // Step 5: poll the order until it's ready (or fails), then finalize.
+    // Poll the order until it's ready (or fails), then finalize.
     op_push(op_id, "等待域名验证 …");
     let mut tries = 0;
+    let key_pem;
     let cert_chain_pem = loop {
         tokio::time::sleep(std::time::Duration::from_secs(if tries == 0 {
             1
@@ -1808,11 +2182,11 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
                 op_push(op_id, "验证通过，正在签发证书 …");
                 let key_pair =
                     rcgen::KeyPair::generate().map_err(|e| anyhow!("生成私钥失败：{e}"))?;
-                let mut csr_params = rcgen::CertificateParams::new(vec![host.clone()])
+                let mut csr_params = rcgen::CertificateParams::new(vec![host.to_string()])
                     .map_err(|e| anyhow!("生成 CSR 参数失败：{e}"))?;
                 csr_params
                     .distinguished_name
-                    .push(rcgen::DnType::CommonName, host.clone());
+                    .push(rcgen::DnType::CommonName, host.to_string());
                 let csr = csr_params
                     .serialize_request(&key_pair)
                     .map_err(|e| anyhow!("生成 CSR 失败：{e}"))?;
@@ -1820,12 +2194,8 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
                     .finalize(csr.der())
                     .await
                     .map_err(|e| anyhow!("finalize 失败：{e}"))?;
-                // Persist the issued chain + our key.
                 let chain = wait_for_cert(&mut order).await?;
-                // Save the key alongside (PEM).
-                let key_path = lo.cert_store.join(format!("{}.key", site.id));
-                std::fs::write(&key_path, key_pair.serialize_pem())?;
-                set_key_perms(&key_path);
+                key_pem = key_pair.serialize_pem();
                 break chain;
             }
             OrderStatus::Invalid => {
@@ -1846,20 +2216,7 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
 
     // Clean up challenge token files.
     let _ = cleanup_files(&challenge_files);
-
-    // Write the issued certificate chain.
-    let crt_path = lo.cert_store.join(format!("{}.crt", site.id));
-    std::fs::write(&crt_path, cert_chain_pem)?;
-
-    // Step 6: rewrite with SSL + persist + reload.
-    op_push(op_id, "启用 HTTPS 配置 …");
-    write_site_conf(lo, site).await?;
-    validate_and_reload(lo).await?;
-    let mut sites = load_sites();
-    sites.retain(|s| s.id != site.id);
-    sites.push(site.clone());
-    save_sites(&sites)?;
-    Ok(())
+    Ok((cert_chain_pem, key_pem))
 }
 
 /// Poll an order's certificate endpoint until the chain PEM is available.
@@ -1918,6 +2275,16 @@ mod tests {
     }
 
     #[test]
+    fn cert_name_validation() {
+        assert!(valid_cert_name("mysite-2026"));
+        assert!(valid_cert_name("a.b_c"));
+        assert!(!valid_cert_name(""));
+        assert!(!valid_cert_name(".."));
+        assert!(!valid_cert_name("a/b"));
+        assert!(!valid_cert_name("a b"));
+    }
+
+    #[test]
     fn with_port_defaults_80() {
         assert_eq!(with_port("host"), "host:80");
         assert_eq!(with_port("host:8080"), "host:8080");
@@ -1945,6 +2312,7 @@ mod tests {
             root: "site1".into(),
             ssl,
             cert_mode: "self".into(),
+            cert_name: String::new(),
         }
     }
 

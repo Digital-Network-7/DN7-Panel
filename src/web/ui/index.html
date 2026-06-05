@@ -5,6 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>Tea Panel</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2322d3ee'/%3E%3Cstop offset='1' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='7' fill='url(%23g)'/%3E%3Cg fill='none' stroke='white' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 13h11v5a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5z'/%3E%3Cpath d='M20 14h2.4a2.2 2.2 0 0 1 0 4.4H20'/%3E%3Cpath d='M11.5 9.2c.5-.7.5-1.4 0-2.1M14.5 9.2c.5-.7.5-1.4 0-2.1M17.5 9.2c.5-.7.5-1.4 0-2.1'/%3E%3C/g%3E%3C/svg%3E" />
+<script>
+  // Apply the saved theme synchronously (before first paint) so there's no
+  // dark-mode flash before the main script runs.
+  (function () {
+    try {
+      var m = localStorage.getItem('teaops_theme') || 'auto';
+      var eff = m;
+      if (m === 'auto') eff = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', eff);
+      document.documentElement.setAttribute('data-mode', m);
+    } catch (e) {}
+  })();
+</script>
 <style>
   /* ---- Theme tokens: dark (default) ---- */
   :root {
@@ -226,15 +239,21 @@
   /* ---- File browser ---- */
   .files-page { display:flex; flex-direction:column; flex:1 1 auto; min-height:0; width:100%; padding:18px 24px; box-sizing:border-box; }
   .files-page .fb-scroll { flex:1 1 auto; min-height:0; overflow-y:auto; }
-  .fb-path { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:12.5px; margin-bottom:12px; }
-  .fb-path .seg2 { cursor:pointer; color:var(--cy); }
-  .fb-list { border:1px solid var(--line); border-radius:10px; overflow:hidden; }
-  .fb-row { display:flex; align-items:center; gap:10px; padding:9px 12px; border-bottom:1px solid var(--line); cursor:default; }
-  .fb-row:last-child { border-bottom:none; }
+  /* Sticky toolbar: bordered breadcrumb path bar + action buttons. */
+  .fb-toolbar { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex:0 0 auto; }
+  .fb-pathbar { flex:1; min-width:0; display:flex; align-items:center; gap:4px; flex-wrap:nowrap; overflow-x:auto; white-space:nowrap;
+    font-size:12.5px; padding:7px 12px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; }
+  .fb-pathbar .seg2 { cursor:pointer; color:var(--cy); padding:1px 2px; border-radius:5px; }
+  .fb-pathbar .seg2:hover { background:var(--hov); }
+  .fb-pathbar .sepc { color:var(--mut); opacity:.6; }
+  /* Borderless, lightly-zebra list (no outer box). */
+  .fb-list { border-radius:10px; }
+  .fb-row { display:flex; align-items:center; gap:11px; padding:10px 12px; border-radius:8px; cursor:default; }
   .fb-row:hover { background:var(--hov); }
+  .fb-row .fbic { width:18px; flex:0 0 auto; text-align:center; opacity:.9; }
   .fb-row .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .fb-row .nm.dir { color:var(--cy); cursor:pointer; }
-  .fb-row .sz { color:var(--mut); font-size:12px; }
+  .fb-row .sz { color:var(--mut); font-size:12px; font-variant-numeric:tabular-nums; }
   /* ---- Progress job ---- */
   .prog { height:9px; border-radius:99px; background:var(--hov); overflow:hidden; position:relative; }
   .prog > i { display:block; height:100%; border-radius:99px; background:linear-gradient(90deg,var(--cy),var(--vio)); width:0; transition:width .4s; }
@@ -257,7 +276,7 @@
   <div class="login-card">
     <div class="logo"><span class="cup"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10h12v6a5 5 0 0 1-5 5h-2a5 5 0 0 1-5-5z"/><path d="M18 11h2.5a2.5 2.5 0 0 1 0 5H18"/><path d="M9 6.5c.6-.8.6-1.6 0-2.4M12 6.5c.6-.8.6-1.6 0-2.4M15 6.5c.6-.8.6-1.6 0-2.4"/></svg></span><h1>Tea Panel</h1></div>
     <div class="sub">安全登录到本机控制台</div>
-    <div class="seg">
+    <div class="seg hidden" id="loginSeg">
       <button id="tabPw" class="on" onclick="loginMode('pw')">账号密码</button>
       <button id="tabWx" onclick="loginMode('wx')">微信扫码</button>
     </div>
@@ -309,7 +328,7 @@
 // =========================================================================
 // Core state + helpers
 // =========================================================================
-const S = { token: localStorage.getItem('teaops_web_token') || '', tab: 'dash', timer: null, ws: null, wxTimer: null };
+const S = { token: localStorage.getItem('teaops_web_token') || '', tab: localStorage.getItem('teaops_tab') || 'dash', timer: null, ws: null, wxTimer: null };
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function $(id) { return document.getElementById(id); }
@@ -562,6 +581,7 @@ function stopTab() {
 
 function switchTab(k) {
   S.tab = k;
+  try { localStorage.setItem('teaops_tab', k); } catch (e) {}
   stopTab();
   document.querySelectorAll('#nav button').forEach((b) => b.className = b.dataset.k === k ? 'active' : '');
   $('title').textContent = (TABS.find((t) => t.key === k) || {}).label || '';
@@ -1105,7 +1125,7 @@ function dkPullForm() {
     $('plGo').onclick = () => {
       const image = $('plImg').value.trim(); if (!image) return toast('请输入镜像名', 'err');
       $('plGo').disabled = true; $('plJob').classList.remove('hidden');
-      op('docker', { op: 'pull_image', image, mirror: $('plMirror').value || undefined }).then((r) => renderJob($('plJob'), 'docker', r.op_id, '', { onDone: () => toast('拉取完成', 'ok'), onError: () => { $('plGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('plGo').disabled = false; });
+      op('docker', { op: 'pull_image', image, mirror: $('plMirror').value || undefined }).then((r) => renderJob($('plJob'), 'docker', r.op_id, '', { onDone: () => { toast('拉取完成', 'ok'); close(); if (S.tab === 'docker') renderDocker($('view')); }, onError: () => { $('plGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('plGo').disabled = false; });
     };
   });
 }
@@ -1326,8 +1346,8 @@ function openFileBrowser(title, container) {
 function fileBrowser(mount, container, startPath) {
   let path = startPath || '/';
   mount.innerHTML = `
-    <div class="row" style="margin-bottom:12px">
-      <div class="fb-path" id="fbPath" style="flex:1"></div>
+    <div class="fb-toolbar">
+      <div class="fb-pathbar" id="fbPath"></div>
       <button class="btn sm sec" id="fbMkdir">新建目录</button>
       <label class="btn sm" style="position:relative;overflow:hidden">上传<input type="file" id="fbUp" style="position:absolute;inset:0;opacity:0;cursor:pointer" /></label>
       <button class="btn sm sec" id="fbRef">刷新</button>
@@ -1336,8 +1356,8 @@ function fileBrowser(mount, container, startPath) {
   const scope = () => (container ? { container } : {});
   const renderPath = () => {
     const parts = path.split('/').filter(Boolean);
-    let acc = '', h = `<span class="seg2" data-p="/">/</span>`;
-    parts.forEach((seg) => { acc += '/' + seg; h += `<span class="seg2" data-p="${esc(acc)}">${esc(seg)}</span><span class="mut">/</span>`; });
+    let acc = '', h = `<span class="seg2" data-p="/">根目录</span>`;
+    parts.forEach((seg) => { acc += '/' + seg; h += `<span class="sepc">/</span><span class="seg2" data-p="${esc(acc)}">${esc(seg)}</span>`; });
     $('fbPath').innerHTML = h;
     document.querySelectorAll('#fbPath .seg2').forEach((s) => s.onclick = () => { path = s.dataset.p; load(); });
   };
@@ -1346,12 +1366,12 @@ function fileBrowser(mount, container, startPath) {
     api('/api/files/list', { method: 'POST', body: JSON.stringify(Object.assign({ path }, scope())) }).then((b) => {
       const entries = b.data.entries || []; path = b.data.path || path; renderPath();
       const list = $('fbList'); list.innerHTML = '';
-      if (path !== '/') { const up = el('div', { class: 'fb-row' }, `<span>↩</span><span class="nm dir">..</span>`); up.querySelector('.nm').onclick = () => { path = path.replace(/\/[^/]+\/?$/, '') || '/'; load(); }; list.appendChild(up); }
+      if (path !== '/') { const up = el('div', { class: 'fb-row' }, `<span class="fbic">↩</span><span class="nm dir">上级目录</span>`); up.querySelector('.nm').onclick = () => { path = path.replace(/\/[^/]+\/?$/, '') || '/'; load(); }; list.appendChild(up); }
       if (!entries.length && path === '/') { /* keep up row only */ }
       entries.forEach((e) => {
         const row = el('div', { class: 'fb-row' });
         const full = (path === '/' ? '' : path) + '/' + e.name;
-        row.innerHTML = `<span style="width:18px">${e.is_dir ? '📁' : '📄'}</span><span class="nm ${e.is_dir ? 'dir' : ''}">${esc(e.name)}</span><span class="sz">${e.is_dir ? '' : fmtBytes(e.size)}</span>`;
+        row.innerHTML = `<span class="fbic">${e.is_dir ? '📁' : '📄'}</span><span class="nm ${e.is_dir ? 'dir' : ''}">${esc(e.name)}</span><span class="sz">${e.is_dir ? '' : fmtBytes(e.size)}</span>`;
         const acts = el('div', { class: 'actions', style: 'margin-left:10px' });
         if (e.is_dir) { row.querySelector('.nm').onclick = () => { path = full; load(); }; }
         else { const dl = el('button', { class: 'btn sm sec' }, '下载'); dl.onclick = () => downloadFile(full, container); acts.appendChild(dl); }
@@ -1427,11 +1447,19 @@ function ngAddSite(reload) {
       <div class="full"><label class="lbl">类型</label><select id="nsKind" class="field"><option value="proxy_host">反向代理到主机/地址</option><option value="proxy_container">反向代理到容器</option><option value="static">静态站点</option></select></div>
       <div class="full" id="nsKindFields"></div>
       <div class="full"><label style="display:flex;gap:7px;align-items:center"><input type="checkbox" id="nsSsl" /> 启用 HTTPS</label></div>
-      <div class="full hidden" id="nsCertWrap"><label class="lbl">证书方式</label><select id="nsCert" class="field"><option value="le">Let's Encrypt 自动签发</option><option value="self">自签名</option><option value="manual">手动粘贴</option></select></div>
+      <div class="full hidden" id="nsCertWrap"><label class="lbl">证书方式</label><select id="nsCert" class="field"><option value="named">引用证书库</option><option value="le">Let's Encrypt 自动签发</option><option value="self">自签名</option><option value="manual">手动粘贴</option></select></div>
+      <div class="full hidden" id="nsNamedWrap"><label class="lbl">选择证书</label><select id="nsNamed" class="field"></select></div>
       <div class="full hidden" id="nsManual"><label class="lbl">证书 PEM</label><textarea id="nsCertPem" class="field" rows="3"></textarea><label class="lbl" style="margin-top:8px">私钥 PEM</label><textarea id="nsKeyPem" class="field" rows="3"></textarea></div>
     </div>
     <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="nsGo">创建</button></div>
     <div class="hidden" id="nsJob" style="margin-top:14px"></div>`, (close) => {
+    let named = [];
+    op('nginx', { op: 'list_named_certs' }).then((d) => {
+      named = (d.certs || []).filter((c) => c.has_cert);
+      $('nsNamed').innerHTML = named.length
+        ? named.map((c) => `<option value="${esc(c.name)}">${esc(c.name)}${c.domain ? '（' + esc(c.domain) + '）' : ''}</option>`).join('')
+        : '<option value="">证书库为空，请先在「SSL 证书」创建</option>';
+    }).catch(() => {});
     const kindFields = () => {
       const k = $('nsKind').value;
       $('nsKindFields').innerHTML = k === 'proxy_host'
@@ -1442,7 +1470,12 @@ function ngAddSite(reload) {
     };
     $('nsKind').onchange = kindFields; kindFields();
     $('nsSsl').onchange = () => { $('nsCertWrap').classList.toggle('hidden', !$('nsSsl').checked); certFields(); };
-    const certFields = () => { $('nsManual').classList.toggle('hidden', !($('nsSsl').checked && $('nsCert').value === 'manual')); };
+    const certFields = () => {
+      const on = $('nsSsl').checked;
+      const m = $('nsCert').value;
+      $('nsManual').classList.toggle('hidden', !(on && m === 'manual'));
+      $('nsNamedWrap').classList.toggle('hidden', !(on && m === 'named'));
+    };
     $('nsCert') && ($('nsCert').onchange = certFields);
     $('nsGo').onclick = () => {
       const k = $('nsKind').value;
@@ -1451,7 +1484,11 @@ function ngAddSite(reload) {
       if (k === 'proxy_host') body.target_url = $('nsTarget').value.trim();
       else if (k === 'proxy_container') { body.container = $('nsCtn').value.trim(); body.container_port = Number($('nsCtnPort').value); }
       else body.root = $('nsRoot').value.trim();
-      if (body.ssl) { body.cert_mode = $('nsCert').value; if (body.cert_mode === 'manual') { body.cert_pem = $('nsCertPem').value; body.key_pem = $('nsKeyPem').value; } }
+      if (body.ssl) {
+        body.cert_mode = $('nsCert').value;
+        if (body.cert_mode === 'manual') { body.cert_pem = $('nsCertPem').value; body.key_pem = $('nsKeyPem').value; }
+        else if (body.cert_mode === 'named') { body.cert_name = $('nsNamed').value; if (!body.cert_name) return toast('请先在 SSL 证书库创建证书', 'err'); }
+      }
       $('nsGo').disabled = true; $('nsJob').classList.remove('hidden'); $('nsJob').innerHTML = '<div class="mut">提交中…</div>';
       op('nginx', body).then((r) => {
         if (r.op_id) renderJob($('nsJob'), 'nginx', r.op_id, '', { onDone: () => { toast('站点已创建', 'ok'); close(); reload(); }, onError: () => { $('nsGo').disabled = false; } });
@@ -1461,23 +1498,90 @@ function ngAddSite(reload) {
   });
 }
 
-// SSL certificate management: list each site's cert status and (re)issue or
-// replace its certificate (Let's Encrypt / self-signed / manual).
+// SSL certificate management. Two sections:
+//   1. Standalone certs — create/list/delete certs independent of any site.
+//   2. Per-site certs — each site's current cert status + (re)issue.
 function ngCerts() {
-  modal('SSL 证书管理', '<div id="ngCertBody">' + loading() + '</div>', () => {
-    const load = () => op('nginx', { op: 'list_certs' }).then((d) => {
+  modal('SSL 证书管理', `
+    <div class="seg" id="ngCertTabs" style="margin-bottom:14px">
+      <button class="on" data-t="standalone">证书库</button>
+      <button data-t="sites">站点证书</button>
+    </div>
+    <div id="ngCertBody">${loading()}</div>`, () => {
+    let tab = 'standalone';
+    const loadStandalone = () => op('nginx', { op: 'list_named_certs' }).then((d) => {
+      const certs = d.certs || [];
+      let h = '<div class="row" style="margin-bottom:12px"><span class="mut" style="font-size:12.5px;flex:1">独立创建的证书可在「添加站点」或「站点证书」中被复用。</span><button class="btn sm" id="ngCertNew">创建证书</button></div>';
+      if (!certs.length) { h += '<div class="empty">暂无证书。点击「创建证书」新建。</div>'; }
+      else {
+        h += '<table class="optable"><tr><th>名称</th><th>域名</th><th>方式</th><th>到期</th><th>使用</th><th class="act">操作</th></tr>';
+        certs.forEach((c) => {
+          const modeLabel = { le: "Let's Encrypt", self: '自签名', manual: '手动' }[c.cert_mode] || c.cert_mode;
+          const used = (c.used_by && c.used_by.length) ? esc(c.used_by.join('、')) : '<span class="mut">未使用</span>';
+          h += `<tr><td><b>${esc(c.name)}</b>${c.has_cert ? '' : ' <span class="chip warn">缺失</span>'}</td><td class="mut">${esc(c.domain || '-')}</td><td class="mut">${esc(modeLabel)}</td><td class="mono" style="font-size:12px">${esc(c.not_after || '-')}</td><td style="font-size:12px">${used}</td><td class="act"><button class="btn sm danger" data-del="${esc(c.name)}">删除</button></td></tr>`;
+        });
+        h += '</table>';
+      }
+      $('ngCertBody').innerHTML = '<div class="tablewrap">' + h + '</div>';
+      $('ngCertNew').onclick = () => ngCreateCert(loadStandalone);
+      document.querySelectorAll('#ngCertBody [data-del]').forEach((b) => b.onclick = async () => { if (await confirmDanger('删除证书「' + b.dataset.del + '」？')) op('nginx', { op: 'delete_cert', cert_name: b.dataset.del }).then(() => { toast('已删除', 'ok'); loadStandalone(); }).catch((e) => toast(e.message, 'err')); });
+    }).catch((e) => { $('ngCertBody').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+    const loadSites = () => op('nginx', { op: 'list_certs' }).then((d) => {
       const certs = d.certs || [];
       if (!certs.length) { $('ngCertBody').innerHTML = '<div class="empty">暂无站点。先在「添加站点」创建站点，再来管理其证书。</div>'; return; }
       let h = '<table class="optable"><tr><th>域名</th><th>方式</th><th>到期</th><th>状态</th><th class="act">操作</th></tr>';
       certs.forEach((c) => {
-        const modeLabel = { le: "Let's Encrypt", self: '自签名', manual: '手动' }[c.cert_mode] || (c.ssl ? c.cert_mode : '—');
+        const modeLabel = c.cert_mode === 'named' ? '引用证书库' : ({ le: "Let's Encrypt", self: '自签名', manual: '手动' }[c.cert_mode] || (c.ssl ? c.cert_mode : '—'));
         const status = !c.ssl ? '<span class="chip">未启用</span>' : (c.has_cert ? '<span class="chip on">已签发</span>' : '<span class="chip warn">缺失</span>');
         h += `<tr><td><b>${esc(c.server_name)}</b></td><td class="mut">${esc(modeLabel)}</td><td class="mono" style="font-size:12px">${esc(c.not_after || '-')}</td><td>${status}</td><td class="act"><button class="btn sm" data-id="${esc(c.id)}" data-name="${esc(c.server_name)}">配置证书</button></td></tr>`;
       });
       $('ngCertBody').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
-      document.querySelectorAll('#ngCertBody [data-id]').forEach((b) => b.onclick = () => ngSetCert(b.dataset.id, b.dataset.name, load));
+      document.querySelectorAll('#ngCertBody [data-id]').forEach((b) => b.onclick = () => ngSetCert(b.dataset.id, b.dataset.name, loadSites));
     }).catch((e) => { $('ngCertBody').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
-    load();
+    const refresh = () => { tab === 'standalone' ? loadStandalone() : loadSites(); };
+    document.querySelectorAll('#ngCertTabs button').forEach((b) => b.onclick = () => {
+      tab = b.dataset.t;
+      document.querySelectorAll('#ngCertTabs button').forEach((x) => x.className = x.dataset.t === tab ? 'on' : '');
+      $('ngCertBody').innerHTML = loading();
+      refresh();
+    });
+    refresh();
+  });
+}
+
+// Create a standalone named certificate (self-signed / LE / manual).
+function ngCreateCert(reload) {
+  modal('创建证书', `
+    <div class="formgrid">
+      <div class="full"><label class="lbl">证书名称</label><input id="ccName" class="field" placeholder="例如 mysite-2026" /></div>
+      <div class="full"><label class="lbl">证书方式</label><select id="ccMode" class="field"><option value="self">自签名</option><option value="le">Let's Encrypt 自动签发</option><option value="manual">手动粘贴</option></select></div>
+      <div class="full" id="ccDomainWrap"><label class="lbl">域名</label><input id="ccDomain" class="field" placeholder="example.com" /></div>
+      <div class="full hidden" id="ccManual"><label class="lbl">证书 PEM</label><textarea id="ccCert" class="field" rows="3"></textarea><label class="lbl" style="margin-top:8px">私钥 PEM</label><textarea id="ccKey" class="field" rows="3"></textarea></div>
+    </div>
+    <p class="mut" style="font-size:12px;margin-top:6px" id="ccHint"></p>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="ccGo">创建</button></div>
+    <div class="hidden" id="ccJob" style="margin-top:14px"></div>`, (close) => {
+    const sync = () => {
+      const m = $('ccMode').value;
+      $('ccManual').classList.toggle('hidden', m !== 'manual');
+      $('ccDomainWrap').classList.toggle('hidden', m === 'manual');
+      $('ccHint').textContent = m === 'le'
+        ? "Let's Encrypt 需要该域名已解析到本机且 80 端口可被公网访问。"
+        : m === 'self' ? '自签名证书浏览器会提示不受信任，适合内网/测试。' : '粘贴你已有的证书链和私钥（PEM）。';
+    };
+    $('ccMode').onchange = sync; sync();
+    $('ccGo').onclick = () => {
+      const mode = $('ccMode').value;
+      const body = { op: 'create_cert', cert_name: $('ccName').value.trim(), cert_mode: mode };
+      if (!body.cert_name) return toast('请输入证书名称', 'err');
+      if (mode === 'manual') { body.cert_pem = $('ccCert').value; body.key_pem = $('ccKey').value; }
+      else { body.server_name = $('ccDomain').value.trim(); if (!body.server_name) return toast('请输入域名', 'err'); }
+      $('ccGo').disabled = true; $('ccJob').classList.remove('hidden'); $('ccJob').innerHTML = '<div class="mut">提交中…</div>';
+      op('nginx', body).then((r) => {
+        if (r.op_id) renderJob($('ccJob'), 'nginx', r.op_id, '', { onDone: () => { toast('证书已创建', 'ok'); close(); reload(); }, onError: () => { $('ccGo').disabled = false; } });
+        else { toast('证书已创建', 'ok'); close(); reload(); }
+      }).catch((e) => { toast(e.message, 'err'); $('ccJob').innerHTML = ''; $('ccGo').disabled = false; });
+    };
   });
 }
 
@@ -1486,26 +1590,40 @@ function ngSetCert(siteId, name, reload) {
   modal('配置证书 · ' + name, `
     <label class="lbl">证书方式</label>
     <select id="scMode" class="field" style="margin-bottom:14px">
+      <option value="named">引用证书库</option>
       <option value="le">Let's Encrypt 自动签发</option>
       <option value="self">自签名</option>
       <option value="manual">手动粘贴</option>
     </select>
+    <div class="hidden" id="scNamedWrap"><label class="lbl">选择证书</label><select id="scNamed" class="field" style="margin-bottom:14px"></select></div>
     <div class="hidden" id="scManual"><label class="lbl">证书 PEM</label><textarea id="scCert" class="field" rows="4"></textarea><label class="lbl" style="margin-top:8px">私钥 PEM</label><textarea id="scKey" class="field" rows="4"></textarea></div>
-    <p class="mut" style="font-size:12px;margin-top:6px" id="scHint">Let's Encrypt 需要该域名已解析到本机且 80 端口可被公网访问。</p>
+    <p class="mut" style="font-size:12px;margin-top:6px" id="scHint"></p>
     <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="scGo">应用</button></div>
     <div class="hidden" id="scJob" style="margin-top:14px"></div>`, (close) => {
+    let named = [];
+    op('nginx', { op: 'list_named_certs' }).then((d) => {
+      named = (d.certs || []).filter((c) => c.has_cert);
+      $('scNamed').innerHTML = named.length
+        ? named.map((c) => `<option value="${esc(c.name)}">${esc(c.name)}${c.domain ? '（' + esc(c.domain) + '）' : ''}</option>`).join('')
+        : '<option value="">证书库为空，请先在「证书库」创建</option>';
+      sync();
+    }).catch(() => {});
     const sync = () => {
       const m = $('scMode').value;
       $('scManual').classList.toggle('hidden', m !== 'manual');
+      $('scNamedWrap').classList.toggle('hidden', m !== 'named');
       $('scHint').textContent = m === 'le'
         ? "Let's Encrypt 需要该域名已解析到本机且 80 端口可被公网访问。"
-        : m === 'self' ? '自签名证书浏览器会提示不受信任，适合内网/测试。' : '粘贴你已有的证书链和私钥（PEM）。';
+        : m === 'self' ? '自签名证书浏览器会提示不受信任，适合内网/测试。'
+        : m === 'named' ? '复用证书库中已创建的证书，多个站点可共用同一张证书。'
+        : '粘贴你已有的证书链和私钥（PEM）。';
     };
     $('scMode').onchange = sync; sync();
     $('scGo').onclick = () => {
       const mode = $('scMode').value;
       const body = { op: 'set_cert', site_id: siteId, cert_mode: mode };
       if (mode === 'manual') { body.cert_pem = $('scCert').value; body.key_pem = $('scKey').value; }
+      else if (mode === 'named') { body.cert_name = $('scNamed').value; if (!body.cert_name) return toast('请先在证书库创建证书', 'err'); }
       $('scGo').disabled = true; $('scJob').classList.remove('hidden'); $('scJob').innerHTML = '<div class="mut">提交中…</div>';
       op('nginx', body).then((r) => {
         if (r.op_id) renderJob($('scJob'), 'nginx', r.op_id, '', { onDone: () => { toast('证书已配置', 'ok'); close(); reload(); }, onError: () => { $('scGo').disabled = false; } });
@@ -1693,19 +1811,17 @@ function renderSettings(v) {
 $('pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
 
 // Only offer WeChat scan login when this server is bound to a mini-program
-// account (scan login validates server ownership). Otherwise hide the tab
-// segment entirely and stay on password login.
+// account (scan login validates server ownership). The tab segment starts
+// hidden and is revealed only once we confirm a binding — so password-only
+// servers never see a WeChat tab flash, and bound servers get it as soon as
+// the status returns.
 function initWxOption() {
   fetch('/api/wx/status').then((r) => r.json()).then((b) => {
-    if (b && b.bound) return; // keep the tab
-    const seg = document.querySelector('#login .seg');
-    if (seg) seg.classList.add('hidden');
-    loginMode('pw');
-  }).catch(() => {
-    const seg = document.querySelector('#login .seg');
-    if (seg) seg.classList.add('hidden');
-    loginMode('pw');
-  });
+    if (b && b.bound) {
+      const seg = $('loginSeg');
+      if (seg) seg.classList.remove('hidden');
+    }
+  }).catch(() => {});
 }
 initWxOption();
 
