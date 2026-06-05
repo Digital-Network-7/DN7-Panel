@@ -364,7 +364,7 @@
   <!-- Brand pinned top-left. -->
   <div class="login-brand"><span class="cup"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10h12v6a5 5 0 0 1-5 5h-2a5 5 0 0 1-5-5z"/><path d="M18 11h2.5a2.5 2.5 0 0 1 0 5H18"/><path d="M9 6.5c.6-.8.6-1.6 0-2.4M12 6.5c.6-.8.6-1.6 0-2.4M15 6.5c.6-.8.6-1.6 0-2.4"/></svg></span><h1>Tea Panel</h1></div>
   <div class="login-card">
-    <div class="login-title">Login</div>
+    <div class="login-title">SIGN IN</div>
     <div class="sub">安全登录到本机控制台</div>
     <div class="seg hidden" id="loginSeg">
       <button id="tabPw" class="on" onclick="loginMode('pw')">账号密码</button>
@@ -372,10 +372,10 @@
     </div>
     <div class="login-panes">
       <div id="panewPw">
-        <label class="lbl">账号</label>
-        <input id="user" class="field" style="margin-bottom:12px" value="admin" autocomplete="username" />
-        <label class="lbl">密码</label>
-        <input id="pw" class="field" type="password" placeholder="访问密码" autocomplete="current-password" style="margin-bottom:16px" />
+        <label class="lbl">Account</label>
+        <input id="user" class="field" style="margin-bottom:12px" placeholder="Please enter your account" autocomplete="username" />
+        <label class="lbl">Password</label>
+        <input id="pw" class="field" type="password" placeholder="Please enter your password" autocomplete="current-password" style="margin-bottom:16px" />
         <button class="btn" style="width:100%" onclick="doLogin()">登 录</button>
         <div class="err" id="loginErr" style="margin-top:10px"></div>
       </div>
