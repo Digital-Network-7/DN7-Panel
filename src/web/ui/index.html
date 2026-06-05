@@ -147,8 +147,15 @@
   .dash .card { padding:15px 18px; }
   .dash .statrow .card { display:flex; flex-direction:column; min-height:128px; }
   .dash .card .big { font-size:24px; }
-  .dash .procwrap { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
-  .dash .procwrap .scroll { flex:1 1 auto; min-height:0; overflow-y:auto; }
+  .dash .procwrap { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; padding:10px 8px; }
+  /* Process table: fixed header table + separately scrolling body table. The
+     header sits OUTSIDE the scroll area so the scrollbar never runs beside it;
+     a reserved gutter (var(--sbw)) keeps the two tables' columns aligned. */
+  .dash .procwrap .proc-head { flex:0 0 auto; }
+  .dash .procwrap .scroll { flex:1 1 auto; min-height:0; overflow-y:auto; scrollbar-gutter:stable; }
+  .dash .procwrap .scroll::-webkit-scrollbar { width:9px; }
+  .dash .procwrap .scroll::-webkit-scrollbar-thumb { background:var(--line2); border-radius:99px; border:2px solid transparent; background-clip:content-box; }
+  .dash .procwrap .scroll::-webkit-scrollbar-thumb:hover { background:var(--mut); background-clip:content-box; }
   /* Network stat card: left/right split (上行 amber, 下行 blue). */
   .netcard .netsplit { display:flex; gap:10px; margin-top:2px; }
   .netcard .netcell { flex:1; min-width:0; }
@@ -172,13 +179,9 @@
   table.optable td.act, table.optable th.act { white-space:nowrap; width:1%; text-align:right; }
   table.optable td.act .actions { flex-wrap:nowrap; justify-content:flex-end; }
   .tablewrap { overflow-x:auto; }
-  /* Fixed-layout process table: stable columns that don't reflow each refresh. */
+  /* Fixed-layout process tables (header + body share identical columns). */
   table.proctable { table-layout:fixed; border-collapse:separate; border-spacing:0; }
-  /* Sticky header that stays put while the list scrolls. With separated borders
-     the header travels cleanly (no row line peeking through / jitter); a
-     box-shadow draws the divider instead of a collapsed border. */
-  table.proctable th { position:sticky; top:0; z-index:2; background:var(--panel-solid);
-    border-bottom:none; box-shadow:inset 0 -1px 0 var(--line); }
+  table.proctable.proc-head-tbl th { background:var(--panel-solid); box-shadow:inset 0 -1px 0 var(--line); border-bottom:none; }
   table.proctable td { border-bottom:1px solid var(--line); }
   table.proctable col.c-pid { width:68px; }
   table.proctable col.c-user { width:96px; }
@@ -660,7 +663,7 @@ function renderDash(v) {
   v.innerHTML = `
     <div class="dash">
       <div class="statrow" id="cards"></div>
-      <div class="card procwrap"><div class="scroll" id="procs">${loading()}</div></div>
+      <div class="card procwrap"><div class="proc-head" id="procHead"></div><div class="scroll" id="procs">${loading()}</div></div>
     </div>`;
   const hist = { rx: [], tx: [] };
   const st = { sort: 'cpu', data: null };
@@ -680,7 +683,7 @@ function renderDash(v) {
     api('/api/procs').then((b) => { st.data = b.data; renderProcs(st); }).catch(() => {});
   };
   // Clicking the CPU / 内存 header toggles which ranking is shown.
-  $('procs').addEventListener('click', (e) => {
+  $('procHead').addEventListener('click', (e) => {
     const th = e.target.closest('[data-sort]');
     if (!th) return;
     st.sort = th.dataset.sort;
@@ -689,19 +692,30 @@ function renderDash(v) {
   refresh(); S.timer = setInterval(refresh, 2000);
 }
 // Render the process ranking. `st.sort` is 'cpu' | 'mem'; the agent returns both
-// pre-sorted lists (by_cpu / by_mem) so switching is instant + accurate.
+// pre-sorted lists (by_cpu / by_mem) so switching is instant + accurate. The
+// header is a separate (non-scrolling) table from the scrolling body so the
+// scrollbar never overlaps the header and the columns never jitter.
+const PROC_COLS = '<colgroup><col class="c-pid"/><col class="c-name"/><col class="c-user"/><col class="c-time"/><col class="c-cpu"/><col class="c-mem"/></colgroup>';
 function renderProcs(st) {
   if (!st.data) return;
   const rows = ((st.sort === 'mem' ? st.data.by_mem : st.data.by_cpu) || []).slice(0, 30);
   const arrow = (k) => (st.sort === k ? ' <span class="sortar">▼</span>' : '');
-  let h = '<table class="proctable"><colgroup><col class="c-pid"/><col class="c-name"/><col class="c-user"/><col class="c-time"/><col class="c-cpu"/><col class="c-mem"/></colgroup>' +
+  // Header table (fixed, outside the scroll area).
+  $('procHead').innerHTML = '<table class="proctable proc-head-tbl">' + PROC_COLS +
     '<tr><th class="num">PID</th><th>进程</th><th>用户</th><th class="num">TIME</th>' +
     `<th class="num sortable" data-sort="cpu">CPU${arrow('cpu')}</th>` +
-    `<th class="num sortable" data-sort="mem">内存${arrow('mem')}</th></tr>`;
+    `<th class="num sortable" data-sort="mem">内存${arrow('mem')}</th></tr></table>`;
+  // Body table (scrolls).
+  let h = '<table class="proctable">' + PROC_COLS + '<tbody>';
   rows.forEach((p) => {
     h += `<tr><td class="num mono">${p.pid}</td><td class="mono nm" title="${esc(p.name)}">${esc(p.name)}</td><td class="mut nm" title="${esc(p.user || '')}">${esc(p.user || '-')}</td><td class="num mono">${fmtProcTime(p.time)}</td><td class="num">${(p.cpu || 0).toFixed(1)}%</td><td class="num">${fmtBytes(p.mem)}</td></tr>`;
   });
-  $('procs').innerHTML = h + '</table>';
+  const sc = $('procs');
+  sc.innerHTML = h + '</tbody></table>';
+  // Pad the header by the body's actual scrollbar width so columns stay aligned
+  // (and the scrollbar never sits beside the header).
+  const sbw = sc.offsetWidth - sc.clientWidth;
+  $('procHead').style.paddingRight = (sbw > 0 ? sbw : 0) + 'px';
 }
 // Format cumulative CPU time (seconds) like top: M:SS, or H:MM:SS past an hour.
 function fmtProcTime(sec) {
