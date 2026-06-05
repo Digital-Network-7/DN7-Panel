@@ -15,10 +15,18 @@
       if (m === 'auto') eff = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
       document.documentElement.setAttribute('data-theme', eff);
       document.documentElement.setAttribute('data-mode', m);
+      // Decide auth view before first paint so a logged-in refresh never flashes
+      // the login page (CSS below hides the opposite view based on this attr).
+      document.documentElement.setAttribute('data-auth', localStorage.getItem('teaops_web_token') ? 'in' : 'out');
     } catch (e) {}
   })();
 </script>
 <style>
+  /* Pre-paint auth gating: hide whichever view doesn't match the saved token,
+     set synchronously in <head> so there's no login-page flash on refresh.
+     The main script still calls showApp()/logout to keep these in sync. */
+  html[data-auth="in"] #login { display:none !important; }
+  html[data-auth="out"] #app { display:none !important; }
   /* ---- Theme tokens: dark (default) ---- */
   :root {
     --bg:#070b14; --panel:rgba(18,26,42,0.72); --panel-solid:#0e1626; --panel2:rgba(8,13,24,0.85);
@@ -561,6 +569,7 @@ function stopWxLogin() { if (S.wxTimer) { clearInterval(S.wxTimer); S.wxTimer = 
 function logout() {
   if (S.token) api('/api/logout', { method: 'POST' }).catch(() => {});
   S.token = ''; localStorage.removeItem('teaops_web_token');
+  document.documentElement.setAttribute('data-auth', 'out');
   stopTab();
   $('app').classList.add('hidden');
   $('login').classList.remove('hidden');
@@ -594,6 +603,7 @@ const TABS = [
 ];
 
 function showApp() {
+  document.documentElement.setAttribute('data-auth', 'in');
   $('login').classList.add('hidden');
   $('app').classList.remove('hidden');
   const nav = $('nav'); nav.innerHTML = '';
