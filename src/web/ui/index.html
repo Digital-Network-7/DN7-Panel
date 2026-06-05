@@ -64,7 +64,20 @@
   input,select,textarea,button { font:inherit; color:var(--fg); }
   .field { width:100%; padding:10px 12px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; outline:none; transition:border-color .15s,box-shadow .15s; }
   .field:focus { border-color:var(--cy); box-shadow:0 0 0 3px var(--acc-soft); }
-  select.field { appearance:none; cursor:pointer; }
+  select.field { appearance:none; -webkit-appearance:none; cursor:pointer; padding-right:32px;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238294b0' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat:no-repeat; background-position:right 11px center; }
+  /* Custom select popup: replaces the native OS dropdown list so options match
+     the app theme. The real <select> stays as the source of truth (value /
+     change / dynamic options); we only intercept its dropdown and render this. */
+  .selx-pop { position:fixed; z-index:120; max-height:260px; overflow-y:auto;
+    background:var(--panel-solid); border:1px solid var(--line2); border-radius:10px; box-shadow:var(--shadow); padding:4px; }
+  .selx-opt { padding:9px 11px; font-size:13px; cursor:pointer; border-radius:7px; display:flex; align-items:center; gap:8px; }
+  .selx-opt:hover, .selx-opt.active { background:var(--hov); }
+  .selx-opt.sel { color:var(--cy); }
+  .selx-opt.sel::after { content:'✓'; margin-left:auto; font-size:12px; }
+  .selx-opt.dis { color:var(--mut); cursor:default; opacity:.55; }
+  .selx-opt.dis:hover { background:none; }
   .btn { background:linear-gradient(135deg,var(--br),var(--vio)); color:#fff; border:none; padding:10px 16px; border-radius:10px; cursor:pointer; font-weight:500; letter-spacing:.3px; transition:transform .08s,opacity .15s; }
   .btn:hover { opacity:.92; } .btn:active { transform:translateY(1px); }
   .btn.sec { background:var(--hov); border:1px solid var(--line); color:var(--fg); }
@@ -1999,6 +2012,83 @@ function renderSettings(v) {
     };
   }).catch((e) => { v.innerHTML = '<div class="card">加载失败：' + esc(e.message) + '</div>'; });
 }
+
+// =========================================================================
+// Custom select dropdown — replaces the native OS <select> popup (which looks
+// out of place, especially in dark mode) with a themed list, app-wide. The
+// real <select> stays the source of truth: we intercept its dropdown, render
+// our own popup, then write the chosen value back and fire a `change` event so
+// every existing handler keeps working. Works for dynamically-added selects too
+// via event delegation.
+// =========================================================================
+const SELX = { sel: null, pop: null };
+function selxClose() {
+  if (SELX.pop) { SELX.pop.remove(); SELX.pop = null; }
+  SELX.sel = null;
+}
+function selxOpen(sel) {
+  selxClose();
+  if (sel.disabled || !sel.options.length) return;
+  SELX.sel = sel;
+  const pop = el('div', { class: 'selx-pop' });
+  Array.from(sel.options).forEach((o, i) => {
+    const opt = el('div', { class: 'selx-opt' + (i === sel.selectedIndex ? ' sel' : '') + (o.disabled ? ' dis' : '') }, esc(o.textContent));
+    if (!o.disabled) {
+      opt.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        if (sel.selectedIndex !== i) { sel.selectedIndex = i; sel.dispatchEvent(new Event('change', { bubbles: true })); }
+        selxClose();
+      });
+    }
+    pop.appendChild(opt);
+  });
+  document.body.appendChild(pop);
+  // Position under (or above, if no room) the select, matching its width.
+  const r = sel.getBoundingClientRect();
+  pop.style.left = r.left + 'px';
+  pop.style.width = r.width + 'px';
+  const below = window.innerHeight - r.bottom;
+  if (below < 280 && r.top > below) { pop.style.bottom = (window.innerHeight - r.top + 4) + 'px'; }
+  else { pop.style.top = (r.bottom + 4) + 'px'; }
+  // Scroll the selected option into view.
+  const selOpt = pop.querySelector('.selx-opt.sel');
+  if (selOpt) selOpt.scrollIntoView({ block: 'nearest' });
+}
+// Intercept native dropdown on pointerdown (capture) for any <select>.
+document.addEventListener('mousedown', (e) => {
+  const sel = e.target.closest && e.target.closest('select');
+  if (sel) {
+    e.preventDefault(); // suppress the native OS dropdown
+    if (SELX.sel === sel) { selxClose(); } else { sel.focus(); selxOpen(sel); }
+    return;
+  }
+  if (SELX.pop && !e.target.closest('.selx-pop')) selxClose();
+}, true);
+// Keyboard: open on Enter/Space/Arrow when focused; navigate + select in popup.
+document.addEventListener('keydown', (e) => {
+  const a = document.activeElement;
+  if (a && a.tagName === 'SELECT' && !SELX.pop && (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+    e.preventDefault(); selxOpen(a); return;
+  }
+  if (!SELX.pop) return;
+  if (e.key === 'Escape') { e.preventDefault(); selxClose(); return; }
+  const opts = Array.from(SELX.pop.querySelectorAll('.selx-opt:not(.dis)'));
+  if (!opts.length) return;
+  let cur = opts.findIndex((o) => o.classList.contains('active'));
+  if (cur < 0) cur = opts.findIndex((o) => o.classList.contains('sel'));
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    cur = e.key === 'ArrowDown' ? Math.min(opts.length - 1, cur + 1) : Math.max(0, cur - 1);
+    opts.forEach((o) => o.classList.remove('active'));
+    opts[cur].classList.add('active'); opts[cur].scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter' && cur >= 0) {
+    e.preventDefault(); opts[cur].dispatchEvent(new MouseEvent('mousedown'));
+  }
+}, true);
+// Reposition/close on scroll or resize (popup is fixed-position). Ignore scroll
+// events originating inside the popup itself (long option lists scroll).
+window.addEventListener('scroll', (e) => { if (SELX.pop && e.target && e.target.closest && e.target.closest('.selx-pop')) return; selxClose(); }, true);
+window.addEventListener('resize', selxClose);
 
 // =========================================================================
 // Bootstrap
