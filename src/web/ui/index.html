@@ -598,7 +598,7 @@ function startWxLogin() {
     .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok || b.ok === false) throw new Error(b.error || '无法发起'); return b; })
     .then((b) => {
       $('qrbox').innerHTML = b.svg || '';
-      $('qrstate').textContent = '请在微信小程序「茶记本」中使用「扫一扫」确认登录';
+      $('qrstate').textContent = '';
       pollWx(b.ticket);
     })
     .catch((e) => { $('qrstate').textContent = e.message; });
