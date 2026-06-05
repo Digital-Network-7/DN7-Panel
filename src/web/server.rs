@@ -648,6 +648,12 @@ async fn backend_call(state: &Shared, path: &str, extra: Value) -> anyhow::Resul
         .json(&Value::Object(body))
         .send()
         .await?;
+    let status = resp.status();
+    // A missing route (older backend) returns 404 with a non-JSON body; surface
+    // the status so callers can fall back instead of silently failing.
+    if status == reqwest::StatusCode::NOT_FOUND {
+        anyhow::bail!("404 not found: {path}");
+    }
     let v: Value = resp.json().await?;
     if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
         Ok(v.get("data").cloned().unwrap_or(Value::Null))
@@ -668,15 +674,29 @@ fn err_msg(e: impl std::fmt::Display) -> Response {
 /// mini-program account (a claimed `servers` row). The login page hides the
 /// WeChat scan option entirely when it isn't bound (or the backend is
 /// unreachable), since scan login validates server ownership.
+///
+/// Primary check is `/agent/wx/login/status`. Older backends don't have that
+/// route yet (404) — in that case we fall back to `/agent/wx/login/start`,
+/// which succeeds only for a claimed server (and errors for an unbound/unknown
+/// token), so it doubles as a bound probe.
 async fn wx_status(State(state): State<Shared>) -> Response {
     match backend_call(&state, "/agent/wx/login/status", json!({})).await {
         Ok(d) => {
             let bound = d.get("bound").and_then(|b| b.as_bool()).unwrap_or(false);
-            Json(json!({ "bound": bound })).into_response()
+            return Json(json!({ "bound": bound })).into_response();
         }
-        // Backend unreachable / unknown token: treat as not bound (hide the tab).
-        Err(_) => Json(json!({ "bound": false })).into_response(),
+        Err(e) => {
+            // Only fall back when the status route is missing (older backend).
+            if e.to_string().contains("404") || e.to_string().contains("not found") {
+                let bound = backend_call(&state, "/agent/wx/login/start", json!({}))
+                    .await
+                    .is_ok();
+                return Json(json!({ "bound": bound })).into_response();
+            }
+        }
     }
+    // Backend unreachable / unknown token: treat as not bound (hide the tab).
+    Json(json!({ "bound": false })).into_response()
 }
 
 /// POST /api/wx/login/start — PUBLIC (pre-auth login page). Calls the backend
