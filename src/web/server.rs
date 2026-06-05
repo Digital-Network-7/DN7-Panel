@@ -16,7 +16,7 @@ use axum::{
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use super::auth::{password_matches, AuthState};
+use super::auth::{password_matches, proof_matches, AuthState};
 use super::settings::{self, WebSettings};
 use crate::config::AgentConfig;
 use crate::metrics::Collector;
@@ -68,6 +68,7 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
     let app = Router::new()
         // Public (no auth): the login page + login endpoint.
         .route("/", get(index_page))
+        .route("/api/login/challenge", get(login_challenge))
         .route("/api/login", post(login))
         // Authenticated API.
         .route("/api/logout", post(logout))
@@ -133,7 +134,23 @@ fn require_auth(state: &Shared, headers: &header::HeaderMap) -> Option<Response>
 struct LoginReq {
     #[serde(default)]
     username: String,
+    /// Challenge-response: the nonce from `/api/login/challenge` and the proof
+    /// `sha256_hex(nonce + ":" + password)`. The cleartext password is never
+    /// sent (keeps it off the plaintext-HTTP wire). `password` is accepted as a
+    /// legacy fallback only when no nonce/proof is supplied.
+    #[serde(default)]
+    nonce: String,
+    #[serde(default)]
+    proof: String,
+    #[serde(default)]
     password: String,
+}
+
+/// GET /api/login/challenge — PUBLIC. Mint a one-time login nonce for the
+/// challenge-response flow.
+async fn login_challenge(State(state): State<Shared>) -> Response {
+    let nonce = state.auth.issue_challenge();
+    Json(json!({ "nonce": nonce })).into_response()
 }
 
 async fn login(
@@ -149,9 +166,17 @@ async fn login(
         let s = state.settings.lock().unwrap();
         (s.username.clone(), s.password_plain())
     };
-    // Account name must match (case-sensitive) and the password must match.
+    // Account name must match (case-sensitive), then verify the password —
+    // preferring the challenge-response proof, falling back to a direct compare
+    // only if the client didn't use the challenge flow.
     let user_ok = req.username == exp_user;
-    if user_ok && password_matches(&exp_pw, &req.password) {
+    let pw_ok = if !req.proof.is_empty() {
+        // The nonce must be valid + single-use, then the proof must match.
+        state.auth.consume_challenge(&req.nonce) && proof_matches(&req.nonce, &exp_pw, &req.proof)
+    } else {
+        password_matches(&exp_pw, &req.password)
+    };
+    if user_ok && pw_ok {
         state.auth.clear_failures(&source);
         let token = state.auth.issue();
         Json(json!({ "ok": true, "token": token })).into_response()

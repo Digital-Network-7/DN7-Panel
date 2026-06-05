@@ -17,10 +17,14 @@ const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
 const FAIL_WINDOW: Duration = Duration::from_secs(300);
 const FAIL_MAX: usize = 10;
 
+/// Login challenge (nonce) lifetime. Short — it's used immediately.
+const CHALLENGE_TTL: Duration = Duration::from_secs(120);
+
 #[derive(Default)]
 pub struct AuthState {
     sessions: Mutex<HashMap<String, Instant>>, // token -> created
     fails: Mutex<HashMap<String, Vec<Instant>>>, // source -> failure times
+    challenges: Mutex<HashMap<String, Instant>>, // login nonce -> issued (single use)
 }
 
 impl AuthState {
@@ -76,6 +80,31 @@ impl AuthState {
     pub fn revoke(&self, token: &str) {
         self.sessions.lock().unwrap().remove(token);
     }
+
+    /// Mint a one-time login challenge nonce (hex). The client proves knowledge
+    /// of the password by returning `sha256(nonce:password)` so the cleartext
+    /// password never crosses the (plaintext-HTTP) wire.
+    pub fn issue_challenge(&self) -> String {
+        let nonce = random_token();
+        let mut m = self.challenges.lock().unwrap();
+        let now = Instant::now();
+        m.retain(|_, t| now.duration_since(*t) <= CHALLENGE_TTL);
+        m.insert(nonce.clone(), now);
+        nonce
+    }
+
+    /// Consume a challenge nonce: valid only if present + unexpired, and it's
+    /// removed so it can't be replayed.
+    pub fn consume_challenge(&self, nonce: &str) -> bool {
+        if nonce.is_empty() {
+            return false;
+        }
+        let mut m = self.challenges.lock().unwrap();
+        match m.remove(nonce) {
+            Some(t) => Instant::now().duration_since(t) <= CHALLENGE_TTL,
+            None => false,
+        }
+    }
 }
 
 fn random_token() -> String {
@@ -99,6 +128,31 @@ pub fn password_matches(expected: &str, given: &str) -> bool {
     diff == 0
 }
 
+/// Verify a challenge-response login proof: the client sends
+/// `sha256_hex(nonce + ":" + password)`. We recompute it from the known
+/// password and compare (constant-time). This keeps the cleartext password off
+/// the (plaintext-HTTP) wire; the nonce is single-use so a captured proof can't
+/// be replayed.
+pub fn proof_matches(nonce: &str, password: &str, proof: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(nonce.as_bytes());
+    h.update(b":");
+    h.update(password.as_bytes());
+    let expected = hex_lower(&h.finalize());
+    password_matches(&expected, &proof.trim().to_lowercase())
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0xf) as usize] as char);
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +163,32 @@ mod tests {
         assert!(!password_matches("hunter2", "hunter3"));
         assert!(!password_matches("hunter2", "hunter22"));
         assert!(!password_matches("", "x"));
+    }
+
+    #[test]
+    fn proof_roundtrip() {
+        use sha2::{Digest, Sha256};
+        let nonce = "abc123";
+        let pw = "hunter2";
+        let mut h = Sha256::new();
+        h.update(nonce.as_bytes());
+        h.update(b":");
+        h.update(pw.as_bytes());
+        let proof = super::hex_lower(&h.finalize());
+        assert!(proof_matches(nonce, pw, &proof));
+        // Uppercase proof still matches (we lowercase before compare).
+        assert!(proof_matches(nonce, pw, &proof.to_uppercase()));
+        assert!(!proof_matches(nonce, "wrong", &proof));
+        assert!(!proof_matches("othernonce", pw, &proof));
+    }
+
+    #[test]
+    fn challenge_single_use() {
+        let a = AuthState::new();
+        let n = a.issue_challenge();
+        assert!(a.consume_challenge(&n));
+        assert!(!a.consume_challenge(&n)); // replay rejected
+        assert!(!a.consume_challenge("never-issued"));
     }
 
     #[test]
