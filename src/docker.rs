@@ -492,11 +492,8 @@ async fn managed_container_guard(reference: &str) -> Option<String> {
         .and_then(|cf| cf.labels.clone())
         .unwrap_or_default();
     let is_mysql = name == crate::mysql::CONTAINER || labels.contains_key("dn7.mysql");
-    let is_nginx = name == crate::nginx::CONTAINER;
     if is_mysql {
         Some("该容器由 DN7 Panel MySQL 管理，请在「MySQL」页面操作".to_string())
-    } else if is_nginx {
-        Some("该容器由 DN7 Panel Nginx 管理，请在「Nginx」页面操作".to_string())
     } else {
         None
     }
@@ -756,8 +753,7 @@ async fn managed_image_refs(dkr: &Docker) -> std::collections::HashSet<String> {
             .as_ref()
             .map(|l| l.contains_key("dn7.mysql"))
             .unwrap_or(false);
-        let managed =
-            name == crate::nginx::CONTAINER || name == crate::mysql::CONTAINER || has_mysql_label;
+        let managed = name == crate::mysql::CONTAINER || has_mysql_label;
         if managed {
             if let Some(image) = c.image.clone() {
                 out.insert(image);
@@ -861,8 +857,7 @@ async fn list_containers() -> Result<Value> {
             .as_ref()
             .map(|l| l.contains_key("dn7.mysql"))
             .unwrap_or(false);
-        let managed =
-            name == crate::nginx::CONTAINER || name == crate::mysql::CONTAINER || has_mysql_label;
+        let managed = name == crate::mysql::CONTAINER || has_mysql_label;
         items.push(json!({
             "id": short_id,
             "name": name,

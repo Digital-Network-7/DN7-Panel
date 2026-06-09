@@ -1,18 +1,13 @@
-//! Agent-side Nginx management.
+//! Agent-side Nginx management (host-only).
 //!
-//! Two managed modes, chosen once at setup and persisted under the agent state
-//! dir (`/var/lib/dn7/nginx/mode`):
+//! Manages the **host's own nginx**: DN7 Panel ensures nginx is installed (via
+//! the system package manager) and only ever writes its own
+//! `dn7-<id>.conf` files into `/etc/nginx/conf.d`, never touching the user's
+//! existing configs, reloading via `nginx -s reload`. Certs and static webroots
+//! live under the agent state dir (`/var/ops/.../nginx/`).
 //!
-//! * **host**   – manage the host's own nginx. We only ever write our own
-//!   `dn7-<id>.conf` files into `/etc/nginx/conf.d`, never touch the user's
-//!   existing configs, and reload via `nginx -s reload`.
-//! * **docker** – run a dedicated `dn7-nginx` container (nginx:alpine) that
-//!   we created ourselves, with 80/443 published and our config / cert / webroot
-//!   directories bind-mounted in. We never adopt a pre-existing container.
-//!
-//! The wire protocol mirrors the docker channel: request/response JSON keyed by
-//! `id`, with long operations (install / Let's Encrypt issuance) run **detached**
-//! in a process-global op registry so they survive client reconnects.
+//! Long operations (install / Let's Encrypt issuance) run **detached** in a
+//! process-global op registry so they survive client reconnects.
 //!
 //! Sites are form-defined (domain + target), never raw nginx config, so there's
 //! no config-injection surface. Each site is generated from a small manifest
@@ -21,7 +16,7 @@
 //!
 //! Requests (client -> agent):
 //!   {"id","op":"info"}
-//!   {"id","op":"setup","mode":"host"|"docker","mirror"?}   -> {op_id} (detached)
+//!   {"id","op":"setup"}                       -> {op_id} (detached install)
 //!   {"id","op":"list_sites"}
 //!   {"id","op":"add_site", <site fields>}     -> {site} or {op_id} (LE issuance)
 //!   {"id","op":"remove_site","site_id"}
@@ -38,20 +33,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::process::Command;
 
-/// The container name we create + manage in docker mode. We never adopt a
-/// container we didn't create with this exact name.
-pub const CONTAINER: &str = "dn7-nginx";
-
 #[derive(Debug, Deserialize)]
 struct Req {
     #[serde(default)]
     #[allow(dead_code)]
     id: i64,
     op: String,
-    #[serde(default)]
-    mode: Option<String>,
-    #[serde(default)]
-    mirror: Option<String>,
     #[serde(default)]
     op_id: Option<String>,
     #[serde(default)]
@@ -210,11 +197,10 @@ fn op_finish(op_id: &str, status: &str, error: &str) {
     }
 }
 
-/// Estimate 0..100 progress from docker pull log lines during setup (the nginx
-/// container image pull — shared with the docker module's phase-weighted
-/// logic). Returns -1 when indeterminate.
-fn pull_pct(lines: &[String], status: &str) -> i64 {
-    crate::docker::pull_pct(lines, status)
+/// Estimate 0..100 progress for the setup op (host nginx package install has no
+/// reliable percentage, so this is indeterminate). Returns -1 (indeterminate).
+fn pull_pct(_lines: &[String], _status: &str) -> i64 {
+    -1
 }
 
 fn ops_snapshot() -> Value {
@@ -266,24 +252,22 @@ fn op_dismiss(op_id: &str) {
 // ---------------------------------------------------------------------------
 // State directory layout (persisted under the agent runtime dir).
 //
-//   <base>/nginx/mode          "host" | "docker"
+//   <base>/nginx/setup_done    marker that host nginx setup completed
 //   <base>/nginx/sites.json    the site manifest
-//   <base>/nginx/conf.d/       generated dn7-*.conf (docker mode: mounted)
-//   <base>/nginx/certs/        certs (docker mode: mounted)
-//   <base>/nginx/www/          static webroots (docker mode: mounted)
+//   <base>/nginx/certs/        per-site + named certs (nginx reads from here)
+//   <base>/nginx/www/          static webroots (nginx reads from here)
+//
+// Generated conf files go directly into the host's /etc/nginx/conf.d.
 // ---------------------------------------------------------------------------
 
 fn base_dir() -> std::path::PathBuf {
     crate::paths::default_base_dir().join("nginx")
 }
-fn mode_file() -> std::path::PathBuf {
-    base_dir().join("mode")
+fn setup_marker() -> std::path::PathBuf {
+    base_dir().join("setup_done")
 }
 fn sites_file() -> std::path::PathBuf {
     base_dir().join("sites.json")
-}
-fn confd_dir() -> std::path::PathBuf {
-    base_dir().join("conf.d")
 }
 fn certs_dir() -> std::path::PathBuf {
     base_dir().join("certs")
@@ -292,19 +276,17 @@ fn www_dir() -> std::path::PathBuf {
     base_dir().join("www")
 }
 
-/// Host nginx config drop-in directory (host mode only).
+/// Host nginx config drop-in directory.
 const HOST_CONFD: &str = "/etc/nginx/conf.d";
 
-fn read_mode() -> Option<String> {
-    std::fs::read_to_string(mode_file())
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| s == "host" || s == "docker")
+/// Whether host nginx setup has been completed (marker file present).
+fn is_setup() -> bool {
+    setup_marker().exists()
 }
 
-fn write_mode(mode: &str) -> Result<()> {
+fn mark_setup() -> Result<()> {
     std::fs::create_dir_all(base_dir())?;
-    std::fs::write(mode_file(), mode)?;
+    std::fs::write(setup_marker(), "host")?;
     Ok(())
 }
 
@@ -507,7 +489,7 @@ async fn handle(req: &Req) -> Result<Value> {
     match req.op.as_str() {
         "info" => nginx_info().await,
         "setup" => start_setup(req),
-        "list_sites" => Ok(json!({ "sites": load_sites(), "mode": read_mode() })),
+        "list_sites" => Ok(json!({ "sites": load_sites() })),
         "add_site" => add_site(req).await,
         "remove_site" => remove_site(req).await,
         "list_certs" => list_certs().await,
@@ -582,11 +564,9 @@ extern "C" {
 // ---------------------------------------------------------------------------
 
 /// Detect the host nginx binary + whether it (or anything) holds 80/443, plus
-/// our managed state. Never errors — a clean host reports everything false so
-/// the UI can drive the setup flow.
+/// whether we've completed setup. Never errors — a clean host reports
+/// everything false so the UI can drive the setup flow.
 async fn nginx_info() -> Result<Value> {
-    let managed_mode = read_mode();
-
     // Host nginx binary + version.
     let (ok, _o, e) = run("nginx", &["-v"])
         .await
@@ -606,30 +586,16 @@ async fn nginx_info() -> Result<Value> {
     let p80 = port_listener(80).await;
     let p443 = port_listener(443).await;
 
-    // Is our docker nginx container present (created by us) and running?
-    let docker_present = match crate::docker::dkr() {
-        Ok(d) => d.version().await.is_ok(),
-        Err(_) => false,
-    };
-    let (ctn_exists, ctn_running) = if docker_present {
-        container_state().await
-    } else {
-        (false, false)
-    };
-
     // host nginx "owns" 80/443 if the listener process looks like nginx.
     let host_owns_ports = p80.contains("nginx") || p443.contains("nginx");
 
     Ok(json!({
-        "managed_mode": managed_mode,           // null | "host" | "docker"
+        "managed": is_setup(),                  // setup completed?
         "host_nginx_present": host_nginx_present,
         "host_nginx_version": host_nginx_version,
         "host_owns_ports": host_owns_ports,
         "port80": p80,                          // listener description ("" if free)
         "port443": p443,
-        "docker_present": docker_present,
-        "container_exists": ctn_exists,         // our dn7-nginx container
-        "container_running": ctn_running,
         "is_root": is_root(),
     }))
 }
@@ -737,24 +703,9 @@ fn proc_name_for_inode(inode: u64) -> Option<String> {
     None
 }
 
-/// (exists, running) for our dn7-nginx container (via the daemon API).
-async fn container_state() -> (bool, bool) {
-    let dkr = match crate::docker::dkr() {
-        Ok(d) => d,
-        Err(_) => return (false, false),
-    };
-    match dkr.inspect_container(CONTAINER, None).await {
-        Ok(c) => {
-            let running = c.state.as_ref().and_then(|s| s.running).unwrap_or(false);
-            (true, running)
-        }
-        Err(_) => (false, false),
-    }
-}
-
 /// List running containers (name + published port hint) so the proxy form can
-/// offer "forward to container:port" targets. Docker mode only. Uses the daemon
-/// API (no `docker` CLI).
+/// offer "forward to container:port" targets. Uses the daemon API (no `docker`
+/// CLI); returns empty if Docker isn't present.
 async fn list_running_containers() -> Result<Value> {
     let dkr = crate::docker::dkr()?;
     let opts = bollard::container::ListContainersOptions::<String> {
@@ -773,8 +724,8 @@ async fn list_running_containers() -> Result<Value> {
             .and_then(|n| n.first())
             .map(|s| s.trim_start_matches('/').to_string())
             .unwrap_or_default();
-        if name.is_empty() || name == CONTAINER {
-            continue; // don't proxy to ourselves
+        if name.is_empty() {
+            continue;
         }
         let ports = c
             .ports
@@ -875,15 +826,7 @@ fn valid_port(p: i64) -> bool {
 // ---------------------------------------------------------------------------
 
 fn start_setup(req: &Req) -> Result<Value> {
-    let mode = req
-        .mode
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| *s == "host" || *s == "docker")
-        .ok_or_else(|| anyhow!("无效的管理方式"))?
-        .to_string();
-    let mirror = req.mirror.as_deref().unwrap_or("m.daocloud.io").to_string();
-
+    let _ = req;
     const SETUP_OP: &str = "setup";
     if let Ok(m) = ops().lock() {
         if let Some(o) = m.get(SETUP_OP) {
@@ -894,32 +837,26 @@ fn start_setup(req: &Req) -> Result<Value> {
     }
     if !is_root() {
         return Err(anyhow!(
-            "配置 Nginx 需要 root 权限，请用 root 运行 Agent 后重试"
+            "配置 Nginx 需要 root 权限，请用 root 运行 DN7 Panel 后重试"
         ));
     }
 
-    op_create(SETUP_OP, "setup", &mode);
-    let mode_t = mode.clone();
+    op_create(SETUP_OP, "setup", "host");
     tokio::spawn(async move {
-        let res = if mode_t == "host" {
-            setup_host(SETUP_OP).await
-        } else {
-            setup_docker(SETUP_OP, &mirror).await
-        };
-        match res {
+        match setup_host(SETUP_OP).await {
             Ok(()) => {
-                let _ = write_mode(&mode_t);
+                let _ = mark_setup();
                 op_push(SETUP_OP, "配置完成");
                 op_finish(SETUP_OP, "done", "");
             }
             Err(e) => op_finish(SETUP_OP, "error", &e.to_string()),
         }
     });
-    Ok(json!({ "op_id": SETUP_OP, "target": mode }))
+    Ok(json!({ "op_id": SETUP_OP, "target": "host" }))
 }
 
-/// Host mode: ensure nginx is installed (distro package manager, China mirrors
-/// where possible), enabled and running. Only used when the user picked host.
+/// Ensure host nginx is installed (distro package manager), enabled, running,
+/// and that our conf.d drop-in dir + state dirs exist.
 async fn setup_host(op_id: &str) -> Result<()> {
     // Already present?
     if run("nginx", &["-v"])
@@ -948,6 +885,9 @@ fi"#;
 
     op_push(op_id, "确保配置目录存在并启用 Nginx …");
     let _ = sh(&format!("mkdir -p {HOST_CONFD}")).await;
+    // Our state dirs (certs + webroots) that nginx reads from.
+    std::fs::create_dir_all(certs_dir())?;
+    std::fs::create_dir_all(www_dir())?;
     let _ = sh("systemctl enable nginx 2>/dev/null || true; systemctl restart nginx 2>/dev/null || service nginx restart 2>/dev/null || nginx 2>/dev/null || true").await;
 
     // Verify it's runnable.
@@ -957,137 +897,6 @@ fi"#;
             trim_msg(&e).unwrap_or_else(|| "nginx 配置测试失败".into())
         ));
     }
-    Ok(())
-}
-
-/// Docker mode: pull nginx:alpine (via mirror) and run our dedicated container
-/// with 80/443 published and our config/cert/webroot dirs mounted in, via the
-/// daemon API (no `docker` CLI). We never adopt a container we didn't create —
-/// any existing dn7-nginx is removed and recreated with our mounts.
-async fn setup_docker(op_id: &str, mirror: &str) -> Result<()> {
-    use bollard::container::{Config, CreateContainerOptions, RemoveContainerOptions};
-    use bollard::models::{HostConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum};
-    use futures::StreamExt;
-
-    let dkr = crate::docker::dkr()
-        .map_err(|_| anyhow!("未检测到 Docker，请先在「Docker 管理」中安装 Docker"))?;
-    dkr.version()
-        .await
-        .map_err(|_| anyhow!("未检测到 Docker，请先在「Docker 管理」中安装 Docker"))?;
-
-    // Prepare host directories that we mount into the container.
-    std::fs::create_dir_all(confd_dir())?;
-    std::fs::create_dir_all(certs_dir())?;
-    std::fs::create_dir_all(www_dir())?;
-
-    // Pull nginx:alpine through the accelerator, then retag to a clean name.
-    let pull_ref = if mirror.is_empty() {
-        "nginx:alpine".to_string()
-    } else {
-        format!("{mirror}/docker.io/library/nginx:alpine")
-    };
-    op_push(op_id, &format!("拉取镜像 {pull_ref} …"));
-    {
-        let opts = bollard::image::CreateImageOptions {
-            from_image: pull_ref.clone(),
-            ..Default::default()
-        };
-        let mut stream = dkr.create_image(Some(opts), None, None);
-        let mut last = String::new();
-        while let Some(item) = stream.next().await {
-            match item {
-                Ok(info) => {
-                    let mut line = info.status.unwrap_or_default();
-                    if let Some(p) = info.progress {
-                        if !p.is_empty() {
-                            line.push(' ');
-                            line.push_str(&p);
-                        }
-                    }
-                    let line = line.trim().to_string();
-                    if !line.is_empty() && line != last {
-                        op_push(op_id, &line);
-                        last = line;
-                    }
-                }
-                Err(e) => return Err(anyhow!("拉取镜像失败：{e}")),
-            }
-        }
-    }
-    if pull_ref != "nginx:alpine" {
-        let opts = bollard::image::TagImageOptions {
-            repo: "nginx".to_string(),
-            tag: "alpine".to_string(),
-        };
-        let _ = dkr.tag_image(&pull_ref, Some(opts)).await;
-    }
-
-    // Remove any previous dn7-nginx (ours) so mounts/ports are fresh.
-    op_push(op_id, "创建 Nginx 容器 …");
-    let _ = dkr
-        .remove_container(
-            CONTAINER,
-            Some(RemoveContainerOptions {
-                force: true,
-                ..Default::default()
-            }),
-        )
-        .await;
-
-    let m_conf = format!("{}:/etc/nginx/conf.d", confd_dir().display());
-    let m_cert = format!("{}:/etc/nginx/certs", certs_dir().display());
-    let m_www = format!("{}:/usr/share/nginx/html", www_dir().display());
-
-    let mut port_bindings: std::collections::HashMap<String, Option<Vec<PortBinding>>> =
-        std::collections::HashMap::new();
-    for p in ["80", "443"] {
-        port_bindings.insert(
-            format!("{p}/tcp"),
-            Some(vec![PortBinding {
-                host_ip: None,
-                host_port: Some(p.to_string()),
-            }]),
-        );
-    }
-    let mut exposed: std::collections::HashMap<String, std::collections::HashMap<(), ()>> =
-        std::collections::HashMap::new();
-    exposed.insert("80/tcp".to_string(), std::collections::HashMap::new());
-    exposed.insert("443/tcp".to_string(), std::collections::HashMap::new());
-
-    let config = Config {
-        image: Some("nginx:alpine".to_string()),
-        exposed_ports: Some(exposed),
-        host_config: Some(HostConfig {
-            binds: Some(vec![m_conf, m_cert, m_www]),
-            port_bindings: Some(port_bindings),
-            restart_policy: Some(RestartPolicy {
-                name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
-                maximum_retry_count: None,
-            }),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-
-    dkr.create_container(
-        Some(CreateContainerOptions {
-            name: CONTAINER.to_string(),
-            platform: None,
-        }),
-        config,
-    )
-    .await
-    .map_err(|e| {
-        anyhow!(trim_msg(&e.to_string()).unwrap_or_else(|| "创建 Nginx 容器失败".into()))
-    })?;
-    dkr.start_container(
-        CONTAINER,
-        None::<bollard::container::StartContainerOptions<String>>,
-    )
-    .await
-    .map_err(|e| {
-        anyhow!(trim_msg(&e.to_string()).unwrap_or_else(|| "启动 Nginx 容器失败".into()))
-    })?;
     Ok(())
 }
 
@@ -1141,45 +950,29 @@ async fn stream_cmd(op_id: &str, cmd: &str, args: &[&str]) -> Result<()> {
 // Sites: add / remove / generate config / reload.
 // ---------------------------------------------------------------------------
 
-/// Where generated conf files live for the active mode, and the paths that the
-/// running nginx will read certs/webroots from (container paths in docker mode,
-/// host paths in host mode).
+/// Where generated conf files live, and the paths the running host nginx reads
+/// certs/webroots from. Host-only: nginx reads the same on-disk paths we write.
 struct Layout {
-    mode: String,
-    confd: std::path::PathBuf,      // where we WRITE conf files (host fs)
-    cert_ref: String,               // dir nginx READS certs from
-    www_ref: String,                // dir nginx READS webroots from
-    cert_store: std::path::PathBuf, // where we WRITE cert files (host fs)
-    www_store: std::path::PathBuf,  // where we WRITE webroots (host fs)
+    confd: std::path::PathBuf, // where we WRITE conf files (/etc/nginx/conf.d)
+    cert_ref: String,          // dir nginx READS certs from (== cert_store)
+    www_ref: String,           // dir nginx READS webroots from (== www_store)
+    cert_store: std::path::PathBuf, // where we WRITE cert files
+    www_store: std::path::PathBuf, // where we WRITE webroots
 }
 
 fn layout() -> Result<Layout> {
-    let mode = read_mode().ok_or_else(|| anyhow!("尚未完成 Nginx 配置"))?;
-    if mode == "host" {
-        std::fs::create_dir_all(certs_dir())?;
-        std::fs::create_dir_all(www_dir())?;
-        Ok(Layout {
-            mode,
-            confd: std::path::PathBuf::from(HOST_CONFD),
-            cert_ref: certs_dir().display().to_string(),
-            www_ref: www_dir().display().to_string(),
-            cert_store: certs_dir(),
-            www_store: www_dir(),
-        })
-    } else {
-        // docker: we write into the mounted host dirs; nginx reads container paths.
-        std::fs::create_dir_all(confd_dir())?;
-        std::fs::create_dir_all(certs_dir())?;
-        std::fs::create_dir_all(www_dir())?;
-        Ok(Layout {
-            mode,
-            confd: confd_dir(),
-            cert_ref: "/etc/nginx/certs".to_string(),
-            www_ref: "/usr/share/nginx/html".to_string(),
-            cert_store: certs_dir(),
-            www_store: www_dir(),
-        })
+    if !is_setup() {
+        return Err(anyhow!("尚未完成 Nginx 配置"));
     }
+    std::fs::create_dir_all(certs_dir())?;
+    std::fs::create_dir_all(www_dir())?;
+    Ok(Layout {
+        confd: std::path::PathBuf::from(HOST_CONFD),
+        cert_ref: certs_dir().display().to_string(),
+        www_ref: www_dir().display().to_string(),
+        cert_store: certs_dir(),
+        www_store: www_dir(),
+    })
 }
 
 fn conf_path(lo: &Layout, site_id: &str) -> std::path::PathBuf {
@@ -1348,13 +1141,6 @@ async fn add_site(req: &Req) -> Result<Value> {
     let lo = layout()?;
     let site = site_from_req(req)?;
 
-    // For docker proxy_container, the target must be reachable on the nginx
-    // container's network — connect our container to the target's network so
-    // service discovery by name works. Best-effort.
-    if lo.mode == "docker" && site.kind == "proxy_container" {
-        ensure_shared_network(&site.container).await;
-    }
-
     // Prepare certs.
     if site.ssl {
         if !site.cert_name.is_empty() {
@@ -1461,7 +1247,7 @@ async fn list_certs() -> Result<Value> {
             "not_after": not_after,
         }));
     }
-    Ok(json!({ "certs": out, "mode": read_mode() }))
+    Ok(json!({ "certs": out }))
 }
 
 /// (Re)issue or replace a site's certificate. `cert_mode` selects:
@@ -1564,7 +1350,7 @@ async fn list_named_certs() -> Result<Value> {
             "used_by": in_use.get(&c.name).cloned().unwrap_or_default(),
         }));
     }
-    Ok(json!({ "certs": out, "mode": read_mode() }))
+    Ok(json!({ "certs": out }))
 }
 
 /// server_names of sites currently referencing each named cert.
@@ -1768,116 +1554,26 @@ fn parse_not_after(der: &[u8]) -> Option<String> {
     Some(format!("{yyyy}-{mm}-{dd}"))
 }
 
-/// Reload nginx (host: `nginx -s reload`; docker: `docker exec ... nginx -s reload`).
+/// Reload nginx (`nginx -s reload`).
 async fn reload() -> Result<()> {
     let lo = layout()?;
     validate_and_reload(&lo).await
 }
 
-/// `nginx -t` then reload, in whichever mode is active. Errors carry nginx's
-/// own message so a bad generated config is visible.
-async fn validate_and_reload(lo: &Layout) -> Result<()> {
-    if lo.mode == "host" {
-        let (ok, _o, e) = run("nginx", &["-t"]).await?;
-        if !ok {
-            return Err(anyhow!(
-                trim_msg(&e).unwrap_or_else(|| "nginx 配置无效".into())
-            ));
-        }
-        let (ok, _o, e) = run("nginx", &["-s", "reload"]).await?;
-        if !ok {
-            return Err(anyhow!(trim_msg(&e).unwrap_or_else(|| "重载失败".into())));
-        }
-    } else {
-        // Docker mode: exec `nginx -t` then `nginx -s reload` inside our
-        // container via the daemon API (no `docker` CLI).
-        let (code, out) = ctn_exec(CONTAINER, &["nginx", "-t"]).await?;
-        if code != 0 {
-            return Err(anyhow!(
-                trim_msg(&out).unwrap_or_else(|| "nginx 配置无效".into())
-            ));
-        }
-        let (code, out) = ctn_exec(CONTAINER, &["nginx", "-s", "reload"]).await?;
-        if code != 0 {
-            return Err(anyhow!(trim_msg(&out).unwrap_or_else(|| "重载失败".into())));
-        }
+/// `nginx -t` then `nginx -s reload`. Errors carry nginx's own message so a bad
+/// generated config is visible.
+async fn validate_and_reload(_lo: &Layout) -> Result<()> {
+    let (ok, _o, e) = run("nginx", &["-t"]).await?;
+    if !ok {
+        return Err(anyhow!(
+            trim_msg(&e).unwrap_or_else(|| "nginx 配置无效".into())
+        ));
+    }
+    let (ok, _o, e) = run("nginx", &["-s", "reload"]).await?;
+    if !ok {
+        return Err(anyhow!(trim_msg(&e).unwrap_or_else(|| "重载失败".into())));
     }
     Ok(())
-}
-
-/// Exec a command inside a container via the daemon API; returns (exit_code,
-/// combined stdout+stderr).
-async fn ctn_exec(container: &str, cmd: &[&str]) -> Result<(i64, String)> {
-    use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
-    use futures::StreamExt;
-
-    let dkr = crate::docker::dkr()?;
-    let exec = dkr
-        .create_exec(
-            container,
-            CreateExecOptions {
-                attach_stdout: Some(true),
-                attach_stderr: Some(true),
-                cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
-                ..Default::default()
-            },
-        )
-        .await
-        .map_err(|e| anyhow!("容器内执行失败：{e}"))?;
-    let started = dkr
-        .start_exec(
-            &exec.id,
-            Some(StartExecOptions {
-                detach: false,
-                ..Default::default()
-            }),
-        )
-        .await
-        .map_err(|e| anyhow!("容器内执行失败：{e}"))?;
-    let mut buf = String::new();
-    if let StartExecResults::Attached { mut output, .. } = started {
-        while let Some(item) = output.next().await {
-            if let Ok(msg) = item {
-                buf.push_str(&String::from_utf8_lossy(&msg.into_bytes()));
-            }
-        }
-    }
-    let code = dkr
-        .inspect_exec(&exec.id)
-        .await
-        .ok()
-        .and_then(|i| i.exit_code)
-        .unwrap_or(0);
-    Ok((code, buf))
-}
-
-/// In docker mode, connect dn7-nginx to the target container's first
-/// user-defined network so it can reach it by name. Best-effort (ignored on the
-/// default bridge, where name resolution isn't available anyway).
-async fn ensure_shared_network(target: &str) {
-    let dkr = match crate::docker::dkr() {
-        Ok(d) => d,
-        Err(_) => return,
-    };
-    let nets: Vec<String> = match dkr.inspect_container(target, None).await {
-        Ok(c) => c
-            .network_settings
-            .and_then(|n| n.networks)
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default(),
-        Err(_) => return,
-    };
-    for net in nets {
-        if net == "bridge" || net == "host" || net == "none" {
-            continue;
-        }
-        let cfg = bollard::network::ConnectNetworkOptions {
-            container: CONTAINER.to_string(),
-            endpoint_config: Default::default(),
-        };
-        let _ = dkr.connect_network(&net, cfg).await;
-        return;
-    }
 }
 
 /// Resolve a container's first reachable IPv4 address from the Docker daemon
@@ -1927,21 +1623,16 @@ async fn published_host_port(target: &str, container_port: i64) -> Option<u16> {
     None
 }
 
-/// Resolve the proxy upstream (`host:port`) for a site, accounting for mode:
-///  - **docker mode + proxy_container**: use the container *name* (dn7-nginx
-///    is joined to its network, so Docker DNS resolves it).
-///  - **host mode + proxy_container**: the host's nginx can't resolve a
-///    container name. Prefer the published host port (`127.0.0.1:<hostport>`,
-///    stable across restarts); otherwise fall back to the container's bridge IP.
+/// Resolve the proxy upstream (`host:port`) for a site:
 ///  - **proxy_host**: the user-supplied host[:port] as-is.
-async fn resolve_upstream(lo: &Layout, site: &Site) -> Result<String> {
+///  - **proxy_container**: the host's nginx can't resolve a container name.
+///    Prefer the published host port (`127.0.0.1:<hostport>`, stable across
+///    restarts); otherwise fall back to the container's bridge IP.
+async fn resolve_upstream(_lo: &Layout, site: &Site) -> Result<String> {
     match site.kind.as_str() {
         "proxy_host" => Ok(with_scheme_port(&site.target_url, &site.scheme)),
         "proxy_container" => {
-            if lo.mode == "docker" {
-                Ok(format!("{}:{}", site.container, site.container_port))
-            } else if let Some(hp) = published_host_port(&site.container, site.container_port).await
-            {
+            if let Some(hp) = published_host_port(&site.container, site.container_port).await {
                 // Reachable + restart-stable via the host's published port.
                 Ok(format!("127.0.0.1:{hp}"))
             } else {
@@ -2143,9 +1834,8 @@ fn write_cert_files(lo: &Layout, site: &Site, cert_pem: &str, key_pem: &str) -> 
 }
 
 /// Generate a self-signed cert/key pair for the site's primary host using
-/// pure-Rust `rcgen` (no `openssl` dependency). Writes directly into the host
-/// cert store; in docker mode that directory is bind-mounted into the nginx
-/// container, so the container reads the very same files.
+/// pure-Rust `rcgen` (no `openssl` dependency). Writes into the host cert store
+/// that the host nginx reads from.
 async fn gen_self_signed(lo: &Layout, site: &Site) -> Result<()> {
     let host = primary_host(&site.server_name);
     let host = if host == "_" {
@@ -2538,12 +2228,11 @@ mod tests {
         assert_eq!(with_scheme_port("host", "https"), "host:443");
     }
 
-    fn lo_docker() -> Layout {
+    fn lo_test() -> Layout {
         Layout {
-            mode: "docker".into(),
             confd: std::path::PathBuf::from("/tmp/dn7-test-confd"),
-            cert_ref: "/etc/nginx/certs".into(),
-            www_ref: "/usr/share/nginx/html".into(),
+            cert_ref: "/tmp/dn7-test-certs".into(),
+            www_ref: "/tmp/dn7-test-www".into(),
             cert_store: std::path::PathBuf::from("/tmp/dn7-test-certs"),
             www_store: std::path::PathBuf::from("/tmp/dn7-test-www"),
         }
@@ -2571,7 +2260,7 @@ mod tests {
 
     #[tokio::test]
     async fn renders_proxy_host() {
-        let lo = lo_docker();
+        let lo = lo_test();
         let site = mk_site("proxy_host", false);
         let body = render_location(&lo, &site).await.unwrap();
         assert!(body.contains("proxy_pass http://10.0.0.5:8080;"));
@@ -2579,25 +2268,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn renders_proxy_container() {
-        // Docker mode resolves the container by name (no daemon call needed).
-        let lo = lo_docker();
-        let site = mk_site("proxy_container", false);
-        let body = render_location(&lo, &site).await.unwrap();
-        assert!(body.contains("proxy_pass http://app:3000;"));
-    }
-
-    #[tokio::test]
     async fn renders_static_root() {
-        let lo = lo_docker();
+        let lo = lo_test();
         let site = mk_site("static", false);
         let body = render_location(&lo, &site).await.unwrap();
-        assert!(body.contains("root /usr/share/nginx/html/site1;"));
+        assert!(body.contains("root /tmp/dn7-test-www/site1;"));
     }
 
     #[tokio::test]
     async fn renders_https_scheme_and_options() {
-        let lo = lo_docker();
+        let lo = lo_test();
         let mut site = mk_site("proxy_host", false);
         site.scheme = "https".into();
         site.cache = true;
@@ -2613,7 +2293,7 @@ mod tests {
 
     #[tokio::test]
     async fn renders_custom_locations() {
-        let lo = lo_docker();
+        let lo = lo_test();
         let mut site = mk_site("proxy_host", false);
         site.locations = vec![Location {
             path: "/api".into(),

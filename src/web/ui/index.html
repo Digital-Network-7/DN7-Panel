@@ -1485,14 +1485,18 @@ function renderNginx(v) {
     return;
   }
   op('nginx', { op: 'info' }).then((info) => {
-    if (!info.managed_mode) {
+    if (!info.managed) {
+      const present = info.host_nginx_present;
+      const hint = present
+        ? `检测到宿主机已安装 Nginx${info.host_nginx_version ? '（' + esc(info.host_nginx_version) + '）' : ''}，初始化后即可统一托管站点与 HTTPS 证书。`
+        : '宿主机未安装 Nginx，初始化将使用系统包管理器自动安装并启用，然后即可托管站点与 HTTPS 证书。';
       v.innerHTML = `<div class="card"><h3>Nginx 初始化</h3>
-        <p class="mut">初始化后即可统一托管站点与 HTTPS 证书。</p>
+        <p class="mut">${hint}</p>
         <div class="row" style="margin:14px 0">
           <button class="btn" id="ngSetup">初始化</button>
         </div>
         <div class="hidden" id="ngSetupJob"></div></div>`;
-      $('ngSetup').onclick = () => { $('ngSetup').disabled = true; $('ngSetupJob').classList.remove('hidden'); op('nginx', { op: 'setup', mode: 'docker' }).then((r) => renderJob($('ngSetupJob'), 'nginx', r.op_id, 'nginx:setup', { onDone: () => { toast('初始化完成', 'ok'); setTimeout(() => renderNginx(v), 600); }, onError: () => { $('ngSetup').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ngSetup').disabled = false; }); };
+      $('ngSetup').onclick = () => { $('ngSetup').disabled = true; $('ngSetupJob').classList.remove('hidden'); op('nginx', { op: 'setup' }).then((r) => renderJob($('ngSetupJob'), 'nginx', r.op_id, 'nginx:setup', { onDone: () => { toast('初始化完成', 'ok'); setTimeout(() => renderNginx(v), 600); }, onError: () => { $('ngSetup').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ngSetup').disabled = false; }); };
       return;
     }
     v.innerHTML = `<div class="row" style="margin-bottom:14px"><span class="chip on">运行中</span><span class="sp" style="flex:1"></span><button class="btn sm" id="ngAdd">添加站点</button><button class="btn sec sm" id="ngCert">SSL 证书</button><button class="btn sec sm" id="ngReload">重载配置</button><button class="btn sec sm" id="ngRef">刷新</button></div><div id="ngSites">${loading()}</div>`;
