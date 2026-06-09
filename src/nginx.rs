@@ -1,12 +1,12 @@
 //! Agent-side Nginx management.
 //!
 //! Two managed modes, chosen once at setup and persisted under the agent state
-//! dir (`/var/lib/teaops/nginx/mode`):
+//! dir (`/var/lib/dn7/nginx/mode`):
 //!
 //! * **host**   – manage the host's own nginx. We only ever write our own
-//!   `teaops-<id>.conf` files into `/etc/nginx/conf.d`, never touch the user's
+//!   `dn7-<id>.conf` files into `/etc/nginx/conf.d`, never touch the user's
 //!   existing configs, and reload via `nginx -s reload`.
-//! * **docker** – run a dedicated `teaops-nginx` container (nginx:alpine) that
+//! * **docker** – run a dedicated `dn7-nginx` container (nginx:alpine) that
 //!   we created ourselves, with 80/443 published and our config / cert / webroot
 //!   directories bind-mounted in. We never adopt a pre-existing container.
 //!
@@ -34,24 +34,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
-use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::process::Command;
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{client::IntoClientRequest, http::header::AUTHORIZATION, Message},
-};
-
-use crate::config::AgentConfig;
 
 /// The container name we create + manage in docker mode. We never adopt a
 /// container we didn't create with this exact name.
-pub const CONTAINER: &str = "teaops-nginx";
+pub const CONTAINER: &str = "dn7-nginx";
 
 #[derive(Debug, Deserialize)]
 struct Req {
     #[serde(default)]
+    #[allow(dead_code)]
     id: i64,
     op: String,
     #[serde(default)]
@@ -274,7 +268,7 @@ fn op_dismiss(op_id: &str) {
 //
 //   <base>/nginx/mode          "host" | "docker"
 //   <base>/nginx/sites.json    the site manifest
-//   <base>/nginx/conf.d/       generated teaops-*.conf (docker mode: mounted)
+//   <base>/nginx/conf.d/       generated dn7-*.conf (docker mode: mounted)
 //   <base>/nginx/certs/        certs (docker mode: mounted)
 //   <base>/nginx/www/          static webroots (docker mode: mounted)
 // ---------------------------------------------------------------------------
@@ -502,57 +496,6 @@ fn extract_zip(body: &[u8], dest: &std::path::Path) -> Result<usize> {
 // Channel runner + dispatch.
 // ---------------------------------------------------------------------------
 
-/// Connect to the backend nginx relay and serve the protocol until either side
-/// closes. The connection is stateless: long ops live in the global registry.
-pub async fn run_nginx_channel(cfg: &AgentConfig, agent_token: &str, session: &str) -> Result<()> {
-    let url = cfg.agent_nginx_ws_url(session);
-    let mut request = url
-        .into_client_request()
-        .map_err(|e| anyhow!("bad ws url: {e}"))?;
-    request.headers_mut().insert(
-        AUTHORIZATION,
-        format!("Bearer {agent_token}")
-            .parse()
-            .map_err(|e| anyhow!("bad auth header: {e}"))?,
-    );
-    let (ws, _resp) = connect_async(request).await?;
-    let (mut ws_tx, mut ws_rx) = ws.split();
-
-    while let Some(msg) = ws_rx.next().await {
-        match msg {
-            Ok(Message::Text(t)) => {
-                let req: Req = match serde_json::from_str(&t) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let _ = ws_tx
-                            .send(Message::Text(
-                                json!({ "ok": false, "error": format!("bad request: {e}") })
-                                    .to_string(),
-                            ))
-                            .await;
-                        continue;
-                    }
-                };
-                let id = req.id;
-                let frame = match handle(&req).await {
-                    Ok(data) => json!({ "id": id, "ok": true, "data": data }),
-                    Err(e) => json!({ "id": id, "ok": false, "error": e.to_string() }),
-                };
-                if ws_tx.send(Message::Text(frame.to_string())).await.is_err() {
-                    break;
-                }
-            }
-            Ok(Message::Ping(p)) => {
-                let _ = ws_tx.send(Message::Pong(p)).await;
-            }
-            Ok(Message::Close(_)) | Err(_) => break,
-            _ => {}
-        }
-    }
-    let _ = ws_tx.close().await;
-    Ok(())
-}
-
 /// Public entrypoint for the local web console: parse a JSON request and run it.
 pub async fn web_dispatch(req: &Value) -> Result<Value> {
     let r: Req =
@@ -685,7 +628,7 @@ async fn nginx_info() -> Result<Value> {
         "port80": p80,                          // listener description ("" if free)
         "port443": p443,
         "docker_present": docker_present,
-        "container_exists": ctn_exists,         // our teaops-nginx container
+        "container_exists": ctn_exists,         // our dn7-nginx container
         "container_running": ctn_running,
         "is_root": is_root(),
     }))
@@ -794,7 +737,7 @@ fn proc_name_for_inode(inode: u64) -> Option<String> {
     None
 }
 
-/// (exists, running) for our teaops-nginx container (via the daemon API).
+/// (exists, running) for our dn7-nginx container (via the daemon API).
 async fn container_state() -> (bool, bool) {
     let dkr = match crate::docker::dkr() {
         Ok(d) => d,
@@ -1020,7 +963,7 @@ fi"#;
 /// Docker mode: pull nginx:alpine (via mirror) and run our dedicated container
 /// with 80/443 published and our config/cert/webroot dirs mounted in, via the
 /// daemon API (no `docker` CLI). We never adopt a container we didn't create —
-/// any existing teaops-nginx is removed and recreated with our mounts.
+/// any existing dn7-nginx is removed and recreated with our mounts.
 async fn setup_docker(op_id: &str, mirror: &str) -> Result<()> {
     use bollard::container::{Config, CreateContainerOptions, RemoveContainerOptions};
     use bollard::models::{HostConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum};
@@ -1079,7 +1022,7 @@ async fn setup_docker(op_id: &str, mirror: &str) -> Result<()> {
         let _ = dkr.tag_image(&pull_ref, Some(opts)).await;
     }
 
-    // Remove any previous teaops-nginx (ours) so mounts/ports are fresh.
+    // Remove any previous dn7-nginx (ours) so mounts/ports are fresh.
     op_push(op_id, "创建 Nginx 容器 …");
     let _ = dkr
         .remove_container(
@@ -1240,7 +1183,7 @@ fn layout() -> Result<Layout> {
 }
 
 fn conf_path(lo: &Layout, site_id: &str) -> std::path::PathBuf {
-    lo.confd.join(format!("teaops-{site_id}.conf"))
+    lo.confd.join(format!("dn7-{site_id}.conf"))
 }
 
 /// Build a site from the request, validating every field.
@@ -1908,7 +1851,7 @@ async fn ctn_exec(container: &str, cmd: &[&str]) -> Result<(i64, String)> {
     Ok((code, buf))
 }
 
-/// In docker mode, connect teaops-nginx to the target container's first
+/// In docker mode, connect dn7-nginx to the target container's first
 /// user-defined network so it can reach it by name. Best-effort (ignored on the
 /// default bridge, where name resolution isn't available anyway).
 async fn ensure_shared_network(target: &str) {
@@ -1985,7 +1928,7 @@ async fn published_host_port(target: &str, container_port: i64) -> Option<u16> {
 }
 
 /// Resolve the proxy upstream (`host:port`) for a site, accounting for mode:
-///  - **docker mode + proxy_container**: use the container *name* (teaops-nginx
+///  - **docker mode + proxy_container**: use the container *name* (dn7-nginx
 ///    is joined to its network, so Docker DNS resolves it).
 ///  - **host mode + proxy_container**: the host's nginx can't resolve a
 ///    container name. Prefer the published host port (`127.0.0.1:<hostport>`,
@@ -2598,11 +2541,11 @@ mod tests {
     fn lo_docker() -> Layout {
         Layout {
             mode: "docker".into(),
-            confd: std::path::PathBuf::from("/tmp/teaops-test-confd"),
+            confd: std::path::PathBuf::from("/tmp/dn7-test-confd"),
             cert_ref: "/etc/nginx/certs".into(),
             www_ref: "/usr/share/nginx/html".into(),
-            cert_store: std::path::PathBuf::from("/tmp/teaops-test-certs"),
-            www_store: std::path::PathBuf::from("/tmp/teaops-test-www"),
+            cert_store: std::path::PathBuf::from("/tmp/dn7-test-certs"),
+            www_store: std::path::PathBuf::from("/tmp/dn7-test-www"),
         }
     }
 

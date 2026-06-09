@@ -9,11 +9,11 @@ use std::process::{Command, Stdio};
 
 use fs2::FileExt;
 
-use crate::config::AgentConfig;
+use crate::config::PanelConfig;
 use crate::procfile::{role_alive, write_heartbeat, write_pid, RolePaths};
 
 /// Write the agent role's pid file (call once at startup).
-pub fn write_own_pid(cfg: &AgentConfig) {
+pub fn write_own_pid(cfg: &PanelConfig) {
     let _ = std::fs::create_dir_all(&cfg.runtime_dir);
     let me = RolePaths::new(&cfg.runtime_dir, "agent");
     let _ = write_pid(&me.pid);
@@ -21,17 +21,17 @@ pub fn write_own_pid(cfg: &AgentConfig) {
 }
 
 /// Refresh the agent role's heartbeat (call each loop iteration).
-pub fn touch_own_heartbeat(cfg: &AgentConfig) {
+pub fn touch_own_heartbeat(cfg: &PanelConfig) {
     let me = RolePaths::new(&cfg.runtime_dir, "agent");
     let _ = write_heartbeat(&me.heartbeat);
 }
 
 /// Spawn the guardian background task: periodically ensure the supervisor is
 /// alive and relaunch it under a lock if it isn't.
-pub fn spawn(cfg: AgentConfig) {
+pub fn spawn(cfg: PanelConfig) {
     tokio::spawn(async move {
         let supervisor = RolePaths::new(&cfg.runtime_dir, "supervisor");
-        let relaunch_lock = cfg.runtime_dir.join("teaops-supervisor-relaunch.lock");
+        let relaunch_lock = cfg.runtime_dir.join("dn7-supervisor-relaunch.lock");
         let interval = cfg.heartbeat_timeout_secs.max(3);
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval));
         loop {

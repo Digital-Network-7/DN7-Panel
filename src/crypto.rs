@@ -1,9 +1,8 @@
-//! At-rest encryption for the persisted agent token.
+//! At-rest encryption for persisted secrets (the web console password).
 //!
-//! The agent token (a 128-char hex secret) used to be written to
-//! `/var/ops/teaops-agent.token` in plaintext. Anyone with read access to that
-//! file could impersonate the server. We now encrypt it at rest with
-//! AES-256-GCM, mirroring the backend's SSH-password scheme: the stored value
+//! The auto-generated default web password is stored in plaintext (so the
+//! operator can read it from the log/settings file); once the user sets their
+//! own password it's encrypted at rest with AES-256-GCM. The stored value
 //! is `nonce_hex:cipher_hex` with a fresh random 96-bit nonce per write.
 //!
 //! The key is *machine-bound*: it's derived (SHA-256) from a stable host
@@ -20,7 +19,7 @@ use sha2::{Digest, Sha256};
 
 /// Domain-separation salt so this key can't be confused with any other use of
 /// the same machine fingerprint.
-const KEY_SALT: &[u8] = b"teaops-agent-token-enc-v1";
+const KEY_SALT: &[u8] = b"dn7-panel-secret-enc-v1";
 
 /// Derive the machine-bound 32-byte AES key.
 fn machine_key() -> [u8; 32] {
@@ -60,13 +59,13 @@ fn machine_fingerprint() -> Vec<u8> {
     }
     // Truly nothing identifying — use a fixed value so encrypt/decrypt still
     // round-trips on this host (offers obfuscation but no real binding).
-    b"teaops-agent-no-machine-id".to_vec()
+    b"dn7-panel-no-machine-id".to_vec()
 }
 
 /// Path of the fallback per-host random key (only used when no machine-id).
 /// Lives in the persisted-data subdir alongside the token.
 fn key_file_path() -> std::path::PathBuf {
-    crate::paths::data_dir().join(".agent_key")
+    crate::paths::data_dir().join(".panel_key")
 }
 
 /// Read the persisted random key, generating + storing one on first use.

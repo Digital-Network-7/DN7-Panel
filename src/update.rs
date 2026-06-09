@@ -1,9 +1,14 @@
 //! Self-update and binary installation.
 //!
-//! Self-update: fetch the latest binary (GitHub-first, see `fetch`), atomically
-//! replace the running executable, and exit so the supervisor role relaunches
-//! it on the new version. There is a single binary that runs as either role, so
-//! one self-update covers both.
+//! Self-update: fetch the latest binary (see `fetch`), atomically replace the
+//! running executable, and exit so the supervisor role relaunches it on the new
+//! version. There is a single binary that runs as either role, so one
+//! self-update covers both.
+//!
+//! NOTE: self-update is currently RETAINED but not auto-triggered — the backend
+//! connection that used to drive it was removed. It will be re-wired to a
+//! panel/dn7.cn-initiated update later, so the mechanism is kept intact.
+#![allow(dead_code)]
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -11,7 +16,7 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 use anyhow::{anyhow, Context, Result};
 
-use crate::config::AgentConfig;
+use crate::config::PanelConfig;
 use crate::fetch;
 
 // ---------------------------------------------------------------------------
@@ -117,12 +122,12 @@ pub async fn install_bytes(bytes: &[u8], target: &Path) -> Result<()> {
 }
 
 /// Self-update: fetch latest (GitHub-first) and replace the binary at the stable
-/// install path (`/var/ops/teaops-agent`, falling back to a cleaned current
+/// install path (`/var/ops/dn7-panel`, falling back to a cleaned current
 /// exe). Writing to the stable path — not the raw `current_exe()` — means a
 /// post-update "(deleted)" path never breaks the next update, and the canonical
 /// binary the supervisor respawns is the one that gets upgraded.
 /// Returns the replaced path; the caller should then exit.
-pub async fn self_update(cfg: &AgentConfig) -> Result<PathBuf> {
+pub async fn self_update(cfg: &PanelConfig) -> Result<PathBuf> {
     let target = crate::paths::stable_bin();
     tracing::info!(?target, "self-update: fetching latest binary");
     set_phase(PHASE_DOWNLOADING);
@@ -142,7 +147,7 @@ pub async fn self_update(cfg: &AgentConfig) -> Result<PathBuf> {
 /// metrics loop keeps reporting + the UI shows progress), then swap it in and
 /// exit so the supervisor relaunches us on the new version. Downloading BEFORE
 /// exiting means a slow network never leaves the host without a running agent.
-pub async fn run_self_update(cfg: &AgentConfig) {
+pub async fn run_self_update(cfg: &PanelConfig) {
     if !try_begin() {
         tracing::info!("self-update already in progress; ignoring duplicate trigger");
         return;

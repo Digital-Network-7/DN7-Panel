@@ -1,7 +1,9 @@
 /target
 .env
+data/
 *.token
 *.token.pending
+.panel_key
 .agent_key
 *.log
 *.pid

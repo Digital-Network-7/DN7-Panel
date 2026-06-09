@@ -6,7 +6,7 @@ name: Build Linux Release
 #
 # Binaries are built for the *musl* targets and statically linked, so they run
 # on any Linux distro/version regardless of its glibc (no more
-# "GLIBC_2.xx not found"). The agent uses rustls (not OpenSSL), so a fully
+# "GLIBC_2.xx not found"). DN7 Panel uses rustls (not OpenSSL), so a fully
 # static musl build needs no system libraries at runtime.
 
 on:
@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 env:
-  BIN_NAME: teaops-agent
+  BIN_NAME: dn7-panel
 
 jobs:
   build:
@@ -105,57 +105,3 @@ jobs:
             Runs on any Linux regardless of glibc version.
             Commit: ${{ github.sha }}
           files: dist/*
-
-      # Push the freshly built binaries straight to the backend's distribution
-      # endpoint so it never needs to reach GitHub (the backend host is in a
-      # region that can't access GitHub). Runs only on main pushes; fork PRs
-      # never get here and never see the secret. Each arch is uploaded with its
-      # sha256 (integrity) and an Ed25519 signature over the binary bytes
-      # (authenticity) produced with the private signing key. The backend
-      # verifies the signature against its embedded public key before accepting.
-      - name: Publish binaries to backend
-        if: github.ref == 'refs/heads/main'
-        env:
-          PUBLISH_TOKEN: ${{ secrets.AGENT_PUBLISH_TOKEN }}
-          SIGNING_KEY: ${{ secrets.AGENT_SIGNING_KEY }}
-          VERSION: ${{ steps.ver.outputs.version }}
-          BACKEND_URL: https://api.teaops.dn7.cn
-        run: |
-          set -e
-          if [ -z "$PUBLISH_TOKEN" ]; then
-            echo "AGENT_PUBLISH_TOKEN not set; skipping backend publish"; exit 0
-          fi
-          if [ -z "$SIGNING_KEY" ]; then
-            echo "AGENT_SIGNING_KEY not set; cannot sign binaries"; exit 1
-          fi
-
-          # Reconstruct an Ed25519 private-key PEM from the raw 32-byte seed hex
-          # stored in the secret. PKCS#8 DER for Ed25519 is a fixed 16-byte
-          # header (302e020100300506032b657004220420) followed by the 32-byte
-          # seed; we prepend it, then let openssl wrap it as PEM.
-          PRIV_PEM="$(mktemp)"
-          trap 'rm -f "$PRIV_PEM"' EXIT
-          printf '302e020100300506032b657004220420%s' "$SIGNING_KEY" \
-            | xxd -r -p \
-            | openssl pkey -inform DER -out "$PRIV_PEM"
-
-          for arch in x86_64 arm64; do
-            file="dist/${BIN_NAME}-linux-${arch}-v${VERSION}"
-            if [ ! -f "$file" ]; then
-              echo "missing $file; skipping $arch"; continue
-            fi
-            sha=$(sha256sum "$file" | awk '{print $1}')
-            # Detached raw Ed25519 signature over the binary bytes, hex-encoded.
-            sig=$(openssl pkeyutl -sign -inkey "$PRIV_PEM" -rawin -in "$file" \
-                  | xxd -p -c 256 | tr -d '\n')
-            echo "publishing $arch (sha256=$sha, sig=${sig:0:16}...)..."
-            code=$(curl -sS -o /tmp/pub.out -w '%{http_code}' \
-              -X POST \
-              -H "Authorization: Bearer ${PUBLISH_TOKEN}" \
-              --data-binary @"$file" \
-              "${BACKEND_URL}/agent/dist/publish?version=${VERSION}&arch=${arch}&sha256=${sha}&signature=${sig}")
-            echo "  -> HTTP $code $(cat /tmp/pub.out)"
-            if [ "$code" != "200" ]; then
-              echo "publish failed for $arch"; exit 1
-            fi
-          done

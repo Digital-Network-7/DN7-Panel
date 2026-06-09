@@ -1,7 +1,7 @@
 //! Periodic in-place log trimming.
 //!
 //! The agent daemonizes with stdout/stderr redirected (in append mode) to
-//! `/var/ops/teaops-agent.log`. With a ~1s report interval that file grows
+//! `/var/ops/dn7-panel.log`. With a ~1s report interval that file grows
 //! without bound. We can't just delete it — the daemon holds the fd open, so
 //! unlinking the inode would keep consuming space (writes continue to the
 //! now-anonymous inode) until restart.
@@ -19,7 +19,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::config::AgentConfig;
+use crate::config::PanelConfig;
 
 /// Trim the log once it grows past this many bytes.
 const MAX_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
@@ -29,12 +29,12 @@ const KEEP_BYTES: u64 = 1024 * 1024; // 1 MiB
 const CHECK_EVERY: Duration = Duration::from_secs(300); // 5 min
 
 /// Path of the daemon log the agent writes to.
-fn log_path(cfg: &AgentConfig) -> PathBuf {
+fn log_path(cfg: &PanelConfig) -> PathBuf {
     cfg.log_dir.join(crate::daemon::LOG_FILE)
 }
 
 /// Spawn the background log-trimming task (runs for the supervisor's lifetime).
-pub fn spawn(cfg: AgentConfig) {
+pub fn spawn(cfg: PanelConfig) {
     tokio::spawn(async move {
         let path = log_path(&cfg);
         let mut ticker = tokio::time::interval(CHECK_EVERY);
@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn does_not_trim_small_files() {
-        let p = std::env::temp_dir().join(format!("teaops-log-small-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("dn7-log-small-{}", std::process::id()));
         std::fs::write(&p, b"hello\nworld\n").unwrap();
         assert!(!trim_if_large(&p, 1024, 256).unwrap());
         assert_eq!(std::fs::read(&p).unwrap(), b"hello\nworld\n");
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn trims_large_files_keeping_tail() {
-        let p = std::env::temp_dir().join(format!("teaops-log-big-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("dn7-log-big-{}", std::process::id()));
         // 100 numbered lines; each ~ "lineNNN\n".
         let mut body = String::new();
         for i in 0..1000 {

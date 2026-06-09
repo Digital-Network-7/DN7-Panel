@@ -3,21 +3,21 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-<title>Tea Panel</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2322d3ee'/%3E%3Cstop offset='1' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='7' fill='url(%23g)'/%3E%3Cg fill='none' stroke='white' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 13h11v5a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5z'/%3E%3Cpath d='M20 14h2.4a2.2 2.2 0 0 1 0 4.4H20'/%3E%3Cpath d='M11.5 9.2c.5-.7.5-1.4 0-2.1M14.5 9.2c.5-.7.5-1.4 0-2.1M17.5 9.2c.5-.7.5-1.4 0-2.1'/%3E%3C/g%3E%3C/svg%3E" />
+<title>DN7 Panel</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2322d3ee'/%3E%3Cstop offset='1' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cg fill='none' stroke='url(%23g)' stroke-width='1.5' stroke-linejoin='round'%3E%3Cpolygon points='16,4 26,9.5 26,22.5 16,28 6,22.5 6,9.5'/%3E%3Cpath d='M16 16 L16 4 M16 16 L26 9.5 M16 16 L26 22.5 M16 16 L16 28 M16 16 L6 22.5 M16 16 L6 9.5' stroke-linecap='round'/%3E%3C/g%3E%3Cg fill='url(%23g)'%3E%3Ccircle cx='16' cy='16' r='2.6'/%3E%3Ccircle cx='16' cy='4' r='1.7'/%3E%3Ccircle cx='26' cy='9.5' r='1.7'/%3E%3Ccircle cx='26' cy='22.5' r='1.7'/%3E%3Ccircle cx='16' cy='28' r='1.7'/%3E%3Ccircle cx='6' cy='22.5' r='1.7'/%3E%3Ccircle cx='6' cy='9.5' r='1.7'/%3E%3C/g%3E%3C/svg%3E" />
 <script>
   // Apply the saved theme synchronously (before first paint) so there's no
   // dark-mode flash before the main script runs.
   (function () {
     try {
-      var m = localStorage.getItem('teaops_theme') || 'auto';
+      var m = localStorage.getItem('dn7_theme') || 'auto';
       var eff = m;
       if (m === 'auto') eff = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
       document.documentElement.setAttribute('data-theme', eff);
       document.documentElement.setAttribute('data-mode', m);
       // Decide auth view before first paint so a logged-in refresh never flashes
       // the login page (CSS below hides the opposite view based on this attr).
-      document.documentElement.setAttribute('data-auth', localStorage.getItem('teaops_web_token') ? 'in' : 'out');
+      document.documentElement.setAttribute('data-auth', localStorage.getItem('dn7_web_token') ? 'in' : 'out');
     } catch (e) {}
   })();
 </script>
@@ -362,14 +362,10 @@
   <!-- Decorative tech background (grid + drifting gradient orbs). -->
   <div class="login-bg" aria-hidden="true"><span class="orb o1"></span><span class="orb o2"></span><span class="orb o3"></span></div>
   <!-- Brand pinned top-left. -->
-  <div class="login-brand"><span class="cup"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10h12v6a5 5 0 0 1-5 5h-2a5 5 0 0 1-5-5z"/><path d="M18 11h2.5a2.5 2.5 0 0 1 0 5H18"/><path d="M9 6.5c.6-.8.6-1.6 0-2.4M12 6.5c.6-.8.6-1.6 0-2.4M15 6.5c.6-.8.6-1.6 0-2.4"/></svg></span><h1>Tea Panel</h1></div>
+  <div class="login-brand"><span class="cup"><svg viewBox="0 0 24 24" fill="none"><polygon points="12,3 19,7.5 19,16.5 12,21 5,16.5 5,7.5" stroke="white" stroke-width="1.4" stroke-linejoin="round" opacity="0.6"/><path d="M12 12 L12 3 M12 12 L19 7.5 M12 12 L19 16.5 M12 12 L12 21 M12 12 L5 16.5 M12 12 L5 7.5" stroke="white" stroke-width="1.4" stroke-linecap="round"/><g fill="white"><circle cx="12" cy="12" r="2"/><circle cx="12" cy="3" r="1.4"/><circle cx="19" cy="7.5" r="1.4"/><circle cx="19" cy="16.5" r="1.4"/><circle cx="12" cy="21" r="1.4"/><circle cx="5" cy="16.5" r="1.4"/><circle cx="5" cy="7.5" r="1.4"/></g></svg></span><h1>DN7 Panel</h1></div>
   <div class="login-card">
     <div class="login-title">SIGN IN</div>
     <div class="sub">安全登录到本机控制台</div>
-    <div class="seg hidden" id="loginSeg">
-      <button id="tabPw" class="on" onclick="loginMode('pw')">账号密码</button>
-      <button id="tabWx" onclick="loginMode('wx')">微信扫码</button>
-    </div>
     <div class="login-panes">
       <div id="panewPw">
         <label class="lbl">Account</label>
@@ -379,13 +375,6 @@
         <button class="btn" style="width:100%" onclick="doLogin()">登 录</button>
         <div class="err" id="loginErr" style="margin-top:10px"></div>
       </div>
-      <div id="paneWx" class="hidden">
-        <div class="qrwrap">
-          <div id="qrbox"></div>
-          <div class="tip">请在微信小程序「茶记本」中使用「扫一扫」确认登录</div>
-          <div class="qrstate" id="qrstate"></div>
-        </div>
-      </div>
     </div>
   </div>
 </div>
@@ -393,7 +382,7 @@
 <!-- App -->
 <div id="app" class="hidden">
   <aside>
-    <div class="logo"><span class="cup"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10h12v6a5 5 0 0 1-5 5h-2a5 5 0 0 1-5-5z"/><path d="M18 11h2.5a2.5 2.5 0 0 1 0 5H18"/><path d="M9 6.5c.6-.8.6-1.6 0-2.4M12 6.5c.6-.8.6-1.6 0-2.4M15 6.5c.6-.8.6-1.6 0-2.4"/></svg></span><h1>Tea Panel</h1></div>
+    <div class="logo"><span class="cup"><svg viewBox="0 0 24 24" fill="none"><polygon points="12,3 19,7.5 19,16.5 12,21 5,16.5 5,7.5" stroke="white" stroke-width="1.4" stroke-linejoin="round" opacity="0.6"/><path d="M12 12 L12 3 M12 12 L19 7.5 M12 12 L19 16.5 M12 12 L12 21 M12 12 L5 16.5 M12 12 L5 7.5" stroke="white" stroke-width="1.4" stroke-linecap="round"/><g fill="white"><circle cx="12" cy="12" r="2"/><circle cx="12" cy="3" r="1.4"/><circle cx="19" cy="7.5" r="1.4"/><circle cx="19" cy="16.5" r="1.4"/><circle cx="12" cy="21" r="1.4"/><circle cx="5" cy="16.5" r="1.4"/><circle cx="5" cy="7.5" r="1.4"/></g></svg></span><h1>DN7 Panel</h1></div>
     <nav id="nav"></nav>
     <div class="foot">
       <div class="ver">Agent <b id="agentVer">…</b></div>
@@ -420,7 +409,7 @@
 // =========================================================================
 // Core state + helpers
 // =========================================================================
-const S = { token: localStorage.getItem('teaops_web_token') || '', tab: localStorage.getItem('teaops_tab') || 'dash', timer: null, ws: null, wxTimer: null };
+const S = { token: localStorage.getItem('dn7_web_token') || '', tab: localStorage.getItem('dn7_tab') || 'dash', timer: null, ws: null };
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function $(id) { return document.getElementById(id); }
@@ -538,7 +527,7 @@ function modal(title, bodyHtml, onMount, big) {
 const THEME_ICONS = { auto: '◑', light: '☀', dark: '☾' };
 const THEME_LABELS = { auto: '跟随系统', light: '浅色', dark: '深色' };
 function applyTheme() {
-  const m = localStorage.getItem('teaops_theme') || 'auto';
+  const m = localStorage.getItem('dn7_theme') || 'auto';
   let eff = m;
   if (m === 'auto') eff = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', eff);
@@ -548,15 +537,15 @@ function applyTheme() {
 }
 function cycleTheme() {
   const order = ['auto', 'light', 'dark'];
-  const m = localStorage.getItem('teaops_theme') || 'auto';
+  const m = localStorage.getItem('dn7_theme') || 'auto';
   const next = order[(order.indexOf(m) + 1) % order.length];
-  localStorage.setItem('teaops_theme', next);
+  localStorage.setItem('dn7_theme', next);
   applyTheme();
 }
 if (window.matchMedia) {
   const mq = window.matchMedia('(prefers-color-scheme: light)');
   (mq.addEventListener ? mq.addEventListener.bind(mq, 'change') : mq.addListener.bind(mq))(() => {
-    if ((localStorage.getItem('teaops_theme') || 'auto') === 'auto') applyTheme();
+    if ((localStorage.getItem('dn7_theme') || 'auto') === 'auto') applyTheme();
   });
 }
 applyTheme();
@@ -564,13 +553,6 @@ applyTheme();
 // =========================================================================
 // Login
 // =========================================================================
-function loginMode(m) {
-  $('tabPw').classList.toggle('on', m === 'pw');
-  $('tabWx').classList.toggle('on', m === 'wx');
-  $('panewPw').classList.toggle('hidden', m !== 'pw');
-  $('paneWx').classList.toggle('hidden', m === 'pw');
-  if (m === 'wx') startWxLogin(); else stopWxLogin();
-}
 function doLogin() {
   const username = $('user').value.trim();
   const password = $('pw').value;
@@ -587,36 +569,13 @@ function doLogin() {
       return fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     })
     .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(b.error || '登录失败'); return b; })
-    .then((b) => { S.token = b.token; localStorage.setItem('teaops_web_token', S.token); showApp(); })
+    .then((b) => { S.token = b.token; localStorage.setItem('dn7_web_token', S.token); showApp(); })
     .catch((e) => { $('loginErr').textContent = e.message === 'challenge' ? '无法连接服务' : e.message; });
 }
-function startWxLogin() {
-  stopWxLogin();
-  $('qrstate').textContent = '正在生成二维码…';
-  $('qrbox').innerHTML = '';
-  fetch('/api/wx/login/start', { method: 'POST' })
-    .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok || b.ok === false) throw new Error(b.error || '无法发起'); return b; })
-    .then((b) => {
-      $('qrbox').innerHTML = b.svg || '';
-      $('qrstate').textContent = '';
-      pollWx(b.ticket);
-    })
-    .catch((e) => { $('qrstate').textContent = e.message; });
-}
-function pollWx(ticket) {
-  S.wxTimer = setInterval(() => {
-    fetch('/api/wx/login/poll?ticket=' + encodeURIComponent(ticket))
-      .then((r) => r.json()).then((b) => {
-        if (b.status === 'confirmed' && b.token) { stopWxLogin(); S.token = b.token; localStorage.setItem('teaops_web_token', S.token); showApp(); }
-        else if (b.status === 'expired') { $('qrstate').textContent = '二维码已过期，正在刷新…'; startWxLogin(); }
-      }).catch(() => {});
-  }, 1500);
-}
-function stopWxLogin() { if (S.wxTimer) { clearInterval(S.wxTimer); S.wxTimer = null; } }
 
 function logout() {
   if (S.token) api('/api/logout', { method: 'POST' }).catch(() => {});
-  S.token = ''; localStorage.removeItem('teaops_web_token');
+  S.token = ''; localStorage.removeItem('dn7_web_token');
   document.documentElement.setAttribute('data-auth', 'out');
   stopTab();
   $('app').classList.add('hidden');
@@ -682,7 +641,7 @@ function stopTab() {
 
 function switchTab(k) {
   S.tab = k;
-  try { localStorage.setItem('teaops_tab', k); } catch (e) {}
+  try { localStorage.setItem('dn7_tab', k); } catch (e) {}
   stopTab();
   document.querySelectorAll('#nav button').forEach((b) => b.className = b.dataset.k === k ? 'active' : '');
   $('title').textContent = (TABS.find((t) => t.key === k) || {}).label || '';
@@ -1164,7 +1123,7 @@ function dkContainers() {
 function buildContainerActions(holder, reload) {
   const id = holder.dataset.id, name = holder.dataset.name, hasShell = holder.dataset.shell === '1', running = holder.dataset.running === '1';
   const managed = holder.dataset.managed === '1';
-  // TeaOps-managed service containers (nginx / mysql) are operated only from
+  // DN7 Panel-managed service containers (nginx / mysql) are operated only from
   // their own pages — show a plain "内置" tag, no action buttons.
   if (managed) { holder.innerHTML = '<span class="chip">内置</span>'; return; }
   const mk = (label, cls, fn) => { const b = el('button', { class: 'btn sm ' + (cls || 'sec') }, label); b.onclick = fn; holder.appendChild(b); };
@@ -1379,7 +1338,7 @@ function dkNetworks() {
 // the running op_id is stashed in localStorage per (kind), so re-entering the
 // page re-attaches and keeps showing progress.
 // =========================================================================
-const JOBS_KEY = 'teaops_web_jobs';
+const JOBS_KEY = 'dn7_web_jobs';
 function loadJobs() { try { return JSON.parse(localStorage.getItem(JOBS_KEY) || '{}'); } catch (e) { return {}; } }
 function saveJob(slot, info) { const j = loadJobs(); if (info) j[slot] = info; else delete j[slot]; localStorage.setItem(JOBS_KEY, JSON.stringify(j)); }
 function getJob(slot) { return loadJobs()[slot] || null; }
@@ -1872,7 +1831,7 @@ function ngSetCert(siteId, name, reload) {
 }
 
 // =========================================================================
-// MySQL management (TeaOps-provisioned instances only)
+// MySQL management (DN7 Panel-provisioned instances only)
 // =========================================================================
 function renderMysql(v) {
   v.innerHTML = `<div style="padding:8px">${loading('正在检测环境')}</div>`;
@@ -1883,14 +1842,14 @@ function renderMysql(v) {
   }
   op('mysql', { op: 'info' }).then((info) => {
     if (info && info.docker_ok === false) {
-      v.innerHTML = '<div class="card"><h3>MySQL</h3><p class="mut">需要先安装并启动 Docker（在 Docker 管理中安装）。数据库由 TeaOps 通过容器管理。</p></div>';
+      v.innerHTML = '<div class="card"><h3>MySQL</h3><p class="mut">需要先安装并启动 Docker（在 Docker 管理中安装）。数据库由 DN7 Panel 通过容器管理。</p></div>';
       return;
     }
     op('mysql', { op: 'list' }).then((d) => {
       const arr = d.instances || [];
       const m = arr[0];
       if (!m) {
-        v.innerHTML = `<div class="card"><h3>MySQL / MariaDB</h3><p class="mut">尚未创建数据库。一台主机由 TeaOps 托管一个实例，可在其中创建多个库。</p><button class="btn" id="myNew">创建数据库</button></div>`;
+        v.innerHTML = `<div class="card"><h3>MySQL / MariaDB</h3><p class="mut">尚未创建数据库。一台主机由 DN7 Panel 托管一个实例，可在其中创建多个库。</p><button class="btn" id="myNew">创建数据库</button></div>`;
         $('myNew').onclick = () => myInstall(() => renderMysql(v));
         return;
       }
@@ -2127,21 +2086,6 @@ window.addEventListener('resize', selxClose);
 // Bootstrap
 // =========================================================================
 $('pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
-
-// Only offer WeChat scan login when this server is bound to a mini-program
-// account (scan login validates server ownership). The tab segment starts
-// hidden and is revealed only once we confirm a binding — so password-only
-// servers never see a WeChat tab flash, and bound servers get it as soon as
-// the status returns.
-function initWxOption() {
-  fetch('/api/wx/status').then((r) => r.json()).then((b) => {
-    if (b && b.bound) {
-      const seg = $('loginSeg');
-      if (seg) seg.classList.remove('hidden');
-    }
-  }).catch(() => {});
-}
-initWxOption();
 
 if (S.token) showApp();
 </script>

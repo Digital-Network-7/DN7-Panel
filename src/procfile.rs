@@ -20,9 +20,9 @@ pub struct RolePaths {
 impl RolePaths {
     pub fn new(runtime_dir: &Path, role: &str) -> Self {
         RolePaths {
-            pid: runtime_dir.join(format!("teaops-{role}.pid")),
-            heartbeat: runtime_dir.join(format!("teaops-{role}.heartbeat")),
-            lock: runtime_dir.join(format!("teaops-{role}.lock")),
+            pid: runtime_dir.join(format!("dn7-{role}.pid")),
+            heartbeat: runtime_dir.join(format!("dn7-{role}.heartbeat")),
+            lock: runtime_dir.join(format!("dn7-{role}.lock")),
         }
     }
 }
@@ -95,7 +95,7 @@ extern "C" {
 /// whether to replace the running instance with a newer binary. Lives in the
 /// persisted-data dir (callers pass `cfg.data_dir`).
 pub fn version_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("teaops-agent.version")
+    data_dir.join("dn7-panel.version")
 }
 
 /// Record this binary's version as the running version (best-effort).

@@ -1,21 +1,19 @@
 [package]
-name = "teaops-agent"
+name = "dn7-panel"
 version = "0.1.0"
 edition = "2021"
-description = "TeaOps monitoring agent - collects system metrics and reports to backend"
+description = "DN7 Panel - on-box server management console (Docker, Nginx, MySQL, files, terminal, monitoring)"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots", "blocking", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = "0.31"
 anyhow = "1"
 fs2 = "0.4"
 portable-pty = "0.9"
-qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 aes-gcm = "0.10"
 sha2 = "0.10"
 rand = "0.8"
@@ -36,19 +34,8 @@ instant-acme = "0.7"
 # Async traits / stream helpers used by the docker + acme integrations.
 futures = "0.3"
 bytes = "1"
-# Local web console: in-process HTTP server (axum). Pure Rust, musl-safe.
+# Local web management console: in-process HTTP server (axum). Pure Rust, musl-safe.
 axum = { version = "0.7", features = ["ws"] }
-tower = "0.4"
-# Per-process network accounting (Linux): SOCK_DIAG netlink for per-socket
-# cumulative TCP byte counters, mapped to pids via /proc. Pure Rust, no C deps
-# (keeps the musl-static build intact). Linux-only; gated in code by target_os.
-[target.'cfg(target_os = "linux")'.dependencies]
-netlink-sys = "0.8"
-netlink-packet-core = "0.7"
-netlink-packet-sock-diag = { version = "0.4", features = ["rich_nlas"] }
-# Private-network overlay: pure-Rust async TUN device (libc + nix ioctl, no C
-# build) so the musl-static build stays intact. Linux-only.
-tokio-tun = "0.11"
 
 [profile.release]
 opt-level = 3

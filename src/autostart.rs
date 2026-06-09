@@ -4,9 +4,9 @@
 //! init system (which might be absent, disabled, or misconfigured), we install
 //! *several redundant* mechanisms and let whichever the host honors win:
 //!
-//!   1. **systemd unit** (`/etc/systemd/system/teaops-agent.service`) — the
+//!   1. **systemd unit** (`/etc/systemd/system/dn7-panel.service`) — the
 //!      primary path on modern Linux. `enable` wires it to boot.
-//!   2. **cron `@reboot`** (a `/etc/cron.d/teaops-agent` drop-in, falling back
+//!   2. **cron `@reboot`** (a `/etc/cron.d/dn7-panel` drop-in, falling back
 //!      to the root user crontab) — covers hosts without systemd or where the
 //!      unit didn't take.
 //!   3. **`/etc/rc.local`** — last-resort for older SysV-style systems.
@@ -23,11 +23,11 @@ use std::path::Path;
 
 use crate::paths::{INSTALL_BIN, INSTALL_DIR};
 
-const SYSTEMD_UNIT_PATH: &str = "/etc/systemd/system/teaops-agent.service";
-const CRON_D_PATH: &str = "/etc/cron.d/teaops-agent";
+const SYSTEMD_UNIT_PATH: &str = "/etc/systemd/system/dn7-panel.service";
+const CRON_D_PATH: &str = "/etc/cron.d/dn7-panel";
 const RC_LOCAL_PATH: &str = "/etc/rc.local";
 /// Marker line so we can find/replace our rc.local entry idempotently.
-const RC_LOCAL_MARKER: &str = "# teaops-agent autostart";
+const RC_LOCAL_MARKER: &str = "# dn7-panel autostart";
 
 /// Are we effectively root (can write system unit/cron files)?
 fn is_root() -> bool {
@@ -41,23 +41,20 @@ extern "C" {
 }
 
 /// Install every available autostart mechanism (best-effort, idempotent).
-///
-/// `backend_url` is baked into the unit/cron env so a boot-time start reports to
-/// the right backend even without an external env file. Returns immediately for
-/// non-root runs.
-pub fn install_all(backend_url: &str) {
+/// Returns immediately for non-root runs.
+pub fn install_all() {
     if !is_root() {
         tracing::debug!("not root; skipping autostart installation");
         return;
     }
     let mut installed: Vec<&str> = Vec::new();
-    if install_systemd(backend_url) {
+    if install_systemd() {
         installed.push("systemd");
     }
-    if install_cron(backend_url) {
+    if install_cron() {
         installed.push("cron@reboot");
     }
-    if install_rc_local(backend_url) {
+    if install_rc_local() {
         installed.push("rc.local");
     }
     if installed.is_empty() {
@@ -67,29 +64,27 @@ pub fn install_all(backend_url: &str) {
     }
 }
 
-/// Common shell to launch the agent at boot: ensure the dir, then exec the
-/// canonical binary in the background. The supervisor self-detaches, but for
-/// cron/rc.local (no service manager) we background it explicitly.
-fn boot_launch_cmd(backend_url: &str, background: bool) -> String {
+/// Common shell to launch the panel at boot: exec the canonical binary,
+/// backgrounding it for cron/rc.local (which have no service manager).
+fn boot_launch_cmd(background: bool) -> String {
     let bg = if background { " &" } else { "" };
-    format!("TEAOPS_BACKEND_URL={backend_url} {INSTALL_BIN}{bg}",)
+    format!("{INSTALL_BIN}{bg}")
 }
 
 /// Mechanism 1: systemd unit + enable.
-fn install_systemd(backend_url: &str) -> bool {
+fn install_systemd() -> bool {
     // Only meaningful if systemd is actually the init system.
     if !Path::new("/run/systemd/system").is_dir() {
         return false;
     }
     let unit = format!(
         "[Unit]\n\
-         Description=TeaOps Agent\n\
+         Description=DN7 Panel\n\
          After=network-online.target\n\
          Wants=network-online.target\n\
          \n\
          [Service]\n\
          Type=simple\n\
-         Environment=TEAOPS_BACKEND_URL={backend_url}\n\
          WorkingDirectory={INSTALL_DIR}\n\
          ExecStart={INSTALL_BIN} --foreground\n\
          Restart=always\n\
@@ -102,16 +97,16 @@ fn install_systemd(backend_url: &str) -> bool {
         return false;
     }
     // Reload + enable (start at boot). Don't `start` here — the foreground
-    // launcher that called us is already bringing the agent up.
+    // launcher that called us is already bringing the panel up.
     let _ = run("systemctl", &["daemon-reload"]);
-    let _ = run("systemctl", &["enable", "teaops-agent"]);
+    let _ = run("systemctl", &["enable", "dn7-panel"]);
     true
 }
 
 /// Mechanism 2: cron @reboot — a /etc/cron.d drop-in if that dir exists, else
 /// the root crontab. Either way, idempotent.
-fn install_cron(backend_url: &str) -> bool {
-    let launch = boot_launch_cmd(backend_url, true);
+fn install_cron() -> bool {
+    let launch = boot_launch_cmd(true);
     // Prefer a cron.d drop-in (clean, isolated, no crontab parsing).
     if Path::new("/etc/cron.d").is_dir() {
         // cron.d entries need a user field.
@@ -127,7 +122,7 @@ fn install_cron(backend_url: &str) -> bool {
     }
     // Fallback: edit root's crontab via `crontab`.
     if which("crontab") {
-        // Read existing crontab (may be empty), strip any prior teaops line,
+        // Read existing crontab (may be empty), strip any prior dn7 line,
         // append a fresh one, and load it back.
         let existing = std::process::Command::new("crontab")
             .arg("-l")
@@ -137,7 +132,7 @@ fn install_cron(backend_url: &str) -> bool {
             .unwrap_or_default();
         let mut lines: Vec<String> = existing
             .lines()
-            .filter(|l| !l.contains("teaops-agent"))
+            .filter(|l| !l.contains("dn7-panel"))
             .map(|l| l.to_string())
             .collect();
         lines.push(format!("@reboot {launch}"));
@@ -161,8 +156,8 @@ fn install_cron(backend_url: &str) -> bool {
 /// Mechanism 3: /etc/rc.local — append our launch line before `exit 0`,
 /// idempotently. Create the file with a shebang if it doesn't exist, and make
 /// it executable.
-fn install_rc_local(backend_url: &str) -> bool {
-    let launch = boot_launch_cmd(backend_url, true);
+fn install_rc_local() -> bool {
+    let launch = boot_launch_cmd(true);
     let our_block = format!("{RC_LOCAL_MARKER}\n{launch}\n");
 
     let existing = std::fs::read_to_string(RC_LOCAL_PATH).unwrap_or_default();
@@ -253,9 +248,8 @@ mod tests {
     }
 
     #[test]
-    fn boot_cmd_has_backend_and_binary() {
-        let c = boot_launch_cmd("https://api.example.cn", true);
-        assert!(c.contains("TEAOPS_BACKEND_URL=https://api.example.cn"));
+    fn boot_cmd_has_binary() {
+        let c = boot_launch_cmd(true);
         assert!(c.contains(INSTALL_BIN));
         assert!(c.trim_end().ends_with('&'));
     }

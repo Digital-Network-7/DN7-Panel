@@ -9,17 +9,9 @@
 //! CPU% needs two samples spaced by a short interval, so a `list` request
 //! refreshes the process CPU usage, waits briefly, refreshes again, then reads.
 
-use anyhow::{anyhow, Result};
-use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::{json, Value};
 use sysinfo::System;
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{client::IntoClientRequest, http::header::AUTHORIZATION, Message},
-};
-
-use crate::config::AgentConfig;
 
 /// One process row in the ranking.
 #[derive(Debug, Clone, Serialize)]
@@ -35,57 +27,6 @@ struct ProcRow {
     mem: u64,
     /// Cumulative CPU time used by the process, in seconds (like top's TIME).
     time: i64,
-}
-
-/// Connect to the backend procs relay and serve the protocol until either side
-/// closes.
-pub async fn run_procs_channel(cfg: &AgentConfig, agent_token: &str, session: &str) -> Result<()> {
-    let url = cfg.agent_procs_ws_url(session);
-    let mut req = url
-        .into_client_request()
-        .map_err(|e| anyhow!("bad ws url: {e}"))?;
-    req.headers_mut().insert(
-        AUTHORIZATION,
-        format!("Bearer {agent_token}")
-            .parse()
-            .map_err(|e| anyhow!("bad auth header: {e}"))?,
-    );
-    let (ws, _resp) = connect_async(req).await?;
-    let (mut ws_tx, mut ws_rx) = ws.split();
-
-    let mut sys = System::new();
-
-    while let Some(msg) = ws_rx.next().await {
-        match msg {
-            Ok(Message::Text(t)) => {
-                let v: Value = serde_json::from_str(&t).unwrap_or(Value::Null);
-                let id = v.get("id").cloned().unwrap_or(Value::Null);
-                let op = v.get("op").and_then(|o| o.as_str()).unwrap_or("");
-                let frame = match op {
-                    "list" => {
-                        let limit = v
-                            .get("limit")
-                            .and_then(|n| n.as_u64())
-                            .unwrap_or(20)
-                            .clamp(1, 50) as usize;
-                        let data = snapshot(&mut sys, limit).await;
-                        json!({ "id": id, "ok": true, "data": data })
-                    }
-                    _ => json!({ "id": id, "ok": false, "error": "unknown op" }),
-                };
-                if ws_tx.send(Message::Text(frame.to_string())).await.is_err() {
-                    break;
-                }
-            }
-            Ok(Message::Ping(p)) => {
-                let _ = ws_tx.send(Message::Pong(p)).await;
-            }
-            Ok(Message::Close(_)) | Err(_) => break,
-            _ => {}
-        }
-    }
-    let _ = ws_tx.close().await;
-    Ok(())
 }
 
 /// Public entrypoint for the local web console: a one-shot process snapshot.

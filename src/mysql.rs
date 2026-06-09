@@ -1,21 +1,19 @@
 //! Agent-side MySQL / MariaDB management.
 //!
-//! TeaOps provisions and manages MySQL/MariaDB **inside Docker containers** on
+//! DN7 Panel provisions and manages MySQL/MariaDB **inside Docker containers** on
 //! the user's server. We only ever touch instances *we* created: each managed
-//! container carries the label `teaops.mysql=1` plus a `teaops.mysql.id` and a
+//! container carries the label `dn7.mysql=1` plus a `dn7.mysql.id` and a
 //! local manifest under `<data>/mysql/<id>.json` (0600) recording the engine,
 //! version, port mapping, data volume, and the at-rest-encrypted root password.
 //! A user's own, hand-run MySQL is never listed or modified.
 //!
-//! When the backend pushes an `open-mysql` command, the agent dials back
-//! `/agent/mysql?session=` (token in the Authorization header) and serves a
-//! request/response JSON protocol backed by the local Docker daemon (bollard):
-//!
-//!   backend WS  <->  agent  <->  local Docker daemon  <->  mysql container
+//! Exposed to the web console via `web_dispatch` — a request/response JSON
+//! protocol backed by the local Docker daemon (bollard). There is no backend
+//! relay.
 //!
 //! Requests (client -> agent):
 //!   {"id","op":"info"}                                  docker present? + engines/versions
-//!   {"id","op":"list"}                                  TeaOps-managed instances
+//!   {"id","op":"list"}                                  DN7 Panel-managed instances
 //!   {"id","op":"install","engine","version","port"?,"expose"?}  -> {op_id} (detached)
 //!   {"id","op":"start"|"stop"|"restart","inst"}
 //!   {"id","op":"remove","inst","keep_data"?}
@@ -33,7 +31,7 @@
 //!   {"id","op":"backup","inst"}                          -> {op_id} (detached dump)
 //!   {"id","op":"list_ops"} / {"op_log","op_id"} / {"dismiss_op","op_id"}
 //!
-//! Only ONE instance is supported (fixed container `teaops-mysql`); create
+//! Only ONE instance is supported (fixed container `dn7-mysql`); create
 //! multiple databases inside it. Version switching is intentionally NOT offered
 //! because MySQL/MariaDB data directories aren't portable across major versions
 //! (downgrades are unsupported and would corrupt data).
@@ -45,31 +43,25 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
 use bollard::Docker;
-use futures_util::{SinkExt, StreamExt};
+use futures::StreamExt;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{client::IntoClientRequest, http::header::AUTHORIZATION, Message},
-};
 
-use crate::config::AgentConfig;
-
-/// Label marking a TeaOps-managed MySQL/MariaDB container.
-const LABEL_MANAGED: &str = "teaops.mysql";
+/// Label marking a DN7 Panel-managed MySQL/MariaDB container.
+const LABEL_MANAGED: &str = "dn7.mysql";
 /// Label carrying our instance id on a managed container.
-const LABEL_ID: &str = "teaops.mysql.id";
+const LABEL_ID: &str = "dn7.mysql.id";
 /// Label carrying the engine ("mysql"|"mariadb").
-const LABEL_ENGINE: &str = "teaops.mysql.engine";
+const LABEL_ENGINE: &str = "dn7.mysql.engine";
 
-/// Single-instance model: one TeaOps MySQL/MariaDB per host with stable names
+/// Single-instance model: one DN7 Panel MySQL/MariaDB per host with stable names
 /// (no random suffix). Create multiple databases inside it instead of multiple
 /// instances. These are also used to protect the container from deletion in the
 /// Docker page.
 pub const INSTANCE_ID: &str = "default";
-pub const CONTAINER: &str = "teaops-mysql";
-const VOLUME: &str = "teaops-mysql-data";
+pub const CONTAINER: &str = "dn7-mysql";
+const VOLUME: &str = "dn7-mysql-data";
 
 /// Connect to the local Docker daemon (or fail with a friendly hint).
 fn dkr() -> Result<Docker> {
@@ -81,6 +73,7 @@ fn dkr() -> Result<Docker> {
 #[derive(Debug, Deserialize)]
 struct Req {
     #[serde(default)]
+    #[allow(dead_code)]
     id: i64,
     op: String,
     /// instance id (start/stop/remove/...)
@@ -124,8 +117,8 @@ struct Manifest {
     id: String,
     engine: String,    // "mysql" | "mariadb"
     version: String,   // image tag, e.g. "8.0"
-    container: String, // container name (teaops-mysql-<id>)
-    volume: String,    // named data volume (teaops-mysql-<id>-data)
+    container: String, // container name (dn7-mysql-<id>)
+    volume: String,    // named data volume (dn7-mysql-<id>-data)
     /// host port if exposed, else None.
     port: Option<i64>,
     /// at-rest-encrypted root password (nonce:cipher), via crate::crypto.
@@ -359,57 +352,6 @@ fn op_dismiss(op_id: &str) {
 // Channel loop.
 // ---------------------------------------------------------------------------
 
-/// Connect to the backend mysql relay and serve the protocol until either side
-/// closes. Stateless: long ops live in the global registry.
-pub async fn run_mysql_channel(cfg: &AgentConfig, agent_token: &str, session: &str) -> Result<()> {
-    let url = cfg.agent_mysql_ws_url(session);
-    let mut request = url
-        .into_client_request()
-        .map_err(|e| anyhow!("bad ws url: {e}"))?;
-    request.headers_mut().insert(
-        AUTHORIZATION,
-        format!("Bearer {agent_token}")
-            .parse()
-            .map_err(|e| anyhow!("bad auth header: {e}"))?,
-    );
-    let (ws, _resp) = connect_async(request).await?;
-    let (mut ws_tx, mut ws_rx) = ws.split();
-
-    while let Some(msg) = ws_rx.next().await {
-        match msg {
-            Ok(Message::Text(t)) => {
-                let req: Req = match serde_json::from_str(&t) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let _ = ws_tx
-                            .send(Message::Text(
-                                json!({ "ok": false, "error": format!("bad request: {e}") })
-                                    .to_string(),
-                            ))
-                            .await;
-                        continue;
-                    }
-                };
-                let id = req.id;
-                let frame = match handle(&req).await {
-                    Ok(data) => json!({ "id": id, "ok": true, "data": data }),
-                    Err(e) => json!({ "id": id, "ok": false, "error": e.to_string() }),
-                };
-                if ws_tx.send(Message::Text(frame.to_string())).await.is_err() {
-                    break;
-                }
-            }
-            Ok(Message::Ping(p)) => {
-                let _ = ws_tx.send(Message::Pong(p)).await;
-            }
-            Ok(Message::Close(_)) | Err(_) => break,
-            _ => {}
-        }
-    }
-    let _ = ws_tx.close().await;
-    Ok(())
-}
-
 /// Public entrypoint for the local web console: parse a JSON request and run it.
 pub async fn web_dispatch(req: &Value) -> Result<Value> {
     let r: Req =
@@ -506,7 +448,7 @@ async fn info() -> Result<Value> {
     }))
 }
 
-/// List TeaOps-managed instances (from manifests), enriched with live container
+/// List DN7 Panel-managed instances (from manifests), enriched with live container
 /// state. Manifests are the source of truth for ownership — we never list a
 /// container we didn't create.
 async fn list_instances() -> Result<Value> {
@@ -693,7 +635,7 @@ async fn run_install_detached(
     .map_err(|e| anyhow!(friendly(&e)))?;
 
     // 5. Persist the manifest first (now the instance is officially
-    // TeaOps-managed and will show up in the list even while initializing).
+    // DN7 Panel-managed and will show up in the list even while initializing).
     let m = Manifest {
         id: inst_id.to_string(),
         engine: engine.to_string(),
@@ -779,7 +721,7 @@ async fn host_port_owner(dkr: &Docker, port: i64) -> Option<String> {
     None
 }
 
-/// Create a named volume tagged as TeaOps-managed.
+/// Create a named volume tagged as DN7 Panel-managed.
 async fn create_volume(dkr: &Docker, name: &str, inst_id: &str, engine: &str) -> Result<()> {
     let mut labels = HashMap::new();
     labels.insert(LABEL_MANAGED.to_string(), "1".to_string());
@@ -797,7 +739,7 @@ async fn create_volume(dkr: &Docker, name: &str, inst_id: &str, engine: &str) ->
 }
 
 /// Create (not start) a MySQL/MariaDB container with the data volume mounted,
-/// the root password set, TeaOps labels applied, and an optional host port
+/// the root password set, DN7 Panel labels applied, and an optional host port
 /// binding for 3306. All values are validated; nothing is passed to a shell.
 #[allow(clippy::too_many_arguments)]
 async fn create_mysql_container(
@@ -1337,7 +1279,7 @@ fn start_backup(req: &Req) -> Result<Value> {
 }
 
 /// Run `mysqldump --all-databases` inside the container, writing to
-/// `/var/lib/mysql/teaops-backup-<ts>.sql` (on the persistent data volume so it
+/// `/var/lib/mysql/dn7-backup-<ts>.sql` (on the persistent data volume so it
 /// survives), and report the path + size.
 async fn run_backup_detached(op_id: &str, inst: &str) -> Result<()> {
     let m = load_manifest(inst)?;
@@ -1347,7 +1289,7 @@ async fn run_backup_detached(op_id: &str, inst: &str) -> Result<()> {
     }
     op_push(op_id, "正在导出数据库（mysqldump）…");
     let ts = now_secs();
-    let path = format!("/var/lib/mysql/teaops-backup-{ts}.sql");
+    let path = format!("/var/lib/mysql/dn7-backup-{ts}.sql");
     // Use the dump tool that matches the engine; both accept the same flags.
     let script = format!(
         "if command -v mysqldump >/dev/null 2>&1; then DUMP=mysqldump; else DUMP=mariadb-dump; fi; \

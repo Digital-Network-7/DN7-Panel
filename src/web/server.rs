@@ -18,16 +18,11 @@ use tokio::sync::Mutex;
 
 use super::auth::{password_matches, proof_matches, AuthState};
 use super::settings::{self, WebSettings};
-use crate::config::AgentConfig;
+use crate::config::PanelConfig;
 use crate::metrics::Collector;
 
 /// Shared web-console state.
 pub struct WebState {
-    cfg: AgentConfig,
-    /// This server's agent token (to authenticate backend wx calls).
-    agent_token: String,
-    /// HTTP client for backend wx bind/login calls.
-    http: reqwest::Client,
     auth: AuthState,
     settings: std::sync::Mutex<WebSettings>,
     /// Reused metrics collector (CPU% needs a persistent handle across reads).
@@ -38,21 +33,14 @@ type Shared = Arc<WebState>;
 
 /// Start the web console in a background task (no-op when disabled). Returns
 /// immediately; the server runs for the process lifetime.
-pub fn spawn(cfg: AgentConfig, agent_token: String) {
+pub fn spawn(cfg: PanelConfig) {
     let s = settings::load_or_init(cfg.web_enabled, cfg.web_port);
     if !s.enabled {
         tracing::info!("web console disabled; not starting");
         return;
     }
     let port = s.port;
-    let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .unwrap_or_default();
     let state: Shared = Arc::new(WebState {
-        cfg,
-        agent_token,
-        http,
         auth: AuthState::new(),
         settings: std::sync::Mutex::new(s),
         collector: Mutex::new(Collector::new()),
@@ -87,10 +75,6 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
         .route("/api/files/download", get(files_download))
         .route("/api/files/upload", post(files_upload))
         .route("/api/nginx/static-upload", post(nginx_static_upload))
-        // WeChat scan login proxied to the backend (NAT-safe via this agent).
-        .route("/api/wx/status", get(wx_status))
-        .route("/api/wx/login/start", post(wx_login_start))
-        .route("/api/wx/login/poll", get(wx_login_poll))
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -626,124 +610,6 @@ async fn nginx_static_upload(
         Ok(n) => Json(json!({ "ok": true, "files": n })).into_response(),
         Err(e) => Json(json!({ "ok": false, "error": e.to_string() })).into_response(),
     }
-}
-
-/// Call a backend wx endpoint with the agent token in the JSON body. Returns
-/// the parsed `data` object on `{ok:true}`.
-async fn backend_call(state: &Shared, path: &str, extra: Value) -> anyhow::Result<Value> {
-    let mut body = serde_json::Map::new();
-    body.insert(
-        "agent_token".into(),
-        Value::String(state.agent_token.clone()),
-    );
-    if let Value::Object(m) = extra {
-        for (k, v) in m {
-            body.insert(k, v);
-        }
-    }
-    let url = format!("{}{}", state.cfg.backend_url, path);
-    let resp = state
-        .http
-        .post(&url)
-        .json(&Value::Object(body))
-        .send()
-        .await?;
-    let status = resp.status();
-    // A missing route (older backend) returns 404 with a non-JSON body; surface
-    // the status so callers can fall back instead of silently failing.
-    if status == reqwest::StatusCode::NOT_FOUND {
-        anyhow::bail!("404 not found: {path}");
-    }
-    let v: Value = resp.json().await?;
-    if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
-        Ok(v.get("data").cloned().unwrap_or(Value::Null))
-    } else {
-        anyhow::bail!(v
-            .get("error")
-            .and_then(|e| e.as_str())
-            .unwrap_or("backend error")
-            .to_string())
-    }
-}
-
-fn err_msg(e: impl std::fmt::Display) -> Response {
-    Json(json!({ "ok": false, "error": e.to_string() })).into_response()
-}
-
-/// GET /api/wx/status — PUBLIC. Reports whether this server is bound to a
-/// mini-program account (a claimed `servers` row). The login page hides the
-/// WeChat scan option entirely when it isn't bound (or the backend is
-/// unreachable), since scan login validates server ownership.
-///
-/// Primary check is `/agent/wx/login/status`. Older backends don't have that
-/// route yet (404) — in that case we fall back to `/agent/wx/login/start`,
-/// which succeeds only for a claimed server (and errors for an unbound/unknown
-/// token), so it doubles as a bound probe.
-async fn wx_status(State(state): State<Shared>) -> Response {
-    match backend_call(&state, "/agent/wx/login/status", json!({})).await {
-        Ok(d) => {
-            let bound = d.get("bound").and_then(|b| b.as_bool()).unwrap_or(false);
-            return Json(json!({ "bound": bound })).into_response();
-        }
-        Err(e) => {
-            // Only fall back when the status route is missing (older backend).
-            if e.to_string().contains("404") || e.to_string().contains("not found") {
-                let bound = backend_call(&state, "/agent/wx/login/start", json!({}))
-                    .await
-                    .is_ok();
-                return Json(json!({ "bound": bound })).into_response();
-            }
-        }
-    }
-    // Backend unreachable / unknown token: treat as not bound (hide the tab).
-    Json(json!({ "bound": false })).into_response()
-}
-
-/// POST /api/wx/login/start — PUBLIC (pre-auth login page). Calls the backend
-/// to mint a login ticket, then renders the QR payload to an inline SVG so the
-/// browser needs no QR JS library.
-async fn wx_login_start(State(state): State<Shared>) -> Response {
-    match backend_call(&state, "/agent/wx/login/start", json!({})).await {
-        Ok(d) => {
-            let payload = d.get("payload").and_then(|p| p.as_str()).unwrap_or("");
-            let ticket = d.get("ticket").and_then(|t| t.as_str()).unwrap_or("");
-            let svg = super::qr::svg(payload, 220).unwrap_or_default();
-            Json(json!({ "ticket": ticket, "payload": payload, "svg": svg })).into_response()
-        }
-        Err(e) => err_msg(e),
-    }
-}
-
-/// GET /api/wx/login/poll?ticket= — PUBLIC. On confirmation, mint a local
-/// session token (this is the actual login).
-async fn wx_login_poll(State(state): State<Shared>, Query(q): Query<PollQuery>) -> Response {
-    match backend_call(
-        &state,
-        "/agent/wx/login/poll",
-        json!({ "ticket": q.ticket }),
-    )
-    .await
-    {
-        Ok(d) => {
-            let status = d
-                .get("status")
-                .and_then(|s| s.as_str())
-                .unwrap_or("pending");
-            if status == "confirmed" {
-                let token = state.auth.issue();
-                Json(json!({ "status": "confirmed", "token": token })).into_response()
-            } else {
-                Json(json!({ "status": status })).into_response()
-            }
-        }
-        Err(e) => err_msg(e),
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct PollQuery {
-    #[serde(default)]
-    ticket: String,
 }
 
 // ---------------------------------------------------------------------------

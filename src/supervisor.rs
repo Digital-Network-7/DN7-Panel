@@ -1,4 +1,4 @@
-//! Supervisor role (the former teaops-agentd).
+//! Supervisor role (the former dn7-agentd).
 //!
 //! Runs as the default (no-arg) role. It keeps the agent role alive by spawning
 //! *itself* with the `agent` subcommand (self-split via `current_exe`) and
@@ -14,11 +14,11 @@ use std::time::Duration;
 use anyhow::Result;
 use tokio::process::{Child, Command};
 
-use crate::config::AgentConfig;
+use crate::config::PanelConfig;
 use crate::procfile::{role_alive, try_lock, write_heartbeat, write_pid, RolePaths};
 
 /// Entry point for the supervisor role.
-pub async fn run(cfg: AgentConfig) -> Result<()> {
+pub async fn run(cfg: PanelConfig) -> Result<()> {
     std::fs::create_dir_all(&cfg.runtime_dir).ok();
     std::fs::create_dir_all(&cfg.data_dir).ok();
     std::fs::create_dir_all(&cfg.log_dir).ok();
@@ -137,7 +137,7 @@ pub async fn run(cfg: AgentConfig) -> Result<()> {
 /// updated (`procfile::write_version`, written on every agent startup) instead
 /// of fork+exec'ing the whole binary every ~60s just to print a version. False
 /// on any error so we never re-exec on a flaky/missing read.
-fn on_disk_is_newer(cfg: &AgentConfig) -> bool {
+fn on_disk_is_newer(cfg: &PanelConfig) -> bool {
     match crate::procfile::read_version(&cfg.data_dir) {
         Some(disk) => crate::supervisor::version_gt(&disk, env!("CARGO_PKG_VERSION")),
         None => false,
@@ -191,7 +191,7 @@ fn spawn_agent() -> Result<Child> {
 }
 
 /// Poll until the (adopted) agent is no longer alive.
-async fn wait_until_agent_dead(agent: &RolePaths, cfg: &AgentConfig) {
+async fn wait_until_agent_dead(agent: &RolePaths, cfg: &PanelConfig) {
     let mut ticker = tokio::time::interval(Duration::from_secs(cfg.supervise_interval_secs.max(1)));
     loop {
         ticker.tick().await;
@@ -216,7 +216,7 @@ async fn wait_until_agent_dead(agent: &RolePaths, cfg: &AgentConfig) {
 ///      the just-killed agent as if it were still alive.
 ///
 /// Best-effort: each step ignores "already gone" errors.
-pub fn stop_running_instance(cfg: &AgentConfig) {
+pub fn stop_running_instance(cfg: &PanelConfig) {
     use crate::procfile::{read_pid, signal_pid, RolePaths};
 
     const SIGKILL: i32 = 9;

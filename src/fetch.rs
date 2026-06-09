@@ -1,18 +1,17 @@
-//! Binary acquisition from the TeaOps backend's distribution endpoints.
+//! Binary acquisition for self-update.
 //!
 //! There is a single binary (it runs as either the supervisor or the agent
-//! role depending on argv). The backend (`api.teaops.dn7.cn`) is now the sole
-//! update source — it mirrors agent releases (CI push + multi-source pull) and
-//! serves them rate-limited under `/agent/dist/*`. The agent never contacts
-//! GitHub or the old downloader directly.
-//!
-//! Used both for self-update and for re-fetching a missing/deleted binary.
+//! role depending on argv). Self-update pulls a new binary from
+//! `cfg.update_url` under `/agent/dist/*`. NOTE: self-update is currently not
+//! auto-triggered (the backend connection that used to drive it was removed);
+//! the mechanism is retained for a future panel/dn7.cn-initiated update.
+#![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
 
 fn http() -> reqwest::Client {
     reqwest::Client::builder()
-        .user_agent("teaops-agent/updater")
+        .user_agent("dn7-panel/updater")
         .timeout(std::time::Duration::from_secs(120))
         .build()
         .expect("http client")
@@ -30,7 +29,7 @@ fn http() -> reqwest::Client {
 /// timeout resets after every successful read.
 fn download_http() -> reqwest::Client {
     reqwest::Client::builder()
-        .user_agent("teaops-agent/updater")
+        .user_agent("dn7-panel/updater")
         .connect_timeout(std::time::Duration::from_secs(30))
         // No bytes at all for 5 minutes => treat the connection as dead.
         .read_timeout(std::time::Duration::from_secs(300))
@@ -51,12 +50,12 @@ fn arch() -> &'static str {
 /// Download the latest agent binary from the backend, reporting download
 /// percent (0..100) via `on_progress` as bytes arrive.
 pub async fn fetch_latest_with_progress<F: Fn(u64) + Copy>(
-    cfg: &crate::config::AgentConfig,
+    cfg: &crate::config::PanelConfig,
     on_progress: F,
 ) -> Result<Vec<u8>> {
     let url = format!(
         "{}/agent/dist/download?arch={}&rate=3145728",
-        cfg.backend_url.trim_end_matches('/'),
+        cfg.update_url.trim_end_matches('/'),
         arch()
     );
     let resp = download_http().get(&url).send().await?.error_for_status()?;
@@ -101,10 +100,10 @@ async fn download_streaming<F: Fn(u64)>(
 
 /// Resolve the latest available agent version from the backend, used to decide
 /// whether a self-update is actually needed before downloading the binary.
-pub async fn latest_version(cfg: &crate::config::AgentConfig) -> Result<String> {
+pub async fn latest_version(cfg: &crate::config::PanelConfig) -> Result<String> {
     let url = format!(
         "{}/agent/dist/version",
-        cfg.backend_url.trim_end_matches('/')
+        cfg.update_url.trim_end_matches('/')
     );
     let manifest: serde_json::Value = http()
         .get(&url)

@@ -1,21 +1,18 @@
-//! Agent-side Docker management.
+//! On-box Docker management for the web console.
 //!
-//! When the backend pushes an `open-docker` command, the agent dials back
-//! `/agent/docker?session=` (token in the Authorization header) and serves a
-//! request/response JSON protocol backed by the local `docker` CLI:
+//! A request/response JSON protocol backed by the local Docker daemon (bollard,
+//! no `docker` CLI), invoked directly by `web::server` via `web_dispatch`.
 //!
-//!   backend WS  <->  agent  <->  local `docker` CLI
-//!
-//! Every request carries an `id` echoed back in its response. Operations are a
+//! Every request carries an `id`. Operations are a
 //! fixed whitelist (no arbitrary command pass-through); user-supplied values
 //! (image names, container ids, ...) are passed as separate argv entries to
 //! `docker`, never interpolated into a shell, so there's no injection surface.
 //!
 //! Long-running operations (image pulls, Docker install) run **detached** in a
 //! process-global registry, so they keep running even if the client leaves the
-//! page and the WebSocket drops. The client starts one (`pull_image`/`install`,
-//! which return an `op_id` immediately) and then polls `list_ops` / `op_log` to
-//! watch progress and pick up the result when it reconnects.
+//! page. The client starts one (`pull_image`/`install`, which return an `op_id`
+//! immediately) and then polls `list_ops` / `op_log` to watch progress and pick
+//! up the result when it reconnects.
 //!
 //! Requests (client -> agent):
 //!   {"id","op":"info"}
@@ -45,15 +42,9 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
 use bollard::Docker;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{client::IntoClientRequest, http::header::AUTHORIZATION, Message},
-};
-
-use crate::config::AgentConfig;
 
 /// Connect to the local Docker daemon via its unix socket (or the platform
 /// default). Replaces shelling out to the `docker` CLI — works as long as the
@@ -66,6 +57,7 @@ pub fn dkr() -> Result<Docker> {
 #[derive(Debug, Deserialize)]
 struct Req {
     #[serde(default)]
+    #[allow(dead_code)]
     id: i64,
     op: String,
     #[serde(default)]
@@ -297,61 +289,6 @@ fn op_dismiss(op_id: &str) {
     }
 }
 
-/// Connect to the backend docker relay and serve the protocol until either side
-/// closes. The connection is stateless: long ops live in the global registry.
-pub async fn run_docker_channel(
-    _cfg: &AgentConfig,
-    agent_token: &str,
-    session: &str,
-) -> Result<()> {
-    let url = _cfg.agent_docker_ws_url(session);
-    let mut request = url
-        .into_client_request()
-        .map_err(|e| anyhow!("bad ws url: {e}"))?;
-    request.headers_mut().insert(
-        AUTHORIZATION,
-        format!("Bearer {agent_token}")
-            .parse()
-            .map_err(|e| anyhow!("bad auth header: {e}"))?,
-    );
-    let (ws, _resp) = connect_async(request).await?;
-    let (mut ws_tx, mut ws_rx) = ws.split();
-
-    while let Some(msg) = ws_rx.next().await {
-        match msg {
-            Ok(Message::Text(t)) => {
-                let req: Req = match serde_json::from_str(&t) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let _ = ws_tx
-                            .send(Message::Text(
-                                json!({ "ok": false, "error": format!("bad request: {e}") })
-                                    .to_string(),
-                            ))
-                            .await;
-                        continue;
-                    }
-                };
-                let id = req.id;
-                let frame = match handle(&req).await {
-                    Ok(data) => json!({ "id": id, "ok": true, "data": data }),
-                    Err(e) => json!({ "id": id, "ok": false, "error": e.to_string() }),
-                };
-                if ws_tx.send(Message::Text(frame.to_string())).await.is_err() {
-                    break;
-                }
-            }
-            Ok(Message::Ping(p)) => {
-                let _ = ws_tx.send(Message::Pong(p)).await;
-            }
-            Ok(Message::Close(_)) | Err(_) => break,
-            _ => {}
-        }
-    }
-    let _ = ws_tx.close().await;
-    Ok(())
-}
-
 /// Public entrypoint for the local web console: parse a JSON request object
 /// (same `{op, ...}` shape used over the backend relay) and run it. Returns the
 /// op result `data` on success.
@@ -364,7 +301,7 @@ pub async fn web_dispatch(req: &Value) -> Result<Value> {
 /// Dispatch one request. Long ops (`pull_image`, `install`) start a detached
 /// task and return an `op_id` immediately.
 async fn handle(req: &Req) -> Result<Value> {
-    // Guard: TeaOps-managed service containers/images (nginx / mysql) can't be
+    // Guard: DN7 Panel-managed service containers/images (nginx / mysql) can't be
     // operated on from the generic Docker channel at all — they're managed by
     // their own modules so state/volumes stay consistent. This applies to every
     // caller (web console AND the mini-program relay).
@@ -389,7 +326,7 @@ async fn handle(req: &Req) -> Result<Value> {
     if req.op == "remove_image" {
         if let Some(r) = req.reference.as_deref() {
             if managed_image_guard(r).await {
-                return Err(anyhow!("该镜像由 TeaOps 的 Nginx/MySQL 使用，无法删除"));
+                return Err(anyhow!("该镜像由 DN7 Panel 的 Nginx/MySQL 使用，无法删除"));
             }
         }
     }
@@ -453,7 +390,7 @@ async fn handle(req: &Req) -> Result<Value> {
         }
         "remove_container" => {
             let r = need_ref(req)?;
-            // Protect TeaOps-managed service containers (nginx / mysql) from
+            // Protect DN7 Panel-managed service containers (nginx / mysql) from
             // deletion here — they must be removed from their own pages so the
             // associated state/volumes are handled correctly.
             if let Some(why) = managed_container_guard(&r).await {
@@ -538,7 +475,7 @@ async fn handle(req: &Req) -> Result<Value> {
     }
 }
 
-/// TeaOps-managed service containers (nginx / mysql) must not be removed from
+/// DN7 Panel-managed service containers (nginx / mysql) must not be removed from
 /// the generic Docker page — they have their own management pages that also
 /// clean up the associated state/volumes. Returns `Some(reason)` to block the
 /// removal, `None` to allow it. Identifies the target by inspecting its real
@@ -554,18 +491,18 @@ async fn managed_container_guard(reference: &str) -> Option<String> {
         .as_ref()
         .and_then(|cf| cf.labels.clone())
         .unwrap_or_default();
-    let is_mysql = name == crate::mysql::CONTAINER || labels.contains_key("teaops.mysql");
+    let is_mysql = name == crate::mysql::CONTAINER || labels.contains_key("dn7.mysql");
     let is_nginx = name == crate::nginx::CONTAINER;
     if is_mysql {
-        Some("该容器由 TeaOps MySQL 管理，请在「MySQL」页面操作".to_string())
+        Some("该容器由 DN7 Panel MySQL 管理，请在「MySQL」页面操作".to_string())
     } else if is_nginx {
-        Some("该容器由 TeaOps Nginx 管理，请在「Nginx」页面操作".to_string())
+        Some("该容器由 DN7 Panel Nginx 管理，请在「Nginx」页面操作".to_string())
     } else {
         None
     }
 }
 
-/// True if `reference` is an image used by a TeaOps-managed service container
+/// True if `reference` is an image used by a DN7 Panel-managed service container
 /// (nginx / mysql) — such images can't be removed from the Docker page.
 async fn managed_image_guard(reference: &str) -> bool {
     let dkr = match dkr() {
@@ -746,7 +683,7 @@ fn host_mem_bytes() -> u64 {
 /// List images: id, repo:tag, size, created.
 async fn list_images() -> Result<Value> {
     let dkr = dkr()?;
-    // Determine which images are used by TeaOps-managed service containers
+    // Determine which images are used by DN7 Panel-managed service containers
     // (nginx / mysql) so the UI can mark them "内置" and the agent can refuse
     // to remove them.
     let managed_images = managed_image_refs(&dkr).await;
@@ -794,7 +731,7 @@ async fn list_images() -> Result<Value> {
     Ok(json!({ "images": items }))
 }
 
-/// The set of image refs (repo:tag) + short ids used by TeaOps-managed service
+/// The set of image refs (repo:tag) + short ids used by DN7 Panel-managed service
 /// containers (nginx / mysql). Used to mark those images "内置" and protect
 /// them from removal.
 async fn managed_image_refs(dkr: &Docker) -> std::collections::HashSet<String> {
@@ -817,7 +754,7 @@ async fn managed_image_refs(dkr: &Docker) -> std::collections::HashSet<String> {
         let has_mysql_label = c
             .labels
             .as_ref()
-            .map(|l| l.contains_key("teaops.mysql"))
+            .map(|l| l.contains_key("dn7.mysql"))
             .unwrap_or(false);
         let managed =
             name == crate::nginx::CONTAINER || name == crate::mysql::CONTAINER || has_mysql_label;
@@ -916,13 +853,13 @@ async fn list_containers() -> Result<Value> {
             .map(|s| s.trim_start_matches('/').to_string())
             .unwrap_or_default();
         let state = c.state.clone().unwrap_or_default();
-        // TeaOps-managed service containers (nginx / mysql) are marked so the UI
+        // DN7 Panel-managed service containers (nginx / mysql) are marked so the UI
         // can show "内置" and hide direct controls (the agent also refuses ops
         // on them — see `managed_container_guard`).
         let has_mysql_label = c
             .labels
             .as_ref()
-            .map(|l| l.contains_key("teaops.mysql"))
+            .map(|l| l.contains_key("dn7.mysql"))
             .unwrap_or(false);
         let managed =
             name == crate::nginx::CONTAINER || name == crate::mysql::CONTAINER || has_mysql_label;
@@ -1904,12 +1841,12 @@ async fn run_install_detached(op_id: &str) -> Result<()> {
     op_push(op_id, "下载 Docker 安装脚本（get.docker.com，阿里云镜像）…");
     let script = "set -e; \
         if command -v curl >/dev/null 2>&1; then \
-          curl -fsSL https://get.docker.com -o /tmp/teaops-get-docker.sh; \
+          curl -fsSL https://get.docker.com -o /tmp/dn7-get-docker.sh; \
         elif command -v wget >/dev/null 2>&1; then \
-          wget -qO /tmp/teaops-get-docker.sh https://get.docker.com; \
+          wget -qO /tmp/dn7-get-docker.sh https://get.docker.com; \
         else echo 'no curl/wget' >&2; exit 1; fi; \
-        sh /tmp/teaops-get-docker.sh --mirror Aliyun; \
-        rm -f /tmp/teaops-get-docker.sh";
+        sh /tmp/dn7-get-docker.sh --mirror Aliyun; \
+        rm -f /tmp/dn7-get-docker.sh";
     stream_shell_to_op(op_id, script).await?;
 
     op_push(op_id, "配置国内镜像加速并重启 Docker …");

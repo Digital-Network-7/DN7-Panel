@@ -2,15 +2,15 @@
 //!
 //! On a normal launch the binary prints its pairing QR + code in the foreground
 //! (so the operator can scan it), then detaches and keeps running in the
-//! background, writing logs to `teaops-agent.log`. Pass `--foreground` / `-f`
-//! (or set `TEAOPS_FOREGROUND=1`) to stay attached.
+//! background, writing logs to `dn7-panel.log`. Pass `--foreground` / `-f`
+//! (or set `DN7_FOREGROUND=1`) to stay attached.
 //!
 //! Daemonization must happen before the tokio runtime is created.
 
 /// Log file the daemonized process appends stdout/stderr to.
-pub const LOG_FILE: &str = "teaops-agent.log";
+pub const LOG_FILE: &str = "dn7-panel.log";
 /// PID file written by the daemonized supervisor.
-pub const PID_FILE: &str = "teaops-supervisor.daemon.pid";
+pub const PID_FILE: &str = "dn7-supervisor.daemon.pid";
 
 /// True when the process should stay in the foreground (no detaching).
 pub fn wants_foreground() -> bool {
@@ -21,7 +21,7 @@ pub fn wants_foreground() -> bool {
         return true;
     }
     matches!(
-        std::env::var("TEAOPS_FOREGROUND").ok().as_deref(),
+        std::env::var("DN7_FOREGROUND").ok().as_deref(),
         Some("1") | Some("true") | Some("yes")
     )
 }

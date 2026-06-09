@@ -1,6 +1,6 @@
 //! Canonical install location and stable-path resolution.
 //!
-//! The agent installs and runs itself from `/var/ops/teaops-agent` so that:
+//! The agent installs and runs itself from `/var/ops/dn7-panel` so that:
 //!   - the operator never has to create directories by hand, and
 //!   - respawns + self-update use a *stable on-disk path*.
 //!
@@ -16,7 +16,7 @@ use std::path::PathBuf;
 /// Directory the agent installs itself into.
 pub const INSTALL_DIR: &str = "/var/ops";
 /// Canonical agent binary path.
-pub const INSTALL_BIN: &str = "/var/ops/teaops-agent";
+pub const INSTALL_BIN: &str = "/var/ops/dn7-panel";
 
 /// Subdirectory names under the base dir, grouping the previously-flat files:
 ///   - `data/` : values that must persist (token, version, encryption key)
@@ -26,7 +26,7 @@ pub const DATA_SUBDIR: &str = "data";
 pub const RUN_SUBDIR: &str = "run";
 pub const LOG_SUBDIR: &str = "log";
 
-/// Persisted-data directory (`<base>/data`): token, version, `.agent_key`.
+/// Persisted-data directory (`<base>/data`): token, version, `.panel_key`.
 pub fn data_dir() -> PathBuf {
     default_base_dir().join(DATA_SUBDIR)
 }
@@ -91,7 +91,7 @@ pub fn default_base_dir() -> PathBuf {
     }
 }
 
-/// Ensure the agent is installed at and running from `/var/ops/teaops-agent`.
+/// Ensure the agent is installed at and running from `/var/ops/dn7-panel`.
 ///
 /// If the current executable isn't the canonical install binary, this copies
 /// itself there (creating `/var/ops`), migrates any older install's runtime
@@ -172,33 +172,33 @@ pub fn ensure_installed() -> bool {
 
 /// Runtime files worth preserving across a move to `/var/ops`.
 const VALUABLE_FILES: &[&str] = &[
-    "teaops-agent.token",
-    "teaops-agent.token.pending",
-    "teaops-agent.version",
-    ".agent_key",
+    "dn7-panel.token",
+    "dn7-panel.token.pending",
+    "dn7-panel.version",
+    ".panel_key",
 ];
 
 /// Transient process-state files that are meaningless once the old instance is
 /// stopped; they're deleted from the old directory rather than migrated.
 const TRANSIENT_FILES: &[&str] = &[
-    "teaops-supervisor.pid",
-    "teaops-supervisor.heartbeat",
-    "teaops-supervisor.lock",
-    "teaops-supervisor.daemon.pid",
-    "teaops-supervisor-relaunch.lock",
-    "teaops-agent.pid",
-    "teaops-agent.heartbeat",
-    "teaops-agent.lock",
+    "dn7-supervisor.pid",
+    "dn7-supervisor.heartbeat",
+    "dn7-supervisor.lock",
+    "dn7-supervisor.daemon.pid",
+    "dn7-supervisor-relaunch.lock",
+    "dn7-agent.pid",
+    "dn7-agent.heartbeat",
+    "dn7-agent.lock",
 ];
 
-const LOG_FILE_NAME: &str = "teaops-agent.log";
+const LOG_FILE_NAME: &str = "dn7-panel.log";
 
 /// Move an older install's runtime files out of `old_dir` into `/var/ops` and
 /// stop the old running instance.
 ///
 /// The old supervisor keeps re-writing its heartbeat/pid every few seconds, so
 /// deleting those files without first stopping it would just have them reappear
-/// (the exact "teaops-supervisor.heartbeat can't be deleted until reboot"
+/// (the exact "dn7-supervisor.heartbeat can't be deleted until reboot"
 /// symptom). We therefore SIGKILL the old instance first, then migrate the
 /// valuable files (without clobbering anything already in /var/ops), append the
 /// old log into the canonical one, and delete the transient state.
@@ -227,9 +227,9 @@ fn migrate_old_runtime(old_dir: &std::path::Path) {
     //    a race brought back.
     const SIGKILL: i32 = 9;
     let kill_order = [
-        "teaops-agent.pid",
-        "teaops-supervisor.pid",
-        "teaops-supervisor.daemon.pid",
+        "dn7-agent.pid",
+        "dn7-supervisor.pid",
+        "dn7-supervisor.daemon.pid",
     ];
     for _ in 0..2 {
         for name in kill_order {
@@ -303,7 +303,7 @@ fn migrate_files(old_dir: &std::path::Path, dest_base: &std::path::Path) {
         }
     }
 
-    // Append the old log into <dest_base>/log/teaops-agent.log, then remove it.
+    // Append the old log into <dest_base>/log/dn7-panel.log, then remove it.
     let old_log = old_dir.join(LOG_FILE_NAME);
     if old_log.is_file() {
         let dst_log = log_dst_dir.join(LOG_FILE_NAME);
@@ -385,21 +385,21 @@ mod tests {
     fn strips_deleted_suffix() {
         // The exact shape Linux reports for a replaced/unlinked running binary.
         assert_eq!(
-            clean_deleted(Path::new("/var/ops/teaops-agent (deleted)")),
-            Path::new("/var/ops/teaops-agent")
+            clean_deleted(Path::new("/var/ops/dn7-panel (deleted)")),
+            Path::new("/var/ops/dn7-panel")
         );
     }
 
     #[test]
     fn leaves_normal_paths_untouched() {
         assert_eq!(
-            clean_deleted(Path::new("/var/ops/teaops-agent")),
-            Path::new("/var/ops/teaops-agent")
+            clean_deleted(Path::new("/var/ops/dn7-panel")),
+            Path::new("/var/ops/dn7-panel")
         );
         // A path that merely contains the word shouldn't be altered.
         assert_eq!(
-            clean_deleted(Path::new("/opt/deleted/teaops-agent")),
-            Path::new("/opt/deleted/teaops-agent")
+            clean_deleted(Path::new("/opt/deleted/dn7-panel")),
+            Path::new("/opt/deleted/dn7-panel")
         );
     }
 
@@ -409,7 +409,7 @@ mod tests {
         use std::fs;
 
         // Build an isolated old dir + dest base under a unique temp path.
-        let base = std::env::temp_dir().join(format!("teaops-mig-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("dn7-mig-{}", std::process::id()));
         let old = base.join("old");
         let dest = base.join("var-ops");
         let _ = fs::remove_dir_all(&base);
@@ -419,43 +419,43 @@ mod tests {
         let logd = dest.join(LOG_SUBDIR);
 
         // Valuable files in the old dir.
-        fs::write(old.join("teaops-agent.token"), "tok").unwrap();
-        fs::write(old.join(".agent_key"), "key").unwrap();
+        fs::write(old.join("dn7-panel.token"), "tok").unwrap();
+        fs::write(old.join(".panel_key"), "key").unwrap();
         // A valuable file that ALSO exists at the destination (kept, not clobbered).
-        fs::write(old.join("teaops-agent.version"), "0.0.1").unwrap();
+        fs::write(old.join("dn7-panel.version"), "0.0.1").unwrap();
         fs::create_dir_all(&data).unwrap();
-        fs::write(data.join("teaops-agent.version"), "0.1.0").unwrap();
+        fs::write(data.join("dn7-panel.version"), "0.1.0").unwrap();
         // Transient state + a log to fold.
-        fs::write(old.join("teaops-supervisor.heartbeat"), "123").unwrap();
-        fs::write(old.join("teaops-supervisor.pid"), "999").unwrap();
-        fs::write(old.join("teaops-agent.log"), "old-log\n").unwrap();
+        fs::write(old.join("dn7-supervisor.heartbeat"), "123").unwrap();
+        fs::write(old.join("dn7-supervisor.pid"), "999").unwrap();
+        fs::write(old.join("dn7-panel.log"), "old-log\n").unwrap();
         fs::create_dir_all(&logd).unwrap();
-        fs::write(logd.join("teaops-agent.log"), "new-log\n").unwrap();
+        fs::write(logd.join("dn7-panel.log"), "new-log\n").unwrap();
 
         migrate_files(&old, &dest);
 
         // Valuables moved into <dest>/data.
         assert_eq!(
-            fs::read_to_string(data.join("teaops-agent.token")).unwrap(),
+            fs::read_to_string(data.join("dn7-panel.token")).unwrap(),
             "tok"
         );
-        assert_eq!(fs::read_to_string(data.join(".agent_key")).unwrap(), "key");
-        assert!(!old.join("teaops-agent.token").exists());
-        assert!(!old.join(".agent_key").exists());
+        assert_eq!(fs::read_to_string(data.join(".panel_key")).unwrap(), "key");
+        assert!(!old.join("dn7-panel.token").exists());
+        assert!(!old.join(".panel_key").exists());
         // Existing version preserved; old copy removed.
         assert_eq!(
-            fs::read_to_string(data.join("teaops-agent.version")).unwrap(),
+            fs::read_to_string(data.join("dn7-panel.version")).unwrap(),
             "0.1.0"
         );
-        assert!(!old.join("teaops-agent.version").exists());
+        assert!(!old.join("dn7-panel.version").exists());
         // Log folded into <dest>/log (contains both), old log gone.
-        let folded = fs::read_to_string(logd.join("teaops-agent.log")).unwrap();
+        let folded = fs::read_to_string(logd.join("dn7-panel.log")).unwrap();
         assert!(folded.contains("new-log"));
         assert!(folded.contains("old-log"));
-        assert!(!old.join("teaops-agent.log").exists());
+        assert!(!old.join("dn7-panel.log").exists());
         // Transient state deleted from the old dir (the heartbeat symptom).
-        assert!(!old.join("teaops-supervisor.heartbeat").exists());
-        assert!(!old.join("teaops-supervisor.pid").exists());
+        assert!(!old.join("dn7-supervisor.heartbeat").exists());
+        assert!(!old.join("dn7-supervisor.pid").exists());
 
         let _ = fs::remove_dir_all(&base);
     }
