@@ -36,6 +36,9 @@ futures = "0.3"
 bytes = "1"
 # Local web management console: in-process HTTP server (axum). Pure Rust, musl-safe.
 axum = { version = "0.7", features = ["ws"] }
+# Embed the split web-console assets (css/js modules) into the binary at compile
+# time so the console stays a single static binary. Pure Rust, musl-safe.
+include_dir = "0.7"
 
 [profile.release]
 opt-level = 3

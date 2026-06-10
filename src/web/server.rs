@@ -21,6 +21,12 @@ use super::branding;
 use super::settings::{self, WebSettings};
 use crate::config::PanelConfig;
 use crate::metrics::Collector;
+use include_dir::{include_dir, Dir};
+
+/// Web-console UI assets (css + js modules), embedded at compile time so the
+/// binary stays self-contained. `index.html` is served separately (templated
+/// with branding); everything else is served verbatim from here under `/ui/`.
+static UI_ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/src/web/ui");
 
 /// Shared web-console state.
 pub struct WebState {
@@ -57,6 +63,7 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
     let app = Router::new()
         // Public (no auth): the login page + login endpoint.
         .route("/", get(index_page))
+        .route("/ui/*path", get(ui_asset))
         .route("/api/login/challenge", get(login_challenge))
         .route("/api/login", post(login))
         // Authenticated API.
@@ -621,6 +628,33 @@ async fn nginx_static_upload(
 async fn index_page() -> Html<String> {
     let b = branding::load();
     Html(branding::render_index(include_str!("ui/index.html"), &b))
+}
+
+/// Serve an embedded UI asset (css/js) under `/ui/...`. These are non-secret
+/// front-end modules; no auth required (same posture as the index page).
+async fn ui_asset(axum::extract::Path(path): axum::extract::Path<String>) -> Response {
+    match UI_ASSETS.get_file(&path) {
+        Some(f) => (
+            [(header::CONTENT_TYPE, asset_content_type(&path))],
+            f.contents().to_vec(),
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+fn asset_content_type(path: &str) -> &'static str {
+    if path.ends_with(".css") {
+        "text/css; charset=utf-8"
+    } else if path.ends_with(".js") {
+        "text/javascript; charset=utf-8"
+    } else if path.ends_with(".svg") {
+        "image/svg+xml"
+    } else if path.ends_with(".html") {
+        "text/html; charset=utf-8"
+    } else {
+        "application/octet-stream"
+    }
 }
 
 // ---------------------------------------------------------------------------
