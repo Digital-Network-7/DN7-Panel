@@ -39,6 +39,9 @@ axum = { version = "0.7", features = ["ws"] }
 # Embed the split web-console assets (css/js modules) into the binary at compile
 # time so the console stays a single static binary. Pure Rust, musl-safe.
 include_dir = "0.7"
+# Verify Ed25519 signatures on downloaded self-update binaries with an embedded
+# public key. Pure Rust (curve25519-dalek), musl-safe.
+ed25519-dalek = "2"
 
 [profile.release]
 opt-level = 3

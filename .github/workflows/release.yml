@@ -1,13 +1,14 @@
 name: Build Linux Release
 
-# Build Linux release binaries on every push. The version is auto-incremented
-# as 1.0.<run_number> (e.g. 1.0.1, 1.0.2, ...) and published as a GitHub Release
-# with the compiled binaries (x86_64 + arm64) attached.
+# Build Linux release binaries on every push. The version is derived from the
+# latest `v1.1.*` git tag (first release => 1.1.0, then 1.1.1, 1.1.2, ...), so
+# it never skips a number and isn't coupled to the run counter. Binaries are
+# built for the *musl* targets and statically linked, then signed (Ed25519) and
+# published as a GitHub Release with the binaries + detached `.sig` attached.
 #
-# Binaries are built for the *musl* targets and statically linked, so they run
-# on any Linux distro/version regardless of its glibc (no more
-# "GLIBC_2.xx not found"). DN7 Panel uses rustls (not OpenSSL), so a fully
-# static musl build needs no system libraries at runtime.
+# Signing: each binary is signed with the release private key (Actions secret
+# DN7_SIGN_KEY, an Ed25519 PKCS8 PEM). Deployed panels verify the signature
+# against an embedded public key before self-updating.
 
 on:
   push:
@@ -21,7 +22,31 @@ env:
   BIN_NAME: dn7-panel
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - name: Checkout (with tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version (1.1.x)
+        id: v
+        run: |
+          latest=$(git tag -l 'v1.1.*' | sort -V | tail -1)
+          if [ -z "$latest" ]; then
+            version="1.1.0"
+          else
+            patch=${latest##*.}
+            version="1.1.$((patch + 1))"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "next version: $version"
+
   build:
+    needs: version
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -36,13 +61,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Compute version (1.0.x)
-        id: ver
-        run: echo "version=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-
       - name: Stamp version into Cargo.toml
         run: |
-          sed -i -E "0,/^version = \".*\"/s//version = \"${{ steps.ver.outputs.version }}\"/" Cargo.toml
+          sed -i -E "0,/^version = \".*\"/s//version = \"${{ needs.version.outputs.version }}\"/" Cargo.toml
           grep -m1 '^version' Cargo.toml
 
       - name: Install Rust toolchain
@@ -56,8 +77,8 @@ jobs:
           key: ${{ matrix.target }}
 
       # `cross` runs the build inside a target-matched Docker image that already
-      # has the musl cross toolchain + C compiler (needed by ring), so both the
-      # x86_64 and aarch64 musl builds are fully static and portable.
+      # has the musl cross toolchain + C compiler, so both the x86_64 and
+      # aarch64 musl builds are fully static and portable.
       - name: Install cross
         uses: taiki-e/install-action@v2
         with:
@@ -69,47 +90,56 @@ jobs:
       - name: Package binary
         id: pkg
         run: |
-          OUT="${BIN_NAME}-linux-${{ matrix.arch }}-v${{ steps.ver.outputs.version }}"
+          OUT="${BIN_NAME}-linux-${{ matrix.arch }}-v${{ needs.version.outputs.version }}"
           cp "target/${{ matrix.target }}/release/${BIN_NAME}" "${OUT}"
           chmod +x "${OUT}"
           echo "artifact=${OUT}" >> "$GITHUB_OUTPUT"
+
+      - name: Sign binary (Ed25519)
+        env:
+          DN7_SIGN_KEY: ${{ secrets.DN7_SIGN_KEY }}
+        run: |
+          if [ -z "$DN7_SIGN_KEY" ]; then
+            echo "::error::DN7_SIGN_KEY secret is not set — cannot sign release" >&2
+            exit 1
+          fi
+          echo "$DN7_SIGN_KEY" > /tmp/dn7_sign.pem
+          openssl pkeyutl -sign -inkey /tmp/dn7_sign.pem -rawin \
+            -in "${{ steps.pkg.outputs.artifact }}" \
+            -out "${{ steps.pkg.outputs.artifact }}.sig"
+          rm -f /tmp/dn7_sign.pem
+          # Sanity: an Ed25519 signature is exactly 64 bytes.
+          sz=$(wc -c < "${{ steps.pkg.outputs.artifact }}.sig")
+          test "$sz" = "64" || { echo "::error::unexpected signature size $sz" >&2; exit 1; }
+          echo "signed ${{ steps.pkg.outputs.artifact }} ($sz-byte sig)"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.pkg.outputs.artifact }}
-          path: ${{ steps.pkg.outputs.artifact }}
+          path: |
+            ${{ steps.pkg.outputs.artifact }}
+            ${{ steps.pkg.outputs.artifact }}.sig
 
   release:
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-latest
 
     steps:
-      - name: Compute version (1.0.x)
-        id: ver
-        run: echo "version=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
-      - name: Generate SHA256SUMS
-        # Bare basenames (no dir prefix) so the panel's updater can match each
-        # asset name directly when verifying a download.
-        run: |
-          cd dist
-          sha256sum dn7-panel-linux-* > SHA256SUMS
-          cat SHA256SUMS
-
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.ver.outputs.version }}
-          name: v${{ steps.ver.outputs.version }}
+          tag_name: v${{ needs.version.outputs.version }}
+          name: v${{ needs.version.outputs.version }}
           body: |
-            Automated static (musl) Linux build of ${{ env.BIN_NAME }} v${{ steps.ver.outputs.version }} (x86_64 + arm64).
+            Automated static (musl) Linux build of ${{ env.BIN_NAME }} v${{ needs.version.outputs.version }} (x86_64 + arm64).
             Runs on any Linux regardless of glibc version.
+            Each binary is Ed25519-signed; the matching `.sig` is attached and verified by the panel before self-update.
             Commit: ${{ github.sha }}
           files: dist/*

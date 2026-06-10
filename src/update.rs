@@ -268,8 +268,12 @@ pub async fn check(cfg: &PanelConfig) -> CheckResult {
 // Install + self-update
 // ---------------------------------------------------------------------------
 
-/// Write `bytes` to `target` atomically with executable permissions.
-pub async fn install_bytes(bytes: &[u8], target: &Path) -> Result<()> {
+/// Write `bytes` to `target` atomically, but only after the freshly-downloaded
+/// (already signature-verified) binary reports a **strictly newer** version
+/// than ours — an anti-rollback guard so a compromised mirror can't push an old
+/// but validly-signed (vulnerable) build. The binary keeps the old inode while
+/// running, so the rename is safe even though we're replacing ourselves.
+pub async fn install_verified(bytes: &[u8], target: &Path) -> Result<()> {
     if bytes.is_empty() {
         return Err(anyhow!("refusing to install empty binary"));
     }
@@ -287,12 +291,43 @@ pub async fn install_bytes(bytes: &[u8], target: &Path) -> Result<()> {
     tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
         .await
         .context("chmod temp binary")?;
-    // Rename over the target. Safe on Linux even if the target is running:
-    // the running process keeps the old inode until it exits.
+    // Anti-rollback: refuse anything that isn't strictly newer than us.
+    let current = env!("CARGO_PKG_VERSION");
+    match read_binary_version(&tmp).await {
+        Ok(v) if is_newer(current, &v) => {
+            tracing::info!(from = current, to = %v, "self-update: version gate passed");
+        }
+        Ok(v) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(anyhow!(
+                "downloaded version {v} is not newer than {current} — refusing (rollback?)"
+            ));
+        }
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(anyhow!("could not read downloaded binary version: {e}"));
+        }
+    }
     tokio::fs::rename(&tmp, target)
         .await
         .context("install (rename) binary")?;
     Ok(())
+}
+
+/// Run `<path> version` and return its reported compiled version.
+async fn read_binary_version(path: &Path) -> Result<String> {
+    let out = tokio::process::Command::new(path)
+        .arg("version")
+        .output()
+        .await?;
+    if !out.status.success() {
+        return Err(anyhow!("version subcommand exited with {}", out.status));
+    }
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if v.is_empty() {
+        return Err(anyhow!("empty version output"));
+    }
+    Ok(v)
 }
 
 /// Fetch the latest binary (resolved source, failing over on download error)
@@ -329,7 +364,7 @@ pub async fn self_update(cfg: &PanelConfig) -> Result<PathBuf> {
         }
     };
     set_phase(PHASE_INSTALLING);
-    install_bytes(&bytes, &target).await?;
+    install_verified(&bytes, &target).await?;
     tracing::info!(
         bytes = bytes.len(),
         "self-update installed; exiting for restart"

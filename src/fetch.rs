@@ -53,7 +53,8 @@ impl SourceKind {
 pub struct Release {
     pub version: String,
     pub url: String,
-    pub sha256: Option<String>,
+    /// Detached Ed25519 signature URL for `url` (raw 64-byte `.sig`).
+    pub sig_url: Option<String>,
     pub source: SourceKind,
 }
 
@@ -122,29 +123,12 @@ pub async fn github_release(cfg: &PanelConfig) -> Result<Release> {
     }
     let asset = format!("dn7-panel-linux-{}-v{}", arch(), version);
     let url = format!("https://github.com/{repo}/releases/download/{tag}/{asset}");
-    // Best-effort: pull the published SHA256SUMS and find our asset's hash.
-    let sums_url = format!("https://github.com/{repo}/releases/download/{tag}/SHA256SUMS");
-    let sha256 = http()
-        .get(&sums_url)
-        .send()
-        .await
-        .ok()
-        .and_then(|r| {
-            if r.status().is_success() {
-                Some(r)
-            } else {
-                None
-            }
-        })
-        .map(|r| async move { r.text().await.ok() });
-    let sha256 = match sha256 {
-        Some(fut) => parse_sha256sums(fut.await.unwrap_or_default(), &asset),
-        None => None,
-    };
+    // The detached Ed25519 signature is published as a sibling `<asset>.sig`.
+    let sig_url = Some(format!("{url}.sig"));
     Ok(Release {
         version,
         url,
-        sha256,
+        sig_url,
         source: SourceKind::Github,
     })
 }
@@ -172,15 +156,15 @@ pub async fn dn7_release(cfg: &PanelConfig) -> Result<Release> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| format!("{}/api/panel/download?arch={}", cfg.dn7_base, arch()));
-    let sha256 = m
-        .get("sha256")
+    let sig_url = m
+        .get("sig")
         .and_then(|v| v.as_str())
-        .filter(|s| s.len() == 64)
-        .map(|s| s.to_lowercase());
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("{}/api/panel/download.sig?arch={}", cfg.dn7_base, arch()));
     Ok(Release {
         version,
         url: dl,
-        sha256,
+        sig_url: Some(sig_url),
         source: SourceKind::Dn7,
     })
 }
@@ -191,20 +175,6 @@ pub async fn release_from(cfg: &PanelConfig, source: SourceKind) -> Result<Relea
         SourceKind::Github => github_release(cfg).await,
         SourceKind::Dn7 => dn7_release(cfg).await,
     }
-}
-
-/// Find `asset`'s hash line in a `sha256  filename` SHA256SUMS body.
-fn parse_sha256sums(body: String, asset: &str) -> Option<String> {
-    for line in body.lines() {
-        let mut it = line.split_whitespace();
-        let hash = it.next()?;
-        let name = it.next().unwrap_or("");
-        let name = name.trim_start_matches('*'); // some tools prefix binary mode
-        if name == asset && hash.len() == 64 {
-            return Some(hash.to_lowercase());
-        }
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -335,28 +305,32 @@ pub async fn download_release<F: Fn(u64) + Copy>(
             release.source.as_str()
         ));
     }
-    if let Some(expected) = &release.sha256 {
-        let got = sha256_hex(&bytes);
-        if &got != expected {
-            return Err(anyhow!(
-                "sha256 mismatch (expected {expected}, got {got}) — refusing to install"
-            ));
-        }
-        tracing::info!("self-update: sha256 verified");
+    // Fetch the detached signature and verify it against the embedded key(s).
+    let sig_url = release
+        .sig_url
+        .as_deref()
+        .ok_or_else(|| anyhow!("no signature URL for release — refusing to install"))?;
+    let sig = http()
+        .get(sig_url)
+        .send()
+        .await
+        .map_err(|e| anyhow!("could not fetch signature: {e}"))?
+        .error_for_status()
+        .map_err(|e| anyhow!("signature not available: {e}"))?
+        .bytes()
+        .await
+        .map_err(|e| anyhow!("could not read signature: {e}"))?;
+    if !crate::signing::verify(&bytes, &sig) {
+        return Err(anyhow!(
+            "signature verification FAILED — refusing to install (untrusted or tampered binary)"
+        ));
     }
     tracing::info!(
         source = release.source.as_str(),
         bytes = bytes.len(),
-        "fetched panel binary"
+        "fetched panel binary; signature verified"
     );
     Ok(bytes)
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(bytes);
-    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Stream a response body into a Vec, reporting download percent via callback.
@@ -394,29 +368,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_sums_matches_asset() {
-        let body = "deadbeef  other-file\n\
-            aaaabbbbccccddddeeeeffff0000111122223333444455556666777788889999  dn7-panel-linux-x86_64-v1.0.9\n";
-        assert_eq!(
-            parse_sha256sums(body.into(), "dn7-panel-linux-x86_64-v1.0.9"),
-            Some("aaaabbbbccccddddeeeeffff0000111122223333444455556666777788889999".into())
-        );
-        assert_eq!(parse_sha256sums(body.into(), "missing"), None);
-    }
-
-    #[test]
     fn source_kind_roundtrip() {
         assert_eq!(SourceKind::from_str("github"), Some(SourceKind::Github));
         assert_eq!(SourceKind::from_str("dn7"), Some(SourceKind::Dn7));
         assert_eq!(SourceKind::from_str("x"), None);
         assert_eq!(SourceKind::Github.other(), SourceKind::Dn7);
-    }
-
-    #[test]
-    fn sha256_known_vector() {
-        assert_eq!(
-            sha256_hex(b"abc"),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
     }
 }

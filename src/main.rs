@@ -14,6 +14,7 @@ mod nginx;
 mod paths;
 mod procfile;
 mod procs;
+mod signing;
 mod supervisor;
 mod terminal;
 mod update;
