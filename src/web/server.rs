@@ -71,6 +71,7 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
         .route("/api/login", post(login))
         // Authenticated API.
         .route("/api/logout", post(logout))
+        .route("/api/ticket", post(mint_ticket))
         .route("/api/info", get(panel_info))
         .route("/api/metrics", get(metrics))
         .route("/api/procs", get(procs))
@@ -197,6 +198,17 @@ async fn logout(State(state): State<Shared>, headers: header::HeaderMap) -> Resp
     Json(json!({ "ok": true })).into_response()
 }
 
+/// POST /api/ticket — mint a one-time, 30-second ticket for a single WebSocket
+/// upgrade or file download. Requires a valid bearer session; the ticket (not
+/// the long-lived token) is what goes in the URL, so a leaked URL exposes only
+/// a short-lived, single-use credential.
+async fn mint_ticket(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    Json(json!({ "ok": true, "data": { "ticket": state.auth.issue_ticket() } })).into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Monitoring
 // ---------------------------------------------------------------------------
@@ -289,9 +301,12 @@ async fn get_settings(State(state): State<Shared>, headers: header::HeaderMap) -
         return r;
     }
     let s = state.settings.lock().unwrap().clone();
+    // The password is intentionally NOT returned: a session should never be able
+    // to read back the reusable console password. The form sends a new password
+    // only when the operator chooses to change it.
     Json(json!({
         "ok": true,
-        "data": { "enabled": s.enabled, "port": s.port, "username": s.username, "password": s.password_plain() }
+        "data": { "enabled": s.enabled, "port": s.port, "username": s.username, "pw_default": s.pw_default }
     }))
     .into_response()
 }
@@ -330,14 +345,12 @@ async fn put_settings(
         }
         if let Some(pw) = req.password {
             let pw = pw.trim();
-            if pw.len() < 6 || pw.len() > 128 {
-                return (StatusCode::BAD_REQUEST, "密码长度需为 6-128").into_response();
-            }
-            // Only treat it as a change when it differs from the current
-            // plaintext (the settings form pre-fills the current password). A
-            // user-chosen password is stored ENCRYPTED; the auto-generated
-            // default stays plaintext until the user replaces it.
-            if pw != s.password_plain() {
+            // Blank means "leave the password unchanged" (the form no longer
+            // pre-fills it). Only validate + set when the operator typed one.
+            if !pw.is_empty() {
+                if pw.len() < 6 || pw.len() > 128 {
+                    return (StatusCode::BAD_REQUEST, "密码长度需为 6-128").into_response();
+                }
                 s.set_user_password(pw);
             }
         }
@@ -374,7 +387,7 @@ async fn put_settings(
 #[derive(serde::Deserialize)]
 struct WsAuth {
     #[serde(default)]
-    token: String,
+    ticket: String,
 }
 
 async fn terminal_ws(
@@ -383,8 +396,8 @@ async fn terminal_ws(
     ws: WebSocketUpgrade,
 ) -> Response {
     // WebSocket upgrades can't carry an Authorization header from the browser,
-    // so the token comes as a query param.
-    if !state.auth.valid(&q.token) {
+    // so a one-time ticket (minted via POST /api/ticket) authorizes the upgrade.
+    if !state.auth.consume_ticket(&q.ticket) {
         return (StatusCode::UNAUTHORIZED, "未授权").into_response();
     }
     ws.on_upgrade(handle_terminal)
@@ -396,11 +409,11 @@ async fn handle_terminal(socket: WebSocket) {
     }
 }
 
-/// WS query for a container terminal: token + container ref.
+/// WS query for a container terminal: one-time ticket + container ref.
 #[derive(serde::Deserialize)]
 struct ContainerWsAuth {
     #[serde(default)]
-    token: String,
+    ticket: String,
     #[serde(default)]
     container: String,
 }
@@ -410,7 +423,7 @@ async fn container_terminal_ws(
     Query(q): Query<ContainerWsAuth>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if !state.auth.valid(&q.token) {
+    if !state.auth.consume_ticket(&q.ticket) {
         return (StatusCode::UNAUTHORIZED, "未授权").into_response();
     }
     let container = q.container.clone();
@@ -499,12 +512,12 @@ async fn files_delete(
     }
 }
 
-/// Download query: token (browser can't set Authorization on a direct link),
-/// path, optional container.
+/// Download query: a one-time ticket (browser can't set Authorization on a
+/// direct link), path, optional container.
 #[derive(serde::Deserialize)]
 struct DownloadQuery {
     #[serde(default)]
-    token: String,
+    ticket: String,
     #[serde(default)]
     path: String,
     #[serde(default)]
@@ -512,7 +525,7 @@ struct DownloadQuery {
 }
 
 async fn files_download(State(state): State<Shared>, Query(q): Query<DownloadQuery>) -> Response {
-    if !state.auth.valid(&q.token) {
+    if !state.auth.consume_ticket(&q.ticket) {
         return (StatusCode::UNAUTHORIZED, "未授权").into_response();
     }
     let ctn = q

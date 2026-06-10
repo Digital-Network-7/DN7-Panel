@@ -1,8 +1,11 @@
 //! Persisted web-console settings (`<data>/web.json`, 0600).
 //!
-//! Holds the auto-generated access password and the user-adjustable port +
-//! enabled flag. The env-var defaults seed the file on first run; thereafter
-//! the file is authoritative so changes made in the console survive restarts.
+//! Holds the access password and the user-adjustable port + enabled flag. The
+//! password is **always stored encrypted** at rest (`nonce:cipher`, machine-
+//! bound via `crate::crypto`), including the auto-generated default — it is
+//! never written in plaintext to the file or the log. Read it back with
+//! `password_plain()`; an operator who needs the current value runs
+//! `dn7-panel password` on the host.
 
 use anyhow::Result;
 use rand::Rng;
@@ -17,14 +20,13 @@ pub struct WebSettings {
     /// Login account name (default "admin"; user-editable).
     #[serde(default = "default_username")]
     pub username: String,
-    /// Access password, stored at rest. The auto-generated **default** password
-    /// is kept as plaintext (so the operator can read it from the daemon log /
-    /// settings file); once the user changes it, it's stored **encrypted**
-    /// (`nonce:cipher`, machine-bound via `crate::crypto`). Read it back with
-    /// `password_plain()`, never this field directly.
+    /// Access password, stored **encrypted** at rest (`nonce:cipher`, machine-
+    /// bound via `crate::crypto`) — both the auto-generated default and any
+    /// user-set password. Read it back with `password_plain()`, never this
+    /// field directly.
     pub password: String,
-    /// True while `password` is still the auto-generated default (plaintext).
-    /// Cleared the moment the user sets their own password (then encrypted).
+    /// True while `password` is still the auto-generated default (the user
+    /// hasn't set their own yet). Cleared the moment the user sets a password.
     #[serde(default = "default_true")]
     pub pw_default: bool,
 }
@@ -66,8 +68,9 @@ fn gen_password() -> String {
 }
 
 /// Load persisted settings, or seed a fresh file from the env-var defaults
-/// (generating a password). The seeded password is logged once so the operator
-/// can find it.
+/// (generating a password). The generated password is stored **encrypted**;
+/// only a redacted notice is logged (the value is never logged). An operator
+/// retrieves it with `dn7-panel password`.
 pub fn load_or_init(default_enabled: bool, default_port: u16) -> WebSettings {
     if let Ok(raw) = std::fs::read_to_string(settings_path()) {
         if let Ok(s) = serde_json::from_str::<WebSettings>(&raw) {
@@ -78,7 +81,7 @@ pub fn load_or_init(default_enabled: bool, default_port: u16) -> WebSettings {
         enabled: default_enabled,
         port: default_port,
         username: default_username(),
-        password: gen_password(),
+        password: crate::crypto::encrypt(&gen_password()),
         pw_default: true,
     };
     if let Err(e) = save(&s) {
@@ -87,10 +90,16 @@ pub fn load_or_init(default_enabled: bool, default_port: u16) -> WebSettings {
     tracing::info!(
         port = s.port,
         username = %s.username,
-        password = %s.password,
-        "web console initialized (account + password generated)"
+        "web console initialized (account + password generated; run `dn7-panel password` to view it)"
     );
     s
+}
+
+/// Read persisted settings without seeding a new file. Returns None when the
+/// console hasn't been initialized yet. Used by the `password` subcommand.
+pub fn load() -> Option<WebSettings> {
+    let raw = std::fs::read_to_string(settings_path()).ok()?;
+    serde_json::from_str::<WebSettings>(&raw).ok()
 }
 
 /// Persist settings to `<data>/web.json` with 0600 perms.
@@ -113,7 +122,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_password_stays_plaintext() {
+    fn legacy_plaintext_password_reads_verbatim() {
         let s = WebSettings {
             enabled: true,
             port: 1080,
@@ -121,7 +130,7 @@ mod tests {
             password: "PlainDefault123".into(),
             pw_default: true,
         };
-        // A default password is readable verbatim and isn't ciphertext-shaped.
+        // A legacy/plaintext-stored value (no ':') is read back verbatim.
         assert_eq!(s.password_plain(), "PlainDefault123");
         assert!(!s.password.contains(':'));
     }

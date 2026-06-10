@@ -61,6 +61,8 @@ function fileBrowser(mount, container, startPath) {
   load();
 }
 function downloadFile(full, container) {
-  const qs = `token=${encodeURIComponent(S.token)}&path=${encodeURIComponent(full)}` + (container ? `&container=${encodeURIComponent(container)}` : '');
-  const a = el('a', { href: '/api/files/download?' + qs }); document.body.appendChild(a); a.click(); a.remove();
+  ticket().then((t) => {
+    const qs = `ticket=${encodeURIComponent(t)}&path=${encodeURIComponent(full)}` + (container ? `&container=${encodeURIComponent(container)}` : '');
+    const a = el('a', { href: '/api/files/download?' + qs }); document.body.appendChild(a); a.click(); a.remove();
+  }).catch((e) => toast(e.message, 'err'));
 }

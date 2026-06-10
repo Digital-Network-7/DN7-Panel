@@ -20,11 +20,17 @@ const FAIL_MAX: usize = 10;
 /// Login challenge (nonce) lifetime. Short — it's used immediately.
 const CHALLENGE_TTL: Duration = Duration::from_secs(120);
 
+/// One-time ticket lifetime. Used to authorize a single WebSocket upgrade or
+/// file download where the bearer token can't ride in an Authorization header
+/// and would otherwise leak into the URL (history, proxy logs, screenshots).
+const TICKET_TTL: Duration = Duration::from_secs(30);
+
 #[derive(Default)]
 pub struct AuthState {
     sessions: Mutex<HashMap<String, Instant>>, // token -> last access (sliding)
     fails: Mutex<HashMap<String, Vec<Instant>>>, // source -> failure times
     challenges: Mutex<HashMap<String, Instant>>, // login nonce -> issued (single use)
+    tickets: Mutex<HashMap<String, Instant>>,  // one-time WS/download ticket -> issued
 }
 
 impl AuthState {
@@ -108,6 +114,33 @@ impl AuthState {
         let mut m = self.challenges.lock().unwrap();
         match m.remove(nonce) {
             Some(t) => Instant::now().duration_since(t) <= CHALLENGE_TTL,
+            None => false,
+        }
+    }
+
+    /// Mint a one-time ticket (hex) authorizing a single WebSocket upgrade or
+    /// download. The caller must already hold a valid session (the HTTP handler
+    /// checks the bearer token first). The ticket — not the long-lived session
+    /// token — is what travels in the URL, so a leaked URL exposes only a
+    /// 30-second, single-use credential.
+    pub fn issue_ticket(&self) -> String {
+        let ticket = random_token();
+        let mut m = self.tickets.lock().unwrap();
+        let now = Instant::now();
+        m.retain(|_, t| now.duration_since(*t) <= TICKET_TTL);
+        m.insert(ticket.clone(), now);
+        ticket
+    }
+
+    /// Consume a one-time ticket: valid only if present + unexpired, then
+    /// removed so it can't be replayed.
+    pub fn consume_ticket(&self, ticket: &str) -> bool {
+        if ticket.is_empty() {
+            return false;
+        }
+        let mut m = self.tickets.lock().unwrap();
+        match m.remove(ticket) {
+            Some(t) => Instant::now().duration_since(t) <= TICKET_TTL,
             None => false,
         }
     }
@@ -195,6 +228,16 @@ mod tests {
         assert!(a.consume_challenge(&n));
         assert!(!a.consume_challenge(&n)); // replay rejected
         assert!(!a.consume_challenge("never-issued"));
+    }
+
+    #[test]
+    fn ticket_single_use() {
+        let a = AuthState::new();
+        let t = a.issue_ticket();
+        assert!(a.consume_ticket(&t));
+        assert!(!a.consume_ticket(&t)); // replay rejected
+        assert!(!a.consume_ticket("never-issued"));
+        assert!(!a.consume_ticket(""));
     }
 
     #[test]

@@ -67,7 +67,7 @@ function buildContainerActions(holder, reload) {
   if (running) {
     mk('停止', 'sec', () => doCAction('stop_container', id, reload));
     mk('重启', 'sec', () => doCAction('restart_container', id, reload));
-    if (hasShell) mk('终端', '', () => openTerminalModal('容器终端 · ' + name, `/api/container/terminal?token=${encodeURIComponent(S.token)}&container=${encodeURIComponent(id)}`));
+    if (hasShell) mk('终端', '', () => ticket().then((t) => openTerminalModal('容器终端 · ' + name, `/api/container/terminal?ticket=${encodeURIComponent(t)}&container=${encodeURIComponent(id)}`)).catch((e) => toast(e.message, 'err')));
     mk('文件', 'sec', () => openFileBrowser('容器文件 · ' + name, id));
   } else {
     mk('启动', '', () => doCAction('start_container', id, reload));

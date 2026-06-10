@@ -3,7 +3,9 @@
 // =========================================================================
 function renderTerm(v) {
   v.innerHTML = `<div class="term-page"><div class="term-wrap" style="flex:1;min-height:0"><div class="term-bar"><span class="dot-s on" id="tStatus"></span><span id="tLabel">主机终端</span><span class="sp"></span><span class="mut">点击下方区域即可输入</span></div><div class="vterm" id="vterm"></div></div></div>`;
-  mountTerminal($('vterm'), $('tStatus'), `/api/terminal?token=${encodeURIComponent(S.token)}`);
+  ticket()
+    .then((t) => mountTerminal($('vterm'), $('tStatus'), `/api/terminal?ticket=${encodeURIComponent(t)}`))
+    .catch((e) => { const d = $('tStatus'); if (d) d.className = 'dot-s'; toast(e.message, 'err'); });
 }
 // Open a terminal in the given host element against a WS path; returns cleanup.
 function mountTerminal(hostEl, statusDot, wsPath) {

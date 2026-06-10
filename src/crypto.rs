@@ -1,8 +1,7 @@
 //! At-rest encryption for persisted secrets (the web console password).
 //!
-//! The auto-generated default web password is stored in plaintext (so the
-//! operator can read it from the log/settings file); once the user sets their
-//! own password it's encrypted at rest with AES-256-GCM. The stored value
+//! The web console password is stored encrypted at rest with AES-256-GCM —
+//! both the auto-generated default and any user-set password. The stored value
 //! is `nonce_hex:cipher_hex` with a fresh random 96-bit nonce per write.
 //!
 //! The key is *machine-bound*: it's derived (SHA-256) from a stable host

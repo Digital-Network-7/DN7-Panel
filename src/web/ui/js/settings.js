@@ -11,8 +11,9 @@ function renderSettings(v) {
       <label class="lbl">账号</label>
       <input id="setUser" class="field" style="margin-bottom:12px" value="${esc(s.username)}" />
       <label class="lbl">密码</label>
-      <div class="row" style="margin-bottom:4px"><input id="setPw" class="field" type="password" value="${esc(s.password)}" style="flex:1" /><button class="btn sec sm" id="setPwShow" type="button">显示</button></div>
-      <h3 style="margin-top:18px">端口（改后重启 Agent 生效）</h3>
+      <div class="row" style="margin-bottom:4px"><input id="setPw" class="field" type="password" value="" placeholder="留空表示不修改" autocomplete="new-password" style="flex:1" /><button class="btn sec sm" id="setPwShow" type="button">显示</button></div>
+      <div class="sub" style="margin:2px 0 0">忘记密码？在主机上运行 <code>dn7-panel password</code> 查看当前密码。</div>
+      <h3 style="margin-top:18px">端口（改后重启 Panel 生效）</h3>
       <input id="setPort" class="field" type="number" value="${s.port}" />
       <label style="display:flex;gap:8px;align-items:center;margin:14px 0"><input type="checkbox" id="setEnabled" ${s.enabled ? 'checked' : ''}/> 启用本机管理（关闭后需重启生效）</label>
       <button class="btn" id="setSave">保存</button>
@@ -46,9 +47,11 @@ function renderSettings(v) {
     </div>`;
     $('setPwShow').onclick = () => { const i = $('setPw'); const show = i.type === 'password'; i.type = show ? 'text' : 'password'; $('setPwShow').textContent = show ? '隐藏' : '显示'; };
     $('setSave').onclick = () => {
-      const body = { username: $('setUser').value, password: $('setPw').value, port: Number($('setPort').value), enabled: $('setEnabled').checked };
+      const body = { username: $('setUser').value, port: Number($('setPort').value), enabled: $('setEnabled').checked };
+      const pw = $('setPw').value;
+      if (pw) body.password = pw; // only send when the operator typed a new one
       api('/api/settings', { method: 'POST', body: JSON.stringify(body) })
-        .then((b) => { const m = $('setMsg'); m.className = 'err ok'; m.textContent = '已保存' + (b.needs_restart ? '（端口/开关改动需重启 Agent 生效）' : ''); setUser(body.username); })
+        .then((b) => { const m = $('setMsg'); m.className = 'err ok'; m.textContent = '已保存' + (b.needs_restart ? '（端口/开关改动需重启 Panel 生效）' : ''); $('setPw').value = ''; setUser(body.username); })
         .catch((e) => { const m = $('setMsg'); m.className = 'err'; m.textContent = e.message; });
     };
     // ---- Appearance / branding ----

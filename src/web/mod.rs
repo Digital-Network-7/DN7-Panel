@@ -22,3 +22,11 @@ mod server;
 mod settings;
 
 pub use server::spawn;
+
+/// The current console password in plaintext, read from `<data>/web.json`
+/// without seeding a new file. None when the console hasn't been initialized.
+/// Used by the `dn7-panel password` subcommand so an operator can retrieve the
+/// (encrypted-at-rest) password on the host without it ever being logged.
+pub fn console_password() -> Option<String> {
+    settings::load().map(|s| s.password_plain())
+}

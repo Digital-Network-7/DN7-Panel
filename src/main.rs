@@ -45,6 +45,20 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `password` subcommand: print the current console password and exit. Lets
+    // an operator retrieve the (encrypted-at-rest, never-logged) password on the
+    // host. Short-circuits before any install/migration side effects.
+    if role.as_deref() == Some("password") {
+        match web::console_password() {
+            Some(pw) => println!("{pw}"),
+            None => {
+                eprintln!("console not initialized yet");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
     // Migrate to the canonical install location (/var/ops/dn7-panel) on the
     // top-level (supervisor) launch, so the operator never has to create dirs
     // and every respawn/self-update uses a stable path. The panel role is an

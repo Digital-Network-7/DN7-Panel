@@ -86,6 +86,10 @@ function api(path, opts = {}) {
 // Capability op (docker/nginx/mysql): POST {op,...} → data.
 function op(kind, obj) { return api('/api/' + kind, { method: 'POST', body: JSON.stringify(obj) }).then((b) => b.data); }
 
+// Mint a one-time, short-lived ticket for a WebSocket upgrade or a download
+// link — the session token must never travel in a URL (history/proxy logs).
+function ticket() { return api('/api/ticket', { method: 'POST' }).then((b) => b.data.ticket); }
+
 function fmtBytes(n) {
   n = Number(n) || 0; const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
