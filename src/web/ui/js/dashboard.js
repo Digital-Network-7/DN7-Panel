@@ -33,7 +33,7 @@ function renderDash(v) {
   });
   refresh(); S.timer = setInterval(refresh, 2000);
 }
-// Render the process ranking. `st.sort` is 'cpu' | 'mem'; the agent returns both
+// Render the process ranking. `st.sort` is 'cpu' | 'mem'; the panel returns both
 // pre-sorted lists (by_cpu / by_mem) so switching is instant + accurate. The
 // header is a separate (non-scrolling) table from the scrolling body so the
 // scrollbar never overlaps the header and the columns never jitter.

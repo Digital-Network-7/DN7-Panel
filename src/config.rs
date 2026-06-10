@@ -1,7 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
-/// Runtime configuration shared by both roles (supervisor + agent).
+/// Runtime configuration shared by both roles (supervisor + panel).
 ///
 /// DN7 Panel is a standalone on-box management console: there is no backend
 /// connection. The only remote interaction is the (currently untriggered)
@@ -16,9 +16,9 @@ pub struct PanelConfig {
     pub log_dir: PathBuf,
     /// Seconds without a heartbeat before a peer role is considered dead.
     pub heartbeat_timeout_secs: u64,
-    /// Supervisor: how often to check the agent child (seconds).
+    /// Supervisor: how often to check the panel child (seconds).
     pub supervise_interval_secs: u64,
-    /// Supervisor: minimum delay between agent restarts (seconds).
+    /// Supervisor: minimum delay between panel restarts (seconds).
     pub restart_backoff_secs: u64,
     /// Local web management: whether to serve the on-box web console.
     pub web_enabled: bool,

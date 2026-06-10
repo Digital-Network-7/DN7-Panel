@@ -38,8 +38,8 @@ function showApp() {
     nav.appendChild(b);
   });
   api('/api/info').then((b) => {
-    $('agentVer').textContent = 'v' + (b.data.version || '?');
-    if (b.data.hostname) $('agentVer').title = b.data.hostname;
+    $('panelVer').textContent = 'v' + (b.data.version || '?');
+    if (b.data.hostname) $('panelVer').title = b.data.hostname;
   }).catch(() => {});
   api('/api/settings').then((b) => { setUser(b.data.username || 'admin'); }).catch(() => {});
   if (window.updateBadge) updateBadge();

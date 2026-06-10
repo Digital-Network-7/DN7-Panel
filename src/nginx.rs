@@ -1,10 +1,10 @@
-//! Agent-side Nginx management (host-only).
+//! Panel-side Nginx management (host-only).
 //!
 //! Manages the **host's own nginx**: DN7 Panel ensures nginx is installed (via
 //! the system package manager) and only ever writes its own
 //! `dn7-<id>.conf` files into `/etc/nginx/conf.d`, never touching the user's
 //! existing configs, reloading via `nginx -s reload`. Certs and static webroots
-//! live under the agent state dir (`/var/ops/.../nginx/`).
+//! live under the panel state dir (`/var/ops/.../nginx/`).
 //!
 //! Long operations (install / Let's Encrypt issuance) run **detached** in a
 //! process-global op registry so they survive client reconnects.
@@ -14,7 +14,7 @@
 //! (`sites.json`) into a single conf file and validated with `nginx -t` before
 //! it's kept (otherwise it's rolled back).
 //!
-//! Requests (client -> agent):
+//! Requests (client -> panel):
 //!   {"id","op":"info"}
 //!   {"id","op":"setup"}                       -> {op_id} (detached install)
 //!   {"id","op":"list_sites"}
@@ -250,7 +250,7 @@ fn op_dismiss(op_id: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// State directory layout (persisted under the agent runtime dir).
+// State directory layout (persisted under the panel runtime dir).
 //
 //   <base>/nginx/setup_done    marker that host nginx setup completed
 //   <base>/nginx/sites.json    the site manifest

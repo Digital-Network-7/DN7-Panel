@@ -1,7 +1,7 @@
 //! Live process-list channel (Top-N by CPU / memory).
 //!
-//! In response to an `open-procs` command the agent dials back
-//! `/agent/procs?session=...` and serves a tiny request/response protocol over
+//! In response to an `open-procs` command the panel dials back
+//! `/panel/procs?session=...` and serves a tiny request/response protocol over
 //! that WebSocket: the client sends `{"id":N,"op":"list"}` and we reply with a
 //! snapshot of the heaviest processes. The mini program's CPU/memory gauges use
 //! this to show a Top-20 ranking on tap.

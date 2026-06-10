@@ -1,7 +1,7 @@
-//! Agent role: run the on-box web console and keep itself alive.
+//! Panel role: run the on-box web console and keep itself alive.
 //!
-//! DN7 Panel has no backend connection. The "agent" role (spawned by the
-//! supervisor with the `agent` subcommand) simply:
+//! DN7 Panel has no backend connection. The "panel" role (spawned by the
+//! supervisor with the `panel` subcommand) simply:
 //!   * writes its pid/heartbeat and guards the supervisor (mutual resurrection),
 //!   * starts the local web management console,
 //!   * idles forever (the console serves requests in its own tasks).
@@ -16,7 +16,7 @@ use anyhow::Result;
 use crate::config::PanelConfig;
 use crate::guardian;
 
-/// Entry point for the agent role.
+/// Entry point for the panel role.
 pub async fn run(cfg: PanelConfig) -> Result<()> {
     // Write our pid/heartbeat and start guarding the supervisor.
     guardian::write_own_pid(&cfg);
@@ -34,7 +34,7 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     // "update available" hint warm.
     crate::update::spawn_periodic(cfg.clone());
 
-    tracing::info!("DN7 Panel agent role started");
+    tracing::info!("DN7 Panel role started");
 
     // Keep the role alive and our heartbeat fresh so the supervisor knows we're
     // up. The console does the real work in background tasks.

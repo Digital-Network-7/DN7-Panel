@@ -113,7 +113,7 @@ function pollUpdStatus() {
         clearInterval(UPD.polling);
       }
     }).catch(() => {
-      // The agent restarts after install → requests fail; that's success.
+      // The panel restarts after install → requests fail; that's success.
       const txt = $('uProgTxt');
       if (txt) txt.textContent = '已安装新版本，正在重启，请稍后刷新页面…';
       clearInterval(UPD.polling);

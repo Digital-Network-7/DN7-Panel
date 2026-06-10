@@ -375,7 +375,7 @@ pub async fn self_update(cfg: &PanelConfig) -> Result<PathBuf> {
 /// Run a full self-update in the background: download first (the UI shows
 /// progress), then swap the binary in and exit so the supervisor relaunches us
 /// on the new version. Downloading BEFORE exiting means a slow network never
-/// leaves the host without a running agent.
+/// leaves the host without a running panel.
 pub async fn run_self_update(cfg: &PanelConfig) {
     if !try_begin() {
         tracing::info!("self-update already in progress; ignoring duplicate trigger");
@@ -400,7 +400,7 @@ pub async fn run_self_update(cfg: &PanelConfig) {
 }
 
 // ---------------------------------------------------------------------------
-// Periodic checker (spawned by the agent role)
+// Periodic checker (spawned by the panel role)
 // ---------------------------------------------------------------------------
 
 /// Background loop: check for a newer version periodically. When auto-update is

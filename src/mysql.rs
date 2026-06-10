@@ -1,4 +1,4 @@
-//! Agent-side MySQL / MariaDB management.
+//! Panel-side MySQL / MariaDB management.
 //!
 //! DN7 Panel provisions and manages MySQL/MariaDB **inside Docker containers** on
 //! the user's server. We only ever touch instances *we* created: each managed
@@ -11,7 +11,7 @@
 //! protocol backed by the local Docker daemon (bollard). There is no backend
 //! relay.
 //!
-//! Requests (client -> agent):
+//! Requests (client -> panel):
 //!   {"id","op":"info"}                                  docker present? + engines/versions
 //!   {"id","op":"list"}                                  DN7 Panel-managed instances
 //!   {"id","op":"install","engine","version","port"?,"expose"?}  -> {op_id} (detached)

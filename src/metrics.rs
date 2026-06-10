@@ -37,7 +37,7 @@ pub struct Metrics {
     pub hostname: String,
     pub os_version: String,
     pub ip: String,
-    /// Whether this agent is running inside a Docker/container environment.
+    /// Whether this panel is running inside a Docker/container environment.
     pub is_container: bool,
     /// Logical CPU core count (threads).
     pub cpu_cores: i64,
@@ -62,7 +62,7 @@ pub struct Metrics {
     pub disk_mounts: Vec<DiskMount>,
     /// Self-update phase ("idle"|"checking"|"downloading"|"installing"|"error")
     /// and download progress percent (0..100), so the UI can show live update
-    /// status instead of the agent appearing to hang during a slow download.
+    /// status instead of the panel appearing to hang during a slow download.
     pub update_phase: String,
     pub update_progress: u64,
     /// Bytes downloaded so far / total bytes for the in-flight self-update, so

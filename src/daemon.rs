@@ -1,4 +1,4 @@
-//! Background daemonization for the agent (supervisor role).
+//! Background daemonization for the panel (supervisor role).
 //!
 //! On a normal launch the binary prints its pairing QR + code in the foreground
 //! (so the operator can scan it), then detaches and keeps running in the
@@ -28,7 +28,7 @@ pub fn wants_foreground() -> bool {
 
 /// Detach from the terminal and run in the background. Logs/PID and the working
 /// directory are anchored at the base dir (`/var/ops`, falling back to cwd) so
-/// they're consistent regardless of where the agent was launched from.
+/// they're consistent regardless of where the panel was launched from.
 #[cfg(unix)]
 pub fn daemonize() -> anyhow::Result<()> {
     use std::fs::OpenOptions;

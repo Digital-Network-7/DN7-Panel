@@ -1,6 +1,6 @@
-//! Agent-role half of the mutual supervision protocol.
+//! Panel-role half of the mutual supervision protocol.
 //!
-//! The agent role writes its own pid + a periodic heartbeat so the supervisor
+//! The panel role writes its own pid + a periodic heartbeat so the supervisor
 //! can detect liveness, and watches the supervisor's heartbeat — relaunching it
 //! (under a file lock, with an adoption re-check) if it dies. Relaunch
 //! re-executes *this* binary with no args (the supervisor role / self-split).
@@ -12,17 +12,17 @@ use fs2::FileExt;
 use crate::config::PanelConfig;
 use crate::procfile::{role_alive, write_heartbeat, write_pid, RolePaths};
 
-/// Write the agent role's pid file (call once at startup).
+/// Write the panel role's pid file (call once at startup).
 pub fn write_own_pid(cfg: &PanelConfig) {
     let _ = std::fs::create_dir_all(&cfg.runtime_dir);
-    let me = RolePaths::new(&cfg.runtime_dir, "agent");
+    let me = RolePaths::new(&cfg.runtime_dir, "panel");
     let _ = write_pid(&me.pid);
     touch_own_heartbeat(cfg);
 }
 
-/// Refresh the agent role's heartbeat (call each loop iteration).
+/// Refresh the panel role's heartbeat (call each loop iteration).
 pub fn touch_own_heartbeat(cfg: &PanelConfig) {
-    let me = RolePaths::new(&cfg.runtime_dir, "agent");
+    let me = RolePaths::new(&cfg.runtime_dir, "panel");
     let _ = write_heartbeat(&me.heartbeat);
 }
 

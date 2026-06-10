@@ -1,21 +1,21 @@
 //! Canonical install location and stable-path resolution.
 //!
-//! The agent installs and runs itself from `/var/ops/dn7-panel` so that:
+//! The panel installs and runs itself from `/var/ops/dn7-panel` so that:
 //!   - the operator never has to create directories by hand, and
 //!   - respawns + self-update use a *stable on-disk path*.
 //!
 //! Why the stable path matters: a self-update renames the new binary over the
 //! running file. On Linux the old inode is then unlinked, so `current_exe()`
 //! (which reads `/proc/self/exe`) returns "<path> (deleted)". The supervisor
-//! that respawns the agent via `current_exe()` then hits
+//! that respawns the panel via `current_exe()` then hits
 //! `No such file or directory`. Resolving against the canonical install path
 //! (or a cleaned `current_exe`) avoids that.
 
 use std::path::PathBuf;
 
-/// Directory the agent installs itself into.
+/// Directory the panel installs itself into.
 pub const INSTALL_DIR: &str = "/var/ops";
-/// Canonical agent binary path.
+/// Canonical panel binary path.
 pub const INSTALL_BIN: &str = "/var/ops/dn7-panel";
 
 /// Subdirectory names under the base dir, grouping the previously-flat files:
@@ -91,7 +91,7 @@ pub fn default_base_dir() -> PathBuf {
     }
 }
 
-/// Ensure the agent is installed at and running from `/var/ops/dn7-panel`.
+/// Ensure the panel is installed at and running from `/var/ops/dn7-panel`.
 ///
 /// If the current executable isn't the canonical install binary, this copies
 /// itself there (creating `/var/ops`), migrates any older install's runtime
@@ -101,7 +101,7 @@ pub fn default_base_dir() -> PathBuf {
 /// subsequent self-split / self-update operates on the stable path. No-ops
 /// (returns false) when already canonical, when the binary was unlinked by a
 /// self-update, or when `/var/ops` can't be written (e.g. unprivileged run) —
-/// in those cases the agent keeps running from where it is.
+/// in those cases the panel keeps running from where it is.
 pub fn ensure_installed() -> bool {
     use std::os::unix::fs::PermissionsExt;
 
@@ -186,9 +186,9 @@ const TRANSIENT_FILES: &[&str] = &[
     "dn7-supervisor.lock",
     "dn7-supervisor.daemon.pid",
     "dn7-supervisor-relaunch.lock",
-    "dn7-agent.pid",
-    "dn7-agent.heartbeat",
-    "dn7-agent.lock",
+    "dn7-panel.pid",
+    "dn7-panel.heartbeat",
+    "dn7-panel.lock",
 ];
 
 const LOG_FILE_NAME: &str = "dn7-panel.log";
@@ -220,14 +220,14 @@ fn migrate_old_runtime(old_dir: &std::path::Path) {
     }
 
     // 1) Stop the old instance so it stops re-creating heartbeat/pid files.
-    //    Kill the AGENT first: its guardian would otherwise relaunch the
+    //    Kill the PANEL first: its guardian would otherwise relaunch the
     //    supervisor the moment we kill it. SIGKILL can't be caught, so the
     //    guardian can't fight back. Then kill the supervisor (and its
     //    daemonized parent). Repeat once after a short pause to mop up anything
     //    a race brought back.
     const SIGKILL: i32 = 9;
     let kill_order = [
-        "dn7-agent.pid",
+        "dn7-panel.pid",
         "dn7-supervisor.pid",
         "dn7-supervisor.daemon.pid",
     ];
@@ -245,11 +245,11 @@ fn migrate_old_runtime(old_dir: &std::path::Path) {
     // 2-4) Move valuables, fold the log, drop transient state — into the new
     // grouped subdirs under /var/ops (data/run/log).
     migrate_files(old_dir, canonical_dir);
-    tracing::info!(dir = %old_dir.display(), "migrated old agent runtime files to /var/ops");
+    tracing::info!(dir = %old_dir.display(), "migrated old panel runtime files to /var/ops");
 }
 
 /// Migrate a *flat* `/var/ops` layout (everything directly under the base dir,
-/// as written by older agents) into the grouped `data/`, `run/`, `log/`
+/// as written by older panels) into the grouped `data/`, `run/`, `log/`
 /// subdirs. Idempotent and best-effort: if there are no flat files it does
 /// nothing. Runs on every supervisor launch so an upgrade picks up its existing
 /// token/key without re-pairing. The old running instance (if any) is *this*
@@ -329,8 +329,8 @@ fn migrate_files(old_dir: &std::path::Path, dest_base: &std::path::Path) {
     }
 }
 
-/// Candidate directories an older agent may have left runtime files in. These
-/// are the places the agent could have been started from before it adopted
+/// Candidate directories an older panel may have left runtime files in. These
+/// are the places the panel could have been started from before it adopted
 /// `/var/ops` (home, `/`, `/root`, and the current working directory).
 fn legacy_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
@@ -355,7 +355,7 @@ fn legacy_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Scan well-known legacy locations on *every* launch and clean up any agent
+/// Scan well-known legacy locations on *every* launch and clean up any panel
 /// runtime files left there (stopping a stale old instance first, migrating the
 /// token, deleting heartbeat/pid/lock/log residue).
 ///

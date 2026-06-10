@@ -71,7 +71,7 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
         .route("/api/login", post(login))
         // Authenticated API.
         .route("/api/logout", post(logout))
-        .route("/api/info", get(agent_info))
+        .route("/api/info", get(panel_info))
         .route("/api/metrics", get(metrics))
         .route("/api/procs", get(procs))
         .route("/api/settings", get(get_settings).post(put_settings))
@@ -217,8 +217,8 @@ async fn procs(State(state): State<Shared>, headers: header::HeaderMap) -> Respo
     Json(json!({ "ok": true, "data": data })).into_response()
 }
 
-/// Basic agent identity (version + hostname) for the console footer/topbar.
-async fn agent_info(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+/// Basic panel identity (version + hostname) for the console footer/topbar.
+async fn panel_info(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
     if let Some(r) = require_auth(&state, &headers) {
         return r;
     }
@@ -594,7 +594,7 @@ async fn files_upload(
 
 /// Static-site upload: extract an uploaded ZIP, or write a single file, into a
 /// managed static webroot. Query params:
-///   root  — the static site's webroot subdirectory name (validated agent-side)
+///   root  — the static site's webroot subdirectory name (validated panel-side)
 ///   mode  — "zip" (body is a .zip to extract) | "file" (body is one file)
 ///   rel   — for mode=file: the file's relative path within the webroot
 ///   clear — "1" to wipe the webroot first (fresh upload)

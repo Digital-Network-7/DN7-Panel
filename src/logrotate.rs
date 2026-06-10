@@ -1,6 +1,6 @@
 //! Periodic in-place log trimming.
 //!
-//! The agent daemonizes with stdout/stderr redirected (in append mode) to
+//! The panel daemonizes with stdout/stderr redirected (in append mode) to
 //! `/var/ops/dn7-panel.log`. With a ~1s report interval that file grows
 //! without bound. We can't just delete it — the daemon holds the fd open, so
 //! unlinking the inode would keep consuming space (writes continue to the
@@ -13,7 +13,7 @@
 //!
 //! A small race exists (a daemon write can interleave between our read of the
 //! tail and the truncate), but it only affects log ordering, never correctness
-//! or the agent itself — acceptable for a best-effort janitor.
+//! or the panel itself — acceptable for a best-effort janitor.
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -28,7 +28,7 @@ const KEEP_BYTES: u64 = 1024 * 1024; // 1 MiB
 /// How often the janitor checks the size.
 const CHECK_EVERY: Duration = Duration::from_secs(300); // 5 min
 
-/// Path of the daemon log the agent writes to.
+/// Path of the daemon log the panel writes to.
 fn log_path(cfg: &PanelConfig) -> PathBuf {
     cfg.log_dir.join(crate::daemon::LOG_FILE)
 }
@@ -41,7 +41,7 @@ pub fn spawn(cfg: PanelConfig) {
         loop {
             ticker.tick().await;
             match trim_if_large(&path, MAX_BYTES, KEEP_BYTES) {
-                Ok(true) => tracing::info!(path = %path.display(), "trimmed oversized agent log"),
+                Ok(true) => tracing::info!(path = %path.display(), "trimmed oversized panel log"),
                 Ok(false) => {}
                 Err(e) => tracing::debug!("log trim skipped: {e}"),
             }

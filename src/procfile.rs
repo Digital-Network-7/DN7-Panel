@@ -1,4 +1,4 @@
-//! Process coordination primitives shared by the supervisor and agent roles:
+//! Process coordination primitives shared by the supervisor and panel roles:
 //! pid files, heartbeat timestamps, liveness checks, and an flock-based guard
 //! that prevents two instances of the same role from running concurrently.
 
@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use fs2::FileExt;
 
-/// Paths for one role ("agent" or "supervisor") within a runtime directory.
+/// Paths for one role ("panel" or "supervisor") within a runtime directory.
 pub struct RolePaths {
     pub pid: PathBuf,
     pub heartbeat: PathBuf,
@@ -90,7 +90,7 @@ extern "C" {
     fn libc_kill(pid: i32, sig: i32) -> i32;
 }
 
-/// Path of the file recording the version of the currently-running agent. The
+/// Path of the file recording the version of the currently-running panel. The
 /// supervisor writes it on startup; a fresh foreground launch reads it to decide
 /// whether to replace the running instance with a newer binary. Lives in the
 /// persisted-data dir (callers pass `cfg.data_dir`).

@@ -1,5 +1,5 @@
 // =========================================================================
-// Progress jobs — a detached agent op (install/pull/create/setup/backup) shown
+// Progress jobs — a detached panel op (install/pull/create/setup/backup) shown
 // as a progress bar + status line + collapsible log. Survives leaving the page:
 // the running op_id is stashed in localStorage per (kind), so re-entering the
 // page re-attaches and keeps showing progress.

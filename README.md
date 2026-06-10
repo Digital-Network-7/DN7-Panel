@@ -2,7 +2,7 @@
 
 A small, single static Rust binary that turns a Linux host into a fully managed
 node via an **on-box web console** — monitoring, a web terminal, and Docker /
-Nginx / MySQL / file management — with no backend, no agent token, and no
+Nginx / MySQL / file management — with no backend, no panel token, and no
 runtime dependencies.
 
 > Part of the [Digital Network 7](https://dn7.cn) suite. Open source:
@@ -12,17 +12,17 @@ runtime dependencies.
 
 The binary runs as one of two roles, chosen by argv:
 
-- `dn7-panel` (no args) — **supervisor**: keeps the agent role alive by spawning
-  *itself* with the `agent` subcommand and restarting it on exit.
-- `dn7-panel agent` — **agent role**: runs the on-box web console.
+- `dn7-panel` (no args) — **supervisor**: keeps the panel role alive by spawning
+  *itself* with the `panel` subcommand and restarting it on exit.
+- `dn7-panel panel` — **panel role**: runs the on-box web console.
 
 The two halves guard each other (pid + heartbeat files under `DN7_RUNTIME_DIR`):
-the supervisor restarts the agent if it exits, and the agent relaunches the
+the supervisor restarts the panel if it exits, and the panel relaunches the
 supervisor if it dies. Because it's a single binary, a self-update replaces one
 file and both halves come back upgraded.
 
 In normal use you only ever run the no-arg form (the supervisor); it splits off
-the agent itself.
+the panel itself.
 
 ## Quick start
 
@@ -86,7 +86,7 @@ at runtime.
 | `DN7_RUNTIME_DIR` | `/var/ops` | base dir for `data/run/log` |
 | `DN7_HEARTBEAT_TIMEOUT_SECS` | `15` | peer liveness threshold |
 | `DN7_SUPERVISE_INTERVAL_SECS` | `3` | supervisor child-check interval |
-| `DN7_RESTART_BACKOFF_SECS` | `2` | delay between agent restarts |
+| `DN7_RESTART_BACKOFF_SECS` | `2` | delay between panel restarts |
 | `DN7_FOREGROUND` | — | set `1` to stay attached (no daemonize) |
 | `DN7_UPDATE_URL` | `https://api.teaops.dn7.cn` | self-update source (retained, not yet auto-triggered) |
 

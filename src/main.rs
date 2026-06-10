@@ -1,4 +1,3 @@
-mod agent;
 mod autostart;
 mod config;
 mod crypto;
@@ -11,6 +10,7 @@ mod logrotate;
 mod metrics;
 mod mysql;
 mod nginx;
+mod panel;
 mod paths;
 mod procfile;
 mod procs;
@@ -27,15 +27,15 @@ use crate::config::PanelConfig;
 use crate::procfile::RolePaths;
 
 /// Single binary, two roles selected by argv:
-/// - no args  => supervisor (keeps the agent role alive; self-splits). On a
+/// - no args  => supervisor (keeps the panel role alive; self-splits). On a
 ///   normal launch it prints the local console address, then detaches to the
 ///   background. Launching again while it's already running re-prints the
 ///   console info instead of starting a duplicate.
-/// - `agent`  => agent role (runs the web console). Spawned by the supervisor
+/// - `panel`  => panel role (runs the web console). Spawned by the supervisor
 ///   with inherited stdio; never daemonizes itself.
 fn main() -> Result<()> {
     let role = std::env::args().nth(1);
-    let is_agent = role.as_deref() == Some("agent");
+    let is_panel = role.as_deref() == Some("panel");
 
     // `version` subcommand: print the compiled version and exit. Used by the
     // running supervisor to read the on-disk binary's version, so it can notice
@@ -47,19 +47,19 @@ fn main() -> Result<()> {
 
     // Migrate to the canonical install location (/var/ops/dn7-panel) on the
     // top-level (supervisor) launch, so the operator never has to create dirs
-    // and every respawn/self-update uses a stable path. The agent role is an
+    // and every respawn/self-update uses a stable path. The panel role is an
     // internal child already launched from the canonical path, so skip it
     // there. On success this re-execs and never returns.
-    if !is_agent {
+    if !is_panel {
         paths::ensure_installed();
     }
 
     let cfg = PanelConfig::from_env();
 
-    // The agent role is an internal child of the supervisor: it inherits stdio
+    // The panel role is an internal child of the supervisor: it inherits stdio
     // and must not daemonize. Run it directly on a fresh runtime.
-    if is_agent {
-        return run_async(cfg, run_agent);
+    if is_panel {
+        return run_async(cfg, run_panel);
     }
 
     // Clean up any residue left in legacy locations and group the /var/ops
@@ -160,9 +160,9 @@ fn init_tracing() {
         .init();
 }
 
-async fn run_agent(cfg: PanelConfig) -> Result<()> {
-    tracing::info!(web_port = cfg.web_port, "agent role starting");
-    agent::run(cfg).await
+async fn run_panel(cfg: PanelConfig) -> Result<()> {
+    tracing::info!(web_port = cfg.web_port, "panel role starting");
+    panel::run(cfg).await
 }
 
 async fn run_supervisor(cfg: PanelConfig) -> Result<()> {

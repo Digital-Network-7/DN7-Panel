@@ -14,7 +14,7 @@
 //! immediately) and then polls `list_ops` / `op_log` to watch progress and pick
 //! up the result when it reconnects.
 //!
-//! Requests (client -> agent):
+//! Requests (client -> panel):
 //!   {"id","op":"info"}
 //!   {"id","op":"install"}                       -> {op_id} (detached)
 //!   {"id","op":"list_images"}
@@ -34,7 +34,7 @@
 //!   {"id","op":"list_ops"}                       -> running/finished operations
 //!   {"id","op":"op_log","op_id"}                 -> a single op's progress lines
 //!   {"id","op":"dismiss_op","op_id"}             -> forget a finished op
-//! Responses (agent -> client): {"id","ok":true,"data":<json>} / {"id","ok":false,"error":".."}
+//! Responses (panel -> client): {"id","ok":true,"data":<json>} / {"id","ok":false,"error":".."}
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -681,7 +681,7 @@ fn host_mem_bytes() -> u64 {
 async fn list_images() -> Result<Value> {
     let dkr = dkr()?;
     // Determine which images are used by DN7 Panel-managed service containers
-    // (nginx / mysql) so the UI can mark them "内置" and the agent can refuse
+    // (nginx / mysql) so the UI can mark them "内置" and the panel can refuse
     // to remove them.
     let managed_images = managed_image_refs(&dkr).await;
     let opts = bollard::image::ListImagesOptions::<String> {
@@ -850,7 +850,7 @@ async fn list_containers() -> Result<Value> {
             .unwrap_or_default();
         let state = c.state.clone().unwrap_or_default();
         // DN7 Panel-managed service containers (nginx / mysql) are marked so the UI
-        // can show "内置" and hide direct controls (the agent also refuses ops
+        // can show "内置" and hide direct controls (the panel also refuses ops
         // on them — see `managed_container_guard`).
         let has_mysql_label = c
             .labels
@@ -1124,7 +1124,7 @@ async fn list_networks() -> Result<Value> {
 /// could still be connected to (so the UI can offer connect/disconnect).
 /// Predefined networks (`host`, `none`) aren't offered as attach targets and
 /// the predefined ones can't be disconnected when they're the only one — the
-/// UI surfaces the agent's docker error in that case rather than guessing.
+/// UI surfaces the panel's docker error in that case rather than guessing.
 async fn inspect_container_networks(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
     let dkr = dkr()?;
@@ -1811,7 +1811,7 @@ fn start_install() -> Result<Value> {
 
     if !is_root() {
         return Err(anyhow!(
-            "安装 Docker 需要 root 权限，请用 root 运行 Agent 后重试"
+            "安装 Docker 需要 root 权限，请用 root 运行 Panel 后重试"
         ));
     }
 

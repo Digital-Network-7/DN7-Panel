@@ -1,6 +1,6 @@
 //! Boot-time auto-start, installed via several mechanisms at once.
 //!
-//! A single agent install should survive a reboot. Rather than rely on one
+//! A single panel install should survive a reboot. Rather than rely on one
 //! init system (which might be absent, disabled, or misconfigured), we install
 //! *several redundant* mechanisms and let whichever the host honors win:
 //!
@@ -11,13 +11,13 @@
 //!      unit didn't take.
 //!   3. **`/etc/rc.local`** — last-resort for older SysV-style systems.
 //!
-//! These don't conflict: the agent is single-instance (the supervisor holds a
+//! These don't conflict: the panel is single-instance (the supervisor holds a
 //! lock; a second launch just re-pairs instead of starting a duplicate), so if
 //! two mechanisms both fire at boot, only one supervisor actually runs.
 //!
 //! All steps are best-effort and idempotent. They run only when we can write
 //! the relevant system paths (i.e. effectively root); an unprivileged run skips
-//! them silently. We never install autostart for the inner `agent` child role.
+//! them silently. We never install autostart for the inner `panel` child role.
 
 use std::path::Path;
 

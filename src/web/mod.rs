@@ -1,7 +1,7 @@
 //! On-box web management console.
 //!
 //! A small axum HTTP server bound to `0.0.0.0:<port>` (default 1080) that
-//! exposes the agent's existing capabilities (monitoring, terminal, Docker,
+//! exposes the panel's existing capabilities (monitoring, terminal, Docker,
 //! Nginx, MySQL, file transfer, processes) directly on the host — no backend
 //! round-trip. It reuses the same per-capability JSON dispatchers the backend
 //! relay uses (`docker::web_dispatch`, etc.) and the same PTY/file code.

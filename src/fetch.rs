@@ -1,6 +1,6 @@
 //! Binary acquisition for self-update — dual source (GitHub + dn7.cn).
 //!
-//! There is a single binary (it runs as either the supervisor or the agent
+//! There is a single binary (it runs as either the supervisor or the panel
 //! role depending on argv). Self-update can pull a new binary from two sources:
 //!
 //!   * **GitHub** — release assets are addressed deterministically
