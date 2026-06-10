@@ -4,13 +4,13 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>DN7 Panel</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2322d3ee'/%3E%3Cstop offset='1' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cg fill='none' stroke='url(%23g)' stroke-width='1.5' stroke-linejoin='round'%3E%3Cpolygon points='16,4 26,9.5 26,22.5 16,28 6,22.5 6,9.5'/%3E%3Cpath d='M16 16 L16 4 M16 16 L26 9.5 M16 16 L26 22.5 M16 16 L16 28 M16 16 L6 22.5 M16 16 L6 9.5' stroke-linecap='round'/%3E%3C/g%3E%3Cg fill='url(%23g)'%3E%3Ccircle cx='16' cy='16' r='2.6'/%3E%3Ccircle cx='16' cy='4' r='1.7'/%3E%3Ccircle cx='26' cy='9.5' r='1.7'/%3E%3Ccircle cx='26' cy='22.5' r='1.7'/%3E%3Ccircle cx='16' cy='28' r='1.7'/%3E%3Ccircle cx='6' cy='22.5' r='1.7'/%3E%3Ccircle cx='6' cy='9.5' r='1.7'/%3E%3C/g%3E%3C/svg%3E" />
+<!--__DN7_HEAD__-->
 <script>
   // Apply the saved theme synchronously (before first paint) so there's no
   // dark-mode flash before the main script runs.
   (function () {
     try {
-      var m = localStorage.getItem('dn7_theme') || 'auto';
+      var m = localStorage.getItem('dn7_theme') || (window.__BRAND__ && window.__BRAND__.theme) || 'auto';
       var eff = m;
       if (m === 'auto') eff = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
       document.documentElement.setAttribute('data-theme', eff);
@@ -362,7 +362,7 @@
   <!-- Decorative tech background (grid + drifting gradient orbs). -->
   <div class="login-bg" aria-hidden="true"><span class="orb o1"></span><span class="orb o2"></span><span class="orb o3"></span></div>
   <!-- Brand pinned top-left. -->
-  <div class="login-brand"><span class="cup"><svg viewBox="0 0 24 24" fill="none"><polygon points="12,3 19,7.5 19,16.5 12,21 5,16.5 5,7.5" stroke="white" stroke-width="1.4" stroke-linejoin="round" opacity="0.6"/><path d="M12 12 L12 3 M12 12 L19 7.5 M12 12 L19 16.5 M12 12 L12 21 M12 12 L5 16.5 M12 12 L5 7.5" stroke="white" stroke-width="1.4" stroke-linecap="round"/><g fill="white"><circle cx="12" cy="12" r="2"/><circle cx="12" cy="3" r="1.4"/><circle cx="19" cy="7.5" r="1.4"/><circle cx="19" cy="16.5" r="1.4"/><circle cx="12" cy="21" r="1.4"/><circle cx="5" cy="16.5" r="1.4"/><circle cx="5" cy="7.5" r="1.4"/></g></svg></span><h1>DN7 Panel</h1></div>
+  <div class="login-brand"><span class="cup"><!--__DN7_BRAND_MARK__--></span><h1 class="brand-name">__DN7_BRAND_NAME__</h1></div>
   <div class="login-card">
     <div class="login-title">SIGN IN</div>
     <div class="sub">安全登录到本机控制台</div>
@@ -382,7 +382,7 @@
 <!-- App -->
 <div id="app" class="hidden">
   <aside>
-    <div class="logo"><span class="cup"><svg viewBox="0 0 24 24" fill="none"><polygon points="12,3 19,7.5 19,16.5 12,21 5,16.5 5,7.5" stroke="white" stroke-width="1.4" stroke-linejoin="round" opacity="0.6"/><path d="M12 12 L12 3 M12 12 L19 7.5 M12 12 L19 16.5 M12 12 L12 21 M12 12 L5 16.5 M12 12 L5 7.5" stroke="white" stroke-width="1.4" stroke-linecap="round"/><g fill="white"><circle cx="12" cy="12" r="2"/><circle cx="12" cy="3" r="1.4"/><circle cx="19" cy="7.5" r="1.4"/><circle cx="19" cy="16.5" r="1.4"/><circle cx="12" cy="21" r="1.4"/><circle cx="5" cy="16.5" r="1.4"/><circle cx="5" cy="7.5" r="1.4"/></g></svg></span><h1>DN7 Panel</h1></div>
+    <div class="logo"><span class="cup"><!--__DN7_BRAND_MARK__--></span><h1 class="brand-name">__DN7_BRAND_NAME__</h1></div>
     <nav id="nav"></nav>
     <div class="foot">
       <div class="ver">Agent <b id="agentVer">…</b></div>
@@ -526,8 +526,9 @@ function modal(title, bodyHtml, onMount, big) {
 // =========================================================================
 const THEME_ICONS = { auto: '◑', light: '☀', dark: '☾' };
 const THEME_LABELS = { auto: '跟随系统', light: '浅色', dark: '深色' };
+function themeDefault() { return (window.__BRAND__ && window.__BRAND__.theme) || 'auto'; }
 function applyTheme() {
-  const m = localStorage.getItem('dn7_theme') || 'auto';
+  const m = localStorage.getItem('dn7_theme') || themeDefault();
   let eff = m;
   if (m === 'auto') eff = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', eff);
@@ -537,7 +538,7 @@ function applyTheme() {
 }
 function cycleTheme() {
   const order = ['auto', 'light', 'dark'];
-  const m = localStorage.getItem('dn7_theme') || 'auto';
+  const m = localStorage.getItem('dn7_theme') || themeDefault();
   const next = order[(order.indexOf(m) + 1) % order.length];
   localStorage.setItem('dn7_theme', next);
   applyTheme();
@@ -545,7 +546,7 @@ function cycleTheme() {
 if (window.matchMedia) {
   const mq = window.matchMedia('(prefers-color-scheme: light)');
   (mq.addEventListener ? mq.addEventListener.bind(mq, 'change') : mq.addListener.bind(mq))(() => {
-    if ((localStorage.getItem('dn7_theme') || 'auto') === 'auto') applyTheme();
+    if ((localStorage.getItem('dn7_theme') || themeDefault()) === 'auto') applyTheme();
   });
 }
 applyTheme();
@@ -1995,6 +1996,32 @@ function renderSettings(v) {
       <label style="display:flex;gap:8px;align-items:center;margin:14px 0"><input type="checkbox" id="setEnabled" ${s.enabled ? 'checked' : ''}/> 启用本机管理（关闭后需重启生效）</label>
       <button class="btn" id="setSave">保存</button>
       <div class="err ok" id="setMsg" style="margin-top:10px"></div>
+    </div>
+    <div class="card" style="max-width:520px;margin-top:16px">
+      <h3>外观与品牌</h3>
+      <label class="lbl">面板名称</label>
+      <input id="brName" class="field" style="margin-bottom:12px" maxlength="40" />
+      <label class="lbl">Logo（登录页与侧边栏，建议方形透明 PNG/SVG，≤512KB）</label>
+      <div class="row" style="align-items:center;margin-bottom:12px">
+        <span id="brLogoPrev" style="width:40px;height:40px;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;overflow:hidden;border:1px solid var(--line)"></span>
+        <input id="brLogoFile" type="file" accept="image/*" style="display:none" />
+        <button class="btn sec sm" type="button" id="brLogoPick">选择图片</button>
+        <button class="btn sec sm" type="button" id="brLogoClear">恢复默认</button>
+      </div>
+      <label class="lbl">主色调</label>
+      <div class="row" style="align-items:center;margin-bottom:12px">
+        <input id="brAccent" type="color" style="width:46px;height:34px;padding:2px;border-radius:8px;border:1px solid var(--line);background:var(--panel2)" />
+        <button class="btn sec sm" type="button" id="brAccentClear">恢复默认</button>
+        <span class="sub" id="brAccentVal" style="margin:0"></span>
+      </div>
+      <label class="lbl">默认主题（新访客；用户切换后以其选择为准）</label>
+      <select id="brTheme" class="field" style="margin-bottom:14px">
+        <option value="auto">跟随系统</option>
+        <option value="light">浅色</option>
+        <option value="dark">深色</option>
+      </select>
+      <button class="btn" id="brSave">保存外观</button>
+      <div class="err ok" id="brMsg" style="margin-top:10px"></div>
     </div>`;
     $('setPwShow').onclick = () => { const i = $('setPw'); const show = i.type === 'password'; i.type = show ? 'text' : 'password'; $('setPwShow').textContent = show ? '隐藏' : '显示'; };
     $('setSave').onclick = () => {
@@ -2002,6 +2029,37 @@ function renderSettings(v) {
       api('/api/settings', { method: 'POST', body: JSON.stringify(body) })
         .then((b) => { const m = $('setMsg'); m.className = 'err ok'; m.textContent = '已保存' + (b.needs_restart ? '（端口/开关改动需重启 Agent 生效）' : ''); setUser(body.username); })
         .catch((e) => { const m = $('setMsg'); m.className = 'err'; m.textContent = e.message; });
+    };
+    // ---- Appearance / branding ----
+    const B = window.__BRAND__ || {};
+    const brState = { logo: B.logo || '', accent: B.accent || '' };
+    const DEF_ACCENT = '#3b82f6';
+    function brRenderPrev() {
+      const p = $('brLogoPrev');
+      if (brState.logo) { p.innerHTML = `<img src="${esc(brState.logo)}" alt="" style="width:100%;height:100%;object-fit:contain" />`; }
+      else { p.innerHTML = '<span style="font-size:11px;color:var(--mut)">默认</span>'; }
+      $('brAccent').value = brState.accent || DEF_ACCENT;
+      $('brAccentVal').textContent = brState.accent || '（默认）';
+    }
+    $('brName').value = B.name || 'DN7 Panel';
+    $('brTheme').value = B.theme || 'auto';
+    brRenderPrev();
+    $('brLogoPick').onclick = () => $('brLogoFile').click();
+    $('brLogoFile').onchange = () => {
+      const f = $('brLogoFile').files[0]; if (!f) return;
+      if (f.size > 512 * 1024) { const m = $('brMsg'); m.className = 'err'; m.textContent = '图片过大（上限 512KB）'; return; }
+      const rd = new FileReader();
+      rd.onload = () => { brState.logo = rd.result; brRenderPrev(); };
+      rd.readAsDataURL(f);
+    };
+    $('brLogoClear').onclick = () => { brState.logo = ''; $('brLogoFile').value = ''; brRenderPrev(); };
+    $('brAccent').oninput = () => { brState.accent = $('brAccent').value; $('brAccentVal').textContent = brState.accent; };
+    $('brAccentClear').onclick = () => { brState.accent = ''; brRenderPrev(); };
+    $('brSave').onclick = () => {
+      const body = { panel_name: $('brName').value, theme_default: $('brTheme').value, accent: brState.accent, logo: brState.logo };
+      api('/api/branding', { method: 'POST', body: JSON.stringify(body) })
+        .then(() => { const m = $('brMsg'); m.className = 'err ok'; m.textContent = '已保存，正在刷新…'; setTimeout(() => location.reload(), 600); })
+        .catch((e) => { const m = $('brMsg'); m.className = 'err'; m.textContent = e.message; });
     };
   }).catch((e) => { v.innerHTML = '<div class="card">加载失败：' + esc(e.message) + '</div>'; });
 }

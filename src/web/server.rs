@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use super::auth::{password_matches, proof_matches, AuthState};
+use super::branding;
 use super::settings::{self, WebSettings};
 use crate::config::PanelConfig;
 use crate::metrics::Collector;
@@ -64,6 +65,7 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
         .route("/api/metrics", get(metrics))
         .route("/api/procs", get(procs))
         .route("/api/settings", get(get_settings).post(put_settings))
+        .route("/api/branding", get(get_branding).post(put_branding))
         .route("/api/docker", post(docker_op))
         .route("/api/nginx", post(nginx_op))
         .route("/api/mysql", post(mysql_op))
@@ -616,6 +618,47 @@ async fn nginx_static_upload(
 // Static UI
 // ---------------------------------------------------------------------------
 
-async fn index_page() -> Html<&'static str> {
-    Html(include_str!("ui/index.html"))
+async fn index_page() -> Html<String> {
+    let b = branding::load();
+    Html(branding::render_index(include_str!("ui/index.html"), &b))
+}
+
+// ---------------------------------------------------------------------------
+// Branding (panel name / logo / accent / default theme) — public GET so the
+// login page can render branded; authenticated POST to update.
+// ---------------------------------------------------------------------------
+
+async fn get_branding() -> Response {
+    let b = branding::load();
+    Json(json!({ "ok": true, "data": b })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct BrandingReq {
+    #[serde(default)]
+    panel_name: Option<String>,
+    #[serde(default)]
+    logo: Option<String>,
+    #[serde(default)]
+    accent: Option<String>,
+    #[serde(default)]
+    theme_default: Option<String>,
+}
+
+async fn put_branding(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<BrandingReq>,
+) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    let b = match branding::validate(req.panel_name, req.logo, req.accent, req.theme_default) {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+    if let Err(e) = branding::save(&b) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败：{e}")).into_response();
+    }
+    Json(json!({ "ok": true, "data": b })).into_response()
 }
