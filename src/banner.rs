@@ -1,9 +1,8 @@
 //! Startup banner printed to the operator's terminal on a supervisor launch.
 //!
-//! Shows the console address (public + internal IP) and the login credentials.
 //! On a fresh install the auto-generated username/password are shown once; once
-//! the operator has customized the password, the values are hidden and only a
-//! notice is printed (with a pointer to `dn7-panel password` for recovery).
+//! it's been shown the password is irrecoverable, so the banner only prints a
+//! notice (with a pointer to `dn7 panel reset` to regenerate it).
 
 use crate::config::PanelConfig;
 use std::io::{Read, Write};
@@ -34,15 +33,13 @@ pub fn print(cfg: &PanelConfig) {
             println!("  │  控制台 console  →  http://{internal}:{port}");
         }
     }
-    if info.customized {
-        println!("  │  账号 / 密码     →  已自定义");
-        println!("  │                     （忘记密码可在主机运行: dn7-panel password）");
-    } else {
+    if let Some(pw) = &info.new_password {
         println!("  │  账号 username   →  {}", info.username);
-        if let Some(pw) = &info.password {
-            println!("  │  密码 password   →  {pw}");
-        }
-        println!("  │  提示            →  首次登录后请尽快在「设置」中修改密码");
+        println!("  │  密码 password   →  {pw}");
+        println!("  │  提示            →  此密码仅显示一次，请妥善保存");
+    } else {
+        println!("  │  账号 / 密码     →  已设置");
+        println!("  │                     （忘记密码可在主机运行: dn7 panel reset）");
     }
     println!("  └──────────────────────────────────────────────");
     println!();

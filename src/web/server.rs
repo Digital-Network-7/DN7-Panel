@@ -16,7 +16,7 @@ use axum::{
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use super::auth::{password_matches, proof_matches, AuthState};
+use super::auth::{proof_matches, AuthState};
 use super::branding;
 use super::settings::{self, WebSettings};
 use crate::config::PanelConfig;
@@ -43,7 +43,7 @@ type Shared = Arc<WebState>;
 /// Start the web console in a background task (no-op when disabled). Returns
 /// immediately; the server runs for the process lifetime.
 pub fn spawn(cfg: PanelConfig) {
-    let s = settings::load_or_init(cfg.web_enabled, cfg.web_port);
+    let (s, _fresh) = settings::load_or_init(cfg.web_enabled, cfg.web_port);
     if !s.enabled {
         tracing::info!("web console disabled; not starting");
         return;
@@ -140,22 +140,21 @@ struct LoginReq {
     #[serde(default)]
     username: String,
     /// Challenge-response: the nonce from `/api/login/challenge` and the proof
-    /// `sha256_hex(nonce + ":" + password)`. The cleartext password is never
-    /// sent (keeps it off the plaintext-HTTP wire). `password` is accepted as a
-    /// legacy fallback only when no nonce/proof is supplied.
+    /// `sha256_hex(nonce ":" verifier)`, where `verifier = sha256_hex(salt ":"
+    /// password)` (the value the server stores). The cleartext password never
+    /// crosses the wire, and the server holds only the irreversible verifier.
     #[serde(default)]
     nonce: String,
     #[serde(default)]
     proof: String,
-    #[serde(default)]
-    password: String,
 }
 
-/// GET /api/login/challenge — PUBLIC. Mint a one-time login nonce for the
-/// challenge-response flow.
+/// GET /api/login/challenge — PUBLIC. Mint a one-time login nonce and return
+/// the per-install password salt so the client can compute the verifier.
 async fn login_challenge(State(state): State<Shared>) -> Response {
     let nonce = state.auth.issue_challenge();
-    Json(json!({ "nonce": nonce })).into_response()
+    let salt = state.settings.lock().unwrap().pw_salt.clone();
+    Json(json!({ "nonce": nonce, "salt": salt })).into_response()
 }
 
 async fn login(
@@ -167,20 +166,17 @@ async fn login(
     if !state.auth.login_allowed(&source) {
         return (StatusCode::TOO_MANY_REQUESTS, "尝试过于频繁，请稍后再试").into_response();
     }
-    let (exp_user, exp_pw) = {
+    let (exp_user, exp_hash) = {
         let s = state.settings.lock().unwrap();
-        (s.username.clone(), s.password_plain())
+        (s.username.clone(), s.verifier().to_string())
     };
-    // Account name must match (case-sensitive), then verify the password —
-    // preferring the challenge-response proof, falling back to a direct compare
-    // only if the client didn't use the challenge flow.
+    // Account name must match (case-sensitive), then verify the challenge-
+    // response proof against the stored verifier. The nonce must be valid +
+    // single-use. There is no plaintext fallback: the server has no plaintext.
     let user_ok = req.username == exp_user;
-    let pw_ok = if !req.proof.is_empty() {
-        // The nonce must be valid + single-use, then the proof must match.
-        state.auth.consume_challenge(&req.nonce) && proof_matches(&req.nonce, &exp_pw, &req.proof)
-    } else {
-        password_matches(&exp_pw, &req.password)
-    };
+    let pw_ok = !exp_hash.is_empty()
+        && state.auth.consume_challenge(&req.nonce)
+        && proof_matches(&req.nonce, &exp_hash, &req.proof);
     if user_ok && pw_ok {
         state.auth.clear_failures(&source);
         let token = state.auth.issue();
@@ -351,7 +347,7 @@ async fn put_settings(
                 if pw.len() < 6 || pw.len() > 128 {
                     return (StatusCode::BAD_REQUEST, "密码长度需为 6-128").into_response();
                 }
-                s.set_user_password(pw);
+                s.set_password(pw);
             }
         }
         if let Some(un) = req.username {

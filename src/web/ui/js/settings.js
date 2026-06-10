@@ -12,7 +12,7 @@ function renderSettings(v) {
       <input id="setUser" class="field" style="margin-bottom:12px" value="${esc(s.username)}" />
       <label class="lbl">密码</label>
       <div class="row" style="margin-bottom:4px"><input id="setPw" class="field" type="password" value="" placeholder="留空表示不修改" autocomplete="new-password" style="flex:1" /><button class="btn sec sm" id="setPwShow" type="button">显示</button></div>
-      <div class="sub" style="margin:2px 0 0">忘记密码？在主机上运行 <code>dn7-panel password</code> 查看当前密码。</div>
+      <div class="sub" style="margin:2px 0 0">忘记密码？在主机上运行 <code>dn7 panel reset</code> 重置账号密码。</div>
       <h3 style="margin-top:18px">端口（改后重启 Panel 生效）</h3>
       <input id="setPort" class="field" type="number" value="${s.port}" />
       <label style="display:flex;gap:8px;align-items:center;margin:14px 0"><input type="checkbox" id="setEnabled" ${s.enabled ? 'checked' : ''}/> 启用本机管理（关闭后需重启生效）</label>

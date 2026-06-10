@@ -5,15 +5,16 @@ function doLogin() {
   const username = $('user').value.trim();
   const password = $('pw').value;
   $('loginErr').textContent = '';
-  // Challenge-response: fetch a one-time nonce, send sha256(nonce:password) so
-  // the cleartext password never travels over the (plaintext-HTTP) wire. Falls
-  // back to plain password only if the challenge endpoint is unavailable.
+  // Challenge-response: fetch a one-time nonce + the per-install salt, then send
+  // sha256(nonce ":" sha256(salt ":" password)). The cleartext password never
+  // travels over the (plaintext-HTTP) wire, and the server stores only the
+  // irreversible verifier sha256(salt ":" password).
   fetch('/api/login/challenge')
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error('challenge'))))
     .then((c) => {
-      const body = c && c.nonce
-        ? { username, nonce: c.nonce, proof: sha256Hex(c.nonce + ':' + password) }
-        : { username, password };
+      if (!c || !c.nonce) throw new Error('challenge');
+      const verifier = sha256Hex((c.salt || '') + ':' + password);
+      const body = { username, nonce: c.nonce, proof: sha256Hex(c.nonce + ':' + verifier) };
       return fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     })
     .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(b.error || '登录失败'); return b; })

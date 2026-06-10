@@ -23,37 +23,40 @@ mod settings;
 
 pub use server::spawn;
 
-/// The current console password in plaintext, read from `<data>/web.json`
-/// without seeding a new file. None when the console hasn't been initialized.
-/// Used by the `dn7-panel password` subcommand so an operator can retrieve the
-/// (encrypted-at-rest) password on the host without it ever being logged.
-pub fn console_password() -> Option<String> {
-    settings::load().map(|s| s.password_plain())
-}
-
 /// Console info for the startup banner. Reads the settings, **seeding them on
-/// first run** so the auto-generated password exists. The password is returned
-/// only while it's still the auto-generated default; once the operator sets
-/// their own, it's hidden (`password = None`, `customized = true`).
+/// first run** so the password exists. `new_password` is `Some` only on the run
+/// that generated it (shown once); otherwise the password is irrecoverable and
+/// the banner points the operator to `dn7 panel reset`.
 pub struct ConsoleInfo {
     pub enabled: bool,
     pub port: u16,
     pub username: String,
-    pub password: Option<String>,
-    pub customized: bool,
+    pub new_password: Option<String>,
 }
 
 pub fn console_info(default_enabled: bool, default_port: u16) -> ConsoleInfo {
-    let s = settings::load_or_init(default_enabled, default_port);
+    let (s, fresh) = settings::load_or_init(default_enabled, default_port);
     ConsoleInfo {
         enabled: s.enabled,
         port: s.port,
-        username: s.username.clone(),
-        password: if s.pw_default {
-            Some(s.password_plain())
-        } else {
-            None
-        },
-        customized: !s.pw_default,
+        username: s.username,
+        new_password: fresh,
     }
+}
+
+/// uid of the OS user that first initialized the console (for the reset
+/// authorization check). None when the console isn't initialized yet.
+pub fn console_owner_uid() -> Option<u32> {
+    settings::load().map(|s| s.owner_uid)
+}
+
+/// Reset the console account + password to a freshly-generated default,
+/// returning the new plaintext password (to show once). Caller is responsible
+/// for the owner/root authorization check (see `console_owner_uid`).
+pub fn reset_console() -> anyhow::Result<String> {
+    let mut s = settings::load()
+        .ok_or_else(|| anyhow::anyhow!("console not initialized — start the panel once first"))?;
+    let pw = s.reset();
+    settings::save(&s)?;
+    Ok(pw)
 }

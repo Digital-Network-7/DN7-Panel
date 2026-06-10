@@ -1,8 +1,11 @@
-//! At-rest encryption for persisted secrets (the web console password).
+//! At-rest encryption for persisted secrets that must be **recoverable**.
 //!
-//! The web console password is stored encrypted at rest with AES-256-GCM —
-//! both the auto-generated default and any user-set password. The stored value
-//! is `nonce_hex:cipher_hex` with a fresh random 96-bit nonce per write.
+//! Used for the managed MySQL/MariaDB root password (`mysql.rs`): the panel has
+//! to present that password to the DB engine to run queries, so it can't be a
+//! one-way hash — it's encrypted with AES-256-GCM and decrypted on use. (The
+//! web console password, by contrast, is stored irreversibly as a salted hash;
+//! see `web::settings`.) The stored value is `nonce_hex:cipher_hex` with a
+//! fresh random 96-bit nonce per write.
 //!
 //! The key is *machine-bound*: it's derived (SHA-256) from a stable host
 //! fingerprint (`/etc/machine-id`, the dbus machine-id, a persisted random key

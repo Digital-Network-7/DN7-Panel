@@ -51,6 +51,39 @@ pub fn ensure_dirs() {
     }
 }
 
+/// Install a global `dn7` CLI dispatcher (best-effort; needs root). It routes
+/// `dn7 panel <args...>` to the canonical panel binary, so operators get
+/// `dn7 panel` (status banner), `dn7 panel reset`, `dn7 panel version`, etc.
+/// Rewritten on each supervisor launch so it always points at the install path;
+/// future DN7 products can add their own `dn7 <product>` subcommands.
+pub fn install_global_cli() {
+    let script = format!(
+        "#!/bin/sh\n\
+# DN7 global CLI dispatcher (auto-generated; do not edit).\n\
+case \"$1\" in\n\
+  panel) shift; exec {bin} \"$@\" ;;\n\
+  \"\"|-h|--help|help) echo \"usage: dn7 panel [reset|version]\"; exit 0 ;;\n\
+  *) echo \"dn7: unknown component '$1' (try: dn7 panel)\" >&2; exit 1 ;;\n\
+esac\n",
+        bin = INSTALL_BIN
+    );
+    for dir in ["/usr/local/bin", "/usr/bin"] {
+        if !std::path::Path::new(dir).is_dir() {
+            continue;
+        }
+        let path = std::path::Path::new(dir).join("dn7");
+        if std::fs::write(&path, &script).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+            }
+            tracing::info!(path = %path.display(), "installed global `dn7` CLI");
+            return;
+        }
+    }
+}
+
 /// The path to spawn / relaunch / self-update against. Prefers the canonical
 /// install binary when present; otherwise falls back to the current exe with
 /// any trailing " (deleted)" stripped.

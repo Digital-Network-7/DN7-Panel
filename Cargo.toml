@@ -42,6 +42,9 @@ include_dir = "0.7"
 # Verify Ed25519 signatures on downloaded self-update binaries with an embedded
 # public key. Pure Rust (curve25519-dalek), musl-safe.
 ed25519-dalek = "2"
+# Read the process uid (owner check for `dn7-panel reset`). Pure FFI to libc
+# (musl provides it); no C build.
+libc = "0.2"
 
 [profile.release]
 opt-level = 3

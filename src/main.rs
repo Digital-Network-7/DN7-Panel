@@ -46,18 +46,12 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // `password` subcommand: print the current console password and exit. Lets
-    // an operator retrieve the (encrypted-at-rest, never-logged) password on the
-    // host. Short-circuits before any install/migration side effects.
-    if role.as_deref() == Some("password") {
-        match web::console_password() {
-            Some(pw) => println!("{pw}"),
-            None => {
-                eprintln!("console not initialized yet");
-                std::process::exit(1);
-            }
-        }
-        return Ok(());
+    // `reset` subcommand: reset the console account + password to a freshly-
+    // generated default and print it once. Restricted to the OS user that first
+    // initialized the console (or root). Short-circuits before install side
+    // effects. (Exposed globally as `dn7 panel reset`.)
+    if role.as_deref() == Some("reset") {
+        return run_reset();
     }
 
     // Install to the canonical location (/var/dn7/panel/dn7-panel) on the
@@ -79,6 +73,9 @@ fn main() -> Result<()> {
 
     // Ensure the grouped data/run/log subdirs exist under the install dir.
     paths::ensure_dirs();
+
+    // Install the global `dn7` CLI dispatcher (best-effort; needs root).
+    paths::install_global_cli();
 
     // Install redundant boot autostart (systemd + cron@reboot + rc.local) so the
     // panel comes back after a reboot. Best-effort + idempotent.
@@ -178,6 +175,52 @@ fn init_tracing() {
 async fn run_panel(cfg: PanelConfig) -> Result<()> {
     tracing::info!(web_port = cfg.web_port, "panel role starting");
     panel::run(cfg).await
+}
+
+/// Reset the console account + password (subcommand `reset`). Restricted to the
+/// OS user that first initialized the console, or root.
+fn run_reset() -> Result<()> {
+    let uid = current_uid();
+    match web::console_owner_uid() {
+        None => {
+            eprintln!("控制台尚未初始化：请先启动一次 DN7 Panel 再重置。");
+            std::process::exit(1);
+        }
+        Some(owner) if uid != 0 && uid != owner => {
+            eprintln!("无权重置：请以初始安装用户(uid={owner})或 root 身份运行。当前 uid={uid}。");
+            std::process::exit(1);
+        }
+        _ => {}
+    }
+    let pw = web::reset_console()?;
+    println!();
+    println!("  DN7 Panel 账号密码已重置：");
+    println!("    账号 username → admin");
+    println!("    密码 password → {pw}");
+    println!("  （仅显示一次，请妥善保存；忘记可再次运行 dn7 panel reset）");
+    println!();
+    // Make a running instance pick up the new credentials: stop the panel-role
+    // child so the supervisor respawns it (it reloads web.json on start).
+    restart_panel_child();
+    Ok(())
+}
+
+/// The process's real uid (for the reset owner check).
+fn current_uid() -> u32 {
+    // SAFETY: getuid() just reads the process's real uid; always safe.
+    unsafe { libc::getuid() }
+}
+
+/// Signal the running panel-role child to exit so the supervisor relaunches it
+/// with the freshly-reset credentials. No-op when nothing is running.
+fn restart_panel_child() {
+    let cfg = PanelConfig::from_env();
+    let panel = RolePaths::new(&cfg.runtime_dir, "panel");
+    if let Some(pid) = procfile::read_pid(&panel.pid) {
+        const SIGTERM: i32 = 15;
+        procfile::signal_pid(pid, SIGTERM);
+        println!("  已通知运行中的面板重启以应用新密码。");
+    }
 }
 
 async fn run_supervisor(cfg: PanelConfig) -> Result<()> {
