@@ -95,7 +95,7 @@ jobs:
           chmod +x "${OUT}"
           echo "artifact=${OUT}" >> "$GITHUB_OUTPUT"
 
-      - name: Sign binary (Ed25519)
+      - name: Sign binary (Ed25519) and append signature
         env:
           DN7_SIGN_KEY: ${{ secrets.DN7_SIGN_KEY }}
         run: |
@@ -105,21 +105,23 @@ jobs:
           fi
           echo "$DN7_SIGN_KEY" > /tmp/dn7_sign.pem
           openssl pkeyutl -sign -inkey /tmp/dn7_sign.pem -rawin \
-            -in "${{ steps.pkg.outputs.artifact }}" \
-            -out "${{ steps.pkg.outputs.artifact }}.sig"
+            -in "${{ steps.pkg.outputs.artifact }}" -out /tmp/dn7.sig
           rm -f /tmp/dn7_sign.pem
-          # Sanity: an Ed25519 signature is exactly 64 bytes.
-          sz=$(wc -c < "${{ steps.pkg.outputs.artifact }}.sig")
+          # An Ed25519 signature is exactly 64 bytes.
+          sz=$(wc -c < /tmp/dn7.sig)
           test "$sz" = "64" || { echo "::error::unexpected signature size $sz" >&2; exit 1; }
-          echo "signed ${{ steps.pkg.outputs.artifact }} ($sz-byte sig)"
+          # Append the signature to the END of the binary. The ELF loader
+          # ignores trailing bytes, so the file still runs as-is; the panel
+          # strips + verifies the trailer before self-updating.
+          cat /tmp/dn7.sig >> "${{ steps.pkg.outputs.artifact }}"
+          rm -f /tmp/dn7.sig
+          echo "appended 64-byte signature to ${{ steps.pkg.outputs.artifact }}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.pkg.outputs.artifact }}
-          path: |
-            ${{ steps.pkg.outputs.artifact }}
-            ${{ steps.pkg.outputs.artifact }}.sig
+          path: ${{ steps.pkg.outputs.artifact }}
 
   release:
     needs: [version, build]
@@ -140,6 +142,6 @@ jobs:
           body: |
             Automated static (musl) Linux build of ${{ env.BIN_NAME }} v${{ needs.version.outputs.version }} (x86_64 + arm64).
             Runs on any Linux regardless of glibc version.
-            Each binary is Ed25519-signed; the matching `.sig` is attached and verified by the panel before self-update.
+            Each binary is Ed25519-signed (signature appended to the file) and verified by the panel before self-update.
             Commit: ${{ github.sha }}
           files: dist/*

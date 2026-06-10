@@ -48,13 +48,12 @@ impl SourceKind {
     }
 }
 
-/// A resolved, downloadable release.
+/// A resolved, downloadable release. The published binary has its 64-byte
+/// Ed25519 signature appended to the end (see `download_release`).
 #[derive(Clone, Debug)]
 pub struct Release {
     pub version: String,
     pub url: String,
-    /// Detached Ed25519 signature URL for `url` (raw 64-byte `.sig`).
-    pub sig_url: Option<String>,
     pub source: SourceKind,
 }
 
@@ -123,12 +122,9 @@ pub async fn github_release(cfg: &PanelConfig) -> Result<Release> {
     }
     let asset = format!("dn7-panel-linux-{}-v{}", arch(), version);
     let url = format!("https://github.com/{repo}/releases/download/{tag}/{asset}");
-    // The detached Ed25519 signature is published as a sibling `<asset>.sig`.
-    let sig_url = Some(format!("{url}.sig"));
     Ok(Release {
         version,
         url,
-        sig_url,
         source: SourceKind::Github,
     })
 }
@@ -156,15 +152,9 @@ pub async fn dn7_release(cfg: &PanelConfig) -> Result<Release> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| format!("{}/api/panel/download?arch={}", cfg.dn7_base, arch()));
-    let sig_url = m
-        .get("sig")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("{}/api/panel/download.sig?arch={}", cfg.dn7_base, arch()));
     Ok(Release {
         version,
         url: dl,
-        sig_url: Some(sig_url),
         source: SourceKind::Dn7,
     })
 }
@@ -288,7 +278,14 @@ pub async fn probe_winner(cfg: &PanelConfig) -> Option<SourceKind> {
 // Download
 // ---------------------------------------------------------------------------
 
-/// Download a resolved release with progress, verifying sha256 when known.
+/// Length of the Ed25519 signature appended to every published binary.
+const SIG_LEN: usize = 64;
+
+/// Download a resolved release with progress. The published file is the binary
+/// with its 64-byte Ed25519 signature appended; this splits off the trailing
+/// signature, verifies it against the embedded trusted key(s) over the binary
+/// bytes, and returns the **stripped** binary. A missing/invalid signature is a
+/// hard error — nothing is ever installed unverified.
 pub async fn download_release<F: Fn(u64) + Copy>(
     release: &Release,
     on_progress: F,
@@ -298,39 +295,33 @@ pub async fn download_release<F: Fn(u64) + Copy>(
         .send()
         .await?
         .error_for_status()?;
-    let bytes = download_streaming(resp, on_progress).await?;
-    if bytes.is_empty() {
-        return Err(anyhow!(
-            "{} returned an empty binary",
-            release.source.as_str()
-        ));
-    }
-    // Fetch the detached signature and verify it against the embedded key(s).
-    let sig_url = release
-        .sig_url
-        .as_deref()
-        .ok_or_else(|| anyhow!("no signature URL for release — refusing to install"))?;
-    let sig = http()
-        .get(sig_url)
-        .send()
-        .await
-        .map_err(|e| anyhow!("could not fetch signature: {e}"))?
-        .error_for_status()
-        .map_err(|e| anyhow!("signature not available: {e}"))?
-        .bytes()
-        .await
-        .map_err(|e| anyhow!("could not read signature: {e}"))?;
-    if !crate::signing::verify(&bytes, &sig) {
-        return Err(anyhow!(
-            "signature verification FAILED — refusing to install (untrusted or tampered binary)"
-        ));
-    }
+    let mut bytes = download_streaming(resp, on_progress).await?;
+    let src = release.source.as_str();
+    strip_and_verify(&mut bytes).map_err(|e| anyhow!("{src}: {e}"))?;
     tracing::info!(
-        source = release.source.as_str(),
+        source = src,
         bytes = bytes.len(),
         "fetched panel binary; signature verified"
     );
     Ok(bytes)
+}
+
+/// Split the appended 64-byte Ed25519 signature off `data`, verify it against
+/// the embedded trusted key(s) over the remaining (binary) bytes, and truncate
+/// `data` in place to just the binary. Errors (and leaves `data` unspecified)
+/// on a too-small, unsigned, tampered, or untrusted input.
+fn strip_and_verify(data: &mut Vec<u8>) -> Result<()> {
+    if data.len() <= SIG_LEN {
+        return Err(anyhow!("returned a too-small/empty binary"));
+    }
+    let split = data.len() - SIG_LEN;
+    let sig = data.split_off(split); // `data` now holds the binary; `sig` the trailer
+    if !crate::signing::verify(data, &sig) {
+        return Err(anyhow!(
+            "signature verification FAILED — refusing to install (untrusted, tampered, or unsigned binary)"
+        ));
+    }
+    Ok(())
 }
 
 /// Stream a response body into a Vec, reporting download percent via callback.
@@ -373,5 +364,30 @@ mod tests {
         assert_eq!(SourceKind::from_str("dn7"), Some(SourceKind::Dn7));
         assert_eq!(SourceKind::from_str("x"), None);
         assert_eq!(SourceKind::Github.other(), SourceKind::Dn7);
+    }
+
+    #[test]
+    fn strip_and_verify_accepts_appended_signature() {
+        // "binary" + appended 64-byte signature, produced by OpenSSL with the
+        // release key over the message "dn7-panel-signing-test".
+        const SIG: [u8; 64] = [
+            211, 133, 253, 20, 41, 65, 53, 133, 192, 5, 141, 183, 171, 14, 67, 104, 51, 101, 67,
+            19, 119, 250, 153, 134, 141, 27, 153, 97, 137, 112, 38, 67, 214, 75, 236, 251, 138,
+            202, 255, 32, 164, 4, 102, 36, 188, 21, 49, 159, 103, 216, 92, 170, 133, 159, 120, 126,
+            39, 228, 60, 82, 73, 16, 62, 1,
+        ];
+        let mut data = b"dn7-panel-signing-test".to_vec();
+        data.extend_from_slice(&SIG);
+        assert!(strip_and_verify(&mut data).is_ok());
+        assert_eq!(data, b"dn7-panel-signing-test"); // trailer stripped
+
+        // Tampered binary byte must fail.
+        let mut bad = b"dn7-panel-signing-tesT".to_vec();
+        bad.extend_from_slice(&SIG);
+        assert!(strip_and_verify(&mut bad).is_err());
+
+        // Too small / unsigned input must fail.
+        let mut tiny = vec![0u8; 10];
+        assert!(strip_and_verify(&mut tiny).is_err());
     }
 }
