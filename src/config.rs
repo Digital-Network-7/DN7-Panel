@@ -36,7 +36,7 @@ pub struct PanelConfig {
 
 impl PanelConfig {
     pub fn from_env() -> Self {
-        // Base dir (normally /var/ops). Everything else hangs off it, grouped
+        // Base dir (normally /var/dn7/panel). Everything else hangs off it, grouped
         // into data/run/log subdirs. DN7_RUNTIME_DIR overrides the base for
         // special deployments / tests.
         let base_dir = env::var("DN7_RUNTIME_DIR")

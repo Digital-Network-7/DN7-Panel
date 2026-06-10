@@ -76,21 +76,37 @@ fn persisted_random_key() -> Option<Vec<u8>> {
             return Some(bytes);
         }
     }
-    // Generate a fresh 32-byte key and persist it with 0600 perms.
+    // Generate a fresh 32-byte key.
     let mut key = [0u8; 32];
     rand::Rng::fill(&mut rand::thread_rng(), &mut key);
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if std::fs::write(&path, key).is_err() {
-        return None;
-    }
-    #[cfg(unix)]
+    // Create it ATOMICALLY (O_EXCL): if two roles race on first run, only one
+    // writes its key; the loser reads the winner's so both derive the same key.
+    use std::io::Write;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        Ok(mut f) => {
+            if f.write_all(&key).is_err() {
+                return None;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
+            Some(key.to_vec())
+        }
+        // Another process created it first — use theirs.
+        Err(ref e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            std::fs::read(&path).ok().filter(|b| b.len() == 32)
+        }
+        Err(_) => None,
     }
-    Some(key.to_vec())
 }
 
 /// Encrypt a plaintext value for at-rest storage. Returns `nonce_hex:cipher_hex`.

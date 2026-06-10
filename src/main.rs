@@ -59,7 +59,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Migrate to the canonical install location (/var/ops/dn7-panel) on the
+    // Install to the canonical location (/var/dn7/panel/dn7-panel) on the
     // top-level (supervisor) launch, so the operator never has to create dirs
     // and every respawn/self-update uses a stable path. The panel role is an
     // internal child already launched from the canonical path, so skip it
@@ -76,11 +76,8 @@ fn main() -> Result<()> {
         return run_async(cfg, run_panel);
     }
 
-    // Clean up any residue left in legacy locations and group the /var/ops
-    // files into data/run/log subdirs. Idempotent.
-    paths::cleanup_legacy_locations();
+    // Ensure the grouped data/run/log subdirs exist under the install dir.
     paths::ensure_dirs();
-    paths::migrate_flat_layout();
 
     // Install redundant boot autostart (systemd + cron@reboot + rc.local) so the
     // panel comes back after a reboot. Best-effort + idempotent.

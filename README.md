@@ -31,10 +31,10 @@ cargo build --release
 sudo ./target/release/dn7-panel
 ```
 
-On a normal launch the binary **installs itself to `/var/ops/dn7-panel`**
-(creating `/var/ops` if needed) and re-execs from there, so you can run the
+On a normal launch the binary **installs itself to `/var/dn7/panel/dn7-panel`**
+(creating `/var/dn7/panel` if needed) and re-execs from there, so you can run the
 downloaded binary from anywhere — no need to create directories by hand. Runtime
-state is grouped under `/var/ops/{data,run,log}`.
+state is grouped under `/var/dn7/panel/{data,run,log}`.
 
 It also installs **redundant boot autostart** so the panel comes back after a
 reboot, using whatever the host supports (best-effort + idempotent, root only):
@@ -44,7 +44,7 @@ a **systemd unit** (`/etc/systemd/system/dn7-panel.service`, `enable`d), a
 fires at boot only one supervisor actually runs.
 
 It then **detaches and keeps running in the background**, appending logs to
-`/var/ops/log/dn7-panel.log`. Pass `--foreground` / `-f` (or set
+`/var/dn7/panel/log/dn7-panel.log`. Pass `--foreground` / `-f` (or set
 `DN7_FOREGROUND=1`) to stay attached for debugging. The log is **trimmed in
 place** by a background janitor (keeps the recent tail once it passes ~5 MiB).
 
@@ -83,7 +83,7 @@ at runtime.
 |-----|---------|-------|
 | `DN7_WEB_ENABLED` | `1` | serve the on-box web console (`0`/`false` to disable) |
 | `DN7_WEB_PORT` | `1080` | web console TCP port (initial default) |
-| `DN7_RUNTIME_DIR` | `/var/ops` | base dir for `data/run/log` |
+| `DN7_RUNTIME_DIR` | `/var/dn7/panel` | base dir for `data/run/log` |
 | `DN7_HEARTBEAT_TIMEOUT_SECS` | `15` | peer liveness threshold |
 | `DN7_SUPERVISE_INTERVAL_SECS` | `3` | supervisor child-check interval |
 | `DN7_RESTART_BACKOFF_SECS` | `2` | delay between panel restarts |

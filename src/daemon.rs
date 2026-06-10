@@ -27,7 +27,7 @@ pub fn wants_foreground() -> bool {
 }
 
 /// Detach from the terminal and run in the background. Logs/PID and the working
-/// directory are anchored at the base dir (`/var/ops`, falling back to cwd) so
+/// directory are anchored at the base dir (`/var/dn7/panel`, falling back to cwd) so
 /// they're consistent regardless of where the panel was launched from.
 #[cfg(unix)]
 pub fn daemonize() -> anyhow::Result<()> {

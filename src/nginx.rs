@@ -4,7 +4,7 @@
 //! the system package manager) and only ever writes its own
 //! `dn7-<id>.conf` files into `/etc/nginx/conf.d`, never touching the user's
 //! existing configs, reloading via `nginx -s reload`. Certs and static webroots
-//! live under the panel state dir (`/var/ops/.../nginx/`).
+//! live under the panel state dir (`/var/dn7/panel/.../nginx/`).
 //!
 //! Long operations (install / Let's Encrypt issuance) run **detached** in a
 //! process-global op registry so they survive client reconnects.

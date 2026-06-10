@@ -1,7 +1,7 @@
 //! Periodic in-place log trimming.
 //!
 //! The panel daemonizes with stdout/stderr redirected (in append mode) to
-//! `/var/ops/dn7-panel.log`. With a ~1s report interval that file grows
+//! `/var/dn7/panel/dn7-panel.log`. With a ~1s report interval that file grows
 //! without bound. We can't just delete it — the daemon holds the fd open, so
 //! unlinking the inode would keep consuming space (writes continue to the
 //! now-anonymous inode) until restart.
