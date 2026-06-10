@@ -1,4 +1,5 @@
 mod autostart;
+mod banner;
 mod config;
 mod crypto;
 mod daemon;
@@ -105,12 +106,15 @@ fn main() -> Result<()> {
             paths::ensure_installed();
             // Fall through to a normal launch (old supervisor released its lock).
         } else {
-            println!(
-                "DN7 Panel 已在后台运行（本机控制台默认端口 1080）。\n如需修改端口或账号密码，请在控制台「设置」中调整。"
-            );
+            banner::print(&cfg);
+            println!("  DN7 Panel 已在后台运行。修改端口或账号密码请在控制台「设置」中调整。");
             return Ok(());
         }
     }
+
+    // Show the console address + credentials to the operator's terminal before
+    // we detach (so it's never persisted to a log/script).
+    banner::print(&cfg);
 
     // Detach to the background unless asked to stay in the foreground.
     if daemon::wants_foreground() {

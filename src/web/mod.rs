@@ -30,3 +30,30 @@ pub use server::spawn;
 pub fn console_password() -> Option<String> {
     settings::load().map(|s| s.password_plain())
 }
+
+/// Console info for the startup banner. Reads the settings, **seeding them on
+/// first run** so the auto-generated password exists. The password is returned
+/// only while it's still the auto-generated default; once the operator sets
+/// their own, it's hidden (`password = None`, `customized = true`).
+pub struct ConsoleInfo {
+    pub enabled: bool,
+    pub port: u16,
+    pub username: String,
+    pub password: Option<String>,
+    pub customized: bool,
+}
+
+pub fn console_info(default_enabled: bool, default_port: u16) -> ConsoleInfo {
+    let s = settings::load_or_init(default_enabled, default_port);
+    ConsoleInfo {
+        enabled: s.enabled,
+        port: s.port,
+        username: s.username.clone(),
+        password: if s.pw_default {
+            Some(s.password_plain())
+        } else {
+            None
+        },
+        customized: !s.pw_default,
+    }
+}
