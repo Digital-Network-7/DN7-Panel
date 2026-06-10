@@ -1,45 +1,64 @@
-//! Binary acquisition for self-update.
+//! Binary acquisition for self-update — dual source (GitHub + dn7.cn).
 //!
 //! There is a single binary (it runs as either the supervisor or the agent
-//! role depending on argv). Self-update pulls a new binary from
-//! `cfg.update_url` under `/agent/dist/*`. NOTE: self-update is currently not
-//! auto-triggered (the backend connection that used to drive it was removed);
-//! the mechanism is retained for a future panel/dn7.cn-initiated update.
-#![allow(dead_code)]
+//! role depending on argv). Self-update can pull a new binary from two sources:
+//!
+//!   * **GitHub** — release assets are addressed deterministically
+//!     (`.../releases/download/v{ver}/dn7-panel-linux-{arch}-v{ver}`), and the
+//!     latest version is read from the `releases/latest` redirect. This avoids
+//!     api.github.com entirely, so there is no API rate limit to exhaust.
+//!   * **dn7.cn** — a JSON manifest (`/api/panel/version?arch=`) gives the
+//!     version + download URL + sha256; the binary is mirrored domestically for
+//!     speed in regions where GitHub is slow/blocked.
+//!
+//! Source selection is sticky: a lightweight speed probe picks a winner that is
+//! remembered (see `update::UpdateState`); steady-state checks reuse it, and a
+//! download failure fails over to the other source.
 
 use anyhow::{anyhow, Result};
 
-fn http() -> reqwest::Client {
-    reqwest::Client::builder()
-        .user_agent("dn7-panel/updater")
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .expect("http client")
+use crate::config::PanelConfig;
+
+/// Which mirror a release came from / should be fetched from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceKind {
+    Github,
+    Dn7,
 }
 
-/// HTTP client for the (potentially very slow) binary download.
-///
-/// Deliberately has NO overall request timeout: on a server with tiny download
-/// bandwidth the transfer can legitimately take many minutes, and an overall
-/// timeout (the old 120s) would abort a perfectly healthy, still-progressing
-/// download — which surfaced as the self-update "resetting" after ~1-2 minutes.
-/// Instead we bound only the *connect* and *idle read* times: a genuinely dead
-/// or stalled connection (no bytes for `read_timeout`) is still caught and
-/// retried, but a slow-but-progressing download runs to completion. The read
-/// timeout resets after every successful read.
-fn download_http() -> reqwest::Client {
-    reqwest::Client::builder()
-        .user_agent("dn7-panel/updater")
-        .connect_timeout(std::time::Duration::from_secs(30))
-        // No bytes at all for 5 minutes => treat the connection as dead.
-        .read_timeout(std::time::Duration::from_secs(300))
-        .build()
-        .expect("download http client")
+impl SourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SourceKind::Github => "github",
+            SourceKind::Dn7 => "dn7",
+        }
+    }
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "github" => Some(SourceKind::Github),
+            "dn7" => Some(SourceKind::Dn7),
+            _ => None,
+        }
+    }
+    pub fn other(self) -> Self {
+        match self {
+            SourceKind::Github => SourceKind::Dn7,
+            SourceKind::Dn7 => SourceKind::Github,
+        }
+    }
 }
 
-/// Architecture token the backend expects (`x86_64` / `arm64`).
-fn arch() -> &'static str {
-    // Compile-time target arch; the agent binary is arch-specific anyway.
+/// A resolved, downloadable release.
+#[derive(Clone, Debug)]
+pub struct Release {
+    pub version: String,
+    pub url: String,
+    pub sha256: Option<String>,
+    pub source: SourceKind,
+}
+
+/// Architecture token used in asset names / manifest queries (`x86_64`/`arm64`).
+pub fn arch() -> &'static str {
     if cfg!(target_arch = "aarch64") {
         "arm64"
     } else {
@@ -47,24 +66,297 @@ fn arch() -> &'static str {
     }
 }
 
-/// Download the latest agent binary from the backend, reporting download
-/// percent (0..100) via `on_progress` as bytes arrive.
-pub async fn fetch_latest_with_progress<F: Fn(u64) + Copy>(
-    cfg: &crate::config::PanelConfig,
+/// Small-request HTTP client (version lookups, manifests). Short timeouts.
+fn http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent("dn7-panel/updater")
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .expect("http client")
+}
+
+/// HTTP client for the (potentially very slow) binary download.
+///
+/// No overall timeout: a server with tiny bandwidth can legitimately take many
+/// minutes. We bound only connect + idle-read time, so a dead/stalled
+/// connection is still caught, but a slow-but-progressing download runs to
+/// completion (the read timeout resets after every successful read).
+fn download_http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent("dn7-panel/updater")
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(300))
+        .build()
+        .expect("download http client")
+}
+
+// ---------------------------------------------------------------------------
+// Per-source release resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve the latest GitHub release without touching api.github.com: follow
+/// the `releases/latest` redirect to read the tag, then address the asset
+/// deterministically.
+pub async fn github_release(cfg: &PanelConfig) -> Result<Release> {
+    let repo = &cfg.github_repo;
+    let latest = format!("https://github.com/{repo}/releases/latest");
+    // Disable auto-redirect so we can read the Location → /tag/vX.Y.Z.
+    let client = reqwest::Client::builder()
+        .user_agent("dn7-panel/updater")
+        .timeout(std::time::Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let resp = client.get(&latest).send().await?;
+    let loc = resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| anyhow!("github: no redirect to latest tag"))?;
+    let tag = loc
+        .rsplit('/')
+        .next()
+        .ok_or_else(|| anyhow!("github: malformed latest location"))?;
+    let version = tag.trim_start_matches('v').to_string();
+    if version.is_empty() {
+        return Err(anyhow!("github: empty version tag"));
+    }
+    let asset = format!("dn7-panel-linux-{}-v{}", arch(), version);
+    let url = format!("https://github.com/{repo}/releases/download/{tag}/{asset}");
+    // Best-effort: pull the published SHA256SUMS and find our asset's hash.
+    let sums_url = format!("https://github.com/{repo}/releases/download/{tag}/SHA256SUMS");
+    let sha256 = http()
+        .get(&sums_url)
+        .send()
+        .await
+        .ok()
+        .and_then(|r| {
+            if r.status().is_success() {
+                Some(r)
+            } else {
+                None
+            }
+        })
+        .map(|r| async move { r.text().await.ok() });
+    let sha256 = match sha256 {
+        Some(fut) => parse_sha256sums(fut.await.unwrap_or_default(), &asset),
+        None => None,
+    };
+    Ok(Release {
+        version,
+        url,
+        sha256,
+        source: SourceKind::Github,
+    })
+}
+
+/// Resolve the latest dn7.cn release from the JSON manifest.
+pub async fn dn7_release(cfg: &PanelConfig) -> Result<Release> {
+    let url = format!("{}/api/panel/version?arch={}", cfg.dn7_base, arch());
+    let manifest: serde_json::Value = http()
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    // Accept either a flat object or {data:{...}}.
+    let m = manifest.get("data").unwrap_or(&manifest);
+    let version = m
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim_start_matches('v').to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("dn7: no version in manifest"))?;
+    let dl = m
+        .get("url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("{}/api/panel/download?arch={}", cfg.dn7_base, arch()));
+    let sha256 = m
+        .get("sha256")
+        .and_then(|v| v.as_str())
+        .filter(|s| s.len() == 64)
+        .map(|s| s.to_lowercase());
+    Ok(Release {
+        version,
+        url: dl,
+        sha256,
+        source: SourceKind::Dn7,
+    })
+}
+
+/// Resolve a release from a specific source.
+pub async fn release_from(cfg: &PanelConfig, source: SourceKind) -> Result<Release> {
+    match source {
+        SourceKind::Github => github_release(cfg).await,
+        SourceKind::Dn7 => dn7_release(cfg).await,
+    }
+}
+
+/// Find `asset`'s hash line in a `sha256  filename` SHA256SUMS body.
+fn parse_sha256sums(body: String, asset: &str) -> Option<String> {
+    for line in body.lines() {
+        let mut it = line.split_whitespace();
+        let hash = it.next()?;
+        let name = it.next().unwrap_or("");
+        let name = name.trim_start_matches('*'); // some tools prefix binary mode
+        if name == asset && hash.len() == 64 {
+            return Some(hash.to_lowercase());
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Speed probe
+// ---------------------------------------------------------------------------
+
+/// Probe result for one source.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct SourceProbe {
+    pub name: &'static str,
+    pub ok: bool,
+    pub version: Option<String>,
+    /// Measured throughput in KB/s over the probe sample (0 on failure).
+    pub kbps: u64,
+    pub error: Option<String>,
+}
+
+/// Probe a single source: resolve its release, then range-download a small
+/// sample of the binary to measure throughput. Returns (probe, release?).
+async fn probe_one(cfg: &PanelConfig, source: SourceKind) -> (SourceProbe, Option<Release>) {
+    let name = source.as_str();
+    let rel = match release_from(cfg, source).await {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                SourceProbe {
+                    name,
+                    ok: false,
+                    version: None,
+                    kbps: 0,
+                    error: Some(e.to_string()),
+                },
+                None,
+            )
+        }
+    };
+    // Range-GET the first ~256 KiB to estimate throughput.
+    const SAMPLE: u64 = 256 * 1024;
+    let started = std::time::Instant::now();
+    let req = download_http()
+        .get(&rel.url)
+        .header(reqwest::header::RANGE, format!("bytes=0-{}", SAMPLE - 1));
+    let result: Result<u64> = async {
+        let resp = req.send().await?.error_for_status()?;
+        let bytes = resp.bytes().await?;
+        Ok(bytes.len() as u64)
+    }
+    .await;
+    match result {
+        Ok(got) if got > 0 => {
+            let secs = started.elapsed().as_secs_f64().max(0.001);
+            let kbps = ((got as f64 / 1024.0) / secs) as u64;
+            (
+                SourceProbe {
+                    name,
+                    ok: true,
+                    version: Some(rel.version.clone()),
+                    kbps,
+                    error: None,
+                },
+                Some(rel),
+            )
+        }
+        Ok(_) => (
+            SourceProbe {
+                name,
+                ok: false,
+                version: Some(rel.version.clone()),
+                kbps: 0,
+                error: Some("empty probe response".into()),
+            },
+            Some(rel),
+        ),
+        Err(e) => (
+            SourceProbe {
+                name,
+                ok: false,
+                version: Some(rel.version.clone()),
+                kbps: 0,
+                error: Some(e.to_string()),
+            },
+            Some(rel),
+        ),
+    }
+}
+
+/// Probe both sources concurrently. The faster successful source sorts first.
+pub async fn probe_sources(cfg: &PanelConfig) -> Vec<SourceProbe> {
+    let (g, d) = tokio::join!(
+        probe_one(cfg, SourceKind::Github),
+        probe_one(cfg, SourceKind::Dn7)
+    );
+    vec![g.0, d.0]
+}
+
+/// Probe both and return the winning source (highest throughput among those
+/// that connected). `None` if neither connected.
+pub async fn probe_winner(cfg: &PanelConfig) -> Option<SourceKind> {
+    let (g, d) = tokio::join!(
+        probe_one(cfg, SourceKind::Github),
+        probe_one(cfg, SourceKind::Dn7)
+    );
+    let cand = [(SourceKind::Github, g.0), (SourceKind::Dn7, d.0)];
+    cand.iter()
+        .filter(|(_, p)| p.ok)
+        .max_by_key(|(_, p)| p.kbps)
+        .map(|(k, _)| *k)
+}
+
+// ---------------------------------------------------------------------------
+// Download
+// ---------------------------------------------------------------------------
+
+/// Download a resolved release with progress, verifying sha256 when known.
+pub async fn download_release<F: Fn(u64) + Copy>(
+    release: &Release,
     on_progress: F,
 ) -> Result<Vec<u8>> {
-    let url = format!(
-        "{}/agent/dist/download?arch={}&rate=3145728",
-        cfg.update_url.trim_end_matches('/'),
-        arch()
-    );
-    let resp = download_http().get(&url).send().await?.error_for_status()?;
+    let resp = download_http()
+        .get(&release.url)
+        .send()
+        .await?
+        .error_for_status()?;
     let bytes = download_streaming(resp, on_progress).await?;
     if bytes.is_empty() {
-        return Err(anyhow!("backend returned an empty binary"));
+        return Err(anyhow!(
+            "{} returned an empty binary",
+            release.source.as_str()
+        ));
     }
-    tracing::info!("fetched agent binary from backend");
+    if let Some(expected) = &release.sha256 {
+        let got = sha256_hex(&bytes);
+        if &got != expected {
+            return Err(anyhow!(
+                "sha256 mismatch (expected {expected}, got {got}) — refusing to install"
+            ));
+        }
+        tracing::info!("self-update: sha256 verified");
+    }
+    tracing::info!(
+        source = release.source.as_str(),
+        bytes = bytes.len(),
+        "fetched panel binary"
+    );
     Ok(bytes)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Stream a response body into a Vec, reporting download percent via callback.
@@ -78,7 +370,6 @@ async fn download_streaming<F: Fn(u64)>(
     let mut got: u64 = 0;
     let mut last_pct: u64 = 0;
     on_progress(0);
-    // Surface absolute byte counts too, so the UI can show "current / total MB".
     crate::update::set_bytes(0, total.unwrap_or(0));
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
@@ -98,25 +389,34 @@ async fn download_streaming<F: Fn(u64)>(
     Ok(bytes)
 }
 
-/// Resolve the latest available agent version from the backend, used to decide
-/// whether a self-update is actually needed before downloading the binary.
-pub async fn latest_version(cfg: &crate::config::PanelConfig) -> Result<String> {
-    let url = format!(
-        "{}/agent/dist/version",
-        cfg.update_url.trim_end_matches('/')
-    );
-    let manifest: serde_json::Value = http()
-        .get(&url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    manifest
-        .get("data")
-        .and_then(|d| d.get("version"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim_start_matches('v').to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("no version in backend manifest"))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_sums_matches_asset() {
+        let body = "deadbeef  other-file\n\
+            aaaabbbbccccddddeeeeffff0000111122223333444455556666777788889999  dn7-panel-linux-x86_64-v1.0.9\n";
+        assert_eq!(
+            parse_sha256sums(body.into(), "dn7-panel-linux-x86_64-v1.0.9"),
+            Some("aaaabbbbccccddddeeeeffff0000111122223333444455556666777788889999".into())
+        );
+        assert_eq!(parse_sha256sums(body.into(), "missing"), None);
+    }
+
+    #[test]
+    fn source_kind_roundtrip() {
+        assert_eq!(SourceKind::from_str("github"), Some(SourceKind::Github));
+        assert_eq!(SourceKind::from_str("dn7"), Some(SourceKind::Dn7));
+        assert_eq!(SourceKind::from_str("x"), None);
+        assert_eq!(SourceKind::Github.other(), SourceKind::Dn7);
+    }
+
+    #[test]
+    fn sha256_known_vector() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }

@@ -42,6 +42,7 @@ function showApp() {
     if (b.data.hostname) $('agentVer').title = b.data.hostname;
   }).catch(() => {});
   api('/api/settings').then((b) => { setUser(b.data.username || 'admin'); }).catch(() => {});
+  if (window.updateBadge) updateBadge();
   switchTab(S.tab);
 }
 function setUser(name) { $('whoName').textContent = name; $('userAv').textContent = (name[0] || 'A').toUpperCase(); }

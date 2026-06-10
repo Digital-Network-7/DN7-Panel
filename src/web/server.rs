@@ -34,6 +34,8 @@ pub struct WebState {
     settings: std::sync::Mutex<WebSettings>,
     /// Reused metrics collector (CPU% needs a persistent handle across reads).
     collector: Mutex<Collector>,
+    /// Runtime config (used by the self-update endpoints).
+    cfg: PanelConfig,
 }
 
 type Shared = Arc<WebState>;
@@ -51,6 +53,7 @@ pub fn spawn(cfg: PanelConfig) {
         auth: AuthState::new(),
         settings: std::sync::Mutex::new(s),
         collector: Mutex::new(Collector::new()),
+        cfg,
     });
     tokio::spawn(async move {
         if let Err(e) = serve(state, port).await {
@@ -73,6 +76,13 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
         .route("/api/procs", get(procs))
         .route("/api/settings", get(get_settings).post(put_settings))
         .route("/api/branding", get(get_branding).post(put_branding))
+        .route("/api/update/status", get(update_status))
+        .route(
+            "/api/update/config",
+            get(update_config_get).post(update_config_put),
+        )
+        .route("/api/update/check", post(update_check))
+        .route("/api/update/apply", post(update_apply))
         .route("/api/docker", post(docker_op))
         .route("/api/nginx", post(nginx_op))
         .route("/api/mysql", post(mysql_op))
@@ -695,4 +705,104 @@ async fn put_branding(
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败：{e}")).into_response();
     }
     Json(json!({ "ok": true, "data": b })).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Self-update (GitHub + dn7.cn)
+// ---------------------------------------------------------------------------
+
+/// GET /api/update/status — live phase/progress + current version (polled by
+/// the UI during a download). Auth required.
+async fn update_status(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    Json(json!({
+        "ok": true,
+        "data": {
+            "phase": crate::update::phase_str(),
+            "progress": crate::update::progress(),
+            "done_bytes": crate::update::done_bytes(),
+            "total_bytes": crate::update::total_bytes(),
+            "in_progress": crate::update::in_progress(),
+            "current": env!("CARGO_PKG_VERSION"),
+        }
+    }))
+    .into_response()
+}
+
+async fn update_config_get(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    let st = crate::update::UpdateState::load();
+    Json(json!({ "ok": true, "data": st })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct UpdateConfigReq {
+    #[serde(default)]
+    auto: Option<bool>,
+    /// "auto" | "github" | "dn7"
+    #[serde(default)]
+    source_pref: Option<String>,
+}
+
+async fn update_config_put(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<UpdateConfigReq>,
+) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    let mut st = crate::update::UpdateState::load();
+    if let Some(a) = req.auto {
+        st.auto = a;
+    }
+    if let Some(p) = req.source_pref {
+        if !matches!(p.as_str(), "auto" | "github" | "dn7") {
+            return (StatusCode::BAD_REQUEST, "source 需为 auto/github/dn7").into_response();
+        }
+        // Switching preference invalidates any sticky probe winner.
+        if p != st.source_pref {
+            st.chosen = None;
+            st.probed_at = 0;
+        }
+        st.source_pref = p;
+    }
+    if let Err(e) = st.save() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败：{e}")).into_response();
+    }
+    Json(json!({ "ok": true, "data": st })).into_response()
+}
+
+/// POST /api/update/check — probe both sources + report whether a newer build
+/// is available. Auth required.
+async fn update_check(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    let res = crate::update::check(&state.cfg).await;
+    Json(json!({ "ok": true, "data": res })).into_response()
+}
+
+/// POST /api/update/apply — start a self-update in the background (download →
+/// verify → atomic swap → exit for restart). Returns immediately; the UI polls
+/// /api/update/status. Auth required.
+async fn update_apply(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    if crate::update::in_progress() {
+        return Json(
+            json!({ "ok": true, "data": { "started": false, "reason": "already in progress" } }),
+        )
+        .into_response();
+    }
+    let cfg = state.cfg.clone();
+    tokio::spawn(async move {
+        crate::update::run_self_update(&cfg).await;
+    });
+    Json(json!({ "ok": true, "data": { "started": true } })).into_response()
 }

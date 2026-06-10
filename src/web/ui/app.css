@@ -126,6 +126,7 @@
   aside .foot { border-top:1px solid var(--line); padding-top:12px; }
   aside .ver { font-size:11.5px; color:var(--mut); padding:0 8px; display:flex; align-items:center; justify-content:center; gap:7px; }
   aside .ver b { color:var(--fg); font-weight:600; }
+  .updot { width:7px; height:7px; border-radius:99px; background:var(--cy); box-shadow:0 0 8px var(--cy); display:inline-block; margin-left:2px; }
 
   .content { flex:1; min-width:0; display:flex; flex-direction:column; min-height:100vh; }
   /* One-screen tabs (dashboard/terminal): cap content to the viewport so the

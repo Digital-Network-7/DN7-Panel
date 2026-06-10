@@ -1,34 +1,29 @@
-//! Self-update and binary installation.
+//! Self-update: dual-source download, atomic binary replacement, and the
+//! persisted update preferences that drive it.
 //!
-//! Self-update: fetch the latest binary (see `fetch`), atomically replace the
-//! running executable, and exit so the supervisor role relaunches it on the new
-//! version. There is a single binary that runs as either role, so one
-//! self-update covers both.
+//! There is a single binary that runs as either role, so one self-update covers
+//! both: fetch the latest binary (see `fetch`), atomically replace the running
+//! executable at the stable install path, and exit so the supervisor relaunches
+//! it on the new version.
 //!
-//! NOTE: self-update is currently RETAINED but not auto-triggered — the backend
-//! connection that used to drive it was removed. It will be re-wired to a
-//! panel/dn7.cn-initiated update later, so the mechanism is kept intact.
-#![allow(dead_code)]
+//! Source selection (GitHub vs dn7.cn) is sticky: an explicit preference is
+//! honoured; otherwise a remembered probe winner is reused for a week, and a
+//! download failure fails over to the other source (forcing a re-probe).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
 
 use crate::config::PanelConfig;
-use crate::fetch;
+use crate::fetch::{self, Release, SourceKind, SourceProbe};
 
 // ---------------------------------------------------------------------------
-// Global self-update progress state.
-//
-// Self-update runs in its own task so the metrics loop keeps reporting while a
-// (possibly slow) download is in flight. Each tick the loop reads this state and
-// includes it in the report, so the mini program can show live progress instead
-// of the server appearing to hang/offline.
+// Global self-update progress state (read by the UI via /api/update/status).
 // ---------------------------------------------------------------------------
 
-/// Update phase, encoded as a small integer for a lock-free atomic.
 pub const PHASE_IDLE: u8 = 0;
 pub const PHASE_CHECKING: u8 = 1;
 pub const PHASE_DOWNLOADING: u8 = 2;
@@ -36,16 +31,9 @@ pub const PHASE_INSTALLING: u8 = 3;
 pub const PHASE_ERROR: u8 = 4;
 
 static PHASE: AtomicU8 = AtomicU8::new(PHASE_IDLE);
-/// Download progress percent (0..100); only meaningful while DOWNLOADING.
 static PROGRESS: AtomicU64 = AtomicU64::new(0);
-/// Total bytes of the binary being downloaded (0 until known); lets the UI show
-/// "current MB / total MB" instead of just a percent.
 static TOTAL_BYTES: AtomicU64 = AtomicU64::new(0);
-/// Bytes downloaded so far (only meaningful while DOWNLOADING).
 static DONE_BYTES: AtomicU64 = AtomicU64::new(0);
-
-/// True while a self-update task is running (download/install in progress), used
-/// to coalesce duplicate upgrade triggers.
 static IN_PROGRESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn phase() -> u8 {
@@ -54,11 +42,9 @@ pub fn phase() -> u8 {
 pub fn progress() -> u64 {
     PROGRESS.load(Ordering::Relaxed)
 }
-/// Total bytes of the in-flight download (0 until the content length is known).
 pub fn total_bytes() -> u64 {
     TOTAL_BYTES.load(Ordering::Relaxed)
 }
-/// Bytes downloaded so far in the in-flight download.
 pub fn done_bytes() -> u64 {
     DONE_BYTES.load(Ordering::Relaxed)
 }
@@ -77,14 +63,10 @@ fn set_phase(p: u8) {
 fn set_progress(pct: u64) {
     PROGRESS.store(pct.min(100), Ordering::Relaxed);
 }
-/// Record the total/done byte counts for the in-flight download.
 pub fn set_bytes(done: u64, total: u64) {
     DONE_BYTES.store(done, Ordering::Relaxed);
     TOTAL_BYTES.store(total, Ordering::Relaxed);
 }
-
-/// Try to claim the single in-flight update slot. Returns false if one is
-/// already running.
 pub fn try_begin() -> bool {
     IN_PROGRESS
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -93,6 +75,198 @@ pub fn try_begin() -> bool {
 fn end() {
     IN_PROGRESS.store(false, Ordering::SeqCst);
 }
+pub fn in_progress() -> bool {
+    IN_PROGRESS.load(Ordering::SeqCst)
+}
+
+// ---------------------------------------------------------------------------
+// Persisted update preferences + sticky source choice (`<data>/update.json`).
+// ---------------------------------------------------------------------------
+
+const STICKY_TTL_SECS: u64 = 7 * 24 * 3600;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateState {
+    /// Apply updates automatically when a newer version is found.
+    #[serde(default)]
+    pub auto: bool,
+    /// Source preference: `auto` (probe + sticky) | `github` | `dn7`.
+    #[serde(default = "default_pref")]
+    pub source_pref: String,
+    /// Last probe winner (`github`/`dn7`) when `source_pref` is `auto`.
+    #[serde(default)]
+    pub chosen: Option<String>,
+    /// Epoch seconds of the last probe (for the sticky TTL).
+    #[serde(default)]
+    pub probed_at: u64,
+}
+
+fn default_pref() -> String {
+    "auto".to_string()
+}
+
+impl Default for UpdateState {
+    fn default() -> Self {
+        UpdateState {
+            auto: false,
+            source_pref: default_pref(),
+            chosen: None,
+            probed_at: 0,
+        }
+    }
+}
+
+fn state_path() -> PathBuf {
+    crate::paths::data_dir().join("update.json")
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+impl UpdateState {
+    pub fn load() -> Self {
+        if let Ok(raw) = std::fs::read_to_string(state_path()) {
+            if let Ok(s) = serde_json::from_str::<UpdateState>(&raw) {
+                return s;
+            }
+        }
+        UpdateState::default()
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let path = state_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(self)?)?;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Version comparison
+// ---------------------------------------------------------------------------
+
+fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
+    let s = s.trim().trim_start_matches('v');
+    let mut it = s.split('.');
+    let a = it.next()?.parse().ok()?;
+    let b = it.next().unwrap_or("0").parse().ok()?;
+    let c = it.next().unwrap_or("0").parse().ok()?;
+    Some((a, b, c))
+}
+
+/// True if `latest` is a strictly newer semver than `current`.
+pub fn is_newer(current: &str, latest: &str) -> bool {
+    match (parse_semver(current), parse_semver(latest)) {
+        (Some(cur), Some(lat)) => lat > cur,
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Source resolution
+// ---------------------------------------------------------------------------
+
+/// Pick the release to use per the persisted preference / sticky choice,
+/// probing when needed. Does not download (only resolves metadata).
+async fn resolve_release(cfg: &PanelConfig) -> Result<Release> {
+    let mut st = UpdateState::load();
+    // Explicit preference wins.
+    if let Some(k) = SourceKind::from_str(&st.source_pref) {
+        return fetch::release_from(cfg, k).await;
+    }
+    // Sticky: reuse a fresh remembered winner.
+    if let Some(chosen) = st.chosen.as_deref().and_then(SourceKind::from_str) {
+        if now_secs().saturating_sub(st.probed_at) < STICKY_TTL_SECS {
+            return fetch::release_from(cfg, chosen).await;
+        }
+    }
+    // Probe both and remember the winner.
+    if let Some(win) = fetch::probe_winner(cfg).await {
+        st.chosen = Some(win.as_str().to_string());
+        st.probed_at = now_secs();
+        let _ = st.save();
+        return fetch::release_from(cfg, win).await;
+    }
+    // Neither probe connected; try GitHub, then dn7.
+    match fetch::release_from(cfg, SourceKind::Github).await {
+        Ok(r) => Ok(r),
+        Err(_) => fetch::release_from(cfg, SourceKind::Dn7).await,
+    }
+}
+
+/// Result of an update check, surfaced to the UI.
+#[derive(Debug, Serialize)]
+pub struct CheckResult {
+    pub current: String,
+    pub latest: Option<String>,
+    pub has_update: bool,
+    pub source: Option<String>,
+    pub auto: bool,
+    pub source_pref: String,
+    pub sources: Vec<SourceProbe>,
+}
+
+/// Probe both sources (for display + sticky refresh) and report whether a newer
+/// version is available.
+pub async fn check(cfg: &PanelConfig) -> CheckResult {
+    set_phase(PHASE_CHECKING);
+    let probes = fetch::probe_sources(cfg).await;
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    // Highest version among sources that responded.
+    let latest = probes
+        .iter()
+        .filter(|p| p.ok)
+        .filter_map(|p| p.version.clone())
+        .max_by(|a, b| {
+            parse_semver(a)
+                .unwrap_or((0, 0, 0))
+                .cmp(&parse_semver(b).unwrap_or((0, 0, 0)))
+        });
+    let mut st = UpdateState::load();
+    // Refresh the sticky winner from this probe when in auto mode.
+    let source = if let Some(k) = SourceKind::from_str(&st.source_pref) {
+        Some(k.as_str().to_string())
+    } else {
+        let win = probes
+            .iter()
+            .filter(|p| p.ok)
+            .max_by_key(|p| p.kbps)
+            .map(|p| p.name.to_string());
+        if let Some(w) = &win {
+            st.chosen = Some(w.clone());
+            st.probed_at = now_secs();
+            let _ = st.save();
+        }
+        win
+    };
+    let has_update = latest
+        .as_deref()
+        .map(|l| is_newer(&current, l))
+        .unwrap_or(false);
+    if phase() == PHASE_CHECKING {
+        set_phase(PHASE_IDLE);
+    }
+    CheckResult {
+        current,
+        latest,
+        has_update,
+        source,
+        auto: st.auto,
+        source_pref: st.source_pref,
+        sources: probes,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Install + self-update
+// ---------------------------------------------------------------------------
 
 /// Write `bytes` to `target` atomically with executable permissions.
 pub async fn install_bytes(bytes: &[u8], target: &Path) -> Result<()> {
@@ -121,19 +295,39 @@ pub async fn install_bytes(bytes: &[u8], target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Self-update: fetch latest (GitHub-first) and replace the binary at the stable
-/// install path (`/var/ops/dn7-panel`, falling back to a cleaned current
-/// exe). Writing to the stable path — not the raw `current_exe()` — means a
-/// post-update "(deleted)" path never breaks the next update, and the canonical
-/// binary the supervisor respawns is the one that gets upgraded.
-/// Returns the replaced path; the caller should then exit.
+/// Fetch the latest binary (resolved source, failing over on download error)
+/// and replace the binary at the stable install path. Returns the replaced
+/// path; the caller should then exit so the supervisor relaunches the new build.
 pub async fn self_update(cfg: &PanelConfig) -> Result<PathBuf> {
     let target = crate::paths::stable_bin();
-    tracing::info!(?target, "self-update: fetching latest binary");
     set_phase(PHASE_DOWNLOADING);
     set_progress(0);
     set_bytes(0, 0);
-    let bytes = fetch::fetch_latest_with_progress(cfg, set_progress).await?;
+    let primary = resolve_release(cfg).await?;
+    tracing::info!(
+        source = primary.source.as_str(),
+        version = %primary.version,
+        ?target,
+        "self-update: downloading"
+    );
+    let bytes = match fetch::download_release(&primary, set_progress).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(
+                "self-update: source {} failed ({e}); failing over",
+                primary.source.as_str()
+            );
+            // Force a re-probe next time and try the other source now.
+            let mut st = UpdateState::load();
+            st.chosen = None;
+            st.probed_at = 0;
+            let _ = st.save();
+            set_progress(0);
+            set_bytes(0, 0);
+            let fb = fetch::release_from(cfg, primary.source.other()).await?;
+            fetch::download_release(&fb, set_progress).await?
+        }
+    };
     set_phase(PHASE_INSTALLING);
     install_bytes(&bytes, &target).await?;
     tracing::info!(
@@ -143,10 +337,10 @@ pub async fn self_update(cfg: &PanelConfig) -> Result<PathBuf> {
     Ok(target)
 }
 
-/// Run a full self-update in the background: download the new binary first (the
-/// metrics loop keeps reporting + the UI shows progress), then swap it in and
-/// exit so the supervisor relaunches us on the new version. Downloading BEFORE
-/// exiting means a slow network never leaves the host without a running agent.
+/// Run a full self-update in the background: download first (the UI shows
+/// progress), then swap the binary in and exit so the supervisor relaunches us
+/// on the new version. Downloading BEFORE exiting means a slow network never
+/// leaves the host without a running agent.
 pub async fn run_self_update(cfg: &PanelConfig) {
     if !try_begin() {
         tracing::info!("self-update already in progress; ignoring duplicate trigger");
@@ -155,15 +349,12 @@ pub async fn run_self_update(cfg: &PanelConfig) {
     match self_update(cfg).await {
         Ok(_) => {
             tracing::info!("upgrade complete; exiting for restart");
-            // Give the metrics loop one beat to flush the "installing" phase.
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             std::process::exit(0);
         }
         Err(e) => {
             tracing::warn!("self-update failed: {e}");
             set_phase(PHASE_ERROR);
-            // Clear the error after a short while so the UI returns to normal and
-            // a later attempt can retry.
             tokio::time::sleep(std::time::Duration::from_secs(20)).await;
             set_phase(PHASE_IDLE);
             set_progress(0);
@@ -171,4 +362,42 @@ pub async fn run_self_update(cfg: &PanelConfig) {
             end();
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Periodic checker (spawned by the agent role)
+// ---------------------------------------------------------------------------
+
+/// Background loop: check for a newer version periodically. When auto-update is
+/// on it checks every minute and applies a newer build automatically; when off
+/// it checks hourly (so the UI's "update available" hint stays warm) and never
+/// applies on its own.
+pub fn spawn_periodic(cfg: PanelConfig) {
+    tokio::spawn(async move {
+        // Small initial delay so startup isn't slowed by a network round-trip.
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        loop {
+            let st = UpdateState::load();
+            let interval = if st.auto { 60 } else { 3600 };
+            if !in_progress() {
+                // A cheap version check (no speed probe): resolve the source and
+                // read its latest version.
+                if let Ok(rel) = resolve_release(&cfg).await {
+                    let current = env!("CARGO_PKG_VERSION");
+                    if is_newer(current, &rel.version) {
+                        tracing::info!(
+                            latest = %rel.version,
+                            source = rel.source.as_str(),
+                            auto = st.auto,
+                            "update available"
+                        );
+                        if st.auto {
+                            run_self_update(&cfg).await;
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+        }
+    });
 }

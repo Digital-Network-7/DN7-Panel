@@ -25,12 +25,13 @@ pub struct PanelConfig {
     /// Local web management: TCP port to bind (default 1080). The bind address
     /// is 0.0.0.0 so it's reachable off-box (per product decision).
     pub web_port: u16,
-    /// Base URL the (retained, not-yet-triggered) self-update mechanism pulls
-    /// new binaries from. Kept unchanged for now; will move to dn7.cn once the
-    /// site backend can serve binaries. Read only by the (dead-code-allowed)
-    /// `fetch`/`update` modules.
-    #[allow(dead_code)]
-    pub update_url: String,
+    /// GitHub `owner/repo` that publishes the release binaries. Used by the
+    /// self-update GitHub source (release assets are addressed deterministically
+    /// — no api.github.com call, so no rate limit).
+    pub github_repo: String,
+    /// Base URL of the dn7.cn site that mirrors the release binaries + manifest.
+    /// Used by the self-update DN7 source.
+    pub dn7_base: String,
 }
 
 impl PanelConfig {
@@ -67,8 +68,9 @@ impl PanelConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1080);
-        let update_url =
-            env::var("DN7_UPDATE_URL").unwrap_or_else(|_| "https://api.teaops.dn7.cn".to_string());
+        let github_repo = env::var("DN7_GITHUB_REPO")
+            .unwrap_or_else(|_| "Digital-Network-7/DN7-Panel".to_string());
+        let dn7_base = env::var("DN7_SITE_URL").unwrap_or_else(|_| "https://dn7.cn".to_string());
 
         PanelConfig {
             runtime_dir,
@@ -79,7 +81,8 @@ impl PanelConfig {
             restart_backoff_secs,
             web_enabled,
             web_port,
-            update_url: update_url.trim_end_matches('/').to_string(),
+            github_repo: github_repo.trim().trim_end_matches('/').to_string(),
+            dn7_base: dn7_base.trim().trim_end_matches('/').to_string(),
         }
     }
 }

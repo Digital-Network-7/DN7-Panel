@@ -95,6 +95,14 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Generate SHA256SUMS
+        # Bare basenames (no dir prefix) so the panel's updater can match each
+        # asset name directly when verifying a download.
+        run: |
+          cd dist
+          sha256sum dn7-panel-linux-* > SHA256SUMS
+          cat SHA256SUMS
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:

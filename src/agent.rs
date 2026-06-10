@@ -29,6 +29,11 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     // task; no-op when disabled in settings.
     crate::web::spawn(cfg.clone());
 
+    // Background self-update checker (GitHub + dn7.cn). Applies automatically
+    // only when auto-update is enabled in settings; otherwise just keeps the
+    // "update available" hint warm.
+    crate::update::spawn_periodic(cfg.clone());
+
     tracing::info!("DN7 Panel agent role started");
 
     // Keep the role alive and our heartbeat fresh so the supervisor knows we're
