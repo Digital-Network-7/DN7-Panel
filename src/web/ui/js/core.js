@@ -76,7 +76,7 @@ function api(path, opts = {}) {
   opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
   if (S.token) opts.headers['Authorization'] = 'Bearer ' + S.token;
   return fetch(path, opts).then(async (r) => {
-    if (r.status === 401) { logout(); throw new Error('未授权'); }
+    if (r.status === 401) { logout(); throw new Error(tr('common.unauthorized')); }
     const txt = await r.text();
     let body; try { body = JSON.parse(txt); } catch (e) { body = txt; }
     if (!r.ok || (body && body.ok === false)) throw new Error((body && body.error) || body || ('HTTP ' + r.status));

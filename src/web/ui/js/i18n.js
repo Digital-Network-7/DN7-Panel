@@ -11,7 +11,7 @@
 // =========================================================================
 const I18N = {
   en: {
-    'common.cancel': 'Cancel', 'common.ok': 'OK', 'common.confirm': 'Please confirm',
+    'common.cancel': 'Cancel', 'common.ok': 'OK', 'common.confirm': 'Please confirm', 'common.unauthorized': 'Unauthorized',
     'common.saved': 'Saved', 'common.loadfail': 'Failed to load: ',
     'common.restart_hint': ' (port/toggle changes take effect after restarting Panel)',
     'login.title': 'SIGN IN', 'login.sub': 'Sign in securely to the local console',
@@ -138,7 +138,7 @@ const I18N = {
     'job.processing': 'Processing…', 'job.log': 'View detailed log', 'job.done': 'Done', 'job.failed': 'Failed: ', 'job.ended': 'Task ended',
   },
   'zh-CN': {
-    'common.cancel': '取消', 'common.ok': '确定', 'common.confirm': '请确认',
+    'common.cancel': '取消', 'common.ok': '确定', 'common.confirm': '请确认', 'common.unauthorized': '未授权',
     'common.saved': '已保存', 'common.loadfail': '加载失败：',
     'common.restart_hint': '（端口/开关改动需重启 Panel 生效）',
     'login.title': '登录', 'login.sub': '安全登录到本机控制台',
@@ -265,7 +265,7 @@ const I18N = {
     'job.processing': '正在处理…', 'job.log': '查看详细日志', 'job.done': '完成', 'job.failed': '失败：', 'job.ended': '任务已结束',
   },
   'zh-TW': {
-    'common.cancel': '取消', 'common.ok': '確定', 'common.confirm': '請確認',
+    'common.cancel': '取消', 'common.ok': '確定', 'common.confirm': '請確認', 'common.unauthorized': '未授權',
     'common.saved': '已儲存', 'common.loadfail': '載入失敗：',
     'common.restart_hint': '（連接埠/開關變更需重啟 Panel 生效）',
     'login.title': '登入', 'login.sub': '安全登入本機主控台',
@@ -392,7 +392,7 @@ const I18N = {
     'job.processing': '正在處理…', 'job.log': '檢視詳細日誌', 'job.done': '完成', 'job.failed': '失敗：', 'job.ended': '任務已結束',
   },
   ja: {
-    'common.cancel': 'キャンセル', 'common.ok': 'OK', 'common.confirm': '確認してください',
+    'common.cancel': 'キャンセル', 'common.ok': 'OK', 'common.confirm': '確認してください', 'common.unauthorized': '認証されていません',
     'common.saved': '保存しました', 'common.loadfail': '読み込み失敗：',
     'common.restart_hint': '（ポート/スイッチの変更は Panel 再起動後に有効）',
     'login.title': 'サインイン', 'login.sub': 'ローカルコンソールに安全にサインイン',
