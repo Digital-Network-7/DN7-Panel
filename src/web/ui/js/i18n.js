@@ -140,6 +140,25 @@ const I18N = {
     'err.settings.port_range': 'Port must be 1-65535', 'err.settings.pw_format': 'Invalid password format', 'err.settings.username_format': 'Account must be 2-32 chars: letters, digits, _ or -',
     'err.update.source_invalid': 'Source must be auto / github / dn7', 'err.terminal.missing_container': 'Missing container', 'err.files.too_large': 'File too large (max 512MiB)', 'err.common.save_failed': 'Save failed',
     'err.branding.name_len': 'Name must be 1-40 characters', 'err.branding.logo_invalid': 'Logo must be an image under ~512KB', 'err.branding.accent_format': 'Accent must be #RRGGBB', 'err.branding.theme_invalid': 'Theme must be auto / light / dark',
+    'err.nginx.bad_static_dir': 'Invalid site directory name', 'err.nginx.missing_file_path': 'Missing file path', 'err.nginx.bad_file_path': 'Invalid file path', 'err.nginx.unknown_upload_mode': 'Unknown upload mode',
+    'err.nginx.not_setup': 'Nginx is not set up yet', 'err.nginx.need_domain': 'Please enter a domain', 'err.nginx.bad_domain': 'Invalid domain format', 'err.nginx.bad_cert_name': 'Invalid certificate name',
+    'err.nginx.need_target': 'Please enter a proxy target', 'err.nginx.bad_target': 'Invalid target (host or host:port)', 'err.nginx.need_container': 'Please select a container', 'err.nginx.bad_container': 'Invalid container name',
+    'err.nginx.bad_container_port': 'Container port must be 1-65535', 'err.nginx.need_static_dir': 'Please enter a site directory name', 'err.nginx.bad_static_dir_name': 'Directory name must be a single segment (letters, digits, _ - .)', 'err.nginx.unknown_site_kind': 'Unknown site type',
+    'err.nginx.unknown_cert_mode': 'Unknown certificate mode', 'err.nginx.too_many_rules': 'Too many path rules', 'err.nginx.need_cert_key': 'Please paste the certificate and private key', 'err.nginx.missing_site_id': 'Missing site ID',
+    'err.nginx.site_not_found': 'Site not found', 'err.nginx.need_cert': 'Please select a certificate', 'err.nginx.need_cert_name': 'Please enter a certificate name', 'err.nginx.bad_cert_name_chars': 'Certificate name may contain only letters, digits, _ - . (max 64 chars)',
+    'err.nginx.cert_exists': 'A certificate with that name already exists', 'err.nginx.need_cert_domain': 'Please enter the certificate domain', 'err.nginx.le_need_domain': 'Let\'s Encrypt requires a specific domain', 'err.nginx.missing_cert_name': 'Missing certificate name',
+    'err.nginx.cert_not_found': 'Certificate not found', 'err.mysql.instance_not_found': 'Instance not found (it may have been deleted)', 'err.mysql.missing_instance_id': 'Missing instance id', 'err.mysql.port_range': 'Port must be 1-65535',
+    'err.mysql.bad_engine': 'Unsupported database type', 'err.mysql.bad_version': 'Unsupported version', 'err.mysql.instance_exists': 'A database instance already exists (create multiple databases inside it)', 'err.mysql.db_name_rules': 'Database name may contain only letters, digits, _ - . (max 64 chars)',
+    'err.mysql.reserved_db_name': 'System database names are not allowed', 'err.mysql.bad_db_name': 'Invalid database name', 'err.mysql.no_drop_system_db': 'System databases cannot be dropped', 'err.mysql.user_name_rules': 'Username may contain only letters, digits, _ - . (max 64 chars)',
+    'err.mysql.bad_host': 'Invalid host format (% wildcard allowed)', 'err.mysql.bad_password': 'Password must be non-empty and at most 128 chars', 'err.mysql.bad_user_or_host': 'Invalid user or host', 'err.mysql.no_drop_system_user': 'System accounts cannot be deleted',
+    'err.mysql.bad_priv_type': 'Unsupported privilege type', 'err.mysql.instance_not_ready': 'Instance not ready; cannot back up', 'err.docker.image_in_use_builtin': 'This image is used by DN7 Panel\'s Nginx/MySQL and cannot be removed', 'err.docker.missing_network_name': 'Missing network name',
+    'err.docker.network_in_use': 'Network is in use; disconnect its containers first', 'err.docker.network_predefined': 'Built-in networks (bridge/host/none) cannot be removed', 'err.docker.container_managed_mysql': 'This container is managed by DN7 Panel MySQL; use the Databases page', 'err.docker.bad_mirror': 'Unsupported registry mirror',
+    'err.docker.name_too_long': 'Container name too long', 'err.docker.bad_name': 'Container name may contain only letters, digits, _ . -', 'err.docker.path_not_absolute': 'Path must be absolute', 'err.docker.path_bad_chars': 'Path contains invalid characters',
+    'err.docker.env_too_long': 'Environment variable too long', 'err.docker.env_format': 'Environment variable must be KEY=VALUE', 'err.docker.env_name_empty': 'Environment variable name cannot be empty', 'err.docker.env_name_rules': 'Env var name: letters, digits, underscore, not starting with a digit',
+    'err.docker.env_bad_chars': 'Environment variable contains invalid characters', 'err.docker.bad_restart_policy': 'Unsupported restart policy', 'err.docker.too_many_ports': 'Too many port mappings', 'err.docker.port_range': 'Port must be 1-65535',
+    'err.docker.bad_proto': 'Protocol must be tcp or udp', 'err.docker.too_many_envs': 'Too many environment variables', 'err.docker.too_many_mounts': 'Too many mounts', 'err.docker.mem_over_host': 'Memory limit cannot exceed host memory',
+    'err.docker.bad_cpu_format': 'Invalid CPU limit format (e.g. 0.5, 1, 2)', 'err.docker.cpu_out_of_range': 'CPU limit out of range', 'err.docker.bad_mem_format': 'Invalid memory limit format (e.g. 512m, 1g)', 'err.docker.mem_too_small': 'Memory limit must be greater than 0',
+    'err.docker.cmd_no_newline': 'Command cannot contain newlines', 'err.docker.cmd_unclosed_quote': 'Unclosed quote in command', 'err.docker.cmd_too_many_args': 'Too many command arguments',
   },
   'zh-CN': {
     'common.cancel': '取消', 'common.ok': '确定', 'common.confirm': '请确认', 'common.unauthorized': '未授权',
@@ -271,6 +290,25 @@ const I18N = {
     'err.settings.port_range': '端口需为 1-65535', 'err.settings.pw_format': '密码格式错误', 'err.settings.username_format': '账号需为 2-32 位字母/数字/_/-',
     'err.update.source_invalid': '源需为 auto / github / dn7', 'err.terminal.missing_container': '缺少容器', 'err.files.too_large': '文件过大（上限 512MiB）', 'err.common.save_failed': '保存失败',
     'err.branding.name_len': '名称需为 1-40 个字符', 'err.branding.logo_invalid': 'Logo 需为图片，且大小不超过约 512KB', 'err.branding.accent_format': '主色需为 #RRGGBB 格式', 'err.branding.theme_invalid': '主题需为 auto/light/dark',
+    'err.nginx.bad_static_dir': '站点目录名不合法', 'err.nginx.missing_file_path': '缺少文件路径', 'err.nginx.bad_file_path': '文件路径不合法', 'err.nginx.unknown_upload_mode': '未知的上传方式',
+    'err.nginx.not_setup': '尚未完成 Nginx 配置', 'err.nginx.need_domain': '请填写域名', 'err.nginx.bad_domain': '域名格式不正确', 'err.nginx.bad_cert_name': '证书名称不正确',
+    'err.nginx.need_target': '请填写转发目标', 'err.nginx.bad_target': '转发目标格式不正确（host 或 host:port）', 'err.nginx.need_container': '请选择容器', 'err.nginx.bad_container': '容器名不正确',
+    'err.nginx.bad_container_port': '容器端口需为 1-65535', 'err.nginx.need_static_dir': '请填写站点目录名', 'err.nginx.bad_static_dir_name': '目录名只能为单层名称（字母数字 _ - .）', 'err.nginx.unknown_site_kind': '未知的站点类型',
+    'err.nginx.unknown_cert_mode': '未知的证书方式', 'err.nginx.too_many_rules': '路径规则过多', 'err.nginx.need_cert_key': '请粘贴证书和私钥', 'err.nginx.missing_site_id': '缺少站点 ID',
+    'err.nginx.site_not_found': '站点不存在', 'err.nginx.need_cert': '请选择证书', 'err.nginx.need_cert_name': '请填写证书名称', 'err.nginx.bad_cert_name_chars': '证书名称只能包含字母、数字、_ - .（最多 64 字符）',
+    'err.nginx.cert_exists': '已存在同名证书', 'err.nginx.need_cert_domain': '请填写证书域名', 'err.nginx.le_need_domain': 'Let\'s Encrypt 需要一个具体域名', 'err.nginx.missing_cert_name': '缺少证书名称',
+    'err.nginx.cert_not_found': '证书不存在', 'err.mysql.instance_not_found': '找不到该实例（可能已删除）', 'err.mysql.missing_instance_id': '缺少实例 id', 'err.mysql.port_range': '端口需为 1-65535',
+    'err.mysql.bad_engine': '不支持的数据库类型', 'err.mysql.bad_version': '不支持的版本', 'err.mysql.instance_exists': '已存在一个数据库实例，无法重复创建（可在实例中创建多个数据库）', 'err.mysql.db_name_rules': '库名只能包含字母、数字、_ - . 且不超过 64 字符',
+    'err.mysql.reserved_db_name': '不允许使用系统库名', 'err.mysql.bad_db_name': '库名不合法', 'err.mysql.no_drop_system_db': '不允许删除系统库', 'err.mysql.user_name_rules': '用户名只能包含字母、数字、_ - . 且不超过 64 字符',
+    'err.mysql.bad_host': '主机格式不合法（可用 % 通配）', 'err.mysql.bad_password': '密码不能为空且不超过 128 字符', 'err.mysql.bad_user_or_host': '用户或主机不合法', 'err.mysql.no_drop_system_user': '不允许删除系统账号',
+    'err.mysql.bad_priv_type': '不支持的权限类型', 'err.mysql.instance_not_ready': '实例未就绪，无法备份', 'err.docker.image_in_use_builtin': '该镜像由 DN7 Panel 的 Nginx/MySQL 使用，无法删除', 'err.docker.missing_network_name': '缺少网络名',
+    'err.docker.network_in_use': '该网络仍有容器在使用，请先断开相关容器后再删除', 'err.docker.network_predefined': '内置网络（bridge/host/none）不可删除', 'err.docker.container_managed_mysql': '该容器由 DN7 Panel MySQL 管理，请在「数据库」页面操作', 'err.docker.bad_mirror': '不支持的加速镜像源',
+    'err.docker.name_too_long': '容器名过长', 'err.docker.bad_name': '容器名只能包含字母、数字、_ . -', 'err.docker.path_not_absolute': '路径必须为绝对路径', 'err.docker.path_bad_chars': '路径包含非法字符',
+    'err.docker.env_too_long': '环境变量过长', 'err.docker.env_format': '环境变量需为 KEY=VALUE 格式', 'err.docker.env_name_empty': '环境变量名不能为空', 'err.docker.env_name_rules': '环境变量名只能包含字母、数字、下划线，且不以数字开头',
+    'err.docker.env_bad_chars': '环境变量包含非法字符', 'err.docker.bad_restart_policy': '不支持的重启策略', 'err.docker.too_many_ports': '端口映射过多', 'err.docker.port_range': '端口需为 1-65535',
+    'err.docker.bad_proto': '协议只能是 tcp 或 udp', 'err.docker.too_many_envs': '环境变量过多', 'err.docker.too_many_mounts': '挂载过多', 'err.docker.mem_over_host': '内存限制不能超过宿主机内存',
+    'err.docker.bad_cpu_format': 'CPU 限制格式不正确（如 0.5、1、2）', 'err.docker.cpu_out_of_range': 'CPU 限制超出范围', 'err.docker.bad_mem_format': '内存限制格式不正确（如 512m、1g）', 'err.docker.mem_too_small': '内存限制需大于 0',
+    'err.docker.cmd_no_newline': '命令不能包含换行', 'err.docker.cmd_unclosed_quote': '命令引号未闭合', 'err.docker.cmd_too_many_args': '命令参数过多',
   },
   'zh-TW': {
     'common.cancel': '取消', 'common.ok': '確定', 'common.confirm': '請確認', 'common.unauthorized': '未授權',
@@ -402,6 +440,25 @@ const I18N = {
     'err.settings.port_range': '連接埠需為 1-65535', 'err.settings.pw_format': '密碼格式錯誤', 'err.settings.username_format': '帳號需為 2-32 位字母/數字/_/-',
     'err.update.source_invalid': '來源需為 auto / github / dn7', 'err.terminal.missing_container': '缺少容器', 'err.files.too_large': '檔案過大（上限 512MiB）', 'err.common.save_failed': '儲存失敗',
     'err.branding.name_len': '名稱需為 1-40 個字元', 'err.branding.logo_invalid': 'Logo 需為圖片，且大小不超過約 512KB', 'err.branding.accent_format': '主色需為 #RRGGBB 格式', 'err.branding.theme_invalid': '主題需為 auto/light/dark',
+    'err.nginx.bad_static_dir': '站點目錄名稱不合法', 'err.nginx.missing_file_path': '缺少檔案路徑', 'err.nginx.bad_file_path': '檔案路徑不合法', 'err.nginx.unknown_upload_mode': '未知的上傳方式',
+    'err.nginx.not_setup': '尚未完成 Nginx 設定', 'err.nginx.need_domain': '請填寫網域', 'err.nginx.bad_domain': '網域格式不正確', 'err.nginx.bad_cert_name': '憑證名稱不正確',
+    'err.nginx.need_target': '請填寫轉發目標', 'err.nginx.bad_target': '轉發目標格式不正確（host 或 host:port）', 'err.nginx.need_container': '請選擇容器', 'err.nginx.bad_container': '容器名稱不正確',
+    'err.nginx.bad_container_port': '容器連接埠需為 1-65535', 'err.nginx.need_static_dir': '請填寫站點目錄名稱', 'err.nginx.bad_static_dir_name': '目錄名稱只能為單層名稱（字母數字 _ - .）', 'err.nginx.unknown_site_kind': '未知的站點類型',
+    'err.nginx.unknown_cert_mode': '未知的憑證方式', 'err.nginx.too_many_rules': '路徑規則過多', 'err.nginx.need_cert_key': '請貼上憑證與私鑰', 'err.nginx.missing_site_id': '缺少站點 ID',
+    'err.nginx.site_not_found': '站點不存在', 'err.nginx.need_cert': '請選擇憑證', 'err.nginx.need_cert_name': '請填寫憑證名稱', 'err.nginx.bad_cert_name_chars': '憑證名稱只能包含字母、數字、_ - .（最多 64 字元）',
+    'err.nginx.cert_exists': '已存在同名憑證', 'err.nginx.need_cert_domain': '請填寫憑證網域', 'err.nginx.le_need_domain': 'Let\'s Encrypt 需要一個具體網域', 'err.nginx.missing_cert_name': '缺少憑證名稱',
+    'err.nginx.cert_not_found': '憑證不存在', 'err.mysql.instance_not_found': '找不到該實例（可能已刪除）', 'err.mysql.missing_instance_id': '缺少實例 id', 'err.mysql.port_range': '連接埠需為 1-65535',
+    'err.mysql.bad_engine': '不支援的資料庫類型', 'err.mysql.bad_version': '不支援的版本', 'err.mysql.instance_exists': '已存在一個資料庫實例，無法重複建立（可在實例中建立多個資料庫）', 'err.mysql.db_name_rules': '資料庫名稱只能包含字母、數字、_ - . 且不超過 64 字元',
+    'err.mysql.reserved_db_name': '不允許使用系統資料庫名稱', 'err.mysql.bad_db_name': '資料庫名稱不合法', 'err.mysql.no_drop_system_db': '不允許刪除系統資料庫', 'err.mysql.user_name_rules': '使用者名稱只能包含字母、數字、_ - . 且不超過 64 字元',
+    'err.mysql.bad_host': '主機格式不合法（可用 % 萬用字元）', 'err.mysql.bad_password': '密碼不能為空且不超過 128 字元', 'err.mysql.bad_user_or_host': '使用者或主機不合法', 'err.mysql.no_drop_system_user': '不允許刪除系統帳號',
+    'err.mysql.bad_priv_type': '不支援的權限類型', 'err.mysql.instance_not_ready': '實例未就緒，無法備份', 'err.docker.image_in_use_builtin': '此映像由 DN7 Panel 的 Nginx/MySQL 使用，無法刪除', 'err.docker.missing_network_name': '缺少網路名稱',
+    'err.docker.network_in_use': '此網路仍有容器在使用，請先中斷相關容器後再刪除', 'err.docker.network_predefined': '內建網路（bridge/host/none）不可刪除', 'err.docker.container_managed_mysql': '此容器由 DN7 Panel MySQL 管理，請在「資料庫」頁面操作', 'err.docker.bad_mirror': '不支援的加速鏡像來源',
+    'err.docker.name_too_long': '容器名稱過長', 'err.docker.bad_name': '容器名稱只能包含字母、數字、_ . -', 'err.docker.path_not_absolute': '路徑必須為絕對路徑', 'err.docker.path_bad_chars': '路徑包含非法字元',
+    'err.docker.env_too_long': '環境變數過長', 'err.docker.env_format': '環境變數需為 KEY=VALUE 格式', 'err.docker.env_name_empty': '環境變數名稱不能為空', 'err.docker.env_name_rules': '環境變數名稱只能包含字母、數字、底線，且不以數字開頭',
+    'err.docker.env_bad_chars': '環境變數包含非法字元', 'err.docker.bad_restart_policy': '不支援的重啟策略', 'err.docker.too_many_ports': '連接埠對應過多', 'err.docker.port_range': '連接埠需為 1-65535',
+    'err.docker.bad_proto': '協定只能是 tcp 或 udp', 'err.docker.too_many_envs': '環境變數過多', 'err.docker.too_many_mounts': '掛載過多', 'err.docker.mem_over_host': '記憶體限制不能超過主機記憶體',
+    'err.docker.bad_cpu_format': 'CPU 限制格式不正確（如 0.5、1、2）', 'err.docker.cpu_out_of_range': 'CPU 限制超出範圍', 'err.docker.bad_mem_format': '記憶體限制格式不正確（如 512m、1g）', 'err.docker.mem_too_small': '記憶體限制需大於 0',
+    'err.docker.cmd_no_newline': '指令不能包含換行', 'err.docker.cmd_unclosed_quote': '指令引號未閉合', 'err.docker.cmd_too_many_args': '指令參數過多',
   },
   ja: {
     'common.cancel': 'キャンセル', 'common.ok': 'OK', 'common.confirm': '確認してください', 'common.unauthorized': '認証されていません',
@@ -533,6 +590,25 @@ const I18N = {
     'err.settings.port_range': 'ポートは1〜65535である必要があります', 'err.settings.pw_format': 'パスワードの形式が不正です', 'err.settings.username_format': 'アカウントは2〜32文字（英数字・_・-）',
     'err.update.source_invalid': 'ソースは auto / github / dn7 のいずれか', 'err.terminal.missing_container': 'コンテナがありません', 'err.files.too_large': 'ファイルが大きすぎます（上限512MiB）', 'err.common.save_failed': '保存に失敗しました',
     'err.branding.name_len': '名前は1〜40文字である必要があります', 'err.branding.logo_invalid': 'ロゴは約512KB以下の画像である必要があります', 'err.branding.accent_format': 'アクセントは #RRGGBB 形式', 'err.branding.theme_invalid': 'テーマは auto/light/dark',
+    'err.nginx.bad_static_dir': 'サイトのディレクトリ名が不正です', 'err.nginx.missing_file_path': 'ファイルパスがありません', 'err.nginx.bad_file_path': 'ファイルパスが不正です', 'err.nginx.unknown_upload_mode': '不明なアップロード方式',
+    'err.nginx.not_setup': 'Nginx の設定が完了していません', 'err.nginx.need_domain': 'ドメインを入力してください', 'err.nginx.bad_domain': 'ドメインの形式が不正です', 'err.nginx.bad_cert_name': '証明書名が不正です',
+    'err.nginx.need_target': '転送先を入力してください', 'err.nginx.bad_target': '転送先の形式が不正です（host または host:port）', 'err.nginx.need_container': 'コンテナを選択してください', 'err.nginx.bad_container': 'コンテナ名が不正です',
+    'err.nginx.bad_container_port': 'コンテナポートは1〜65535', 'err.nginx.need_static_dir': 'サイトのディレクトリ名を入力してください', 'err.nginx.bad_static_dir_name': 'ディレクトリ名は単一階層のみ（英数字 _ - .）', 'err.nginx.unknown_site_kind': '不明なサイト種別',
+    'err.nginx.unknown_cert_mode': '不明な証明書の方式', 'err.nginx.too_many_rules': 'パスルールが多すぎます', 'err.nginx.need_cert_key': '証明書と秘密鍵を貼り付けてください', 'err.nginx.missing_site_id': 'サイト ID がありません',
+    'err.nginx.site_not_found': 'サイトが存在しません', 'err.nginx.need_cert': '証明書を選択してください', 'err.nginx.need_cert_name': '証明書名を入力してください', 'err.nginx.bad_cert_name_chars': '証明書名は英数字・_ - . のみ（最大64文字）',
+    'err.nginx.cert_exists': '同名の証明書が既に存在します', 'err.nginx.need_cert_domain': '証明書のドメインを入力してください', 'err.nginx.le_need_domain': 'Let\'s Encrypt には具体的なドメインが必要です', 'err.nginx.missing_cert_name': '証明書名がありません',
+    'err.nginx.cert_not_found': '証明書が存在しません', 'err.mysql.instance_not_found': 'インスタンスが見つかりません（削除された可能性があります）', 'err.mysql.missing_instance_id': 'インスタンス id がありません', 'err.mysql.port_range': 'ポートは1〜65535',
+    'err.mysql.bad_engine': 'サポートされていないデータベース種別', 'err.mysql.bad_version': 'サポートされていないバージョン', 'err.mysql.instance_exists': 'データベースインスタンスは既に存在します（その中に複数のDBを作成できます）', 'err.mysql.db_name_rules': 'DB名は英数字・_ - . のみ（最大64文字）',
+    'err.mysql.reserved_db_name': 'システムDB名は使用できません', 'err.mysql.bad_db_name': 'データベース名が不正です', 'err.mysql.no_drop_system_db': 'システムDBは削除できません', 'err.mysql.user_name_rules': 'ユーザー名は英数字・_ - . のみ（最大64文字）',
+    'err.mysql.bad_host': 'ホスト形式が不正です（% ワイルドカード可）', 'err.mysql.bad_password': 'パスワードは空でなく128文字以内', 'err.mysql.bad_user_or_host': 'ユーザーまたはホストが不正です', 'err.mysql.no_drop_system_user': 'システムアカウントは削除できません',
+    'err.mysql.bad_priv_type': 'サポートされていない権限種別', 'err.mysql.instance_not_ready': 'インスタンスが未準備のためバックアップできません', 'err.docker.image_in_use_builtin': 'このイメージは DN7 Panel の Nginx/MySQL が使用中のため削除できません', 'err.docker.missing_network_name': 'ネットワーク名がありません',
+    'err.docker.network_in_use': 'このネットワークはコンテナが使用中です。先に切断してください', 'err.docker.network_predefined': '組み込みネットワーク（bridge/host/none）は削除できません', 'err.docker.container_managed_mysql': 'このコンテナは DN7 Panel MySQL の管理対象です。「データベース」ページで操作してください', 'err.docker.bad_mirror': 'サポートされていないミラーソース',
+    'err.docker.name_too_long': 'コンテナ名が長すぎます', 'err.docker.bad_name': 'コンテナ名は英数字・_ . - のみ', 'err.docker.path_not_absolute': 'パスは絶対パスである必要があります', 'err.docker.path_bad_chars': 'パスに不正な文字が含まれています',
+    'err.docker.env_too_long': '環境変数が長すぎます', 'err.docker.env_format': '環境変数は KEY=VALUE 形式', 'err.docker.env_name_empty': '環境変数名は空にできません', 'err.docker.env_name_rules': '環境変数名は英数字・アンダースコアのみ、数字始まり不可',
+    'err.docker.env_bad_chars': '環境変数に不正な文字が含まれています', 'err.docker.bad_restart_policy': 'サポートされていない再起動ポリシー', 'err.docker.too_many_ports': 'ポートマッピングが多すぎます', 'err.docker.port_range': 'ポートは1〜65535',
+    'err.docker.bad_proto': 'プロトコルは tcp または udp', 'err.docker.too_many_envs': '環境変数が多すぎます', 'err.docker.too_many_mounts': 'マウントが多すぎます', 'err.docker.mem_over_host': 'メモリ上限はホストのメモリを超えられません',
+    'err.docker.bad_cpu_format': 'CPU 上限の形式が不正です（例 0.5、1、2）', 'err.docker.cpu_out_of_range': 'CPU 上限が範囲外です', 'err.docker.bad_mem_format': 'メモリ上限の形式が不正です（例 512m、1g）', 'err.docker.mem_too_small': 'メモリ上限は0より大きくしてください',
+    'err.docker.cmd_no_newline': 'コマンドに改行を含められません', 'err.docker.cmd_unclosed_quote': 'コマンドの引用符が閉じられていません', 'err.docker.cmd_too_many_args': 'コマンド引数が多すぎます',
   },
 };
 
@@ -552,17 +628,29 @@ function tr(key, vars) {
   return s;
 }
 
+// Map a raw error string to a localized message when it carries a stable code
+// marker (`ERR_CODE:<code>` → `err.<code>`); otherwise return it unchanged.
+// Capability ops (docker/nginx/mysql) emit fixed validation errors this way.
+function codeMsg(s) {
+  if (typeof s === 'string') {
+    const m = s.match(/^ERR_CODE:(.+)$/);
+    if (m) { const k = 'err.' + m[1]; const t = tr(k); return t !== k ? t : m[1]; }
+  }
+  return s;
+}
+
 // Map a server error response to a localized message. The server returns a
 // stable `code` for fixed/enumerable errors (auth, settings, validation…);
 // we translate it via `err.<code>`. Falls back to the server-provided `error`
-// string (used for dynamic capability errors that aren't code-mapped).
+// string (which may itself carry an `ERR_CODE:` marker for capability ops).
 function srvMsg(body) {
   if (body && typeof body === 'object' && body.code) {
     const k = 'err.' + body.code;
     const m = tr(k);
     if (m !== k) return m;
   }
-  return (body && (body.error || (typeof body === 'string' ? body : ''))) || '';
+  const raw = (body && (body.error || (typeof body === 'string' ? body : ''))) || '';
+  return codeMsg(raw);
 }
 
 // Translate static nodes: text via data-i18n, placeholder via data-i18n-ph,

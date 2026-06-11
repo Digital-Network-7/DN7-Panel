@@ -153,6 +153,18 @@ fn api_err_detail(status: StatusCode, code: &str, detail: impl std::fmt::Display
         .into_response()
 }
 
+/// Build the JSON body for a capability-op failure. Fixed validation errors
+/// from the docker/nginx/mysql modules carry a stable code as `ERR_CODE:<code>`
+/// in their message; split it into a `code` field the client localizes
+/// (`err.<code>`). Dynamic/operational errors pass through as plain text.
+fn op_err_body(e: anyhow::Error) -> Value {
+    let s = e.to_string();
+    match s.strip_prefix("ERR_CODE:") {
+        Some(code) => json!({ "ok": false, "code": code, "error": code }),
+        None => json!({ "ok": false, "error": s }),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Login / logout
 // ---------------------------------------------------------------------------
@@ -279,7 +291,7 @@ async fn dispatch(
     let _ = body; // body already parsed by caller
     match f.await {
         Ok(data) => Json(json!({ "ok": true, "data": data })).into_response(),
-        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })).into_response(),
+        Err(e) => Json(op_err_body(e)).into_response(),
     }
 }
 
@@ -663,7 +675,7 @@ async fn nginx_static_upload(
     let res = crate::nginx::web_static_upload(&q.root, mode, q.rel.as_deref(), clear, &body).await;
     match res {
         Ok(n) => Json(json!({ "ok": true, "files": n })).into_response(),
-        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })).into_response(),
+        Err(e) => Json(op_err_body(e)).into_response(),
     }
 }
 

@@ -331,7 +331,7 @@ async fn handle(req: &Req) -> Result<Value> {
     if req.op == "remove_image" {
         if let Some(r) = req.reference.as_deref() {
             if managed_image_guard(r).await {
-                return Err(anyhow!("该镜像由 DN7 Panel 的 Nginx/MySQL 使用，无法删除"));
+                return Err(anyhow!("ERR_CODE:docker.image_in_use_builtin"));
             }
         }
     }
@@ -419,7 +419,7 @@ async fn handle(req: &Req) -> Result<Value> {
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| anyhow!("缺少网络名"))?;
+                .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_network_name"))?;
             validate_name(name)?;
             let opts = bollard::network::CreateNetworkOptions {
                 name: name.to_string(),
@@ -439,9 +439,9 @@ async fn handle(req: &Req) -> Result<Value> {
                 // clear hint instead of the raw docker error.
                 let raw = e.to_string().to_lowercase();
                 let msg = if raw.contains("active endpoints") || raw.contains("in use") {
-                    "该网络仍有容器在使用，请先断开相关容器后再删除".to_string()
+                    "ERR_CODE:docker.network_in_use".to_string()
                 } else if raw.contains("predefined") || raw.contains("pre-defined") {
-                    "内置网络（bridge/host/none）不可删除".to_string()
+                    "ERR_CODE:docker.network_predefined".to_string()
                 } else {
                     friendly_docker_err(&e)
                 };
@@ -498,7 +498,7 @@ async fn managed_container_guard(reference: &str) -> Option<String> {
         .unwrap_or_default();
     let is_mysql = name == crate::mysql::CONTAINER || labels.contains_key("dn7.mysql");
     if is_mysql {
-        Some("该容器由 DN7 Panel MySQL 管理，请在「MySQL」页面操作".to_string())
+        Some("ERR_CODE:docker.container_managed_mysql".to_string())
     } else {
         None
     }
@@ -555,7 +555,7 @@ fn need_network(req: &Req) -> Result<String> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("缺少网络名"))?;
+        .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_network_name"))?;
     validate_token(n)?;
     Ok(n.to_string())
 }
@@ -1233,7 +1233,7 @@ fn start_pull(req: &Req) -> Result<Value> {
     let (pull_ref, final_ref) = match mirror {
         Some(host) => {
             if !mirror_allowed(host) {
-                return Err(anyhow!("不支持的加速镜像源"));
+                return Err(anyhow!("ERR_CODE:docker.bad_mirror"));
             }
             match docker_io_path(&image) {
                 Some(path) => (format!("{host}/{path}"), Some(with_default_tag(&image))),
@@ -1370,13 +1370,13 @@ fn restart_allowed(p: &str) -> bool {
 /// Validate a container name: docker allows [a-zA-Z0-9][a-zA-Z0-9_.-]+.
 fn validate_name(s: &str) -> Result<()> {
     if s.len() > 128 {
-        return Err(anyhow!("容器名过长"));
+        return Err(anyhow!("ERR_CODE:docker.name_too_long"));
     }
     let ok = s
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
     if !ok || s.starts_with('-') {
-        return Err(anyhow!("容器名只能包含字母、数字、_ . -"));
+        return Err(anyhow!("ERR_CODE:docker.bad_name"));
     }
     Ok(())
 }
@@ -1384,7 +1384,7 @@ fn validate_name(s: &str) -> Result<()> {
 /// Validate a host filesystem path (no shell metacharacters; must be absolute).
 fn validate_path(s: &str) -> Result<()> {
     if s.is_empty() || s.len() > 1024 || !s.starts_with('/') {
-        return Err(anyhow!("路径必须为绝对路径"));
+        return Err(anyhow!("ERR_CODE:docker.path_not_absolute"));
     }
     // Disallow characters that could break out of a single argv entry or look
     // like injection; container/host paths in practice don't need them.
@@ -1395,7 +1395,7 @@ fn validate_path(s: &str) -> Result<()> {
         )
     });
     if bad {
-        return Err(anyhow!("路径包含非法字符"));
+        return Err(anyhow!("ERR_CODE:docker.path_bad_chars"));
     }
     Ok(())
 }
@@ -1405,25 +1405,23 @@ fn validate_path(s: &str) -> Result<()> {
 /// but we still reject newlines.
 fn validate_env(s: &str) -> Result<()> {
     if s.len() > 4096 {
-        return Err(anyhow!("环境变量过长"));
+        return Err(anyhow!("ERR_CODE:docker.env_too_long"));
     }
     let (k, _v) = s
         .split_once('=')
-        .ok_or_else(|| anyhow!("环境变量需为 KEY=VALUE 格式"))?;
+        .ok_or_else(|| anyhow!("ERR_CODE:docker.env_format"))?;
     if k.is_empty() {
-        return Err(anyhow!("环境变量名不能为空"));
+        return Err(anyhow!("ERR_CODE:docker.env_name_empty"));
     }
     let key_ok = k
         .chars()
         .enumerate()
         .all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()));
     if !key_ok {
-        return Err(anyhow!(
-            "环境变量名只能包含字母、数字、下划线，且不以数字开头"
-        ));
+        return Err(anyhow!("ERR_CODE:docker.env_name_rules"));
     }
     if s.contains('\n') || s.contains('\r') {
-        return Err(anyhow!("环境变量包含非法字符"));
+        return Err(anyhow!("ERR_CODE:docker.env_bad_chars"));
     }
     Ok(())
 }
@@ -1467,7 +1465,7 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
         .filter(|s| !s.is_empty())
         .unwrap_or("unless-stopped");
     if !restart_allowed(restart) {
-        return Err(anyhow!("不支持的重启策略"));
+        return Err(anyhow!("ERR_CODE:docker.bad_restart_policy"));
     }
     let restart_policy = RestartPolicy {
         name: Some(match restart {
@@ -1495,15 +1493,15 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
     let mut bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
     if let Some(ports) = &req.ports {
         if ports.len() > 50 {
-            return Err(anyhow!("端口映射过多"));
+            return Err(anyhow!("ERR_CODE:docker.too_many_ports"));
         }
         for p in ports {
             if p.host < 1 || p.host > 65535 || p.container < 1 || p.container > 65535 {
-                return Err(anyhow!("端口需为 1-65535"));
+                return Err(anyhow!("ERR_CODE:docker.port_range"));
             }
             let proto = p.proto.as_deref().unwrap_or("tcp");
             if proto != "tcp" && proto != "udp" {
-                return Err(anyhow!("协议只能是 tcp 或 udp"));
+                return Err(anyhow!("ERR_CODE:docker.bad_proto"));
             }
             let key = format!("{}/{}", p.container, proto);
             exposed.insert(key.clone(), HashMap::new());
@@ -1521,7 +1519,7 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
     let mut env: Vec<String> = Vec::new();
     if let Some(envs) = &req.env {
         if envs.len() > 100 {
-            return Err(anyhow!("环境变量过多"));
+            return Err(anyhow!("ERR_CODE:docker.too_many_envs"));
         }
         for e in envs {
             let e = e.trim();
@@ -1537,7 +1535,7 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
     let mut binds: Vec<String> = Vec::new();
     if let Some(vols) = &req.volumes {
         if vols.len() > 50 {
-            return Err(anyhow!("挂载过多"));
+            return Err(anyhow!("ERR_CODE:docker.too_many_mounts"));
         }
         for v in vols {
             let host = v.host.trim();
@@ -1575,7 +1573,7 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
         let host = host_mem_bytes();
         let bytes = mem_to_bytes(mem);
         if host > 0 && bytes > host {
-            return Err(anyhow!("内存限制不能超过宿主机内存"));
+            return Err(anyhow!("ERR_CODE:docker.mem_over_host"));
         }
         memory = Some(bytes as i64);
     }
@@ -1637,13 +1635,13 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
 fn validate_cpus(s: &str) -> Result<()> {
     let v: f64 = s
         .parse()
-        .map_err(|_| anyhow!("CPU 限制格式不正确（如 0.5、1、2）"))?;
+        .map_err(|_| anyhow!("ERR_CODE:docker.bad_cpu_format"))?;
     if v <= 0.0 || v > 1024.0 {
-        return Err(anyhow!("CPU 限制超出范围"));
+        return Err(anyhow!("ERR_CODE:docker.cpu_out_of_range"));
     }
     // Restrict the charset too (parse alone would accept "inf"/"NaN").
     if !s.chars().all(|c| c.is_ascii_digit() || c == '.') {
-        return Err(anyhow!("CPU 限制格式不正确"));
+        return Err(anyhow!("ERR_CODE:docker.bad_cpu_format"));
     }
     Ok(())
 }
@@ -1657,11 +1655,13 @@ fn validate_memory(s: &str) -> Result<()> {
         _ => (lower.as_str(), None),
     };
     if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
-        return Err(anyhow!("内存限制格式不正确（如 512m、1g）"));
+        return Err(anyhow!("ERR_CODE:docker.bad_mem_format"));
     }
-    let n: u64 = num.parse().map_err(|_| anyhow!("内存限制格式不正确"))?;
+    let n: u64 = num
+        .parse()
+        .map_err(|_| anyhow!("ERR_CODE:docker.bad_mem_format"))?;
     if n == 0 {
-        return Err(anyhow!("内存限制需大于 0"));
+        return Err(anyhow!("ERR_CODE:docker.mem_too_small"));
     }
     Ok(())
 }
@@ -1711,7 +1711,7 @@ fn split_command(s: &str) -> Result<Vec<String>> {
                         has_token = false;
                     }
                 }
-                '\n' | '\r' => return Err(anyhow!("命令不能包含换行")),
+                '\n' | '\r' => return Err(anyhow!("ERR_CODE:docker.cmd_no_newline")),
                 _ => {
                     cur.push(c);
                     has_token = true;
@@ -1720,13 +1720,13 @@ fn split_command(s: &str) -> Result<Vec<String>> {
         }
     }
     if quote.is_some() {
-        return Err(anyhow!("命令引号未闭合"));
+        return Err(anyhow!("ERR_CODE:docker.cmd_unclosed_quote"));
     }
     if has_token {
         out.push(cur);
     }
     if out.len() > 100 {
-        return Err(anyhow!("命令参数过多"));
+        return Err(anyhow!("ERR_CODE:docker.cmd_too_many_args"));
     }
     Ok(out)
 }

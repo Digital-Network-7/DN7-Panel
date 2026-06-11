@@ -376,7 +376,7 @@ pub async fn web_static_upload(
 ) -> Result<usize> {
     let lo = layout()?;
     if !valid_root_segment(root) {
-        return Err(anyhow!("站点目录名不合法"));
+        return Err(anyhow!("ERR_CODE:nginx.bad_static_dir"));
     }
     let dest = lo.www_store.join(root);
     std::fs::create_dir_all(&dest)?;
@@ -396,8 +396,8 @@ pub async fn web_static_upload(
     match mode {
         "zip" => extract_zip(body, &dest),
         "file" => {
-            let rel = rel.ok_or_else(|| anyhow!("缺少文件路径"))?;
-            let safe = sanitize_rel(rel).ok_or_else(|| anyhow!("文件路径不合法"))?;
+            let rel = rel.ok_or_else(|| anyhow!("ERR_CODE:nginx.missing_file_path"))?;
+            let safe = sanitize_rel(rel).ok_or_else(|| anyhow!("ERR_CODE:nginx.bad_file_path"))?;
             let target = dest.join(&safe);
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -405,7 +405,7 @@ pub async fn web_static_upload(
             std::fs::write(&target, body)?;
             Ok(1)
         }
-        _ => Err(anyhow!("未知的上传方式")),
+        _ => Err(anyhow!("ERR_CODE:nginx.unknown_upload_mode")),
     }
 }
 
@@ -962,7 +962,7 @@ struct Layout {
 
 fn layout() -> Result<Layout> {
     if !is_setup() {
-        return Err(anyhow!("尚未完成 Nginx 配置"));
+        return Err(anyhow!("ERR_CODE:nginx.not_setup"));
     }
     std::fs::create_dir_all(certs_dir())?;
     std::fs::create_dir_all(www_dir())?;
@@ -986,10 +986,10 @@ fn site_from_req(req: &Req) -> Result<Site> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("请填写域名"))?
+        .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_domain"))?
         .to_string();
     if !valid_server_name(&server_name) {
-        return Err(anyhow!("域名格式不正确"));
+        return Err(anyhow!("ERR_CODE:nginx.bad_domain"));
     }
     let kind = req.kind.as_deref().unwrap_or("proxy_host").to_string();
     let ssl = req.ssl.unwrap_or(false);
@@ -1001,7 +1001,7 @@ fn site_from_req(req: &Req) -> Result<Site> {
         .unwrap_or("")
         .to_string();
     if !cert_name.is_empty() && !valid_cert_name(&cert_name) {
-        return Err(anyhow!("证书名称不正确"));
+        return Err(anyhow!("ERR_CODE:nginx.bad_cert_name"));
     }
 
     let mut site = Site {
@@ -1029,9 +1029,9 @@ fn site_from_req(req: &Req) -> Result<Site> {
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| anyhow!("请填写转发目标"))?;
+                .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_target"))?;
             if !valid_host_token(t) {
-                return Err(anyhow!("转发目标格式不正确（host 或 host:port）"));
+                return Err(anyhow!("ERR_CODE:nginx.bad_target"));
             }
             site.target_url = t.to_string();
         }
@@ -1041,13 +1041,13 @@ fn site_from_req(req: &Req) -> Result<Site> {
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| anyhow!("请选择容器"))?;
+                .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_container"))?;
             if !valid_container_name(c) {
-                return Err(anyhow!("容器名不正确"));
+                return Err(anyhow!("ERR_CODE:nginx.bad_container"));
             }
             let port = req.container_port.unwrap_or(0);
             if !valid_port(port) {
-                return Err(anyhow!("容器端口需为 1-65535"));
+                return Err(anyhow!("ERR_CODE:nginx.bad_container_port"));
             }
             site.container = c.to_string();
             site.container_port = port;
@@ -1058,13 +1058,13 @@ fn site_from_req(req: &Req) -> Result<Site> {
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| anyhow!("请填写站点目录名"))?;
+                .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_static_dir"))?;
             if !valid_root_segment(r) {
-                return Err(anyhow!("目录名只能为单层名称（字母数字 _ - .）"));
+                return Err(anyhow!("ERR_CODE:nginx.bad_static_dir_name"));
             }
             site.root = r.to_string();
         }
-        _ => return Err(anyhow!("未知的站点类型")),
+        _ => return Err(anyhow!("ERR_CODE:nginx.unknown_site_kind")),
     }
 
     // Validate + normalize any custom path rules.
@@ -1073,7 +1073,7 @@ fn site_from_req(req: &Req) -> Result<Site> {
     }
 
     if ssl && !matches!(cert_mode.as_str(), "self" | "le" | "manual") {
-        return Err(anyhow!("未知的证书方式"));
+        return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
     }
     Ok(site)
 }
@@ -1121,7 +1121,7 @@ fn validate_locations(locs: &[Location]) -> Result<Vec<Location>> {
         });
     }
     if out.len() > 50 {
-        return Err(anyhow!("路径规则过多"));
+        return Err(anyhow!("ERR_CODE:nginx.too_many_rules"));
     }
     Ok(out)
 }
@@ -1157,7 +1157,7 @@ async fn add_site(req: &Req) -> Result<Value> {
                     let cert = req.cert_pem.as_deref().unwrap_or("");
                     let key = req.key_pem.as_deref().unwrap_or("");
                     if cert.trim().is_empty() || key.trim().is_empty() {
-                        return Err(anyhow!("请粘贴证书和私钥"));
+                        return Err(anyhow!("ERR_CODE:nginx.need_cert_key"));
                     }
                     write_cert_files(&lo, &site, cert, key)?;
                 }
@@ -1192,13 +1192,13 @@ async fn remove_site(req: &Req) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("缺少站点 ID"))?;
+        .ok_or_else(|| anyhow!("ERR_CODE:nginx.missing_site_id"))?;
     let mut sites = load_sites();
     let before = sites.len();
     let removed: Vec<Site> = sites.iter().filter(|s| s.id == site_id).cloned().collect();
     sites.retain(|s| s.id != site_id);
     if sites.len() == before {
-        return Err(anyhow!("站点不存在"));
+        return Err(anyhow!("ERR_CODE:nginx.site_not_found"));
     }
     let _ = std::fs::remove_file(conf_path(&lo, site_id));
     // Clean up cert files for removed sites (best-effort).
@@ -1263,10 +1263,10 @@ async fn set_cert(req: &Req) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("缺少站点 ID"))?;
+        .ok_or_else(|| anyhow!("ERR_CODE:nginx.missing_site_id"))?;
     let mode = req.cert_mode.as_deref().unwrap_or("self");
     if !matches!(mode, "self" | "le" | "manual" | "named") {
-        return Err(anyhow!("未知的证书方式"));
+        return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
     }
 
     let mut sites = load_sites();
@@ -1274,7 +1274,7 @@ async fn set_cert(req: &Req) -> Result<Value> {
         .iter()
         .find(|s| s.id == site_id)
         .cloned()
-        .ok_or_else(|| anyhow!("站点不存在"))?;
+        .ok_or_else(|| anyhow!("ERR_CODE:nginx.site_not_found"))?;
     site.ssl = true;
     site.cert_mode = mode.to_string();
 
@@ -1285,7 +1285,7 @@ async fn set_cert(req: &Req) -> Result<Value> {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| anyhow!("请选择证书"))?;
+            .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_cert"))?;
         if !named_crt_file(&lo, name).exists() {
             return Err(anyhow!("证书「{name}」不存在"));
         }
@@ -1300,7 +1300,7 @@ async fn set_cert(req: &Req) -> Result<Value> {
                 let cert = req.cert_pem.as_deref().unwrap_or("");
                 let key = req.key_pem.as_deref().unwrap_or("");
                 if cert.trim().is_empty() || key.trim().is_empty() {
-                    return Err(anyhow!("请粘贴证书和私钥"));
+                    return Err(anyhow!("ERR_CODE:nginx.need_cert_key"));
                 }
                 write_cert_files(&lo, &site, cert, key)?;
             }
@@ -1375,18 +1375,18 @@ async fn create_cert(req: &Req) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("请填写证书名称"))?
+        .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_cert_name"))?
         .to_string();
     if !valid_cert_name(&name) {
-        return Err(anyhow!("证书名称只能包含字母、数字、_ - .（最多 64 字符）"));
+        return Err(anyhow!("ERR_CODE:nginx.bad_cert_name_chars"));
     }
     let mode = req.cert_mode.as_deref().unwrap_or("self");
     if !matches!(mode, "self" | "le" | "manual") {
-        return Err(anyhow!("未知的证书方式"));
+        return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
     }
     let mut certs = load_named_certs();
     if certs.iter().any(|c| c.name == name) {
-        return Err(anyhow!("已存在同名证书"));
+        return Err(anyhow!("ERR_CODE:nginx.cert_exists"));
     }
     let domain = req
         .server_name
@@ -1398,10 +1398,10 @@ async fn create_cert(req: &Req) -> Result<Value> {
     match mode {
         "self" => {
             if domain.is_empty() {
-                return Err(anyhow!("请填写证书域名"));
+                return Err(anyhow!("ERR_CODE:nginx.need_cert_domain"));
             }
             if !valid_server_name(&domain) {
-                return Err(anyhow!("域名格式不正确"));
+                return Err(anyhow!("ERR_CODE:nginx.bad_domain"));
             }
             let host = primary_host(&domain);
             gen_self_signed_to(
@@ -1415,7 +1415,7 @@ async fn create_cert(req: &Req) -> Result<Value> {
             let cert = req.cert_pem.as_deref().unwrap_or("");
             let key = req.key_pem.as_deref().unwrap_or("");
             if cert.trim().is_empty() || key.trim().is_empty() {
-                return Err(anyhow!("请粘贴证书和私钥"));
+                return Err(anyhow!("ERR_CODE:nginx.need_cert_key"));
             }
             std::fs::create_dir_all(&lo.cert_store)?;
             std::fs::write(named_crt_file(&lo, &name), cert)?;
@@ -1424,7 +1424,7 @@ async fn create_cert(req: &Req) -> Result<Value> {
         }
         "le" => {
             if domain.is_empty() || !valid_server_name(&domain) {
-                return Err(anyhow!("Let's Encrypt 需要一个具体域名"));
+                return Err(anyhow!("ERR_CODE:nginx.le_need_domain"));
             }
             return start_named_cert_issue(lo, name, domain);
         }
@@ -1448,7 +1448,7 @@ async fn delete_cert(req: &Req) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("缺少证书名称"))?;
+        .ok_or_else(|| anyhow!("ERR_CODE:nginx.missing_cert_name"))?;
     let in_use = sites_using_certs();
     if let Some(sites) = in_use.get(name) {
         if !sites.is_empty() {
@@ -1459,7 +1459,7 @@ async fn delete_cert(req: &Req) -> Result<Value> {
     let before = certs.len();
     certs.retain(|c| c.name != name);
     if certs.len() == before {
-        return Err(anyhow!("证书不存在"));
+        return Err(anyhow!("ERR_CODE:nginx.cert_not_found"));
     }
     let _ = std::fs::remove_file(named_crt_file(&lo, name));
     let _ = std::fs::remove_file(named_key_file(&lo, name));

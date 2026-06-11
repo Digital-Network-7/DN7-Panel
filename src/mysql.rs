@@ -184,7 +184,7 @@ fn save_manifest(m: &Manifest) -> Result<()> {
 
 fn load_manifest(id: &str) -> Result<Manifest> {
     let raw = std::fs::read_to_string(manifest_path(id))
-        .map_err(|_| anyhow!("找不到该实例（可能已删除）"))?;
+        .map_err(|_| anyhow!("ERR_CODE:mysql.instance_not_found"))?;
     let m: Manifest = serde_json::from_str(&raw).map_err(|e| anyhow!("实例清单损坏：{e}"))?;
     Ok(m)
 }
@@ -424,7 +424,7 @@ fn need_inst(req: &Req) -> Result<&str> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("缺少实例 id"))
+        .ok_or_else(|| anyhow!("ERR_CODE:mysql.missing_instance_id"))
 }
 
 // ---------------------------------------------------------------------------
@@ -525,7 +525,7 @@ fn friendly(e: &bollard::errors::Error) -> String {
 
 fn validate_port(port: i64) -> Result<()> {
     if !(1..=65535).contains(&port) {
-        return Err(anyhow!("端口需为 1-65535"));
+        return Err(anyhow!("ERR_CODE:mysql.port_range"));
     }
     Ok(())
 }
@@ -539,7 +539,7 @@ fn start_install(req: &Req) -> Result<Value> {
         .unwrap_or("mysql")
         .to_string();
     if !valid_engine(&engine) {
-        return Err(anyhow!("不支持的数据库类型"));
+        return Err(anyhow!("ERR_CODE:mysql.bad_engine"));
     }
     let version = req
         .version
@@ -549,7 +549,7 @@ fn start_install(req: &Req) -> Result<Value> {
         .unwrap_or("8.0")
         .to_string();
     if !valid_version(&engine, &version) {
-        return Err(anyhow!("不支持的版本"));
+        return Err(anyhow!("ERR_CODE:mysql.bad_version"));
     }
     let expose = req.expose.unwrap_or(false);
     let port = if expose {
@@ -563,9 +563,7 @@ fn start_install(req: &Req) -> Result<Value> {
     // Single-instance: refuse if one already exists (the user manages multiple
     // databases inside it, not multiple instances).
     if load_manifest(INSTANCE_ID).is_ok() {
-        return Err(anyhow!(
-            "已存在一个数据库实例，无法重复创建（可在实例中创建多个数据库）"
-        ));
+        return Err(anyhow!("ERR_CODE:mysql.instance_exists"));
     }
 
     let inst_id = INSTANCE_ID.to_string();
@@ -1038,11 +1036,11 @@ async fn create_database(req: &Req) -> Result<Value> {
     let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let db = req.database.as_deref().map(str::trim).unwrap_or("");
     if !valid_ident(db, false) {
-        return Err(anyhow!("库名只能包含字母、数字、_ - . 且不超过 64 字符"));
+        return Err(anyhow!("ERR_CODE:mysql.db_name_rules"));
     }
     const SYS: [&str; 4] = ["information_schema", "performance_schema", "mysql", "sys"];
     if SYS.contains(&db) {
-        return Err(anyhow!("不允许使用系统库名"));
+        return Err(anyhow!("ERR_CODE:mysql.reserved_db_name"));
     }
     // Backtick-quote the identifier; valid_ident already restricts the charset.
     let sql = format!(
@@ -1059,11 +1057,11 @@ async fn drop_database(req: &Req) -> Result<Value> {
     let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let db = req.database.as_deref().map(str::trim).unwrap_or("");
     if !valid_ident(db, false) {
-        return Err(anyhow!("库名不合法"));
+        return Err(anyhow!("ERR_CODE:mysql.bad_db_name"));
     }
     const SYS: [&str; 4] = ["information_schema", "performance_schema", "mysql", "sys"];
     if SYS.contains(&db) {
-        return Err(anyhow!("不允许删除系统库"));
+        return Err(anyhow!("ERR_CODE:mysql.no_drop_system_db"));
     }
     let sql = format!("DROP DATABASE `{}`;", db);
     run_stmt(&m.container, &password, &sql).await?;
@@ -1141,13 +1139,13 @@ async fn create_user(req: &Req) -> Result<Value> {
     let host = req.host.as_deref().map(str::trim).unwrap_or("%");
     let pwd = req.password.as_deref().unwrap_or("");
     if !valid_ident(user, false) {
-        return Err(anyhow!("用户名只能包含字母、数字、_ - . 且不超过 64 字符"));
+        return Err(anyhow!("ERR_CODE:mysql.user_name_rules"));
     }
     if !valid_ident(host, true) {
-        return Err(anyhow!("主机格式不合法（可用 % 通配）"));
+        return Err(anyhow!("ERR_CODE:mysql.bad_host"));
     }
     if pwd.is_empty() || pwd.len() > 128 {
-        return Err(anyhow!("密码不能为空且不超过 128 字符"));
+        return Err(anyhow!("ERR_CODE:mysql.bad_password"));
     }
     let sql = format!(
         "CREATE USER '{}'@'{}' IDENTIFIED BY '{}';",
@@ -1166,13 +1164,13 @@ async fn drop_user(req: &Req) -> Result<Value> {
     let user = req.username.as_deref().map(str::trim).unwrap_or("");
     let host = req.host.as_deref().map(str::trim).unwrap_or("%");
     if !valid_ident(user, false) || !valid_ident(host, true) {
-        return Err(anyhow!("用户或主机不合法"));
+        return Err(anyhow!("ERR_CODE:mysql.bad_user_or_host"));
     }
     if user.eq_ignore_ascii_case("root")
         || user.starts_with("mysql.")
         || user.starts_with("mariadb.")
     {
-        return Err(anyhow!("不允许删除系统账号"));
+        return Err(anyhow!("ERR_CODE:mysql.no_drop_system_user"));
     }
     let sql = format!("DROP USER '{}'@'{}';", sql_escape(user), sql_escape(host));
     run_stmt(&m.container, &password, &sql).await?;
@@ -1189,12 +1187,12 @@ async fn grant(req: &Req) -> Result<Value> {
     let db = req.database.as_deref().map(str::trim).unwrap_or("*");
     let priv_kind = req.privilege.as_deref().unwrap_or("all");
     if !valid_ident(user, false) || !valid_ident(host, true) {
-        return Err(anyhow!("用户或主机不合法"));
+        return Err(anyhow!("ERR_CODE:mysql.bad_user_or_host"));
     }
     let privs = match priv_kind {
         "ro" => "SELECT",
         "all" => "ALL PRIVILEGES",
-        _ => return Err(anyhow!("不支持的权限类型")),
+        _ => return Err(anyhow!("ERR_CODE:mysql.bad_priv_type")),
     };
     let scope = grant_scope(db)?;
     let sql = format!(
@@ -1214,7 +1212,7 @@ async fn revoke(req: &Req) -> Result<Value> {
     let host = req.host.as_deref().map(str::trim).unwrap_or("%");
     let db = req.database.as_deref().map(str::trim).unwrap_or("*");
     if !valid_ident(user, false) || !valid_ident(host, true) {
-        return Err(anyhow!("用户或主机不合法"));
+        return Err(anyhow!("ERR_CODE:mysql.bad_user_or_host"));
     }
     let scope = grant_scope(db)?;
     let sql = format!(
@@ -1233,7 +1231,7 @@ fn grant_scope(db: &str) -> Result<String> {
     } else if valid_ident(db, false) {
         Ok(format!("{}.*", ident_quote(db)))
     } else {
-        Err(anyhow!("数据库名不合法"))
+        Err(anyhow!("ERR_CODE:mysql.bad_db_name"))
     }
 }
 
@@ -1285,7 +1283,7 @@ async fn run_backup_detached(op_id: &str, inst: &str) -> Result<()> {
     let m = load_manifest(inst)?;
     let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     if !is_ready(&m.container, &password).await {
-        return Err(anyhow!("实例未就绪，无法备份"));
+        return Err(anyhow!("ERR_CODE:mysql.instance_not_ready"));
     }
     op_push(op_id, "正在导出数据库（mysqldump）…");
     let ts = now_secs();

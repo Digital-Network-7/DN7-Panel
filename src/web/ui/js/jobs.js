@@ -55,7 +55,7 @@ function renderJob(host, kind, opId, slot, cb) {
       const pct = (typeof d.pct === 'number' && d.pct >= 0) ? d.pct / 100 : parsePullPct(lines);
       if (pct != null) { bar.classList.remove('indet'); bar.querySelector('i').style.width = (pct * 100).toFixed(0) + '%'; }
       if (d.status === 'done') { finish('done'); line.textContent = tr('job.done'); op(kind, { op: 'dismiss_op', op_id: opId }).catch(() => {}); if (cb.onDone) cb.onDone(); }
-      else if (d.status === 'error') { finish('err'); line.textContent = tr('job.failed') + (d.error || ''); op(kind, { op: 'dismiss_op', op_id: opId }).catch(() => {}); if (cb.onError) cb.onError(d.error); }
+      else if (d.status === 'error') { finish('err'); line.textContent = tr('job.failed') + codeMsg(d.error || ''); op(kind, { op: 'dismiss_op', op_id: opId }).catch(() => {}); if (cb.onError) cb.onError(d.error); }
       else if (d.status === 'gone') { finish('err'); line.textContent = tr('job.ended'); if (slot) saveJob(slot, null); }
       else setTimeout(tick, 900);
     }).catch(() => setTimeout(tick, 1500));
