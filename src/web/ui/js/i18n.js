@@ -37,6 +37,27 @@ const I18N = {
     'set.default_theme': 'Default theme (new visitors; a user’s own choice wins)',
     'set.save_appearance': 'Save appearance', 'set.img_too_big': 'Image too large (max 512KB)',
     'set.saving_refresh': 'Saved, refreshing…', 'set.language': 'Language',
+    'common.stopped': 'Stopped', 'common.started': 'Started', 'common.restarted': 'Restarted', 'common.deleted': 'Deleted', 'common.created': 'Created', 'common.applied': 'Applied',
+    'my.detecting': 'Checking environment', 'my.creating': 'Creating database',
+    'my.need_docker': 'Install and start Docker first (under Docker management). Databases are managed by DN7 Panel via containers.',
+    'my.none_desc': 'No database yet. DN7 Panel hosts one instance per machine; create multiple databases inside it.',
+    'my.create_db': 'Create database', 'my.phase_init': 'Initializing', 'my.phase_running': 'Running', 'my.phase_stopped': 'Stopped',
+    'my.port': 'Port', 'my.port_unmapped': 'not mapped', 'my.stop': 'Stop', 'my.restart': 'Restart', 'my.start': 'Start', 'my.delete': 'Delete',
+    'my.not_running': 'Instance not running; start it to manage databases and accounts',
+    'my.del_title': 'Delete database', 'my.del_desc': 'Deleting removes the database container. Keep the data volume (all databases and data in it)?',
+    'my.keep_data': 'Keep data', 'my.drop_with_data': 'Delete with data', 'my.engine_version': 'Engine / version',
+    'my.ext_port': 'External port (maps 3306)', 'my.expose': 'Map port externally',
+    'my.root_auto': 'The root password is generated automatically and can be viewed under “Settings”. You can create multiple databases in the instance.',
+    'my.create': 'Create', 'my.db_created': 'Database created',
+    'my.tab_db': 'Databases', 'my.tab_users': 'Accounts', 'my.tab_settings': 'Settings',
+    'my.host': 'Host', 'my.user': 'User', 'my.password': 'Password', 'my.new_db': 'New database', 'my.db_name': 'Database name',
+    'my.tables': 'Tables', 'my.size': 'Size', 'my.actions': 'Actions', 'my.system': 'system', 'my.none': 'none',
+    'my.confirm_drop_db': 'Delete database {db}? This erases all data in it.',
+    'my.new_user': 'New account', 'my.username': 'Username', 'my.src_host': 'Source host',
+    'my.confirm_drop_user': 'Delete account {u}@{h}?',
+    'my.reset_root': 'Reset root password', 'my.reset_show': 'Reset and show new password',
+    'my.port_map': 'Port mapping', 'my.expose_short': 'Map externally', 'my.apply_recreate': 'Apply (recreate container)',
+    'my.backup': 'Backup', 'my.export_dump': 'Export mysqldump', 'my.new_root_pw': 'New root password: ',
   },
   'zh-CN': {
     'common.cancel': '取消', 'common.ok': '确定', 'common.confirm': '请确认',
@@ -65,6 +86,27 @@ const I18N = {
     'set.default_theme': '默认主题（新访客；用户切换后以其选择为准）',
     'set.save_appearance': '保存外观', 'set.img_too_big': '图片过大（上限 512KB）',
     'set.saving_refresh': '已保存，正在刷新…', 'set.language': '语言',
+    'common.stopped': '已停止', 'common.started': '已启动', 'common.restarted': '已重启', 'common.deleted': '已删除', 'common.created': '已创建', 'common.applied': '已应用',
+    'my.detecting': '正在检测环境', 'my.creating': '正在创建数据库',
+    'my.need_docker': '需要先安装并启动 Docker（在 Docker 管理中安装）。数据库由 DN7 Panel 通过容器管理。',
+    'my.none_desc': '尚未创建数据库。一台主机由 DN7 Panel 托管一个实例，可在其中创建多个库。',
+    'my.create_db': '创建数据库', 'my.phase_init': '初始化中', 'my.phase_running': '运行中', 'my.phase_stopped': '已停止',
+    'my.port': '端口', 'my.port_unmapped': '未映射', 'my.stop': '停止', 'my.restart': '重启', 'my.start': '启动', 'my.delete': '删除',
+    'my.not_running': '实例未运行，启动后可管理数据库与账号',
+    'my.del_title': '删除数据库', 'my.del_desc': '删除将移除数据库容器。是否保留数据卷（其中的所有库和数据）？',
+    'my.keep_data': '保留数据', 'my.drop_with_data': '连同数据删除', 'my.engine_version': '引擎 / 版本',
+    'my.ext_port': '对外端口（映射 3306）', 'my.expose': '对外映射端口',
+    'my.root_auto': 'root 密码将自动生成，可在「设置」中查看。创建后可在实例中建立多个数据库。',
+    'my.create': '创建', 'my.db_created': '数据库已创建',
+    'my.tab_db': '数据库', 'my.tab_users': '账号', 'my.tab_settings': '设置',
+    'my.host': '主机', 'my.user': '用户', 'my.password': '密码', 'my.new_db': '新建数据库', 'my.db_name': '库名',
+    'my.tables': '表数', 'my.size': '大小', 'my.actions': '操作', 'my.system': '系统', 'my.none': '无',
+    'my.confirm_drop_db': '删除数据库 {db}？此操作会清空其中所有数据。',
+    'my.new_user': '新建账号', 'my.username': '用户名', 'my.src_host': '来源主机',
+    'my.confirm_drop_user': '删除账号 {u}@{h}？',
+    'my.reset_root': '重置 root 密码', 'my.reset_show': '重置并显示新密码',
+    'my.port_map': '端口映射', 'my.expose_short': '对外映射', 'my.apply_recreate': '应用（重建容器）',
+    'my.backup': '备份', 'my.export_dump': '导出 mysqldump', 'my.new_root_pw': '新 root 密码：',
   },
   'zh-TW': {
     'common.cancel': '取消', 'common.ok': '確定', 'common.confirm': '請確認',
@@ -93,6 +135,27 @@ const I18N = {
     'set.default_theme': '預設主題（新訪客；使用者切換後以其選擇為準）',
     'set.save_appearance': '儲存外觀', 'set.img_too_big': '圖片過大（上限 512KB）',
     'set.saving_refresh': '已儲存，正在重新整理…', 'set.language': '語言',
+    'common.stopped': '已停止', 'common.started': '已啟動', 'common.restarted': '已重啟', 'common.deleted': '已刪除', 'common.created': '已建立', 'common.applied': '已套用',
+    'my.detecting': '正在偵測環境', 'my.creating': '正在建立資料庫',
+    'my.need_docker': '需先安裝並啟動 Docker（於 Docker 管理中安裝）。資料庫由 DN7 Panel 透過容器管理。',
+    'my.none_desc': '尚未建立資料庫。一台主機由 DN7 Panel 託管一個實例，可在其中建立多個資料庫。',
+    'my.create_db': '建立資料庫', 'my.phase_init': '初始化中', 'my.phase_running': '執行中', 'my.phase_stopped': '已停止',
+    'my.port': '連接埠', 'my.port_unmapped': '未對應', 'my.stop': '停止', 'my.restart': '重啟', 'my.start': '啟動', 'my.delete': '刪除',
+    'my.not_running': '實例未執行，啟動後可管理資料庫與帳號',
+    'my.del_title': '刪除資料庫', 'my.del_desc': '刪除將移除資料庫容器。是否保留資料卷（其中的所有資料庫與資料）？',
+    'my.keep_data': '保留資料', 'my.drop_with_data': '連同資料刪除', 'my.engine_version': '引擎 / 版本',
+    'my.ext_port': '對外連接埠（對應 3306）', 'my.expose': '對外對應連接埠',
+    'my.root_auto': 'root 密碼將自動產生，可於「設定」中查看。建立後可在實例中建立多個資料庫。',
+    'my.create': '建立', 'my.db_created': '資料庫已建立',
+    'my.tab_db': '資料庫', 'my.tab_users': '帳號', 'my.tab_settings': '設定',
+    'my.host': '主機', 'my.user': '使用者', 'my.password': '密碼', 'my.new_db': '新增資料庫', 'my.db_name': '資料庫名稱',
+    'my.tables': '資料表數', 'my.size': '大小', 'my.actions': '操作', 'my.system': '系統', 'my.none': '無',
+    'my.confirm_drop_db': '刪除資料庫 {db}？此操作會清空其中所有資料。',
+    'my.new_user': '新增帳號', 'my.username': '使用者名稱', 'my.src_host': '來源主機',
+    'my.confirm_drop_user': '刪除帳號 {u}@{h}？',
+    'my.reset_root': '重設 root 密碼', 'my.reset_show': '重設並顯示新密碼',
+    'my.port_map': '連接埠對應', 'my.expose_short': '對外對應', 'my.apply_recreate': '套用（重建容器）',
+    'my.backup': '備份', 'my.export_dump': '匯出 mysqldump', 'my.new_root_pw': '新 root 密碼：',
   },
   ja: {
     'common.cancel': 'キャンセル', 'common.ok': 'OK', 'common.confirm': '確認してください',
@@ -121,12 +184,34 @@ const I18N = {
     'set.default_theme': '既定テーマ（新規訪問者；ユーザーの選択が優先）',
     'set.save_appearance': '外観を保存', 'set.img_too_big': '画像が大きすぎます（上限512KB）',
     'set.saving_refresh': '保存しました。更新中…', 'set.language': '言語',
+    'common.stopped': '停止しました', 'common.started': '起動しました', 'common.restarted': '再起動しました', 'common.deleted': '削除しました', 'common.created': '作成しました', 'common.applied': '適用しました',
+    'my.detecting': '環境を確認中', 'my.creating': 'データベースを作成中',
+    'my.need_docker': '先に Docker をインストールして起動してください（Docker 管理から）。データベースは DN7 Panel がコンテナで管理します。',
+    'my.none_desc': 'データベースはまだありません。DN7 Panel は1台につき1インスタンスを管理し、その中に複数のデータベースを作成できます。',
+    'my.create_db': 'データベースを作成', 'my.phase_init': '初期化中', 'my.phase_running': '実行中', 'my.phase_stopped': '停止中',
+    'my.port': 'ポート', 'my.port_unmapped': '未マッピング', 'my.stop': '停止', 'my.restart': '再起動', 'my.start': '起動', 'my.delete': '削除',
+    'my.not_running': 'インスタンス停止中。起動するとデータベースとアカウントを管理できます',
+    'my.del_title': 'データベースを削除', 'my.del_desc': '削除するとデータベースコンテナが削除されます。データボリューム（すべてのDBとデータ）を保持しますか？',
+    'my.keep_data': 'データを保持', 'my.drop_with_data': 'データごと削除', 'my.engine_version': 'エンジン / バージョン',
+    'my.ext_port': '外部ポート（3306 にマッピング）', 'my.expose': 'ポートを外部公開',
+    'my.root_auto': 'root パスワードは自動生成され、「設定」で確認できます。作成後、インスタンス内に複数のデータベースを作成できます。',
+    'my.create': '作成', 'my.db_created': 'データベースを作成しました',
+    'my.tab_db': 'データベース', 'my.tab_users': 'アカウント', 'my.tab_settings': '設定',
+    'my.host': 'ホスト', 'my.user': 'ユーザー', 'my.password': 'パスワード', 'my.new_db': '新規データベース', 'my.db_name': 'データベース名',
+    'my.tables': 'テーブル数', 'my.size': 'サイズ', 'my.actions': '操作', 'my.system': 'システム', 'my.none': 'なし',
+    'my.confirm_drop_db': 'データベース {db} を削除しますか？中のすべてのデータが消去されます。',
+    'my.new_user': '新規アカウント', 'my.username': 'ユーザー名', 'my.src_host': '接続元ホスト',
+    'my.confirm_drop_user': 'アカウント {u}@{h} を削除しますか？',
+    'my.reset_root': 'root パスワードをリセット', 'my.reset_show': 'リセットして新パスワードを表示',
+    'my.port_map': 'ポートマッピング', 'my.expose_short': '外部公開', 'my.apply_recreate': '適用（コンテナ再作成）',
+    'my.backup': 'バックアップ', 'my.export_dump': 'mysqldump をエクスポート', 'my.new_root_pw': '新しい root パスワード：',
   },
 };
 
 // Short label shown on the switcher button per language.
-const LANG_SHORT = { en: 'EN', 'zh-CN': '简', 'zh-TW': '繁', ja: '日' };
 const LANG_FULL = { en: 'English', 'zh-CN': '简体中文', 'zh-TW': '繁體中文', ja: '日本語' };
+// A clean line-art globe icon for the switcher (matches the nav/topbar icons).
+const GLOBE_SVG = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.7 2.6 15.3 0 18M12 3c-2.6 2.7-2.6 15.3 0 18"/></svg>';
 
 function curLang() { return window.__LANG__ || 'en'; }
 
@@ -184,8 +269,8 @@ function toggleLangMenu() {
   applyI18n(document);
   const btn = document.getElementById('langBtn');
   if (btn) {
-    btn.textContent = LANG_SHORT[curLang()] || 'EN';
-    btn.title = tr('lang.name');
+    btn.innerHTML = GLOBE_SVG;
+    btn.title = tr('lang.name') + ' · ' + (LANG_FULL[curLang()] || '');
     btn.onclick = toggleLangMenu;
   }
   document.documentElement.setAttribute('data-i18n-ready', '1');
