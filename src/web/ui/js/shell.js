@@ -16,14 +16,16 @@ const IC = {
   settings: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>',
 };
 const TABS = [
-  { key: 'dash', label: '监控', ic: IC.dash },
-  { key: 'term', label: '终端', ic: IC.term },
+  { key: 'dash', tkey: 'tab.dash', ic: IC.dash },
+  { key: 'term', tkey: 'tab.term', ic: IC.term },
   { key: 'docker', label: 'Docker', ic: IC.docker },
   { key: 'nginx', label: 'Nginx', ic: IC.nginx },
   { key: 'mysql', label: 'MySQL', ic: IC.mysql },
-  { key: 'files', label: '文件', ic: IC.files },
-  { key: 'settings', label: '设置', ic: IC.settings },
+  { key: 'files', tkey: 'tab.files', ic: IC.files },
+  { key: 'settings', tkey: 'tab.settings', ic: IC.settings },
 ];
+// A tab's display label: translated when it has a key, else the literal brand.
+function tabLabel(t) { return t.tkey ? tr(t.tkey) : (t.label || ''); }
 
 function showApp() {
   document.documentElement.setAttribute('data-auth', 'in');
@@ -33,7 +35,7 @@ function showApp() {
   TABS.forEach((t) => {
     const b = el('button', { 'data-k': t.key });
     b.className = S.tab === t.key ? 'active' : '';
-    b.innerHTML = `<span class="ic">${t.ic}</span><span class="t">${t.label}</span>`;
+    b.innerHTML = `<span class="ic">${t.ic}</span><span class="t">${tabLabel(t)}</span>`;
     b.onclick = () => switchTab(t.key);
     nav.appendChild(b);
   });
@@ -61,7 +63,7 @@ function switchTab(k) {
   try { localStorage.setItem('dn7_tab', k); } catch (e) {}
   stopTab();
   document.querySelectorAll('#nav button').forEach((b) => b.className = b.dataset.k === k ? 'active' : '');
-  $('title').textContent = (TABS.find((t) => t.key === k) || {}).label || '';
+  $('title').textContent = tabLabel(TABS.find((t) => t.key === k) || {});
   const v = $('view'); v.innerHTML = '';
   // The dashboard + terminal + files are fixed one-screen layouts (no body
   // scroll); other tabs scroll normally.

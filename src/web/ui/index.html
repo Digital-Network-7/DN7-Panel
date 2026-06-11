@@ -6,8 +6,10 @@
 <title>DN7 Panel</title>
 <!--__DN7_HEAD__-->
 <script>
-  // Apply the saved theme synchronously (before first paint) so there's no
-  // dark-mode flash before the main script runs.
+  // Resolve theme + language + auth view synchronously (before first paint) so
+  // there's no flash of the wrong theme/language/login-page before the app JS
+  // runs. The body stays hidden (see app.css) until i18n has populated the
+  // static text, so the user only ever sees the correct language.
   (function () {
     try {
       var m = localStorage.getItem('dn7_theme') || (window.__BRAND__ && window.__BRAND__.theme) || 'auto';
@@ -18,7 +20,27 @@
       // Decide auth view before first paint so a logged-in refresh never flashes
       // the login page (CSS below hides the opposite view based on this attr).
       document.documentElement.setAttribute('data-auth', localStorage.getItem('dn7_web_token') ? 'in' : 'out');
-    } catch (e) {}
+      // Language: a manual choice wins; otherwise follow the browser, falling
+      // back to English. Resolved here so the page renders once, in the right
+      // language, with no flicker.
+      var SUP = ['en', 'zh-CN', 'zh-TW', 'ja'];
+      var saved = localStorage.getItem('dn7_lang');
+      var lang;
+      if (SUP.indexOf(saved) >= 0) {
+        lang = saved;
+      } else {
+        var ls = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || ''];
+        lang = 'en';
+        for (var i = 0; i < ls.length; i++) {
+          var l = (ls[i] || '').toLowerCase();
+          if (l.indexOf('zh') === 0) { lang = (l.indexOf('tw') >= 0 || l.indexOf('hk') >= 0 || l.indexOf('mo') >= 0 || l.indexOf('hant') >= 0) ? 'zh-TW' : 'zh-CN'; break; }
+          if (l.indexOf('ja') === 0) { lang = 'ja'; break; }
+          if (l.indexOf('en') === 0) { lang = 'en'; break; }
+        }
+      }
+      window.__LANG__ = lang;
+      document.documentElement.lang = lang;
+    } catch (e) { window.__LANG__ = 'en'; }
   })();
 </script>
 <link rel="stylesheet" href="/ui/app.css" />
@@ -32,15 +54,15 @@
   <!-- Brand pinned top-left. -->
   <div class="login-brand"><span class="cup"><!--__DN7_BRAND_MARK__--></span><h1 class="brand-name">__DN7_BRAND_NAME__</h1></div>
   <div class="login-card">
-    <div class="login-title">SIGN IN</div>
-    <div class="sub">安全登录到本机控制台</div>
+    <div class="login-title" data-i18n="login.title">SIGN IN</div>
+    <div class="sub" data-i18n="login.sub">安全登录到本机控制台</div>
     <div class="login-panes">
       <div id="panewPw">
-        <label class="lbl">Account</label>
-        <input id="user" class="field" style="margin-bottom:12px" placeholder="Please enter your account" autocomplete="username" />
-        <label class="lbl">Password</label>
-        <input id="pw" class="field" type="password" placeholder="Please enter your password" autocomplete="current-password" style="margin-bottom:16px" />
-        <button class="btn" style="width:100%" onclick="doLogin()">登 录</button>
+        <label class="lbl" data-i18n="login.account">Account</label>
+        <input id="user" class="field" style="margin-bottom:12px" data-i18n-ph="login.ph_account" placeholder="Please enter your account" autocomplete="username" />
+        <label class="lbl" data-i18n="login.password">Password</label>
+        <input id="pw" class="field" type="password" data-i18n-ph="login.ph_password" placeholder="Please enter your password" autocomplete="current-password" style="margin-bottom:16px" />
+        <button class="btn" style="width:100%" data-i18n="login.submit" onclick="doLogin()">登 录</button>
         <div class="err" id="loginErr" style="margin-top:10px"></div>
       </div>
     </div>
@@ -53,18 +75,19 @@
     <div class="logo"><span class="cup"><!--__DN7_BRAND_MARK__--></span><h1 class="brand-name">__DN7_BRAND_NAME__</h1></div>
     <nav id="nav"></nav>
     <div class="foot">
-      <div class="ver" id="verLine" title="点击查看更新" onclick="openUpdate()" style="cursor:pointer">Panel <b id="panelVer">…</b><span id="verDot" class="updot hidden"></span></div>
+      <div class="ver" id="verLine" data-i18n-title="shell.update_hint" title="点击查看更新" onclick="openUpdate()" style="cursor:pointer">Panel <b id="panelVer">…</b><span id="verDot" class="updot hidden"></span></div>
     </div>
   </aside>
   <div class="content">
     <div class="topbar">
       <h2 id="title">监控</h2>
       <span class="sp"></span>
+      <button class="iconbtn" id="langBtn" title="Language">EN</button>
       <button class="iconbtn" id="themeBtn" title="主题：跟随系统" onclick="cycleTheme()">◑</button>
       <div class="userbox">
         <span class="av" id="userAv">A</span>
         <b id="whoName">admin</b>
-        <button class="iconbtn" style="width:28px;height:28px;font-size:13px" title="退出登录" onclick="logout()">⏻</button>
+        <button class="iconbtn" style="width:28px;height:28px;font-size:13px" data-i18n-title="shell.logout" title="退出登录" onclick="logout()">⏻</button>
       </div>
     </div>
     <main id="view"></main>
@@ -73,6 +96,7 @@
 
 <div id="modalRoot"></div>
 
+<script src="/ui/js/i18n.js"></script>
 <script src="/ui/js/core.js"></script>
 <script src="/ui/js/theme.js"></script>
 <script src="/ui/js/login.js"></script>

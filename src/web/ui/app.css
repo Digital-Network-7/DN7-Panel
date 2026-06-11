@@ -3,6 +3,11 @@
      The main script still calls showApp()/logout to keep these in sync. */
   html[data-auth="in"] #login { display:none !important; }
   html[data-auth="out"] #app { display:none !important; }
+  /* No-flash i18n: keep the page invisible until the i18n module has filled in
+     the static text in the resolved language, so the user never sees a flash of
+     the source language before it's translated. Revealed by setting
+     data-i18n-ready (see js/i18n.js), which runs before first meaningful paint. */
+  html:not([data-i18n-ready]) body { visibility:hidden; }
   /* ---- Theme tokens: dark (default) ---- */
   :root {
     --bg:#070b14; --panel:rgba(18,26,42,0.72); --panel-solid:#0e1626; --panel2:rgba(8,13,24,0.85);

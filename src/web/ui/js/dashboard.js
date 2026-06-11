@@ -14,11 +14,11 @@ function renderDash(v) {
       const m = b.data;
       hist.rx.push(m.net_rx || 0); hist.tx.push(m.net_tx || 0);
       if (hist.rx.length > 40) { hist.rx.shift(); hist.tx.shift(); }
-      const coreLabel = m.cpu_virtual ? ' vCPU' : ' 核心';
+      const coreLabel = m.cpu_virtual ? tr('dash.vcpu') : tr('dash.cores');
       $('cards').innerHTML = [
         card('CPU', (m.cpu_usage || 0).toFixed(1) + '%', (m.cpu_cores || 0) + coreLabel, m.cpu_usage),
-        card('内存', (m.memory_usage || 0).toFixed(1) + '%', fmtBytes(m.mem_used) + ' / ' + fmtBytes(m.mem_total), m.memory_usage),
-        card('磁盘', (m.disk_usage || 0).toFixed(1) + '%', fmtBytes(m.disk_used) + ' / ' + fmtBytes(m.disk_total), m.disk_usage),
+        card(tr('dash.mem'), (m.memory_usage || 0).toFixed(1) + '%', fmtBytes(m.mem_used) + ' / ' + fmtBytes(m.mem_total), m.memory_usage),
+        card(tr('dash.disk'), (m.disk_usage || 0).toFixed(1) + '%', fmtBytes(m.disk_used) + ' / ' + fmtBytes(m.disk_total), m.disk_usage),
         netCard(m.net_rx || 0, m.net_tx || 0, hist),
       ].join('');
     }).catch(() => {});
@@ -58,9 +58,9 @@ function renderProcs(st) {
   const arrow = (k) => (st.sort === k ? ' <span class="sortar">▼</span>' : '');
   // Header table (fixed, outside the scroll area).
   $('procHead').innerHTML = '<table class="proctable proc-head-tbl">' + PROC_COLS +
-    '<tr><th class="num">PID</th><th>进程</th><th>用户</th><th class="num">TIME</th>' +
+    '<tr><th class="num">PID</th><th>' + tr('dash.proc') + '</th><th>' + tr('dash.user') + '</th><th class="num">TIME</th>' +
     `<th class="num sortable" data-sort="cpu">CPU${arrow('cpu')}</th>` +
-    `<th class="num sortable" data-sort="mem">内存${arrow('mem')}</th></tr></table>`;
+    `<th class="num sortable" data-sort="mem">${tr('dash.mem')}${arrow('mem')}</th></tr></table>`;
   // Body table (scrolls).
   let h = '<table class="proctable">' + PROC_COLS + '<tbody>';
   rows.forEach((p) => {
@@ -92,15 +92,15 @@ function card(title, big, sub, pct) {
 function netCard(rx, tx, hist) {
   const upIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V7"/><path d="M6 11l6-6 6 6"/><path d="M5 21h14"/></svg>';
   const dnIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v12"/><path d="M6 13l6 6 6-6"/><path d="M5 3h14"/></svg>';
-  return `<div class="card netcard"><h3>网络吞吐</h3>
+  return `<div class="card netcard"><h3>${tr('dash.net')}</h3>
     <div class="netsplit">
       <div class="netcell up">
-        <div class="nethdr"><span class="netic">${upIcon}</span><span>上行</span></div>
+        <div class="nethdr"><span class="netic">${upIcon}</span><span>${tr('dash.up')}</span></div>
         <div class="netval">${fmtBytes(tx)}<s>/s</s></div>
         <div class="netchart">${areaChart(hist.tx, 'up')}</div>
       </div>
       <div class="netcell dn">
-        <div class="nethdr"><span class="netic">${dnIcon}</span><span>下行</span></div>
+        <div class="nethdr"><span class="netic">${dnIcon}</span><span>${tr('dash.dn')}</span></div>
         <div class="netval">${fmtBytes(rx)}<s>/s</s></div>
         <div class="netchart">${areaChart(hist.rx, 'dn')}</div>
       </div>

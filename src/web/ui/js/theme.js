@@ -2,7 +2,7 @@
 // Theme: auto (follow OS) | light | dark — single icon cycles the 3 states.
 // =========================================================================
 const THEME_ICONS = { auto: '◑', light: '☀', dark: '☾' };
-const THEME_LABELS = { auto: '跟随系统', light: '浅色', dark: '深色' };
+function themeLabel(m) { return tr('theme.' + m); }
 function themeDefault() { return (window.__BRAND__ && window.__BRAND__.theme) || 'auto'; }
 function applyTheme() {
   const m = localStorage.getItem('dn7_theme') || themeDefault();
@@ -11,7 +11,7 @@ function applyTheme() {
   document.documentElement.setAttribute('data-theme', eff);
   document.documentElement.setAttribute('data-mode', m);
   const btn = $('themeBtn');
-  if (btn) { btn.textContent = THEME_ICONS[m]; btn.title = '主题：' + THEME_LABELS[m]; }
+  if (btn) { btn.textContent = THEME_ICONS[m]; btn.title = tr('theme.tip') + themeLabel(m); }
 }
 function cycleTheme() {
   const order = ['auto', 'light', 'dark'];
