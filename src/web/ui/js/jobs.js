@@ -49,8 +49,8 @@ function renderJob(host, kind, opId, slot, cb) {
     if (stopped) return;
     op(kind, { op: 'op_log', op_id: opId }).then((d) => {
       const lines = d.lines || [];
-      log.textContent = lines.join('\n'); log.scrollTop = log.scrollHeight;
-      line.textContent = lines.length ? lines[lines.length - 1] : tr('job.processing');
+      log.textContent = lines.map(msgLine).join('\n'); log.scrollTop = log.scrollHeight;
+      line.textContent = lines.length ? msgLine(lines[lines.length - 1]) : tr('job.processing');
       // Prefer the server-computed percent; fall back to client-side parsing.
       const pct = (typeof d.pct === 'number' && d.pct >= 0) ? d.pct / 100 : parsePullPct(lines);
       if (pct != null) { bar.classList.remove('indet'); bar.querySelector('i').style.width = (pct * 100).toFixed(0) + '%'; }

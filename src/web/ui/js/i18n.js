@@ -140,6 +140,24 @@ const I18N = {
     'err.settings.port_range': 'Port must be 1-65535', 'err.settings.pw_format': 'Invalid password format', 'err.settings.username_format': 'Account must be 2-32 chars: letters, digits, _ or -',
     'err.update.source_invalid': 'Source must be auto / github / dn7', 'err.terminal.missing_container': 'Missing container', 'err.files.too_large': 'File too large (max 512MiB)', 'err.common.save_failed': 'Save failed',
     'err.branding.name_len': 'Name must be 1-40 characters', 'err.branding.logo_invalid': 'Logo must be an image under ~512KB', 'err.branding.accent_format': 'Accent must be #RRGGBB', 'err.branding.theme_invalid': 'Theme must be auto / light / dark',
+    'err.nginx.need_root': 'Configuring Nginx requires root; run DN7 Panel as root and retry', 'err.nginx.le_need_domain_specific': 'Let\'s Encrypt requires a specific domain (no wildcard / default site)', 'err.nginx.le_no_http01': 'This domain does not support HTTP-01 validation',
+    'err.nginx.le_verify_timeout': 'Validation timed out; ensure the domain resolves here and port 80 is reachable', 'err.nginx.le_issue_timeout': 'Certificate issuance timed out', 'err.docker.install_failed': 'Could not install/start Docker. Check system logs, or pick another install method in Settings and retry',
+    'err.docker.need_root': 'Installing Docker requires root; run Panel as root and retry', 'err.docker.install_script_nonzero': 'Install script returned a non-zero exit code', 'err.docker.pull_incomplete': 'Pull incomplete or image not found (network issue? try a registry mirror)',
+    'msg.ng.setup_done': 'Configuration complete', 'msg.ng.detected_host': 'Detected Nginx already installed on the host', 'msg.ng.installing': 'Installing Nginx (system package manager)…',
+    'msg.ng.ensure_enable': 'Ensuring config directory and enabling Nginx…', 'msg.ng.cert_done_https': 'Certificate issued; HTTPS enabled for the site', 'msg.ng.prep_http': 'Preparing HTTP validation site…',
+    'msg.ng.enable_https': 'Enabling HTTPS configuration…', 'msg.ng.cert_done': 'Certificate issued', 'msg.ng.le_account': 'Connecting to Let\'s Encrypt and creating an account…',
+    'msg.ng.request_cert': 'Requesting a certificate for {0}…', 'msg.ng.wait_verify': 'Waiting for domain validation…', 'msg.ng.verify_ok': 'Validated; issuing certificate…',
+    'msg.my.pulling': 'Pulling image {0}…', 'msg.my.creating_volume': 'Creating data volume…', 'msg.my.creating_container': 'Creating container…',
+    'msg.my.starting': 'Starting…', 'msg.my.waiting_ready': 'Waiting for the database to be ready…', 'msg.my.install_done': 'Setup complete; database is ready',
+    'msg.my.init_timeout': 'Database init timed out; check the instance status later (it may still be initializing or restarting)', 'msg.my.exporting': 'Exporting database (mysqldump)…', 'msg.my.backup_done': 'Backup complete: {0} ({1} bytes)',
+    'msg.my.initializing': 'Database is initializing, please wait…', 'msg.dk.pulling': 'Pulling {0}…', 'msg.dk.renaming': 'Renaming to {0}',
+    'msg.dk.done': 'Done', 'msg.dk.error': 'Error: {0}', 'msg.dk.creating_container': 'Creating container…',
+    'msg.dk.container_created': 'Container {0}: {1}', 'msg.dk.already_installed': 'Docker is already installed', 'msg.dk.detected_os': 'Detected OS: {0} ({1})',
+    'msg.dk.install_method': 'Install method: {0}; network region: {1}', 'msg.dk.start_install': 'Starting Docker installation…', 'msg.dk.fallback_script': 'Falling back to the get.docker.com script…',
+    'msg.dk.config_mirror': 'Configuring China registry mirror and starting Docker…', 'msg.dk.starting': 'Starting Docker…', 'msg.dk.verify_install': 'Verifying installation result…',
+    'msg.dk.install_done': 'Installation complete', 'dklbl.ce': 'official docker-ce', 'dklbl.distro': 'distro docker.io',
+    'dklbl.cn': 'China (mirror)', 'dklbl.global': 'Global (official)', 'dklbl.created': 'created',
+    'dklbl.created_started': 'created and started',
     'err.nginx.bad_static_dir': 'Invalid site directory name', 'err.nginx.missing_file_path': 'Missing file path', 'err.nginx.bad_file_path': 'Invalid file path', 'err.nginx.unknown_upload_mode': 'Unknown upload mode',
     'err.nginx.not_setup': 'Nginx is not set up yet', 'err.nginx.need_domain': 'Please enter a domain', 'err.nginx.bad_domain': 'Invalid domain format', 'err.nginx.bad_cert_name': 'Invalid certificate name',
     'err.nginx.need_target': 'Please enter a proxy target', 'err.nginx.bad_target': 'Invalid target (host or host:port)', 'err.nginx.need_container': 'Please select a container', 'err.nginx.bad_container': 'Invalid container name',
@@ -290,6 +308,24 @@ const I18N = {
     'err.settings.port_range': '端口需为 1-65535', 'err.settings.pw_format': '密码格式错误', 'err.settings.username_format': '账号需为 2-32 位字母/数字/_/-',
     'err.update.source_invalid': '源需为 auto / github / dn7', 'err.terminal.missing_container': '缺少容器', 'err.files.too_large': '文件过大（上限 512MiB）', 'err.common.save_failed': '保存失败',
     'err.branding.name_len': '名称需为 1-40 个字符', 'err.branding.logo_invalid': 'Logo 需为图片，且大小不超过约 512KB', 'err.branding.accent_format': '主色需为 #RRGGBB 格式', 'err.branding.theme_invalid': '主题需为 auto/light/dark',
+    'err.nginx.need_root': '配置 Nginx 需要 root 权限，请用 root 运行 DN7 Panel 后重试', 'err.nginx.le_need_domain_specific': 'Let\'s Encrypt 需要一个具体域名（不支持通配符/默认站点）', 'err.nginx.le_no_http01': '该域名不支持 HTTP-01 验证',
+    'err.nginx.le_verify_timeout': '验证超时，请确认域名解析与 80 端口可达', 'err.nginx.le_issue_timeout': '证书签发超时', 'err.docker.install_failed': '未能安装/启动 Docker。请检查系统日志，或在「设置」中改用其它安装方式重试',
+    'err.docker.need_root': '安装 Docker 需要 root 权限，请用 root 运行 Panel 后重试', 'err.docker.install_script_nonzero': '安装脚本返回非零退出码', 'err.docker.pull_incomplete': '拉取未完成或镜像不存在（网络中断？建议选择加速镜像源后重试）',
+    'msg.ng.setup_done': '配置完成', 'msg.ng.detected_host': '检测到宿主机已安装 Nginx', 'msg.ng.installing': '安装 Nginx（使用系统包管理器）…',
+    'msg.ng.ensure_enable': '确保配置目录存在并启用 Nginx …', 'msg.ng.cert_done_https': '证书签发完成，站点已启用 HTTPS', 'msg.ng.prep_http': '准备 HTTP 验证站点 …',
+    'msg.ng.enable_https': '启用 HTTPS 配置 …', 'msg.ng.cert_done': '证书签发完成', 'msg.ng.le_account': '连接 Let\'s Encrypt 并创建账户 …',
+    'msg.ng.request_cert': '为 {0} 申请证书 …', 'msg.ng.wait_verify': '等待域名验证 …', 'msg.ng.verify_ok': '验证通过，正在签发证书 …',
+    'msg.my.pulling': '正在拉取镜像 {0} …', 'msg.my.creating_volume': '正在创建数据卷 …', 'msg.my.creating_container': '正在创建容器 …',
+    'msg.my.starting': '正在启动 …', 'msg.my.waiting_ready': '等待数据库就绪 …', 'msg.my.install_done': '安装完成，数据库已就绪',
+    'msg.my.init_timeout': '数据库初始化超时，请稍后在实例详情中查看状态（容器可能仍在初始化或反复重启）', 'msg.my.exporting': '正在导出数据库（mysqldump）…', 'msg.my.backup_done': '备份完成：{0}（{1} 字节）',
+    'msg.my.initializing': '数据库正在初始化，请稍候 …', 'msg.dk.pulling': '正在拉取 {0} …', 'msg.dk.renaming': '重命名为 {0}',
+    'msg.dk.done': '完成', 'msg.dk.error': '错误：{0}', 'msg.dk.creating_container': '正在创建容器 …',
+    'msg.dk.container_created': '容器{0}：{1}', 'msg.dk.already_installed': 'Docker 已安装', 'msg.dk.detected_os': '检测到系统：{0}（{1}）',
+    'msg.dk.install_method': '安装方式：{0}；网络地区：{1}', 'msg.dk.start_install': '开始安装 Docker …', 'msg.dk.fallback_script': '改用通用安装脚本 get.docker.com …',
+    'msg.dk.config_mirror': '配置国内镜像加速并启动 Docker …', 'msg.dk.starting': '启动 Docker …', 'msg.dk.verify_install': '校验安装结果 …',
+    'msg.dk.install_done': '安装完成', 'dklbl.ce': '官方 docker-ce', 'dklbl.distro': '系统自带 docker.io',
+    'dklbl.cn': '国内（镜像加速）', 'dklbl.global': '海外（官方源）', 'dklbl.created': '已创建',
+    'dklbl.created_started': '已创建并启动',
     'err.nginx.bad_static_dir': '站点目录名不合法', 'err.nginx.missing_file_path': '缺少文件路径', 'err.nginx.bad_file_path': '文件路径不合法', 'err.nginx.unknown_upload_mode': '未知的上传方式',
     'err.nginx.not_setup': '尚未完成 Nginx 配置', 'err.nginx.need_domain': '请填写域名', 'err.nginx.bad_domain': '域名格式不正确', 'err.nginx.bad_cert_name': '证书名称不正确',
     'err.nginx.need_target': '请填写转发目标', 'err.nginx.bad_target': '转发目标格式不正确（host 或 host:port）', 'err.nginx.need_container': '请选择容器', 'err.nginx.bad_container': '容器名不正确',
@@ -440,6 +476,24 @@ const I18N = {
     'err.settings.port_range': '連接埠需為 1-65535', 'err.settings.pw_format': '密碼格式錯誤', 'err.settings.username_format': '帳號需為 2-32 位字母/數字/_/-',
     'err.update.source_invalid': '來源需為 auto / github / dn7', 'err.terminal.missing_container': '缺少容器', 'err.files.too_large': '檔案過大（上限 512MiB）', 'err.common.save_failed': '儲存失敗',
     'err.branding.name_len': '名稱需為 1-40 個字元', 'err.branding.logo_invalid': 'Logo 需為圖片，且大小不超過約 512KB', 'err.branding.accent_format': '主色需為 #RRGGBB 格式', 'err.branding.theme_invalid': '主題需為 auto/light/dark',
+    'err.nginx.need_root': '設定 Nginx 需要 root 權限，請以 root 執行 DN7 Panel 後重試', 'err.nginx.le_need_domain_specific': 'Let\'s Encrypt 需要一個具體網域（不支援萬用字元/預設站點）', 'err.nginx.le_no_http01': '該網域不支援 HTTP-01 驗證',
+    'err.nginx.le_verify_timeout': '驗證逾時，請確認網域解析與 80 連接埠可達', 'err.nginx.le_issue_timeout': '憑證簽發逾時', 'err.docker.install_failed': '未能安裝/啟動 Docker。請檢查系統日誌，或在「設定」中改用其他安裝方式重試',
+    'err.docker.need_root': '安裝 Docker 需要 root 權限，請以 root 執行 Panel 後重試', 'err.docker.install_script_nonzero': '安裝指令稿返回非零退出碼', 'err.docker.pull_incomplete': '拉取未完成或映像不存在（網路中斷？建議選擇加速鏡像來源後重試）',
+    'msg.ng.setup_done': '設定完成', 'msg.ng.detected_host': '偵測到主機已安裝 Nginx', 'msg.ng.installing': '安裝 Nginx（使用系統套件管理器）…',
+    'msg.ng.ensure_enable': '確保設定目錄存在並啟用 Nginx …', 'msg.ng.cert_done_https': '憑證簽發完成，站點已啟用 HTTPS', 'msg.ng.prep_http': '準備 HTTP 驗證站點 …',
+    'msg.ng.enable_https': '啟用 HTTPS 設定 …', 'msg.ng.cert_done': '憑證簽發完成', 'msg.ng.le_account': '連線 Let\'s Encrypt 並建立帳戶 …',
+    'msg.ng.request_cert': '為 {0} 申請憑證 …', 'msg.ng.wait_verify': '等待網域驗證 …', 'msg.ng.verify_ok': '驗證通過，正在簽發憑證 …',
+    'msg.my.pulling': '正在拉取映像 {0} …', 'msg.my.creating_volume': '正在建立資料卷 …', 'msg.my.creating_container': '正在建立容器 …',
+    'msg.my.starting': '正在啟動 …', 'msg.my.waiting_ready': '等待資料庫就緒 …', 'msg.my.install_done': '安裝完成，資料庫已就緒',
+    'msg.my.init_timeout': '資料庫初始化逾時，請稍後在實例詳情中查看狀態（容器可能仍在初始化或反覆重啟）', 'msg.my.exporting': '正在匯出資料庫（mysqldump）…', 'msg.my.backup_done': '備份完成：{0}（{1} 位元組）',
+    'msg.my.initializing': '資料庫正在初始化，請稍候 …', 'msg.dk.pulling': '正在拉取 {0} …', 'msg.dk.renaming': '重新命名為 {0}',
+    'msg.dk.done': '完成', 'msg.dk.error': '錯誤：{0}', 'msg.dk.creating_container': '正在建立容器 …',
+    'msg.dk.container_created': '容器{0}：{1}', 'msg.dk.already_installed': 'Docker 已安裝', 'msg.dk.detected_os': '偵測到系統：{0}（{1}）',
+    'msg.dk.install_method': '安裝方式：{0}；網路地區：{1}', 'msg.dk.start_install': '開始安裝 Docker …', 'msg.dk.fallback_script': '改用通用安裝指令稿 get.docker.com …',
+    'msg.dk.config_mirror': '設定中國大陸鏡像加速並啟動 Docker …', 'msg.dk.starting': '啟動 Docker …', 'msg.dk.verify_install': '校驗安裝結果 …',
+    'msg.dk.install_done': '安裝完成', 'dklbl.ce': '官方 docker-ce', 'dklbl.distro': '系統內建 docker.io',
+    'dklbl.cn': '中國大陸（鏡像加速）', 'dklbl.global': '海外（官方源）', 'dklbl.created': '已建立',
+    'dklbl.created_started': '已建立並啟動',
     'err.nginx.bad_static_dir': '站點目錄名稱不合法', 'err.nginx.missing_file_path': '缺少檔案路徑', 'err.nginx.bad_file_path': '檔案路徑不合法', 'err.nginx.unknown_upload_mode': '未知的上傳方式',
     'err.nginx.not_setup': '尚未完成 Nginx 設定', 'err.nginx.need_domain': '請填寫網域', 'err.nginx.bad_domain': '網域格式不正確', 'err.nginx.bad_cert_name': '憑證名稱不正確',
     'err.nginx.need_target': '請填寫轉發目標', 'err.nginx.bad_target': '轉發目標格式不正確（host 或 host:port）', 'err.nginx.need_container': '請選擇容器', 'err.nginx.bad_container': '容器名稱不正確',
@@ -590,6 +644,24 @@ const I18N = {
     'err.settings.port_range': 'ポートは1〜65535である必要があります', 'err.settings.pw_format': 'パスワードの形式が不正です', 'err.settings.username_format': 'アカウントは2〜32文字（英数字・_・-）',
     'err.update.source_invalid': 'ソースは auto / github / dn7 のいずれか', 'err.terminal.missing_container': 'コンテナがありません', 'err.files.too_large': 'ファイルが大きすぎます（上限512MiB）', 'err.common.save_failed': '保存に失敗しました',
     'err.branding.name_len': '名前は1〜40文字である必要があります', 'err.branding.logo_invalid': 'ロゴは約512KB以下の画像である必要があります', 'err.branding.accent_format': 'アクセントは #RRGGBB 形式', 'err.branding.theme_invalid': 'テーマは auto/light/dark',
+    'err.nginx.need_root': 'Nginx の設定には root 権限が必要です。root で DN7 Panel を実行して再試行してください', 'err.nginx.le_need_domain_specific': 'Let\'s Encrypt には具体的なドメインが必要です（ワイルドカード/既定サイトは不可）', 'err.nginx.le_no_http01': 'このドメインは HTTP-01 検証に対応していません',
+    'err.nginx.le_verify_timeout': '検証がタイムアウトしました。ドメイン解決とポート80の到達性を確認してください', 'err.nginx.le_issue_timeout': '証明書の発行がタイムアウトしました', 'err.docker.install_failed': 'Docker のインストール/起動に失敗しました。システムログを確認するか、「設定」で別の方法を選んで再試行してください',
+    'err.docker.need_root': 'Docker のインストールには root 権限が必要です。root で Panel を実行して再試行してください', 'err.docker.install_script_nonzero': 'インストールスクリプトが非ゼロの終了コードを返しました', 'err.docker.pull_incomplete': '取得が未完了またはイメージが存在しません（ネットワーク切断？ミラーソースを選んで再試行してください）',
+    'msg.ng.setup_done': '設定が完了しました', 'msg.ng.detected_host': 'ホストに Nginx を検出しました', 'msg.ng.installing': 'Nginx をインストール中（システムのパッケージマネージャ）…',
+    'msg.ng.ensure_enable': '設定ディレクトリを確認し Nginx を有効化中…', 'msg.ng.cert_done_https': '証明書を発行し、サイトの HTTPS を有効化しました', 'msg.ng.prep_http': 'HTTP 検証サイトを準備中…',
+    'msg.ng.enable_https': 'HTTPS 設定を有効化中…', 'msg.ng.cert_done': '証明書を発行しました', 'msg.ng.le_account': 'Let\'s Encrypt に接続してアカウントを作成中…',
+    'msg.ng.request_cert': '{0} の証明書を申請中…', 'msg.ng.wait_verify': 'ドメイン検証を待機中…', 'msg.ng.verify_ok': '検証に成功、証明書を発行中…',
+    'msg.my.pulling': 'イメージ {0} を取得中…', 'msg.my.creating_volume': 'データボリュームを作成中…', 'msg.my.creating_container': 'コンテナを作成中…',
+    'msg.my.starting': '起動中…', 'msg.my.waiting_ready': 'データベースの準備を待機中…', 'msg.my.install_done': 'セットアップ完了。データベースは準備できました',
+    'msg.my.init_timeout': 'データベースの初期化がタイムアウトしました。後でインスタンスの状態を確認してください（初期化中か再起動中の可能性があります）', 'msg.my.exporting': 'データベースをエクスポート中（mysqldump）…', 'msg.my.backup_done': 'バックアップ完了：{0}（{1} バイト）',
+    'msg.my.initializing': 'データベースを初期化中です。お待ちください…', 'msg.dk.pulling': '{0} を取得中…', 'msg.dk.renaming': '{0} に名前変更',
+    'msg.dk.done': '完了', 'msg.dk.error': 'エラー：{0}', 'msg.dk.creating_container': 'コンテナを作成中…',
+    'msg.dk.container_created': 'コンテナ{0}：{1}', 'msg.dk.already_installed': 'Docker はすでにインストール済みです', 'msg.dk.detected_os': 'OS を検出：{0}（{1}）',
+    'msg.dk.install_method': 'インストール方法：{0}；ネットワーク地域：{1}', 'msg.dk.start_install': 'Docker のインストールを開始…', 'msg.dk.fallback_script': '汎用インストールスクリプト get.docker.com に切り替え…',
+    'msg.dk.config_mirror': '中国向けミラーを設定して Docker を起動中…', 'msg.dk.starting': 'Docker を起動中…', 'msg.dk.verify_install': 'インストール結果を検証中…',
+    'msg.dk.install_done': 'インストール完了', 'dklbl.ce': '公式 docker-ce', 'dklbl.distro': 'ディストリ標準 docker.io',
+    'dklbl.cn': '中国（ミラー高速化）', 'dklbl.global': '海外（公式ソース）', 'dklbl.created': '作成',
+    'dklbl.created_started': '作成して起動',
     'err.nginx.bad_static_dir': 'サイトのディレクトリ名が不正です', 'err.nginx.missing_file_path': 'ファイルパスがありません', 'err.nginx.bad_file_path': 'ファイルパスが不正です', 'err.nginx.unknown_upload_mode': '不明なアップロード方式',
     'err.nginx.not_setup': 'Nginx の設定が完了していません', 'err.nginx.need_domain': 'ドメインを入力してください', 'err.nginx.bad_domain': 'ドメインの形式が不正です', 'err.nginx.bad_cert_name': '証明書名が不正です',
     'err.nginx.need_target': '転送先を入力してください', 'err.nginx.bad_target': '転送先の形式が不正です（host または host:port）', 'err.nginx.need_container': 'コンテナを選択してください', 'err.nginx.bad_container': 'コンテナ名が不正です',
@@ -635,6 +707,23 @@ function codeMsg(s) {
   if (typeof s === 'string') {
     const m = s.match(/^ERR_CODE:(.+)$/);
     if (m) { const k = 'err.' + m[1]; const t = tr(k); return t !== k ? t : m[1]; }
+  }
+  return s;
+}
+
+// Map a progress-log line that carries a localizable MSG marker
+// (`\x1eMSG\x1e<code>[\x1earg…]`) to a translated string with positional
+// {0},{1}… substitution. An arg prefixed with `@` is itself a translation key.
+// Plain command-output lines pass through unchanged.
+function msgLine(s) {
+  if (typeof s === 'string' && s.indexOf('\x1eMSG\x1e') === 0) {
+    const p = s.split('\x1e'); // ['', 'MSG', code, arg0, arg1, …]
+    const code = p[2];
+    const vars = {};
+    for (let i = 3; i < p.length; i++) { let a = p[i]; if (a && a[0] === '@') a = tr(a.slice(1)); vars[i - 3] = a; }
+    const k = 'msg.' + code;
+    const t = tr(k, vars);
+    return t !== k ? t : code;
   }
   return s;
 }

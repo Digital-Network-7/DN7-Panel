@@ -262,6 +262,19 @@ fn op_create(op_id: &str, kind: &str, target: &str) {
     }
 }
 
+/// Build a localizable progress line for the op log: a sentinel-delimited
+/// `MSG` record the web console maps to `msg.<code>` (positional `{0}`, `{1}`…
+/// args). An arg prefixed with `@` is itself a translation key resolved on the
+/// client. Plain command output is pushed verbatim and rendered as-is.
+fn pmsg(code: &str, args: &[&str]) -> String {
+    let mut s = format!("\u{1e}MSG\u{1e}{code}");
+    for a in args {
+        s.push('\u{1e}');
+        s.push_str(a);
+    }
+    s
+}
+
 fn op_push(op_id: &str, line: &str) {
     if line.is_empty() {
         return;
@@ -605,12 +618,12 @@ async fn run_install_detached(
     }
 
     // 1. Pull the image (stream status lines into the op log).
-    op_push(op_id, &format!("正在拉取镜像 {image} …"));
+    op_push(op_id, &pmsg("my.pulling", &[image.as_str()]));
     pull_image(&dkr, &image, op_id).await?;
 
     // 2. Create a named data volume so the data survives container recreation.
     let volume = VOLUME.to_string();
-    op_push(op_id, "正在创建数据卷 …");
+    op_push(op_id, &pmsg("my.creating_volume", &[]));
     create_volume(&dkr, &volume, inst_id, engine).await?;
 
     // 3. Generate + encrypt the root password.
@@ -619,12 +632,12 @@ async fn run_install_detached(
 
     // 4. Create + start the container.
     let container = CONTAINER.to_string();
-    op_push(op_id, "正在创建容器 …");
+    op_push(op_id, &pmsg("my.creating_container", &[]));
     create_mysql_container(
         &dkr, &container, &image, engine, inst_id, &volume, port, &password,
     )
     .await?;
-    op_push(op_id, "正在启动 …");
+    op_push(op_id, &pmsg("my.starting", &[]));
     dkr.start_container(
         &container,
         None::<bollard::container::StartContainerOptions<String>>,
@@ -649,16 +662,13 @@ async fn run_install_detached(
     // 6. Wait for mysqld to actually accept connections (data-dir init takes a
     // while on first run). The container is `running` almost immediately but
     // queries fail until this completes, so block the op until it's truly ready.
-    op_push(op_id, "等待数据库就绪 …");
+    op_push(op_id, &pmsg("my.waiting_ready", &[]));
     if wait_ready(&container, &password, op_id, 180).await {
-        op_push(op_id, "安装完成，数据库已就绪");
+        op_push(op_id, &pmsg("my.install_done", &[]));
     } else {
         // Don't hard-fail: the container exists and may still come up. Surface
         // a clear hint so the user knows to check the container's state.
-        op_push(
-            op_id,
-            "数据库初始化超时，请稍后在实例详情中查看状态（容器可能仍在初始化或反复重启）",
-        );
+        op_push(op_id, &pmsg("my.init_timeout", &[]));
     }
     Ok(())
 }
@@ -1285,7 +1295,7 @@ async fn run_backup_detached(op_id: &str, inst: &str) -> Result<()> {
     if !is_ready(&m.container, &password).await {
         return Err(anyhow!("ERR_CODE:mysql.instance_not_ready"));
     }
-    op_push(op_id, "正在导出数据库（mysqldump）…");
+    op_push(op_id, &pmsg("my.exporting", &[]));
     let ts = now_secs();
     let path = format!("/var/lib/mysql/dn7-backup-{ts}.sql");
     // Use the dump tool that matches the engine; both accept the same flags.
@@ -1311,7 +1321,10 @@ async fn run_backup_detached(op_id: &str, inst: &str) -> Result<()> {
         .trim()
         .parse()
         .unwrap_or(0);
-    op_push(op_id, &format!("备份完成：{path}（{bytes} 字节）"));
+    op_push(
+        op_id,
+        &pmsg("my.backup_done", &[path.as_str(), &bytes.to_string()]),
+    );
     Ok(())
 }
 
@@ -1484,7 +1497,7 @@ async fn wait_ready(container: &str, password: &str, op_id: &str, timeout_secs: 
             return false;
         }
         if !announced {
-            op_push(op_id, "数据库正在初始化，请稍候 …");
+            op_push(op_id, &pmsg("my.initializing", &[]));
             announced = true;
         }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;

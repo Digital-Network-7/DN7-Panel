@@ -160,6 +160,19 @@ fn op_create(op_id: &str, kind: &str, target: &str) {
     }
 }
 
+/// Build a localizable progress line for the op log: a sentinel-delimited
+/// `MSG` record the web console maps to `msg.<code>` (positional `{0}`, `{1}`…
+/// args). An arg prefixed with `@` is itself a translation key resolved on the
+/// client. Plain command output is pushed verbatim and rendered as-is.
+fn pmsg(code: &str, args: &[&str]) -> String {
+    let mut s = format!("\u{1e}MSG\u{1e}{code}");
+    for a in args {
+        s.push('\u{1e}');
+        s.push_str(a);
+    }
+    s
+}
+
 fn op_push(op_id: &str, line: &str) {
     if line.is_empty() {
         return;
@@ -1252,12 +1265,12 @@ fn start_pull(req: &Req) -> Result<Value> {
     let op_id_t = op_id.clone();
     let shown_t = shown.clone();
     tokio::spawn(async move {
-        op_push(&op_id_t, &format!("正在拉取 {pull_ref} …"));
+        op_push(&op_id_t, &pmsg("dk.pulling", &[pull_ref.as_str()]));
         match run_pull_detached(&op_id_t, &pull_ref).await {
             Ok(()) => {
                 if let Some(final_ref) = final_ref.as_deref() {
                     if final_ref != pull_ref {
-                        op_push(&op_id_t, &format!("重命名为 {final_ref}"));
+                        op_push(&op_id_t, &pmsg("dk.renaming", &[final_ref]));
                         if let Err(e) = tag_image(&pull_ref, final_ref).await {
                             op_finish(&op_id_t, "error", &e.to_string(), "");
                             return;
@@ -1265,7 +1278,7 @@ fn start_pull(req: &Req) -> Result<Value> {
                         let _ = remove_image_quiet(&pull_ref).await; // best-effort
                     }
                 }
-                op_push(&op_id_t, "完成");
+                op_push(&op_id_t, &pmsg("dk.done", &[]));
                 op_finish(&op_id_t, "done", "", &shown_t);
             }
             Err(e) => op_finish(&op_id_t, "error", &e.to_string(), ""),
@@ -1324,7 +1337,7 @@ async fn run_pull_detached(op_id: &str, pull_ref: &str) -> Result<()> {
                 if let Some(err) = info.error {
                     let e = err.trim();
                     if !e.is_empty() {
-                        op_push(op_id, &format!("错误：{e}"));
+                        op_push(op_id, &pmsg("dk.error", &[e]));
                         stream_error = Some(trim_msg(e).unwrap_or_else(|| "拉取失败".into()));
                         continue;
                     }
@@ -1354,7 +1367,7 @@ async fn run_pull_detached(op_id: &str, pull_ref: &str) -> Result<()> {
     // connection mid-transfer), so confirm before reporting success.
     dkr.inspect_image(pull_ref)
         .await
-        .map_err(|_| anyhow!("拉取未完成或镜像不存在（网络中断？建议选择加速镜像源后重试）"))?;
+        .map_err(|_| anyhow!("ERR_CODE:docker.pull_incomplete"))?;
     Ok(())
 }
 
@@ -1747,16 +1760,22 @@ fn start_create(req: &Req) -> Result<Value> {
     let op_id_t = op_id.clone();
     let target_t = target.clone();
     tokio::spawn(async move {
-        op_push(&op_id_t, "正在创建容器 …");
+        op_push(&op_id_t, &pmsg("dk.creating_container", &[]));
         match create_container(spec).await {
             Ok((id, started)) => {
                 let short = id.chars().take(12).collect::<String>();
                 op_push(
                     &op_id_t,
-                    &format!(
-                        "容器已{}：{}",
-                        if started { "创建并启动" } else { "创建" },
-                        short
+                    &pmsg(
+                        "dk.container_created",
+                        &[
+                            if started {
+                                "@dklbl.created_started"
+                            } else {
+                                "@dklbl.created"
+                            },
+                            short.as_str(),
+                        ],
                     ),
                 );
                 op_finish(&op_id_t, "done", "", &target_t);
@@ -1815,9 +1834,7 @@ fn start_install(req: &Req) -> Result<Value> {
     }
 
     if !is_root() {
-        return Err(anyhow!(
-            "安装 Docker 需要 root 权限，请用 root 运行 Panel 后重试"
-        ));
+        return Err(anyhow!("ERR_CODE:docker.need_root"));
     }
 
     // "distro" (docker.io, default) | "ce"; "auto" (default) | "cn" | "global".
@@ -1845,31 +1862,33 @@ fn start_install(req: &Req) -> Result<Value> {
 
 async fn run_install_detached(op_id: &str, channel: &str, region_pref: &str) -> Result<()> {
     if docker_is_installed().await {
-        op_push(op_id, "Docker 已安装");
+        op_push(op_id, &pmsg("dk.already_installed", &[]));
         return Ok(());
     }
 
     let os = detect_os();
     op_push(
         op_id,
-        &format!("检测到系统：{}（{}）", os.pretty, os.family),
+        &pmsg("dk.detected_os", &[os.pretty.as_str(), os.family.as_str()]),
     );
 
     let region = resolve_region(region_pref).await;
     op_push(
         op_id,
-        &format!(
-            "安装方式：{}；网络地区：{}",
-            if channel == "ce" {
-                "官方 docker-ce"
-            } else {
-                "系统自带 docker.io"
-            },
-            if region == "cn" {
-                "国内（镜像加速）"
-            } else {
-                "海外（官方源）"
-            }
+        &pmsg(
+            "dk.install_method",
+            &[
+                if channel == "ce" {
+                    "@dklbl.ce"
+                } else {
+                    "@dklbl.distro"
+                },
+                if region == "cn" {
+                    "@dklbl.cn"
+                } else {
+                    "@dklbl.global"
+                },
+            ],
         ),
     );
 
@@ -1877,35 +1896,33 @@ async fn run_install_detached(op_id: &str, channel: &str, region_pref: &str) -> 
     // existing mirrors — no external Docker repo), or the official convenience
     // script for the `ce` channel / unknown distros.
     let primary = build_install_script(&os.family, channel, region);
-    op_push(op_id, "开始安装 Docker …");
+    op_push(op_id, &pmsg("dk.start_install", &[]));
     let _ = stream_shell_to_op(op_id, &primary).await;
 
     // Universal fallback: if the daemon still isn't present, run get.docker.com
     // (it handles the repo setup for every supported distro). Covers e.g. RHEL/
     // Rocky/Alma where the distro repos ship podman, not a `docker` package.
     if !docker_is_installed().await {
-        op_push(op_id, "改用通用安装脚本 get.docker.com …");
+        op_push(op_id, &pmsg("dk.fallback_script", &[]));
         let _ = stream_shell_to_op(op_id, &get_docker_script(region)).await;
     }
 
     // Region tuning + enable/start. For CN, write registry-mirror accelerators
     // (faster image pulls) before restarting; otherwise just ensure it's up.
     if region == "cn" {
-        op_push(op_id, "配置国内镜像加速并启动 Docker …");
+        op_push(op_id, &pmsg("dk.config_mirror", &[]));
         let _ = stream_shell_to_op(op_id, REGISTRY_MIRROR_SCRIPT).await;
     } else {
-        op_push(op_id, "启动 Docker …");
+        op_push(op_id, &pmsg("dk.starting", &[]));
         let _ = stream_shell_to_op(op_id, ENABLE_START_SCRIPT).await;
     }
 
-    op_push(op_id, "校验安装结果 …");
+    op_push(op_id, &pmsg("dk.verify_install", &[]));
     if docker_is_installed().await {
-        op_push(op_id, "安装完成");
+        op_push(op_id, &pmsg("dk.install_done", &[]));
         Ok(())
     } else {
-        Err(anyhow!(
-            "未能安装/启动 Docker。请检查系统日志，或在「设置」中改用其它安装方式重试"
-        ))
+        Err(anyhow!("ERR_CODE:docker.install_failed"))
     }
 }
 
@@ -2124,7 +2141,7 @@ async fn stream_shell_to_op(op_id: &str, script: &str) -> Result<()> {
         }
     }
     if !status.success() {
-        return Err(anyhow!("安装脚本返回非零退出码"));
+        return Err(anyhow!("ERR_CODE:docker.install_script_nonzero"));
     }
     Ok(())
 }

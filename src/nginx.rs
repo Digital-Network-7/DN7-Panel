@@ -173,6 +173,19 @@ fn op_create(op_id: &str, kind: &str, target: &str) {
     }
 }
 
+/// Build a localizable progress line for the op log: a sentinel-delimited
+/// `MSG` record the web console maps to `msg.<code>` (positional `{0}`, `{1}`…
+/// args). An arg prefixed with `@` is itself a translation key resolved on the
+/// client. Plain command output is pushed verbatim and rendered as-is.
+fn pmsg(code: &str, args: &[&str]) -> String {
+    let mut s = format!("\u{1e}MSG\u{1e}{code}");
+    for a in args {
+        s.push('\u{1e}');
+        s.push_str(a);
+    }
+    s
+}
+
 fn op_push(op_id: &str, line: &str) {
     if line.is_empty() {
         return;
@@ -836,9 +849,7 @@ fn start_setup(req: &Req) -> Result<Value> {
         }
     }
     if !is_root() {
-        return Err(anyhow!(
-            "配置 Nginx 需要 root 权限，请用 root 运行 DN7 Panel 后重试"
-        ));
+        return Err(anyhow!("ERR_CODE:nginx.need_root"));
     }
 
     op_create(SETUP_OP, "setup", "host");
@@ -846,7 +857,7 @@ fn start_setup(req: &Req) -> Result<Value> {
         match setup_host(SETUP_OP).await {
             Ok(()) => {
                 let _ = mark_setup();
-                op_push(SETUP_OP, "配置完成");
+                op_push(SETUP_OP, &pmsg("ng.setup_done", &[]));
                 op_finish(SETUP_OP, "done", "");
             }
             Err(e) => op_finish(SETUP_OP, "error", &e.to_string()),
@@ -864,9 +875,9 @@ async fn setup_host(op_id: &str) -> Result<()> {
         .map(|(ok, ..)| ok)
         .unwrap_or(false)
     {
-        op_push(op_id, "检测到宿主机已安装 Nginx");
+        op_push(op_id, &pmsg("ng.detected_host", &[]));
     } else {
-        op_push(op_id, "安装 Nginx（使用系统包管理器）…");
+        op_push(op_id, &pmsg("ng.installing", &[]));
         let script = r#"set -e
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
@@ -883,7 +894,7 @@ fi"#;
         stream_sh(op_id, script).await?;
     }
 
-    op_push(op_id, "确保配置目录存在并启用 Nginx …");
+    op_push(op_id, &pmsg("ng.ensure_enable", &[]));
     let _ = sh(&format!("mkdir -p {HOST_CONFD}")).await;
     // Our state dirs (certs + webroots) that nginx reads from.
     std::fs::create_dir_all(certs_dir())?;
@@ -1912,7 +1923,7 @@ async fn start_cert_issue(lo: Layout, site: Site) -> Result<Value> {
     tokio::spawn(async move {
         match issue_le(&op_id, &lo, &site).await {
             Ok(()) => {
-                op_push(&op_id, "证书签发完成，站点已启用 HTTPS");
+                op_push(&op_id, &pmsg("ng.cert_done_https", &[]));
                 op_finish(&op_id, "done", "");
             }
             Err(e) => op_finish(&op_id, "error", &e.to_string()),
@@ -1924,13 +1935,11 @@ async fn start_cert_issue(lo: Layout, site: Site) -> Result<Value> {
 async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
     let host = primary_host(&site.server_name);
     if host.is_empty() || host == "_" || host.contains('*') {
-        return Err(anyhow!(
-            "Let's Encrypt 需要一个具体域名（不支持通配符/默认站点）"
-        ));
+        return Err(anyhow!("ERR_CODE:nginx.le_need_domain_specific"));
     }
 
     // Step 1: serve HTTP (no SSL yet) so the http-01 challenge path is reachable.
-    op_push(op_id, "准备 HTTP 验证站点 …");
+    op_push(op_id, &pmsg("ng.prep_http", &[]));
     let mut http_site = site.clone();
     http_site.ssl = false;
     write_site_conf(lo, &http_site).await?;
@@ -1950,7 +1959,7 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
     set_key_perms(&key_path);
 
     // Step 6: rewrite with SSL + persist + reload.
-    op_push(op_id, "启用 HTTPS 配置 …");
+    op_push(op_id, &pmsg("ng.enable_https", &[]));
     write_site_conf(lo, site).await?;
     validate_and_reload(lo).await?;
     let mut sites = load_sites();
@@ -1971,7 +1980,7 @@ fn start_named_cert_issue(lo: Layout, name: String, domain: String) -> Result<Va
     tokio::spawn(async move {
         match issue_le_named(&op_id, &lo, &name, &domain).await {
             Ok(()) => {
-                op_push(&op_id, "证书签发完成");
+                op_push(&op_id, &pmsg("ng.cert_done", &[]));
                 op_finish(&op_id, "done", "");
             }
             Err(e) => op_finish(&op_id, "error", &e.to_string()),
@@ -1983,15 +1992,13 @@ fn start_named_cert_issue(lo: Layout, name: String, domain: String) -> Result<Va
 async fn issue_le_named(op_id: &str, lo: &Layout, name: &str, domain: &str) -> Result<()> {
     let host = primary_host(domain);
     if host.is_empty() || host == "_" || host.contains('*') {
-        return Err(anyhow!(
-            "Let's Encrypt 需要一个具体域名（不支持通配符/默认站点）"
-        ));
+        return Err(anyhow!("ERR_CODE:nginx.le_need_domain_specific"));
     }
 
     // Step 1: write a temporary HTTP-only conf that serves ONLY the ACME
     // webroot for this domain, so the http-01 challenge is reachable even
     // before any site references the cert.
-    op_push(op_id, "准备 HTTP 验证站点 …");
+    op_push(op_id, &pmsg("ng.prep_http", &[]));
     let conf_id = format!("acme-{name}");
     let tmp_conf = format!(
         "server {{\n    listen 80;\n    server_name {host};\n\
@@ -2047,7 +2054,7 @@ async fn acme_http01(op_id: &str, lo: &Layout, host: &str) -> Result<(String, St
     std::fs::create_dir_all(&acme_root)?;
 
     // Create (or implicitly register) an ACME account with Let's Encrypt.
-    op_push(op_id, "连接 Let's Encrypt 并创建账户 …");
+    op_push(op_id, &pmsg("ng.le_account", &[]));
     let (account, _creds) = Account::create(
         &NewAccount {
             contact: &[],
@@ -2061,7 +2068,7 @@ async fn acme_http01(op_id: &str, lo: &Layout, host: &str) -> Result<(String, St
     .map_err(|e| anyhow!("创建 ACME 账户失败：{e}"))?;
 
     // Place an order for the domain.
-    op_push(op_id, &format!("为 {host} 申请证书 …"));
+    op_push(op_id, &pmsg("ng.request_cert", &[host]));
     let identifier = Identifier::Dns(host.to_string());
     let mut order = account
         .new_order(&NewOrder {
@@ -2084,7 +2091,7 @@ async fn acme_http01(op_id: &str, lo: &Layout, host: &str) -> Result<(String, St
             .challenges
             .iter()
             .find(|c| c.r#type == ChallengeType::Http01)
-            .ok_or_else(|| anyhow!("该域名不支持 HTTP-01 验证"))?;
+            .ok_or_else(|| anyhow!("ERR_CODE:nginx.le_no_http01"))?;
 
         // Write the key authorization to <webroot>/.well-known/acme-challenge/<token>.
         let token = &challenge.token;
@@ -2100,7 +2107,7 @@ async fn acme_http01(op_id: &str, lo: &Layout, host: &str) -> Result<(String, St
     }
 
     // Poll the order until it's ready (or fails), then finalize.
-    op_push(op_id, "等待域名验证 …");
+    op_push(op_id, &pmsg("ng.wait_verify", &[]));
     let mut tries = 0;
     let key_pem;
     let cert_chain_pem = loop {
@@ -2116,7 +2123,7 @@ async fn acme_http01(op_id: &str, lo: &Layout, host: &str) -> Result<(String, St
             .map_err(|e| anyhow!("查询订单状态失败：{e}"))?;
         match state.status {
             OrderStatus::Ready => {
-                op_push(op_id, "验证通过，正在签发证书 …");
+                op_push(op_id, &pmsg("ng.verify_ok", &[]));
                 let key_pair =
                     rcgen::KeyPair::generate().map_err(|e| anyhow!("生成私钥失败：{e}"))?;
                 let mut csr_params = rcgen::CertificateParams::new(vec![host.to_string()])
@@ -2145,7 +2152,7 @@ async fn acme_http01(op_id: &str, lo: &Layout, host: &str) -> Result<(String, St
                 tries += 1;
                 if tries > 40 {
                     let _ = cleanup_files(&challenge_files);
-                    return Err(anyhow!("验证超时，请确认域名解析与 80 端口可达"));
+                    return Err(anyhow!("ERR_CODE:nginx.le_verify_timeout"));
                 }
             }
         }
@@ -2165,7 +2172,7 @@ async fn wait_for_cert(order: &mut instant_acme::Order) -> Result<String> {
             Err(e) => return Err(anyhow!("下载证书失败：{e}")),
         }
     }
-    Err(anyhow!("证书签发超时"))
+    Err(anyhow!("ERR_CODE:nginx.le_issue_timeout"))
 }
 
 /// Best-effort cleanup of the written HTTP-01 challenge token files.
