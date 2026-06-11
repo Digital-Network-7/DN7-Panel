@@ -17,7 +17,7 @@ function doLogin() {
       const body = { username, nonce: c.nonce, proof: sha256Hex(c.nonce + ':' + verifier) };
       return fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     })
-    .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(b.error || tr('login.err_fail')); return b; })
+    .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(srvMsg(b) || tr('login.err_fail')); return b; })
     .then((b) => { S.token = b.token; localStorage.setItem('dn7_web_token', S.token); showApp(); })
     .catch((e) => { $('loginErr').textContent = e.message === 'challenge' ? tr('login.err_conn') : e.message; });
 }

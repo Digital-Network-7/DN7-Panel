@@ -136,6 +136,10 @@ const I18N = {
     'upd.error': 'Update failed. Please retry later or switch the download source.', 'upd.restarting': 'New version installed, restarting. Please refresh the page shortly…',
     'upd.retry': 'Retry', 'upd.has_update': 'New version v{latest} available, click to update', 'upd.saved': 'Saved',
     'job.processing': 'Processing…', 'job.log': 'View detailed log', 'job.done': 'Done', 'job.failed': 'Failed: ', 'job.ended': 'Task ended',
+    'err.auth.unauthorized': 'Unauthorized', 'err.auth.rate_limited': 'Too many attempts, please try again later', 'err.auth.bad_credentials': 'Incorrect account or password',
+    'err.settings.port_range': 'Port must be 1-65535', 'err.settings.pw_format': 'Invalid password format', 'err.settings.username_format': 'Account must be 2-32 chars: letters, digits, _ or -',
+    'err.update.source_invalid': 'Source must be auto / github / dn7', 'err.terminal.missing_container': 'Missing container', 'err.files.too_large': 'File too large (max 512MiB)', 'err.common.save_failed': 'Save failed',
+    'err.branding.name_len': 'Name must be 1-40 characters', 'err.branding.logo_invalid': 'Logo must be an image under ~512KB', 'err.branding.accent_format': 'Accent must be #RRGGBB', 'err.branding.theme_invalid': 'Theme must be auto / light / dark',
   },
   'zh-CN': {
     'common.cancel': '取消', 'common.ok': '确定', 'common.confirm': '请确认', 'common.unauthorized': '未授权',
@@ -263,6 +267,10 @@ const I18N = {
     'upd.error': '更新失败，请稍后重试或更换下载源。', 'upd.restarting': '已安装新版本，正在重启，请稍后刷新页面…',
     'upd.retry': '重试', 'upd.has_update': '有新版本 v{latest}，点击更新', 'upd.saved': '已保存',
     'job.processing': '正在处理…', 'job.log': '查看详细日志', 'job.done': '完成', 'job.failed': '失败：', 'job.ended': '任务已结束',
+    'err.auth.unauthorized': '未授权', 'err.auth.rate_limited': '尝试过于频繁，请稍后再试', 'err.auth.bad_credentials': '账号或密码错误',
+    'err.settings.port_range': '端口需为 1-65535', 'err.settings.pw_format': '密码格式错误', 'err.settings.username_format': '账号需为 2-32 位字母/数字/_/-',
+    'err.update.source_invalid': '源需为 auto / github / dn7', 'err.terminal.missing_container': '缺少容器', 'err.files.too_large': '文件过大（上限 512MiB）', 'err.common.save_failed': '保存失败',
+    'err.branding.name_len': '名称需为 1-40 个字符', 'err.branding.logo_invalid': 'Logo 需为图片，且大小不超过约 512KB', 'err.branding.accent_format': '主色需为 #RRGGBB 格式', 'err.branding.theme_invalid': '主题需为 auto/light/dark',
   },
   'zh-TW': {
     'common.cancel': '取消', 'common.ok': '確定', 'common.confirm': '請確認', 'common.unauthorized': '未授權',
@@ -390,6 +398,10 @@ const I18N = {
     'upd.error': '更新失敗，請稍後重試或更換下載來源。', 'upd.restarting': '已安裝新版本，正在重新啟動，請稍後重新整理頁面…',
     'upd.retry': '重試', 'upd.has_update': '有新版本 v{latest}，點擊更新', 'upd.saved': '已儲存',
     'job.processing': '正在處理…', 'job.log': '檢視詳細日誌', 'job.done': '完成', 'job.failed': '失敗：', 'job.ended': '任務已結束',
+    'err.auth.unauthorized': '未授權', 'err.auth.rate_limited': '嘗試過於頻繁，請稍後再試', 'err.auth.bad_credentials': '帳號或密碼錯誤',
+    'err.settings.port_range': '連接埠需為 1-65535', 'err.settings.pw_format': '密碼格式錯誤', 'err.settings.username_format': '帳號需為 2-32 位字母/數字/_/-',
+    'err.update.source_invalid': '來源需為 auto / github / dn7', 'err.terminal.missing_container': '缺少容器', 'err.files.too_large': '檔案過大（上限 512MiB）', 'err.common.save_failed': '儲存失敗',
+    'err.branding.name_len': '名稱需為 1-40 個字元', 'err.branding.logo_invalid': 'Logo 需為圖片，且大小不超過約 512KB', 'err.branding.accent_format': '主色需為 #RRGGBB 格式', 'err.branding.theme_invalid': '主題需為 auto/light/dark',
   },
   ja: {
     'common.cancel': 'キャンセル', 'common.ok': 'OK', 'common.confirm': '確認してください', 'common.unauthorized': '認証されていません',
@@ -517,6 +529,10 @@ const I18N = {
     'upd.error': '更新に失敗しました。後で再試行するかダウンロード元を変更してください。', 'upd.restarting': '新バージョンをインストールしました。再起動中です。しばらくしてページを更新してください…',
     'upd.retry': '再試行', 'upd.has_update': '新しいバージョン v{latest} があります。クリックして更新', 'upd.saved': '保存しました',
     'job.processing': '処理中…', 'job.log': '詳細ログを表示', 'job.done': '完了', 'job.failed': '失敗：', 'job.ended': 'タスクが終了しました',
+    'err.auth.unauthorized': '認証されていません', 'err.auth.rate_limited': '試行回数が多すぎます。しばらくしてから再試行してください', 'err.auth.bad_credentials': 'アカウントまたはパスワードが違います',
+    'err.settings.port_range': 'ポートは1〜65535である必要があります', 'err.settings.pw_format': 'パスワードの形式が不正です', 'err.settings.username_format': 'アカウントは2〜32文字（英数字・_・-）',
+    'err.update.source_invalid': 'ソースは auto / github / dn7 のいずれか', 'err.terminal.missing_container': 'コンテナがありません', 'err.files.too_large': 'ファイルが大きすぎます（上限512MiB）', 'err.common.save_failed': '保存に失敗しました',
+    'err.branding.name_len': '名前は1〜40文字である必要があります', 'err.branding.logo_invalid': 'ロゴは約512KB以下の画像である必要があります', 'err.branding.accent_format': 'アクセントは #RRGGBB 形式', 'err.branding.theme_invalid': 'テーマは auto/light/dark',
   },
 };
 
@@ -534,6 +550,19 @@ function tr(key, vars) {
   let s = (d && d[key] != null) ? d[key] : (I18N.en[key] != null ? I18N.en[key] : key);
   if (vars) for (const k in vars) s = s.split('{' + k + '}').join(vars[k]);
   return s;
+}
+
+// Map a server error response to a localized message. The server returns a
+// stable `code` for fixed/enumerable errors (auth, settings, validation…);
+// we translate it via `err.<code>`. Falls back to the server-provided `error`
+// string (used for dynamic capability errors that aren't code-mapped).
+function srvMsg(body) {
+  if (body && typeof body === 'object' && body.code) {
+    const k = 'err.' + body.code;
+    const m = tr(k);
+    if (m !== k) return m;
+  }
+  return (body && (body.error || (typeof body === 'string' ? body : ''))) || '';
 }
 
 // Translate static nodes: text via data-i18n, placeholder via data-i18n-ph,

@@ -127,8 +127,30 @@ fn require_auth(state: &Shared, headers: &header::HeaderMap) -> Option<Response>
     if state.auth.valid(&token) {
         None
     } else {
-        Some((StatusCode::UNAUTHORIZED, "未授权").into_response())
+        Some(api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"))
     }
+}
+
+/// Build a stable, localizable error response: `{ ok:false, code, error }`.
+/// `code` is a machine-stable identifier the client maps to a translated
+/// message (`err.<code>`); `error` carries the same code as a neutral fallback
+/// for non-localized consumers / logs.
+fn api_err(status: StatusCode, code: &str) -> Response {
+    (
+        status,
+        Json(json!({ "ok": false, "code": code, "error": code })),
+    )
+        .into_response()
+}
+
+/// Like `api_err`, but keep a human detail string (e.g. an underlying IO error)
+/// in `error` while `code` still drives localization on the client.
+fn api_err_detail(status: StatusCode, code: &str, detail: impl std::fmt::Display) -> Response {
+    (
+        status,
+        Json(json!({ "ok": false, "code": code, "error": detail.to_string() })),
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +186,7 @@ async fn login(
 ) -> Response {
     let source = peer.ip().to_string();
     if !state.auth.login_allowed(&source) {
-        return (StatusCode::TOO_MANY_REQUESTS, "尝试过于频繁，请稍后再试").into_response();
+        return api_err(StatusCode::TOO_MANY_REQUESTS, "auth.rate_limited");
     }
     let (exp_user, exp_hash) = {
         let s = state.settings.lock().unwrap();
@@ -183,7 +205,7 @@ async fn login(
         Json(json!({ "ok": true, "token": token })).into_response()
     } else {
         state.auth.record_failure(&source);
-        (StatusCode::UNAUTHORIZED, "账号或密码错误").into_response()
+        api_err(StatusCode::UNAUTHORIZED, "auth.bad_credentials")
     }
 }
 
@@ -336,7 +358,7 @@ async fn put_settings(
         let mut s = state.settings.lock().unwrap();
         if let Some(p) = req.port {
             if !(1..=65535).contains(&p) {
-                return (StatusCode::BAD_REQUEST, "端口需为 1-65535").into_response();
+                return api_err(StatusCode::BAD_REQUEST, "settings.port_range");
             }
             if p != s.port {
                 s.port = p;
@@ -351,7 +373,7 @@ async fn put_settings(
             let salt_ok = salt.len() == 32 && salt.bytes().all(|b| b.is_ascii_hexdigit());
             let hash_ok = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
             if !salt_ok || !hash_ok {
-                return (StatusCode::BAD_REQUEST, "密码格式错误").into_response();
+                return api_err(StatusCode::BAD_REQUEST, "settings.pw_format");
             }
             s.set_password_hashed(&salt, &hash.to_lowercase());
         }
@@ -363,7 +385,7 @@ async fn put_settings(
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
             {
-                return (StatusCode::BAD_REQUEST, "账号需为 2-32 位字母/数字/_/-").into_response();
+                return api_err(StatusCode::BAD_REQUEST, "settings.username_format");
             }
             s.username = un.to_string();
         }
@@ -376,7 +398,7 @@ async fn put_settings(
         s.clone()
     };
     if let Err(e) = settings::save(&saved) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败：{e}")).into_response();
+        return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
     Json(json!({ "ok": true, "needs_restart": needs_restart })).into_response()
 }
@@ -399,7 +421,7 @@ async fn terminal_ws(
     // WebSocket upgrades can't carry an Authorization header from the browser,
     // so a one-time ticket (minted via POST /api/ticket) authorizes the upgrade.
     if !state.auth.consume_ticket(&q.ticket) {
-        return (StatusCode::UNAUTHORIZED, "未授权").into_response();
+        return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized");
     }
     ws.on_upgrade(handle_terminal)
 }
@@ -425,11 +447,11 @@ async fn container_terminal_ws(
     ws: WebSocketUpgrade,
 ) -> Response {
     if !state.auth.consume_ticket(&q.ticket) {
-        return (StatusCode::UNAUTHORIZED, "未授权").into_response();
+        return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized");
     }
     let container = q.container.clone();
     if container.is_empty() {
-        return (StatusCode::BAD_REQUEST, "缺少容器").into_response();
+        return api_err(StatusCode::BAD_REQUEST, "terminal.missing_container");
     }
     ws.on_upgrade(move |socket| async move {
         if let Err(e) = crate::terminal::run_web_container_exec(socket, &container).await {
@@ -527,7 +549,7 @@ struct DownloadQuery {
 
 async fn files_download(State(state): State<Shared>, Query(q): Query<DownloadQuery>) -> Response {
     if !state.auth.consume_ticket(&q.ticket) {
-        return (StatusCode::UNAUTHORIZED, "未授权").into_response();
+        return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized");
     }
     let ctn = q
         .container
@@ -589,7 +611,7 @@ async fn files_upload(
         return r;
     }
     if body.len() as u64 > 512 * 1024 * 1024 {
-        return (StatusCode::PAYLOAD_TOO_LARGE, "文件过大（上限 512MiB）").into_response();
+        return api_err(StatusCode::PAYLOAD_TOO_LARGE, "files.too_large");
     }
     let ctn = q
         .container
@@ -634,7 +656,7 @@ async fn nginx_static_upload(
         return r;
     }
     if body.len() as u64 > 512 * 1024 * 1024 {
-        return (StatusCode::PAYLOAD_TOO_LARGE, "文件过大（上限 512MiB）").into_response();
+        return api_err(StatusCode::PAYLOAD_TOO_LARGE, "files.too_large");
     }
     let mode = q.mode.as_deref().unwrap_or("zip");
     let clear = q.clear.as_deref() == Some("1");
@@ -713,10 +735,10 @@ async fn put_branding(
     }
     let b = match branding::validate(req.panel_name, req.logo, req.accent, req.theme_default) {
         Ok(b) => b,
-        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => return api_err(StatusCode::BAD_REQUEST, &e),
     };
     if let Err(e) = branding::save(&b) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败：{e}")).into_response();
+        return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
     Json(json!({ "ok": true, "data": b })).into_response()
 }
@@ -776,7 +798,7 @@ async fn update_config_put(
     }
     if let Some(p) = req.source_pref {
         if !matches!(p.as_str(), "auto" | "github" | "dn7") {
-            return (StatusCode::BAD_REQUEST, "source 需为 auto/github/dn7").into_response();
+            return api_err(StatusCode::BAD_REQUEST, "update.source_invalid");
         }
         // Switching preference invalidates any sticky probe winner.
         if p != st.source_pref {
@@ -786,7 +808,7 @@ async fn update_config_put(
         st.source_pref = p;
     }
     if let Err(e) = st.save() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("保存失败：{e}")).into_response();
+        return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
     Json(json!({ "ok": true, "data": st })).into_response()
 }

@@ -82,7 +82,8 @@ pub fn save(b: &Branding) -> anyhow::Result<()> {
 }
 
 /// Validate + normalise an incoming branding update. Returns the value to
-/// store, or an error message suitable for a 400 response.
+/// store, or a stable error **code** (mapped client-side to a localized
+/// message via `err.<code>`) suitable for a 400 response.
 pub fn validate(
     panel_name: Option<String>,
     logo: Option<String>,
@@ -93,7 +94,7 @@ pub fn validate(
     if let Some(name) = panel_name {
         let name = name.trim();
         if name.is_empty() || name.chars().count() > 40 {
-            return Err("名称需为 1-40 个字符".into());
+            return Err("branding.name_len".into());
         }
         b.panel_name = name.to_string();
     }
@@ -102,7 +103,7 @@ pub fn validate(
         if logo.is_empty() {
             b.logo = String::new();
         } else if !logo.starts_with("data:image/") || logo.len() > MAX_LOGO_LEN {
-            return Err("Logo 需为图片，且大小不超过约 512KB".into());
+            return Err("branding.logo_invalid".into());
         } else {
             b.logo = logo.to_string();
         }
@@ -112,7 +113,7 @@ pub fn validate(
         if accent.is_empty() {
             b.accent = String::new();
         } else if !is_hex_color(accent) {
-            return Err("主色需为 #RRGGBB 格式".into());
+            return Err("branding.accent_format".into());
         } else {
             b.accent = accent.to_lowercase();
         }
@@ -120,7 +121,7 @@ pub fn validate(
     if let Some(theme) = theme_default {
         match theme.as_str() {
             "auto" | "light" | "dark" => b.theme_default = theme,
-            _ => return Err("主题需为 auto/light/dark".into()),
+            _ => return Err("branding.theme_invalid".into()),
         }
     }
     Ok(b)
