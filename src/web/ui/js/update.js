@@ -31,7 +31,7 @@ function openUpdate() {
       <select id="uSource" class="field">
         <option value="auto">${tr('upd.src_auto')}</option>
         <option value="github">GitHub</option>
-        <option value="dn7">dn7.cn</option>
+        <option value="dn7">Digital Network 7</option>
       </select>
     </div>`;
   modal(tr('upd.title'), body, (close) => {
@@ -54,7 +54,7 @@ function saveUpdCfg() {
     .then(() => toast(tr('upd.saved'))).catch((e) => toast(e.message, 'err'));
 }
 
-function srcLabel(name) { return name === 'dn7' ? 'dn7.cn' : 'GitHub'; }
+function srcLabel(name) { return name === 'dn7' ? 'Digital Network 7' : 'GitHub'; }
 
 function runUpdCheck() {
   const r = $('uResult'); if (!r) return;
