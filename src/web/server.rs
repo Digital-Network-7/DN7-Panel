@@ -313,8 +313,12 @@ struct SettingsReq {
     port: Option<u16>,
     #[serde(default)]
     username: Option<String>,
+    /// Password change: client-computed `salt` + `sha256_hex(salt ":" password)`
+    /// so the plaintext never crosses the wire. Both must be present to change.
     #[serde(default)]
-    password: Option<String>,
+    pw_salt: Option<String>,
+    #[serde(default)]
+    pw_hash: Option<String>,
     #[serde(default)]
     enabled: Option<bool>,
 }
@@ -339,16 +343,17 @@ async fn put_settings(
                 needs_restart = true;
             }
         }
-        if let Some(pw) = req.password {
-            let pw = pw.trim();
-            // Blank means "leave the password unchanged" (the form no longer
-            // pre-fills it). Only validate + set when the operator typed one.
-            if !pw.is_empty() {
-                if pw.len() < 6 || pw.len() > 128 {
-                    return (StatusCode::BAD_REQUEST, "密码长度需为 6-128").into_response();
-                }
-                s.set_password(pw);
+        // Password change: accept a client-computed salt + hash (plaintext never
+        // crosses the wire). Both must be present and well-formed hex.
+        if req.pw_salt.is_some() || req.pw_hash.is_some() {
+            let salt = req.pw_salt.unwrap_or_default();
+            let hash = req.pw_hash.unwrap_or_default();
+            let salt_ok = salt.len() == 32 && salt.bytes().all(|b| b.is_ascii_hexdigit());
+            let hash_ok = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
+            if !salt_ok || !hash_ok {
+                return (StatusCode::BAD_REQUEST, "密码格式错误").into_response();
             }
+            s.set_password_hashed(&salt, &hash.to_lowercase());
         }
         if let Some(un) = req.username {
             let un = un.trim();

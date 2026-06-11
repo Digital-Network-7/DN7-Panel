@@ -9,7 +9,7 @@ function renderDash(v) {
     </div>`;
   const hist = { rx: [], tx: [] };
   const st = { sort: 'cpu', data: null };
-  const refresh = () => {
+  const doMetrics = () => {
     api('/api/metrics').then((b) => {
       const m = b.data;
       hist.rx.push(m.net_rx || 0); hist.tx.push(m.net_tx || 0);
@@ -22,7 +22,19 @@ function renderDash(v) {
         netCard(m.net_rx || 0, m.net_tx || 0, hist),
       ].join('');
     }).catch(() => {});
+  };
+  const doProcs = () => {
     api('/api/procs').then((b) => { st.data = b.data; renderProcs(st); }).catch(() => {});
+  };
+  // Poll loop: skip entirely while the tab is in the background (no point
+  // burning CPU collecting metrics nobody is looking at), and refresh the
+  // heavier process listing on a slower beat than the lightweight stat cards.
+  let beat = 0;
+  const tick = () => {
+    if (document.hidden) return;
+    doMetrics();
+    if (beat % 3 === 0) doProcs(); // process table every ~6s; cards every 2s
+    beat++;
   };
   // Clicking the CPU / 内存 header toggles which ranking is shown.
   $('procHead').addEventListener('click', (e) => {
@@ -31,7 +43,9 @@ function renderDash(v) {
     st.sort = th.dataset.sort;
     renderProcs(st);
   });
-  refresh(); S.timer = setInterval(refresh, 2000);
+  doMetrics(); doProcs(); // immediate first paint
+  beat = 1;
+  S.timer = setInterval(tick, 2000);
 }
 // Render the process ranking. `st.sort` is 'cpu' | 'mem'; the panel returns both
 // pre-sorted lists (by_cpu / by_mem) so switching is instant + accurate. The

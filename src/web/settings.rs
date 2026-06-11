@@ -77,11 +77,11 @@ impl WebSettings {
         &self.pw_hash
     }
 
-    /// Set a (user-chosen) password: fresh salt + hash, marked non-default.
-    pub fn set_password(&mut self, plain: &str) {
-        let salt = gen_salt();
-        self.pw_hash = hash_password(&salt, plain);
-        self.pw_salt = salt;
+    /// Set a password from a client-computed salt + hash (so the plaintext never
+    /// crosses the wire). Marked non-default.
+    pub fn set_password_hashed(&mut self, salt: &str, hash: &str) {
+        self.pw_salt = salt.to_string();
+        self.pw_hash = hash.to_string();
         self.pw_default = false;
     }
 
@@ -182,9 +182,10 @@ mod tests {
             pw_default: true,
             owner_uid: 0,
         };
-        s.set_password("mySecret!42");
+        let salt = "0123456789abcdef0123456789abcdef";
+        s.set_password_hashed(salt, &hash_password(salt, "mySecret!42"));
         // Stored as salt + hash, never the plaintext.
-        assert!(!s.pw_salt.is_empty());
+        assert_eq!(s.pw_salt, salt);
         assert_eq!(s.pw_hash.len(), 64);
         assert!(!s.pw_hash.contains("mySecret"));
         assert!(!s.pw_default);

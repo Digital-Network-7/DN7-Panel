@@ -90,6 +90,15 @@ function op(kind, obj) { return api('/api/' + kind, { method: 'POST', body: JSON
 // link — the session token must never travel in a URL (history/proxy logs).
 function ticket() { return api('/api/ticket', { method: 'POST' }).then((b) => b.data.ticket); }
 
+// Random hex string of `n` bytes (uses the CSPRNG; getRandomValues works on
+// insecure origins too). Used to salt a client-side password hash.
+function randHex(n) {
+  const a = new Uint8Array(n);
+  if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(a);
+  else for (let i = 0; i < n; i++) a[i] = Math.floor(Math.random() * 256);
+  return Array.from(a).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 function fmtBytes(n) {
   n = Number(n) || 0; const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }

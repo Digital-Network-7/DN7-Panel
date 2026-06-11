@@ -49,7 +49,14 @@ function renderSettings(v) {
     $('setSave').onclick = () => {
       const body = { username: $('setUser').value, port: Number($('setPort').value), enabled: $('setEnabled').checked };
       const pw = $('setPw').value;
-      if (pw) body.password = pw; // only send when the operator typed a new one
+      if (pw) {
+        if (pw.length < 6 || pw.length > 128) { const m = $('setMsg'); m.className = 'err'; m.textContent = '密码长度需为 6-128'; return; }
+        // Hash client-side with a fresh salt so the new password never crosses
+        // the (plaintext-HTTP) wire; the server stores salt + hash verbatim.
+        const salt = randHex(16);
+        body.pw_salt = salt;
+        body.pw_hash = sha256Hex(salt + ':' + pw);
+      }
       api('/api/settings', { method: 'POST', body: JSON.stringify(body) })
         .then((b) => { const m = $('setMsg'); m.className = 'err ok'; m.textContent = '已保存' + (b.needs_restart ? '（端口/开关改动需重启 Panel 生效）' : ''); $('setPw').value = ''; setUser(body.username); })
         .catch((e) => { const m = $('setMsg'); m.className = 'err'; m.textContent = e.message; });
