@@ -66,6 +66,7 @@ function runUpdCheck() {
     if (d.has_update) {
       html += `<div class="ok" style="font-size:14px;margin-bottom:10px">${tr('upd.found', { latest: esc(d.latest), current: esc(d.current) })}</div>`;
       html += `<button class="btn" id="uApply">${tr('upd.apply_to', { latest: esc(d.latest) })}</button>`;
+      html += '<div id="uChangelog"></div>';
     } else if (d.latest) {
       html += `<div class="mut" style="margin-bottom:6px">${tr('upd.latest', { current: esc(d.current) })}</div>`;
     } else {
@@ -77,8 +78,36 @@ function runUpdCheck() {
       return `<div class="row" style="justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)"><span>${srcLabel(s.name)}${star}</span>${tag}</div>`;
     }).join('') + '</div>';
     r.innerHTML = html;
-    if (d.has_update) $('uApply').onclick = applyUpdate;
+    if (d.has_update) { $('uApply').onclick = applyUpdate; loadChangelog(); }
   }).catch((e) => { r.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+}
+
+// Fetch + render "what's new": the notes for every version this update brings
+// (newest first). Shows the latest version expanded; the rest collapse behind a
+// "view all" toggle. Works from whichever source (GitHub / Digital Network 7)
+// is reachable; a fetch failure degrades to a quiet hint.
+function loadChangelog() {
+  const host = $('uChangelog'); if (!host) return;
+  api('/api/update/changelog').then((b) => {
+    const entries = (b.data && b.data.entries) || [];
+    if (!entries.length) { host.innerHTML = ''; return; }
+    const entry = (e) => `<div class="cl-entry"><div class="cl-ver">v${esc(e.version)}${e.date ? ' · ' + esc(e.date) : ''}</div>`
+      + (e.notes && e.notes.length ? '<ul class="cl-notes">' + e.notes.map((n) => `<li>${esc(n)}</li>`).join('') + '</ul>' : '')
+      + '</div>';
+    let html = `<div class="cl-title">${tr('upd.changelog')}</div>` + entry(entries[0]);
+    if (entries.length > 1) {
+      html += `<div id="uClMore" class="hidden">${entries.slice(1).map(entry).join('')}</div>`;
+      html += `<button class="cl-toggle" id="uClToggle">${tr('upd.view_all', { n: entries.length })}</button>`;
+    }
+    host.innerHTML = `<div class="upd-cl">${html}</div>`;
+    if (entries.length > 1) {
+      $('uClToggle').onclick = () => {
+        const more = $('uClMore'); const closed = more.classList.contains('hidden');
+        more.classList.toggle('hidden');
+        $('uClToggle').textContent = closed ? tr('upd.collapse') : tr('upd.view_all', { n: entries.length });
+      };
+    }
+  }).catch(() => { host.innerHTML = `<div class="mut" style="font-size:12px;margin-top:10px">${tr('upd.cl_unavailable')}</div>`; });
 }
 
 function applyUpdate() {

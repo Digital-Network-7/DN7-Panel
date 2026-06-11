@@ -83,6 +83,7 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
             get(update_config_get).post(update_config_put),
         )
         .route("/api/update/check", post(update_check))
+        .route("/api/update/changelog", get(update_changelog))
         .route("/api/update/apply", post(update_apply))
         .route("/api/docker", post(docker_op))
         .route("/api/nginx", post(nginx_op))
@@ -832,6 +833,16 @@ async fn update_check(State(state): State<Shared>, headers: header::HeaderMap) -
         return r;
     }
     let res = crate::update::check(&state.cfg).await;
+    Json(json!({ "ok": true, "data": res })).into_response()
+}
+
+/// GET /api/update/changelog — release notes for every version newer than the
+/// running one (newest first), from whichever source is reachable. Auth req.
+async fn update_changelog(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+    if let Some(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    let res = crate::update::changelog(&state.cfg).await;
     Json(json!({ "ok": true, "data": res })).into_response()
 }
 

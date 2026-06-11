@@ -128,11 +128,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout (with tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+
+      - name: Generate changelog index (releases.json)
+        env:
+          NEW_VERSION: ${{ needs.version.outputs.version }}
+        run: python3 .github/gen_releases.py dist/releases.json
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

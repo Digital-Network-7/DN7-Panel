@@ -335,3 +335,13 @@
   .job-log summary::-webkit-details-marker { display:none; }
   .job-log summary::before { content:'▸ '; }
   .job-log[open] summary::before { content:'▾ '; }
+
+/* ---- Update "what's new" changelog ---- */
+.upd-cl { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+.upd-cl .cl-title { font-size: 12.5px; font-weight: 600; opacity: .85; margin-bottom: 8px; }
+.upd-cl .cl-entry { margin-bottom: 10px; }
+.upd-cl .cl-ver { font-size: 12.5px; font-weight: 600; color: var(--cy); }
+.upd-cl .cl-notes { margin: 4px 0 0; padding-left: 18px; }
+.upd-cl .cl-notes li { font-size: 12.5px; line-height: 1.7; color: var(--mut); }
+.upd-cl .cl-toggle { margin-top: 4px; background: none; border: none; padding: 2px 0; cursor: pointer; color: var(--br); font-size: 12.5px; }
+.upd-cl .cl-toggle:hover { text-decoration: underline; }
