@@ -96,6 +96,11 @@ struct Req {
     cpus: Option<String>,
     #[serde(default)]
     memory: Option<String>,
+    // docker install options
+    #[serde(default)]
+    channel: Option<String>, // "distro" (docker.io, default) | "ce" (official latest)
+    #[serde(default)]
+    region: Option<String>, // "auto" (default) | "cn" | "global"
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -335,7 +340,7 @@ async fn handle(req: &Req) -> Result<Value> {
         "list_images" => list_images().await,
         "pull_image" => start_pull(req),
         "create_container" => start_create(req),
-        "install" => start_install(),
+        "install" => start_install(req),
         "list_ops" => Ok(ops_snapshot()),
         "op_log" => {
             let op_id = req.op_id.as_deref().unwrap_or("");
@@ -1796,7 +1801,7 @@ async fn create_container(spec: CreateSpec) -> Result<(String, bool)> {
 
 /// Start (or resume watching) a detached Docker install. Uses a fixed op id so
 /// re-entering the page finds the in-progress install and its full log.
-fn start_install() -> Result<Value> {
+fn start_install(req: &Req) -> Result<Value> {
     const INSTALL_OP: &str = "install";
     // If an install is already running, just hand back its op id.
     if let Ok(m) = ops().lock() {
@@ -1815,9 +1820,22 @@ fn start_install() -> Result<Value> {
         ));
     }
 
+    // "distro" (docker.io, default) | "ce"; "auto" (default) | "cn" | "global".
+    let channel = match req.channel.as_deref() {
+        Some("ce") => "ce",
+        _ => "distro",
+    }
+    .to_string();
+    let region = match req.region.as_deref() {
+        Some("cn") => "cn",
+        Some("global") => "global",
+        _ => "auto",
+    }
+    .to_string();
+
     op_create(INSTALL_OP, "install", "docker");
     tokio::spawn(async move {
-        match run_install_detached(INSTALL_OP).await {
+        match run_install_detached(INSTALL_OP, &channel, &region).await {
             Ok(()) => op_finish(INSTALL_OP, "done", "", ""),
             Err(e) => op_finish(INSTALL_OP, "error", &e.to_string(), ""),
         }
@@ -1825,48 +1843,247 @@ fn start_install() -> Result<Value> {
     Ok(json!({ "op_id": INSTALL_OP, "target": "docker" }))
 }
 
-async fn run_install_detached(op_id: &str) -> Result<()> {
-    if let Ok(info) = docker_info().await {
-        if info.get("installed").and_then(Value::as_bool) == Some(true) {
-            op_push(op_id, "Docker 已安装");
-            return Ok(());
-        }
+async fn run_install_detached(op_id: &str, channel: &str, region_pref: &str) -> Result<()> {
+    if docker_is_installed().await {
+        op_push(op_id, "Docker 已安装");
+        return Ok(());
     }
 
-    op_push(op_id, "下载 Docker 安装脚本（get.docker.com，阿里云镜像）…");
-    let script = "set -e; \
-        if command -v curl >/dev/null 2>&1; then \
-          curl -fsSL https://get.docker.com -o /tmp/dn7-get-docker.sh; \
-        elif command -v wget >/dev/null 2>&1; then \
-          wget -qO /tmp/dn7-get-docker.sh https://get.docker.com; \
-        else echo 'no curl/wget' >&2; exit 1; fi; \
-        sh /tmp/dn7-get-docker.sh --mirror Aliyun; \
-        rm -f /tmp/dn7-get-docker.sh";
-    stream_shell_to_op(op_id, script).await?;
+    let os = detect_os();
+    op_push(
+        op_id,
+        &format!("检测到系统：{}（{}）", os.pretty, os.family),
+    );
 
-    op_push(op_id, "配置国内镜像加速并重启 Docker …");
-    let conf = r#"set -e; mkdir -p /etc/docker; cat > /etc/docker/daemon.json <<'JSON'
+    let region = resolve_region(region_pref).await;
+    op_push(
+        op_id,
+        &format!(
+            "安装方式：{}；网络地区：{}",
+            if channel == "ce" {
+                "官方 docker-ce"
+            } else {
+                "系统自带 docker.io"
+            },
+            if region == "cn" {
+                "国内（镜像加速）"
+            } else {
+                "海外（官方源）"
+            }
+        ),
+    );
+
+    // Primary attempt: native distro package (friendliest, uses the system's
+    // existing mirrors — no external Docker repo), or the official convenience
+    // script for the `ce` channel / unknown distros.
+    let primary = build_install_script(&os.family, channel, region);
+    op_push(op_id, "开始安装 Docker …");
+    let _ = stream_shell_to_op(op_id, &primary).await;
+
+    // Universal fallback: if the daemon still isn't present, run get.docker.com
+    // (it handles the repo setup for every supported distro). Covers e.g. RHEL/
+    // Rocky/Alma where the distro repos ship podman, not a `docker` package.
+    if !docker_is_installed().await {
+        op_push(op_id, "改用通用安装脚本 get.docker.com …");
+        let _ = stream_shell_to_op(op_id, &get_docker_script(region)).await;
+    }
+
+    // Region tuning + enable/start. For CN, write registry-mirror accelerators
+    // (faster image pulls) before restarting; otherwise just ensure it's up.
+    if region == "cn" {
+        op_push(op_id, "配置国内镜像加速并启动 Docker …");
+        let _ = stream_shell_to_op(op_id, REGISTRY_MIRROR_SCRIPT).await;
+    } else {
+        op_push(op_id, "启动 Docker …");
+        let _ = stream_shell_to_op(op_id, ENABLE_START_SCRIPT).await;
+    }
+
+    op_push(op_id, "校验安装结果 …");
+    if docker_is_installed().await {
+        op_push(op_id, "安装完成");
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "未能安装/启动 Docker。请检查系统日志，或在「设置」中改用其它安装方式重试"
+        ))
+    }
+}
+
+/// True when the Docker daemon is reachable (installed + running).
+async fn docker_is_installed() -> bool {
+    docker_info()
+        .await
+        .ok()
+        .and_then(|i| i.get("installed").and_then(Value::as_bool))
+        == Some(true)
+}
+
+/// Detected host OS family + a human label.
+struct OsInfo {
+    family: String,
+    pretty: String,
+}
+
+/// Classify the host distro from `/etc/os-release` into an install family.
+fn detect_os() -> OsInfo {
+    fn unquote(s: &str) -> String {
+        s.trim().trim_matches('"').to_string()
+    }
+    let txt = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let (mut id, mut like, mut name, mut ver) =
+        (String::new(), String::new(), String::new(), String::new());
+    for line in txt.lines() {
+        if let Some(v) = line.strip_prefix("ID=") {
+            id = unquote(v);
+        } else if let Some(v) = line.strip_prefix("ID_LIKE=") {
+            like = unquote(v);
+        } else if let Some(v) = line.strip_prefix("PRETTY_NAME=") {
+            name = unquote(v);
+        } else if let Some(v) = line.strip_prefix("VERSION_ID=") {
+            ver = unquote(v);
+        }
+    }
+    let hay = format!(" {} {} ", id.to_lowercase(), like.to_lowercase());
+    let has = |needles: &[&str]| needles.iter().any(|n| hay.contains(n));
+    let family = if has(&["debian", "ubuntu", "linuxmint", "raspbian", "devuan", "pop"]) {
+        "debian"
+    } else if has(&[
+        "rhel",
+        "centos",
+        "fedora",
+        "rocky",
+        "almalinux",
+        "amzn",
+        "ol",
+        "oracle",
+    ]) {
+        "rhel"
+    } else if has(&["suse", "sles", "opensuse"]) {
+        "suse"
+    } else if has(&["arch", "manjaro", "endeavouros"]) {
+        "arch"
+    } else if has(&["alpine"]) {
+        "alpine"
+    } else {
+        "unknown"
+    };
+    let pretty = if !name.is_empty() {
+        name
+    } else if !id.is_empty() {
+        format!("{id} {ver}").trim().to_string()
+    } else {
+        "Linux".to_string()
+    };
+    OsInfo {
+        family: family.to_string(),
+        pretty,
+    }
+}
+
+/// Resolve the region preference to "cn" | "global". For "auto", probe whether
+/// Docker's global infra is quickly reachable; if not, assume a CN network.
+async fn resolve_region(pref: &str) -> &'static str {
+    match pref {
+        "cn" => "cn",
+        "global" => "global",
+        _ => {
+            if tcp_reachable("download.docker.com:443", 2500).await {
+                "global"
+            } else {
+                "cn"
+            }
+        }
+    }
+}
+
+/// Best-effort: can we open a TCP connection to `addr` within `ms` ms?
+async fn tcp_reachable(addr: &str, ms: u64) -> bool {
+    let addrs = match tokio::net::lookup_host(addr).await {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    for a in addrs {
+        let ok = tokio::time::timeout(
+            std::time::Duration::from_millis(ms),
+            tokio::net::TcpStream::connect(a),
+        )
+        .await
+        .map(|r| r.is_ok())
+        .unwrap_or(false);
+        if ok {
+            return true;
+        }
+    }
+    false
+}
+
+/// Build the primary install script for a distro family + channel + region.
+fn build_install_script(family: &str, channel: &str, region: &str) -> String {
+    // The `ce` channel and unknown distros use Docker's convenience script,
+    // which sets up the official repo for every supported distro.
+    if channel == "ce" || family == "unknown" {
+        return get_docker_script(region);
+    }
+    match family {
+        "debian" => "set -e\n\
+             export DEBIAN_FRONTEND=noninteractive\n\
+             apt-get update\n\
+             apt-get install -y docker.io\n\
+             apt-get install -y docker-compose-v2 >/dev/null 2>&1 || true"
+            .to_string(),
+        // Fedora / Amazon Linux ship a `docker`/`moby-engine` package; RHEL/
+        // Rocky/Alma don't (they get caught by the get.docker.com fallback).
+        "rhel" => "set -e\n\
+             (dnf -y install docker || dnf -y install moby-engine || yum -y install docker)"
+            .to_string(),
+        "suse" => "set -e\nzypper --non-interactive install docker".to_string(),
+        "arch" => "set -e\npacman -Sy --noconfirm docker".to_string(),
+        "alpine" => "set -e\n\
+             apk add --no-cache docker docker-cli-compose\n\
+             rc-update add docker boot || true"
+            .to_string(),
+        _ => get_docker_script(region),
+    }
+}
+
+/// Docker's official convenience script, mirrored to Aliyun for CN networks.
+fn get_docker_script(region: &str) -> String {
+    let mirror = if region == "cn" {
+        " --mirror Aliyun"
+    } else {
+        ""
+    };
+    format!(
+        "set -e\n\
+         if command -v curl >/dev/null 2>&1; then curl -fsSL https://get.docker.com -o /tmp/dn7-get-docker.sh;\n\
+         elif command -v wget >/dev/null 2>&1; then wget -qO /tmp/dn7-get-docker.sh https://get.docker.com;\n\
+         else echo 'no curl/wget' >&2; exit 1; fi\n\
+         sh /tmp/dn7-get-docker.sh{mirror}\n\
+         rm -f /tmp/dn7-get-docker.sh"
+    )
+}
+
+/// Ensure the docker service is enabled + started across init systems.
+const ENABLE_START_SCRIPT: &str = "systemctl enable --now docker 2>/dev/null \
+     || service docker start 2>/dev/null \
+     || rc-service docker start 2>/dev/null || true";
+
+/// Write CN registry-mirror accelerators into daemon.json and (re)start Docker.
+/// NOTE: public CN accelerators change/shut down periodically — review these.
+const REGISTRY_MIRROR_SCRIPT: &str = r#"set -e
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json <<'JSON'
 {
   "registry-mirrors": [
     "https://docker.m.daocloud.io",
-    "https://mirror.ccs.tencentyun.com"
+    "https://docker.1ms.run",
+    "https://dockerproxy.net"
   ]
 }
 JSON
 systemctl daemon-reload 2>/dev/null || true
 systemctl enable docker 2>/dev/null || true
-systemctl restart docker 2>/dev/null || service docker restart 2>/dev/null || true"#;
-    let _ = stream_shell_to_op(op_id, conf).await;
-
-    op_push(op_id, "校验安装结果 …");
-    let info = docker_info().await?;
-    if info.get("installed").and_then(Value::as_bool) == Some(true) {
-        op_push(op_id, "安装完成");
-        Ok(())
-    } else {
-        Err(anyhow!("安装完成但 Docker 守护进程未就绪，请检查系统日志"))
-    }
-}
+systemctl restart docker 2>/dev/null || service docker restart 2>/dev/null || rc-service docker restart 2>/dev/null || true"#;
 
 /// Run a shell script, pushing combined output lines into the op registry.
 async fn stream_shell_to_op(op_id: &str, script: &str) -> Result<()> {
@@ -2010,6 +2227,8 @@ mod tests {
             tty: None,
             cpus: None,
             memory: None,
+            channel: None,
+            region: None,
         }
     }
 
@@ -2020,6 +2239,21 @@ mod tests {
         assert!(restart_allowed("always"));
         assert!(!restart_allowed("on-failure"));
         assert!(!restart_allowed("; rm -rf /"));
+    }
+
+    #[test]
+    fn install_script_selection() {
+        // distro channel → native package per family
+        assert!(build_install_script("debian", "distro", "global").contains("docker.io"));
+        assert!(build_install_script("rhel", "distro", "global").contains("install docker"));
+        assert!(build_install_script("arch", "distro", "cn").contains("pacman"));
+        assert!(build_install_script("alpine", "distro", "cn").contains("apk add"));
+        // ce channel + unknown distro → official convenience script
+        assert!(build_install_script("debian", "ce", "global").contains("get.docker.com"));
+        assert!(build_install_script("unknown", "distro", "global").contains("get.docker.com"));
+        // CN networks add the Aliyun package mirror; global does not.
+        assert!(get_docker_script("cn").contains("--mirror Aliyun"));
+        assert!(!get_docker_script("global").contains("--mirror"));
     }
 
     #[test]

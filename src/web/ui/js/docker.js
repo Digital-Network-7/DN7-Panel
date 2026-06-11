@@ -11,10 +11,24 @@ function renderDocker(v) {
   }
   op('docker', { op: 'info' }).then((info) => {
     if (!info.installed) {
-      v.innerHTML = `<div class="card"><h3>Docker</h3><p class="mut">本机未检测到 Docker 守护进程。</p><button class="btn" id="dkInstall">一键安装 Docker</button><div id="dkInstallJob" class="hidden" style="margin-top:14px"></div></div>`;
+      v.innerHTML = `<div class="card" style="max-width:520px"><h3>Docker</h3><p class="mut">本机未检测到 Docker 守护进程。</p>
+        <label class="lbl">安装方式</label>
+        <select id="dkChannel" class="field" style="margin-bottom:10px">
+          <option value="distro">系统自带 docker.io（推荐，最稳，走系统镜像）</option>
+          <option value="ce">官方最新 docker-ce</option>
+        </select>
+        <label class="lbl">网络 / 地区</label>
+        <select id="dkRegion" class="field" style="margin-bottom:14px">
+          <option value="auto">自动检测</option>
+          <option value="cn">国内（镜像加速）</option>
+          <option value="global">海外（官方源）</option>
+        </select>
+        <button class="btn" id="dkInstall">一键安装 Docker</button>
+        <div id="dkInstallJob" class="hidden" style="margin-top:14px"></div></div>`;
       $('dkInstall').onclick = () => {
         $('dkInstall').disabled = true; $('dkInstallJob').classList.remove('hidden');
-        op('docker', { op: 'install' }).then((r) => renderJob($('dkInstallJob'), 'docker', r.op_id, 'docker:install', { onDone: () => setTimeout(() => renderDocker(v), 800), onError: () => { $('dkInstall').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('dkInstall').disabled = false; });
+        const body = { op: 'install', channel: $('dkChannel').value, region: $('dkRegion').value };
+        op('docker', body).then((r) => renderJob($('dkInstallJob'), 'docker', r.op_id, 'docker:install', { onDone: () => setTimeout(() => renderDocker(v), 800), onError: () => { $('dkInstall').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('dkInstall').disabled = false; });
       };
       return;
     }
