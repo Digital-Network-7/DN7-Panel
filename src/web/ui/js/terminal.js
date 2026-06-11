@@ -2,7 +2,7 @@
 // Terminal tab (host shell) + reusable terminal launcher
 // =========================================================================
 function renderTerm(v) {
-  v.innerHTML = `<div class="term-page"><div class="term-wrap" style="flex:1;min-height:0"><div class="term-bar"><span class="dot-s on" id="tStatus"></span><span id="tLabel">主机终端</span><span class="sp"></span><span class="mut">点击下方区域即可输入</span></div><div class="vterm" id="vterm"></div></div></div>`;
+  v.innerHTML = `<div class="term-page"><div class="term-wrap" style="flex:1;min-height:0"><div class="term-bar"><span class="dot-s on" id="tStatus"></span><span id="tLabel">${tr('term.host')}</span><span class="sp"></span><span class="mut">${tr('term.hint')}</span></div><div class="vterm" id="vterm"></div></div></div>`;
   ticket()
     .then((t) => mountTerminal($('vterm'), $('tStatus'), `/api/terminal?ticket=${encodeURIComponent(t)}`))
     .catch((e) => { const d = $('tStatus'); if (d) d.className = 'dot-s'; toast(e.message, 'err'); });
@@ -16,7 +16,7 @@ function mountTerminal(hostEl, statusDot, wsPath) {
   const term = VTerm(hostEl, (s) => { if (ws.readyState === 1) ws.send(s); });
   ws.onopen = () => { if (statusDot) statusDot.className = 'dot-s on'; setTimeout(() => { term.fit(); term.focus(); }, 30); };
   ws.onmessage = (e) => { term.feed(typeof e.data === 'string' ? e.data : dec.decode(e.data, { stream: true })); };
-  ws.onclose = () => { if (statusDot) statusDot.className = 'dot-s'; term.feed('\r\n\x1b[90m[连接已关闭]\x1b[0m\r\n'); };
+  ws.onclose = () => { if (statusDot) statusDot.className = 'dot-s'; term.feed('\r\n\x1b[90m' + tr('term.closed') + '\x1b[0m\r\n'); };
   ws.onerror = () => { if (statusDot) statusDot.className = 'dot-s'; };
   hostEl.addEventListener('click', () => term.focus());
   const onResize = () => term.fit();
@@ -32,7 +32,7 @@ function openTerminalModal(title, wsPath) {
   const root = $('modalRoot');
   const mask = el('div', { class: 'mask term-mask' });
   const panel = el('div', { class: 'term-overlay' });
-  panel.innerHTML = `<div class="term-wrap" style="height:100%"><div class="term-bar"><span class="dot-s" id="mtStatus"></span><span>${esc(title)}</span><span class="sp"></span><button class="term-x" title="关闭">&times;</button></div><div class="vterm" id="mvterm"></div></div>`;
+  panel.innerHTML = `<div class="term-wrap" style="height:100%"><div class="term-bar"><span class="dot-s" id="mtStatus"></span><span>${esc(title)}</span><span class="sp"></span><button class="term-x" title="${tr('term.close')}">&times;</button></div><div class="vterm" id="mvterm"></div></div>`;
   mask.appendChild(panel);
   root.appendChild(mask);
   const cleanup = mountTerminal(panel.querySelector('#mvterm'), panel.querySelector('#mtStatus'), wsPath);

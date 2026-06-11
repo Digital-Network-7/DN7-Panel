@@ -39,8 +39,8 @@ function renderJob(host, kind, opId, slot, cb) {
   cb = cb || {};
   host.innerHTML = `
     <div class="prog indet" id="jpBar"><i></i></div>
-    <div class="job-line" id="jpLine">正在处理…</div>
-    <details class="job-log"><summary>查看详细日志</summary><pre class="out" id="jpLog" style="margin-top:8px;max-height:30vh"></pre></details>`;
+    <div class="job-line" id="jpLine">${tr('job.processing')}</div>
+    <details class="job-log"><summary>${tr('job.log')}</summary><pre class="out" id="jpLog" style="margin-top:8px;max-height:30vh"></pre></details>`;
   const bar = host.querySelector('#jpBar'), line = host.querySelector('#jpLine'), log = host.querySelector('#jpLog');
   if (slot) saveJob(slot, { kind, opId });
   let stopped = false;
@@ -50,13 +50,13 @@ function renderJob(host, kind, opId, slot, cb) {
     op(kind, { op: 'op_log', op_id: opId }).then((d) => {
       const lines = d.lines || [];
       log.textContent = lines.join('\n'); log.scrollTop = log.scrollHeight;
-      line.textContent = lines.length ? lines[lines.length - 1] : '正在处理…';
+      line.textContent = lines.length ? lines[lines.length - 1] : tr('job.processing');
       // Prefer the server-computed percent; fall back to client-side parsing.
       const pct = (typeof d.pct === 'number' && d.pct >= 0) ? d.pct / 100 : parsePullPct(lines);
       if (pct != null) { bar.classList.remove('indet'); bar.querySelector('i').style.width = (pct * 100).toFixed(0) + '%'; }
-      if (d.status === 'done') { finish('done'); line.textContent = '完成'; op(kind, { op: 'dismiss_op', op_id: opId }).catch(() => {}); if (cb.onDone) cb.onDone(); }
-      else if (d.status === 'error') { finish('err'); line.textContent = '失败：' + (d.error || ''); op(kind, { op: 'dismiss_op', op_id: opId }).catch(() => {}); if (cb.onError) cb.onError(d.error); }
-      else if (d.status === 'gone') { finish('err'); line.textContent = '任务已结束'; if (slot) saveJob(slot, null); }
+      if (d.status === 'done') { finish('done'); line.textContent = tr('job.done'); op(kind, { op: 'dismiss_op', op_id: opId }).catch(() => {}); if (cb.onDone) cb.onDone(); }
+      else if (d.status === 'error') { finish('err'); line.textContent = tr('job.failed') + (d.error || ''); op(kind, { op: 'dismiss_op', op_id: opId }).catch(() => {}); if (cb.onError) cb.onError(d.error); }
+      else if (d.status === 'gone') { finish('err'); line.textContent = tr('job.ended'); if (slot) saveJob(slot, null); }
       else setTimeout(tick, 900);
     }).catch(() => setTimeout(tick, 1500));
   };

@@ -9,15 +9,15 @@ function updateBadge() {
   api('/api/update/check', { method: 'POST' }).then((b) => {
     const d = b.data, dot = $('verDot');
     if (dot) dot.classList.toggle('hidden', !d.has_update);
-    if (d.has_update && $('verLine')) $('verLine').title = '有新版本 v' + d.latest + '，点击更新';
+    if (d.has_update && $('verLine')) $('verLine').title = tr('upd.has_update', { latest: d.latest });
   }).catch(() => {});
 }
 
 function openUpdate() {
   const body = `
     <div class="row" style="justify-content:space-between;align-items:center">
-      <div>当前版本 <b id="uCur">…</b></div>
-      <button class="btn sec sm" id="uCheck">检查更新</button>
+      <div>${tr('upd.current')} <b id="uCur">…</b></div>
+      <button class="btn sec sm" id="uCheck">${tr('upd.check')}</button>
     </div>
     <div id="uResult" style="margin-top:14px"></div>
     <div id="uProg" class="hidden" style="margin-top:14px">
@@ -25,16 +25,16 @@ function openUpdate() {
       <div class="job-line" id="uProgTxt"></div>
     </div>
     <div class="card" style="margin-top:16px;background:var(--panel2)">
-      <h3>更新设置</h3>
-      <label class="switch"><input type="checkbox" id="uAuto"/><span class="swbox"></span><span class="swtxt"><b>自动更新</b><span>发现新版本后每分钟自动检测并更新；关闭则每小时检测，仅提示</span></span></label>
-      <label class="lbl" style="margin-top:10px">下载源</label>
+      <h3>${tr('upd.settings')}</h3>
+      <label class="switch"><input type="checkbox" id="uAuto"/><span class="swbox"></span><span class="swtxt"><b>${tr('upd.auto')}</b><span>${tr('upd.auto_d')}</span></span></label>
+      <label class="lbl" style="margin-top:10px">${tr('upd.source')}</label>
       <select id="uSource" class="field">
-        <option value="auto">自动（测速择优，并记住最快的源）</option>
+        <option value="auto">${tr('upd.src_auto')}</option>
         <option value="github">GitHub</option>
         <option value="dn7">dn7.cn</option>
       </select>
     </div>`;
-  modal('Panel 更新', body, (close) => {
+  modal(tr('upd.title'), body, (close) => {
     UPD.close = close;
     api('/api/update/config').then((b) => {
       $('uAuto').checked = !!b.data.auto;
@@ -51,29 +51,29 @@ function openUpdate() {
 
 function saveUpdCfg() {
   api('/api/update/config', { method: 'POST', body: JSON.stringify({ auto: $('uAuto').checked, source_pref: $('uSource').value }) })
-    .then(() => toast('已保存')).catch((e) => toast(e.message, 'err'));
+    .then(() => toast(tr('upd.saved'))).catch((e) => toast(e.message, 'err'));
 }
 
 function srcLabel(name) { return name === 'dn7' ? 'dn7.cn' : 'GitHub'; }
 
 function runUpdCheck() {
   const r = $('uResult'); if (!r) return;
-  r.innerHTML = loading('正在检测两个下载源…', 2);
+  r.innerHTML = loading(tr('upd.checking'), 2);
   api('/api/update/check', { method: 'POST' }).then((b) => {
     const d = b.data, dot = $('verDot');
     if (dot) dot.classList.toggle('hidden', !d.has_update);
     let html = '';
     if (d.has_update) {
-      html += `<div class="ok" style="font-size:14px;margin-bottom:10px">发现新版本 v${esc(d.latest)}（当前 v${esc(d.current)}）</div>`;
-      html += `<button class="btn" id="uApply">立即更新到 v${esc(d.latest)}</button>`;
+      html += `<div class="ok" style="font-size:14px;margin-bottom:10px">${tr('upd.found', { latest: esc(d.latest), current: esc(d.current) })}</div>`;
+      html += `<button class="btn" id="uApply">${tr('upd.apply_to', { latest: esc(d.latest) })}</button>`;
     } else if (d.latest) {
-      html += `<div class="mut" style="margin-bottom:6px">已是最新版本 v${esc(d.current)}</div>`;
+      html += `<div class="mut" style="margin-bottom:6px">${tr('upd.latest', { current: esc(d.current) })}</div>`;
     } else {
-      html += `<div class="err" style="margin-bottom:6px">无法连接任何下载源，请检查网络。</div>`;
+      html += `<div class="err" style="margin-bottom:6px">${tr('upd.no_source')}</div>`;
     }
     html += '<div style="margin-top:12px">' + (d.sources || []).map((s) => {
-      const tag = s.ok ? `<span class="chip on">${s.kbps} KB/s</span>` : `<span class="chip warn">连接失败</span>`;
-      const star = (s.name === d.source) ? ' <span style="color:var(--cy)">★ 当前源</span>' : '';
+      const tag = s.ok ? `<span class="chip on">${tr('upd.kbps', { n: s.kbps })}</span>` : `<span class="chip warn">${tr('upd.conn_fail')}</span>`;
+      const star = (s.name === d.source) ? ` <span style="color:var(--cy)">${tr('upd.cur_src')}</span>` : '';
       return `<div class="row" style="justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)"><span>${srcLabel(s.name)}${star}</span>${tag}</div>`;
     }).join('') + '</div>';
     r.innerHTML = html;
@@ -82,12 +82,12 @@ function runUpdCheck() {
 }
 
 function applyUpdate() {
-  const btn = $('uApply'); if (btn) { btn.disabled = true; btn.textContent = '开始更新…'; }
+  const btn = $('uApply'); if (btn) { btn.disabled = true; btn.textContent = tr('upd.starting'); }
   api('/api/update/apply', { method: 'POST' }).then((b) => {
-    if (b.data && b.data.started === false) toast('更新已在进行中');
+    if (b.data && b.data.started === false) toast(tr('upd.in_progress'));
     $('uProg').classList.remove('hidden');
     pollUpdStatus();
-  }).catch((e) => { toast(e.message, 'err'); if (btn) { btn.disabled = false; btn.textContent = '重试'; } });
+  }).catch((e) => { toast(e.message, 'err'); if (btn) { btn.disabled = false; btn.textContent = tr('upd.retry'); } });
 }
 
 function pollUpdStatus() {
@@ -101,13 +101,13 @@ function pollUpdStatus() {
         prog.classList.remove('hidden');
         pi.style.width = d.progress + '%';
         const mb = (n) => (n / 1048576).toFixed(1);
-        txt.textContent = `下载中 ${d.progress}%` + (d.total_bytes ? ` (${mb(d.done_bytes)}/${mb(d.total_bytes)} MB)` : '');
+        txt.textContent = tr('upd.downloading', { pct: d.progress }) + (d.total_bytes ? ` (${mb(d.done_bytes)}/${mb(d.total_bytes)} MB)` : '');
       } else if (d.phase === 'installing') {
         prog.classList.remove('hidden');
         pi.style.width = '100%';
-        txt.textContent = '正在安装并重启…';
+        txt.textContent = tr('upd.installing');
       } else if (d.phase === 'error') {
-        txt.textContent = '更新失败，请稍后重试或更换下载源。';
+        txt.textContent = tr('upd.error');
         clearInterval(UPD.polling);
       } else if (!d.in_progress) {
         clearInterval(UPD.polling);
@@ -115,7 +115,7 @@ function pollUpdStatus() {
     }).catch(() => {
       // The panel restarts after install → requests fail; that's success.
       const txt = $('uProgTxt');
-      if (txt) txt.textContent = '已安装新版本，正在重启，请稍后刷新页面…';
+      if (txt) txt.textContent = tr('upd.restarting');
       clearInterval(UPD.polling);
     });
   }, 1000);

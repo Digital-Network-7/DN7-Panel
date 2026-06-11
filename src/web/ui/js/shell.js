@@ -19,8 +19,8 @@ const TABS = [
   { key: 'dash', tkey: 'tab.dash', ic: IC.dash },
   { key: 'term', tkey: 'tab.term', ic: IC.term },
   { key: 'docker', label: 'Docker', ic: IC.docker },
-  { key: 'nginx', label: 'Nginx', ic: IC.nginx },
-  { key: 'mysql', label: 'MySQL', ic: IC.mysql },
+  { key: 'nginx', tkey: 'tab.website', ic: IC.nginx },
+  { key: 'mysql', tkey: 'tab.databases', ic: IC.mysql },
   { key: 'files', tkey: 'tab.files', ic: IC.files },
   { key: 'settings', tkey: 'tab.settings', ic: IC.settings },
 ];
