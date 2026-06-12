@@ -2082,7 +2082,17 @@ where
     }
 
     // Make the challenge responses reachable over HTTP, then tell LE we're ready.
-    serve(to_serve).await?;
+    serve(to_serve.clone()).await?;
+
+    // Pre-flight on THIS host before involving Let's Encrypt: fetch the challenge
+    // over localhost:80 with the right Host header. If our nginx block isn't the
+    // one answering (a foreign/own vhost is shadowing it, or conf.d isn't served),
+    // this reproduces LE's 404 locally and fails with an actionable message —
+    // without consuming a real validation attempt / rate limit.
+    if let Some((token, keyauth)) = to_serve.first() {
+        self_check_challenge(host, token, keyauth).await?;
+    }
+
     for url in &ready_urls {
         order
             .set_challenge_ready(url)
@@ -2143,6 +2153,53 @@ where
     };
 
     Ok((cert_chain_pem, key_pem))
+}
+
+/// Pre-flight the HTTP-01 challenge against THIS host (localhost:80, with the
+/// domain in the Host header) so we serve the same server block Let's Encrypt
+/// will hit. A 404/mismatch here means a non-panel nginx vhost is shadowing the
+/// domain (or `conf.d` isn't served) — fail with an actionable message rather
+/// than burning a real validation attempt.
+async fn self_check_challenge(host: &str, token: &str, expected: &str) -> Result<()> {
+    let url = format!("http://127.0.0.1/.well-known/acme-challenge/{token}");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| anyhow!("自检客户端创建失败：{e}"))?;
+    // nginx reload is asynchronous; retry briefly so we don't false-negative on
+    // the worker-swap race right after the reload.
+    let mut last = String::new();
+    for attempt in 0..4 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        match client
+            .get(&url)
+            .header(reqwest::header::HOST, host)
+            .send()
+            .await
+        {
+            Ok(r) => {
+                let status = r.status();
+                let body = r.text().await.unwrap_or_default();
+                if status.is_success() && body.trim() == expected {
+                    return Ok(());
+                }
+                last = format!(
+                    "本机校验未通过（HTTP {code}）：{host} 的 80 端口请求没有命中本面板的站点配置。\
+                     通常是有另一段非面板管理的 Nginx 配置抢先处理了该域名，或 nginx.conf 未 include /etc/nginx/conf.d。\
+                     请执行 `nginx -T | grep -n {host}` 排查重复的 server_name，移除冲突配置后重试。",
+                    code = status.as_u16()
+                );
+            }
+            Err(e) => {
+                last = format!(
+                    "无法在本机访问校验路径（{e}）：Nginx 可能未监听 80 端口，或被本机防火墙拦截。"
+                );
+            }
+        }
+    }
+    Err(anyhow!("{last}"))
 }
 
 /// Best-effort: pull the ACME server's error detail for a failed order so the
