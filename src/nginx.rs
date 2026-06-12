@@ -506,8 +506,6 @@ async fn handle(req: &Req) -> Result<Value> {
         "add_site" => add_site(req).await,
         "update_site" => update_site(req).await,
         "remove_site" => remove_site(req).await,
-        "list_certs" => list_certs().await,
-        "set_cert" => set_cert(req).await,
         "list_named_certs" => list_named_certs().await,
         "create_cert" => create_cert(req).await,
         "delete_cert" => delete_cert(req).await,
@@ -1291,110 +1289,6 @@ async fn update_site(req: &Req) -> Result<Value> {
         let _ = validate_and_reload(&lo).await;
         return Err(e);
     }
-    sites.retain(|s| s.id != site.id);
-    sites.push(site.clone());
-    save_sites(&sites)?;
-    Ok(json!({ "site": site }))
-}
-
-/// List every managed site's SSL/cert status: { id, server_name, ssl,
-/// cert_mode, has_cert, not_after } so the UI can show a cert management table.
-async fn list_certs() -> Result<Value> {
-    let lo = layout()?;
-    let sites = load_sites();
-    let mut out = Vec::new();
-    for s in &sites {
-        let crt = if s.cert_name.is_empty() {
-            lo.cert_store.join(format!("{}.crt", s.id))
-        } else {
-            named_crt_file(&lo, &s.cert_name)
-        };
-        let has_cert = crt.exists();
-        let not_after = if has_cert {
-            std::fs::read_to_string(&crt)
-                .ok()
-                .and_then(|pem| cert_not_after(&pem))
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-        out.push(json!({
-            "id": s.id,
-            "server_name": s.server_name,
-            "ssl": s.ssl,
-            "cert_mode": s.cert_mode,
-            "cert_name": s.cert_name,
-            "has_cert": has_cert,
-            "not_after": not_after,
-        }));
-    }
-    Ok(json!({ "certs": out }))
-}
-
-/// (Re)issue or replace a site's certificate. `cert_mode` selects:
-///   - "le":     Let's Encrypt (detached → returns {op_id})
-///   - "self":   self-signed
-///   - "manual": cert_pem + key_pem
-///
-/// Enables SSL on the site and persists it.
-async fn set_cert(req: &Req) -> Result<Value> {
-    let lo = layout()?;
-    let site_id = req
-        .site_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("ERR_CODE:nginx.missing_site_id"))?;
-    let mode = req.cert_mode.as_deref().unwrap_or("self");
-    if !matches!(mode, "self" | "le" | "manual" | "named") {
-        return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
-    }
-
-    let mut sites = load_sites();
-    let mut site = sites
-        .iter()
-        .find(|s| s.id == site_id)
-        .cloned()
-        .ok_or_else(|| anyhow!("ERR_CODE:nginx.site_not_found"))?;
-    site.ssl = true;
-    site.cert_mode = mode.to_string();
-
-    // "named" references an existing standalone cert; the others are per-site.
-    if mode == "named" {
-        let name = req
-            .cert_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_cert"))?;
-        if !named_crt_file(&lo, name).exists() {
-            return Err(anyhow!("证书「{name}」不存在"));
-        }
-        site.cert_name = name.to_string();
-    } else {
-        site.cert_name = String::new();
-        match mode {
-            "self" => {
-                gen_self_signed(&lo, &site).await?;
-            }
-            "manual" => {
-                let cert = req.cert_pem.as_deref().unwrap_or("");
-                let key = req.key_pem.as_deref().unwrap_or("");
-                if cert.trim().is_empty() || key.trim().is_empty() {
-                    return Err(anyhow!("ERR_CODE:nginx.need_cert_key"));
-                }
-                write_cert_files(&lo, &site, cert, key)?;
-            }
-            "le" => {
-                // Detached issuance; issue_le persists the (ssl=true) site on success.
-                return start_cert_issue(lo, site).await;
-            }
-            _ => {}
-        }
-    }
-
-    write_site_conf(&lo, &site).await?;
-    validate_and_reload(&lo).await?;
     sites.retain(|s| s.id != site.id);
     sites.push(site.clone());
     save_sites(&sites)?;
