@@ -962,6 +962,7 @@ async fn stream_cmd(op_id: &str, cmd: &str, args: &[&str]) -> Result<()> {
 
 /// Where generated conf files live, and the paths the running host nginx reads
 /// certs/webroots from. Host-only: nginx reads the same on-disk paths we write.
+#[derive(Clone)]
 struct Layout {
     confd: std::path::PathBuf, // where we WRITE conf files (/etc/nginx/conf.d)
     cert_ref: String,          // dir nginx READS certs from (== cert_store)
@@ -1182,7 +1183,7 @@ async fn add_site(req: &Req) -> Result<Value> {
     }
 
     // Generate + validate.
-    write_site_conf(&lo, &site).await?;
+    write_site_conf(&lo, &site, &[]).await?;
     if let Err(e) = validate_and_reload(&lo).await {
         // Roll back the conf we just wrote.
         let _ = std::fs::remove_file(conf_path(&lo, &site.id));
@@ -1282,10 +1283,10 @@ async fn update_site(req: &Req) -> Result<Value> {
         }
     }
 
-    write_site_conf(&lo, &site).await?;
+    write_site_conf(&lo, &site, &[]).await?;
     if let Err(e) = validate_and_reload(&lo).await {
         // Roll back to the previous configuration.
-        let _ = write_site_conf(&lo, &old).await;
+        let _ = write_site_conf(&lo, &old, &[]).await;
         let _ = validate_and_reload(&lo).await;
         return Err(e);
     }
@@ -1631,10 +1632,28 @@ async fn resolve_upstream(_lo: &Layout, site: &Site) -> Result<String> {
 // Config generation. All values are pre-validated, so they're safe to embed.
 // ---------------------------------------------------------------------------
 
-/// Generate the nginx server block(s) for a site and write the conf file.
-async fn write_site_conf(lo: &Layout, site: &Site) -> Result<()> {
+/// Inline nginx locations that answer the ACME HTTP-01 challenge directly from
+/// config (`return 200 "<keyAuthorization>"`). Serving the response inline —
+/// rather than from a webroot file — means issuance never depends on a webroot
+/// the nginx worker can read (file perms, SELinux context, path), which is the
+/// usual cause of "domain validation failed" on existing/host nginx setups.
+fn acme_challenge_locations(acme: &[(String, String)]) -> String {
+    let mut s = String::new();
+    for (token, keyauth) in acme {
+        s.push_str(&format!(
+            "\n    location = /.well-known/acme-challenge/{token} {{\n        default_type text/plain;\n        return 200 \"{keyauth}\";\n    }}\n"
+        ));
+    }
+    s
+}
+
+/// Generate the nginx server block(s) for a site and write the conf file. When
+/// `acme` is non-empty, the port-80 block also answers those HTTP-01 challenges
+/// inline (used during Let's Encrypt issuance).
+async fn write_site_conf(lo: &Layout, site: &Site, acme: &[(String, String)]) -> Result<()> {
     let body = render_location(lo, site).await?;
     let server_name = &site.server_name;
+    let acme_loc = acme_challenge_locations(acme);
 
     let mut conf = String::new();
     if site.ssl {
@@ -1650,13 +1669,10 @@ async fn write_site_conf(lo: &Layout, site: &Site) -> Result<()> {
                 format!("{}/cert-{}.key", lo.cert_ref, site.cert_name),
             )
         };
-        // HTTP -> HTTPS redirect, plus an ACME webroot passthrough so renewals
-        // keep working.
+        // HTTP -> HTTPS redirect (with any in-flight ACME challenge served first).
         conf.push_str(&format!(
-            "server {{\n    listen 80;\n    server_name {server_name};\n\
-             \n    location ^~ /.well-known/acme-challenge/ {{\n        root {www}/_acme;\n    }}\n\
-             \n    location / {{\n        return 301 https://$host$request_uri;\n    }}\n}}\n\n",
-            www = lo.www_ref
+            "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\
+             \n    location / {{\n        return 301 https://$host$request_uri;\n    }}\n}}\n\n"
         ));
         conf.push_str(&format!(
             "server {{\n    listen 443 ssl;\n    http2 on;\n    server_name {server_name};\n\
@@ -1665,10 +1681,7 @@ async fn write_site_conf(lo: &Layout, site: &Site) -> Result<()> {
         ));
     } else {
         conf.push_str(&format!(
-            "server {{\n    listen 80;\n    server_name {server_name};\n\
-             \n    location ^~ /.well-known/acme-challenge/ {{\n        root {www}/_acme;\n    }}\n\
-             \n{body}}}\n",
-            www = lo.www_ref
+            "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\n{body}}}\n"
         ));
     }
 
@@ -1877,10 +1890,10 @@ fn set_key_perms(path: &std::path::Path) {
     }
 }
 
-/// Issue a Let's Encrypt cert via acme.sh (webroot/http-01), detached. The flow:
-///   1. write an HTTP-only conf so the challenge path is served,
-///   2. install acme.sh if needed, issue against the webroot,
-///   3. install the cert into our cert store,
+/// Issue a Let's Encrypt cert via the ACME HTTP-01 challenge, detached. The flow:
+///   1. serve the challenge inline from an HTTP conf for the domain,
+///   2. run the ACME order + validation,
+///   3. install the issued cert into our cert store,
 ///   4. rewrite the conf with SSL and reload.
 async fn start_cert_issue(lo: Layout, site: Site) -> Result<Value> {
     let op_id = new_op_id();
@@ -1905,18 +1918,21 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
         return Err(anyhow!("ERR_CODE:nginx.le_need_domain_specific"));
     }
 
-    // Step 1: serve HTTP (no SSL yet) so the http-01 challenge path is reachable.
+    // Steps 1-5: serve the HTTP-01 challenge inline from the site's HTTP conf
+    // (no webroot — so it works regardless of file perms / SELinux), then run
+    // the ACME dance. The `serve` callback writes the conf + reloads once the
+    // challenge tokens are known.
     op_push(op_id, &pmsg("ng.prep_http", &[]));
-    let mut http_site = site.clone();
-    http_site.ssl = false;
-    write_site_conf(lo, &http_site).await?;
-    if let Err(e) = validate_and_reload(lo).await {
-        let _ = std::fs::remove_file(conf_path(lo, &site.id));
-        return Err(e);
-    }
-
-    // Steps 2-5: the ACME HTTP-01 dance → issued chain + our key.
-    let (cert_chain_pem, key_pem) = acme_http01(op_id, lo, &host).await?;
+    let (cert_chain_pem, key_pem) = {
+        let lo2 = lo.clone();
+        let mut http_site = site.clone();
+        http_site.ssl = false;
+        acme_http01(op_id, &host, move |chals| async move {
+            write_site_conf(&lo2, &http_site, &chals).await?;
+            validate_and_reload(&lo2).await
+        })
+        .await?
+    };
 
     // Persist the issued chain + key into the per-site cert store.
     let crt_path = lo.cert_store.join(format!("{}.crt", site.id));
@@ -1927,7 +1943,7 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
 
     // Step 6: rewrite with SSL + persist + reload.
     op_push(op_id, &pmsg("ng.enable_https", &[]));
-    write_site_conf(lo, site).await?;
+    write_site_conf(lo, site, &[]).await?;
     validate_and_reload(lo).await?;
     let mut sites = load_sites();
     sites.retain(|s| s.id != site.id);
@@ -1962,27 +1978,27 @@ async fn issue_le_named(op_id: &str, lo: &Layout, name: &str, domain: &str) -> R
         return Err(anyhow!("ERR_CODE:nginx.le_need_domain_specific"));
     }
 
-    // Step 1: write a temporary HTTP-only conf that serves ONLY the ACME
-    // webroot for this domain, so the http-01 challenge is reachable even
-    // before any site references the cert.
+    // Steps 1-5: serve the HTTP-01 challenge from a temporary conf for this
+    // domain (challenges answered inline — no webroot), then run the ACME dance.
     op_push(op_id, &pmsg("ng.prep_http", &[]));
     let conf_id = format!("acme-{name}");
-    let tmp_conf = format!(
-        "server {{\n    listen 80;\n    server_name {host};\n\
-         \n    location ^~ /.well-known/acme-challenge/ {{\n        root {www}/_acme;\n    }}\n\
-         \n    location / {{\n        return 404;\n    }}\n}}\n",
-        www = lo.www_ref
-    );
     let conf_file = conf_path(lo, &conf_id);
-    std::fs::create_dir_all(&lo.confd)?;
-    std::fs::write(&conf_file, tmp_conf)?;
-    if let Err(e) = validate_and_reload(lo).await {
-        let _ = std::fs::remove_file(&conf_file);
-        return Err(e);
-    }
-
-    // Steps 2-5: the ACME HTTP-01 dance.
-    let dance = acme_http01(op_id, lo, &host).await;
+    let dance = {
+        let lo2 = lo.clone();
+        let host2 = host.clone();
+        let conf_file2 = conf_file.clone();
+        acme_http01(op_id, &host, move |chals| async move {
+            let conf = format!(
+                "server {{\n    listen 80;\n    server_name {host2};\n{loc}\
+                 \n    location / {{\n        return 404;\n    }}\n}}\n",
+                loc = acme_challenge_locations(&chals)
+            );
+            std::fs::create_dir_all(&lo2.confd)?;
+            std::fs::write(&conf_file2, conf)?;
+            validate_and_reload(&lo2).await
+        })
+        .await
+    };
 
     // Always drop the temporary challenge conf afterwards.
     let _ = std::fs::remove_file(&conf_file);
@@ -2005,20 +2021,20 @@ async fn issue_le_named(op_id: &str, lo: &Layout, name: &str, domain: &str) -> R
     Ok(())
 }
 
-/// The ACME HTTP-01 issuance dance for `host`, assuming an HTTP server is
-/// already serving `<www_store>/_acme/.well-known/acme-challenge/`. Creates the
-/// account, places + validates the order, finalizes, and returns the issued
+/// The ACME HTTP-01 issuance dance for `host`. Creates the account and order,
+/// hands the `(token, keyAuthorization)` pairs to `serve` (which makes them
+/// reachable at `http://host/.well-known/acme-challenge/<token>` — e.g. by
+/// writing an nginx conf that answers them inline and reloading), then tells
+/// Let's Encrypt to validate, finalizes, and returns the issued
 /// `(chain_pem, key_pem)`.
-async fn acme_http01(op_id: &str, lo: &Layout, host: &str) -> Result<(String, String)> {
+async fn acme_http01<F, Fut>(op_id: &str, host: &str, serve: F) -> Result<(String, String)>
+where
+    F: FnOnce(Vec<(String, String)>) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
     use instant_acme::{
         Account, AuthorizationStatus, ChallengeType, Identifier, NewAccount, NewOrder, OrderStatus,
     };
-
-    let acme_root = format!(
-        "{}/_acme/.well-known/acme-challenge",
-        lo.www_store.display()
-    );
-    std::fs::create_dir_all(&acme_root)?;
 
     // Create (or implicitly register) an ACME account with Let's Encrypt.
     op_push(op_id, &pmsg("ng.le_account", &[]));
@@ -2044,12 +2060,13 @@ async fn acme_http01(op_id: &str, lo: &Layout, host: &str) -> Result<(String, St
         .await
         .map_err(|e| anyhow!("创建订单失败：{e}"))?;
 
-    // Satisfy the HTTP-01 challenge for each authorization.
+    // Collect the HTTP-01 challenge response for each pending authorization.
     let authorizations = order
         .authorizations()
         .await
         .map_err(|e| anyhow!("获取授权失败：{e}"))?;
-    let mut challenge_files: Vec<std::path::PathBuf> = Vec::new();
+    let mut to_serve: Vec<(String, String)> = Vec::new();
+    let mut ready_urls: Vec<String> = Vec::new();
     for authz in &authorizations {
         if !matches!(authz.status, AuthorizationStatus::Pending) {
             continue;
@@ -2059,16 +2076,16 @@ async fn acme_http01(op_id: &str, lo: &Layout, host: &str) -> Result<(String, St
             .iter()
             .find(|c| c.r#type == ChallengeType::Http01)
             .ok_or_else(|| anyhow!("ERR_CODE:nginx.le_no_http01"))?;
-
-        // Write the key authorization to <webroot>/.well-known/acme-challenge/<token>.
-        let token = &challenge.token;
         let key_auth = order.key_authorization(challenge);
-        let file = std::path::Path::new(&acme_root).join(token);
-        std::fs::write(&file, key_auth.as_str())?;
-        challenge_files.push(file);
+        to_serve.push((challenge.token.clone(), key_auth.as_str().to_string()));
+        ready_urls.push(challenge.url.clone());
+    }
 
+    // Make the challenge responses reachable over HTTP, then tell LE we're ready.
+    serve(to_serve).await?;
+    for url in &ready_urls {
         order
-            .set_challenge_ready(&challenge.url)
+            .set_challenge_ready(url)
             .await
             .map_err(|e| anyhow!("提交验证失败：{e}"))?;
     }
@@ -2110,24 +2127,40 @@ async fn acme_http01(op_id: &str, lo: &Layout, host: &str) -> Result<(String, St
                 break chain;
             }
             OrderStatus::Invalid => {
-                let _ = cleanup_files(&challenge_files);
+                let detail = acme_failure_detail(&mut order).await;
+                let sep = if detail.is_empty() { "" } else { "：" };
                 return Err(anyhow!(
-                    "域名验证失败，请确认 {host} 已解析到本机且 80 端口可被公网访问"
+                    "域名验证失败{sep}{detail}（请确认 {host} 已解析到本机、公网可访问其 80 端口，且该域名未被其他站点抢先占用）"
                 ));
             }
             _ => {
                 tries += 1;
                 if tries > 40 {
-                    let _ = cleanup_files(&challenge_files);
                     return Err(anyhow!("ERR_CODE:nginx.le_verify_timeout"));
                 }
             }
         }
     };
 
-    // Clean up challenge token files.
-    let _ = cleanup_files(&challenge_files);
     Ok((cert_chain_pem, key_pem))
+}
+
+/// Best-effort: pull the ACME server's error detail for a failed order so the
+/// UI can show *why* validation failed (404, connection refused, DNS, …)
+/// instead of a generic message — mirroring NPM/1panel.
+async fn acme_failure_detail(order: &mut instant_acme::Order) -> String {
+    if let Ok(authzs) = order.authorizations().await {
+        for a in &authzs {
+            for c in &a.challenges {
+                if let Some(err) = &c.error {
+                    if let Some(d) = &err.detail {
+                        return d.clone();
+                    }
+                }
+            }
+        }
+    }
+    String::new()
 }
 
 /// Poll an order's certificate endpoint until the chain PEM is available.
@@ -2140,14 +2173,6 @@ async fn wait_for_cert(order: &mut instant_acme::Order) -> Result<String> {
         }
     }
     Err(anyhow!("ERR_CODE:nginx.le_issue_timeout"))
-}
-
-/// Best-effort cleanup of the written HTTP-01 challenge token files.
-fn cleanup_files(files: &[std::path::PathBuf]) -> std::io::Result<()> {
-    for f in files {
-        let _ = std::fs::remove_file(f);
-    }
-    Ok(())
 }
 
 #[cfg(test)]
