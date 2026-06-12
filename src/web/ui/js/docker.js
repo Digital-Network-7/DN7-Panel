@@ -51,7 +51,7 @@ function dkContainers() {
   const body = $('dkBody');
   body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_containers')}</h3><span class="sp"></span><button class="btn sm" id="dkNew">${tr('dk.create_container')}</button><button class="btn sec sm" id="dkRefC">${tr('dk.refresh')}</button></div><div id="dkCList">` + loading() + '</div>';
   $('dkRefC').onclick = dkContainers;
-  $('dkNew').onclick = dkCreateForm;
+  $('dkNew').onclick = () => dkCreateForm();
   op('docker', { op: 'list_containers' }).then((d) => {
     const list = d.containers || [];
     if (!list.length) { $('dkCList').innerHTML = `<div class="empty">${tr('dk.no_containers')}</div>`; return; }
@@ -159,24 +159,22 @@ function dkPullForm() {
 function dkCreateForm(image, info) {
   modal(tr('dk.create_container'), `
     <div class="formgrid">
-      <div class="full"><label class="lbl">${tr('dk.image')}</label>
-        <div class="imgpick" id="ccImgPick">
-          <input id="ccImg" class="field" value="${esc(image || '')}" placeholder="${tr('dk.image_ph')}" autocomplete="off" />
-          <div class="imgpop hidden" id="ccImgPop"></div>
-        </div>
-      </div>
+      <div class="full"><label class="lbl">${tr('dk.image')}</label><select id="ccImg" class="field"><option value="">${tr('dk.image_ph')}</option></select></div>
       <div><label class="lbl">${tr('dk.ctn_name')}</label><input id="ccName" class="field" placeholder="my-app" /></div>
       <div><label class="lbl">${tr('dk.restart_policy')}</label><select id="ccRestart" class="field"><option value="unless-stopped">unless-stopped</option><option value="always">always</option><option value="no">no</option></select></div>
+      <div class="full"><label class="lbl">${tr('dk.start_cmd')}</label><input id="ccCmd" class="field" placeholder="${tr('dk.cmd_ph')}" /></div>
+      <div class="full" style="margin-top:2px">
+        <label class="switch"><input type="checkbox" id="ccTty" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.alloc_tty')}</b><span>${tr('dk.alloc_tty_d')}</span></span></label>
+        <label class="switch"><input type="checkbox" id="ccStart" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.start_after')}</b><span>${tr('dk.start_after_d')}</span></span></label>
+      </div>
       <div class="full"><label class="lbl">${tr('dk.port_map')}</label><div class="kvlist" id="ccPorts"></div><button type="button" class="kvadd" id="ccPortsAdd">${tr('dk.add_port')}</button></div>
       <div class="full"><label class="lbl">${tr('dk.env')}</label><div class="kvlist" id="ccEnv"></div><button type="button" class="kvadd" id="ccEnvAdd">${tr('dk.add_env')}</button></div>
       <div class="full"><label class="lbl">${tr('dk.volumes')}</label><div class="kvlist" id="ccVol"></div><button type="button" class="kvadd" id="ccVolAdd">${tr('dk.add_vol')}</button></div>
-      <div><label class="lbl">${tr('dk.start_cmd')}</label><input id="ccCmd" class="field" placeholder="${tr('dk.cmd_ph')}" /></div>
-      <div style="display:flex;align-items:flex-end;gap:16px"><label style="display:flex;gap:7px;align-items:center"><input type="checkbox" id="ccTty" checked /> ${tr('dk.alloc_tty')}</label><label style="display:flex;gap:7px;align-items:center"><input type="checkbox" id="ccStart" checked /> ${tr('dk.start_after')}</label></div>
     </div>
     <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="ccGo">${tr('dk.create')}</button></div>
     <div class="hidden" id="ccJob" style="margin-top:14px"></div>`, (close) => {
-    // Searchable image picker: all local images (incl. built-in), filtered live.
-    setupImagePicker();
+    // Image picker: a select of all local images (built-in ones included).
+    loadImageOptions(image);
     // Dynamic row helpers.
     const portRow = (v) => kvRow('ccPorts', [
       { ph: tr('dk.host_port'), val: v && v.h }, { sep: ':' }, { ph: tr('dk.container_port'), val: v && v.c },
@@ -190,7 +188,7 @@ function dkCreateForm(image, info) {
     $('ccPortsAdd').onclick = () => portRow();
     $('ccEnvAdd').onclick = () => envRow();
     $('ccVolAdd').onclick = () => volRow();
-    portRow(); // start with one empty row each
+    // No default rows — ports/env/volumes start empty.
     $('ccGo').onclick = () => {
       const image = $('ccImg').value.trim(); if (!image) return toast(tr('dk.need_image'), 'err');
       const ports = readKv('ccPorts').map((r) => ({ host: Number(r[0]), container: Number(r[1]), proto: r.proto || 'tcp' })).filter((p) => p.host && p.container);
@@ -203,26 +201,16 @@ function dkCreateForm(image, info) {
   });
 }
 
-// Wire the searchable image dropdown in the create form: loads all local images
-// (built-in ones included), shows a filtered list as the user types/focuses.
-function setupImagePicker() {
-  const inp = $('ccImg'), pop = $('ccImgPop');
-  let names = [];
+// Populate the create-form image dropdown with all local images (built-in ones
+// included). Pre-selects `preselect` when given.
+function loadImageOptions(preselect) {
+  const sel = $('ccImg'); if (!sel) return;
   op('docker', { op: 'list_images' }).then((d) => {
-    names = (d.images || []).map((im) => ({ name: im.name, managed: im.managed })).filter((x) => x.name && x.name !== '<none>:<none>');
-    if (document.activeElement === inp) renderPop();
+    const names = (d.images || []).map((im) => im.name).filter((n) => n && n !== '<none>:<none>');
+    if (!names.length) { sel.innerHTML = `<option value="">${tr('dk.no_images_pull')}</option>`; return; }
+    sel.innerHTML = names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+    if (preselect && names.includes(preselect)) sel.value = preselect;
   }).catch(() => {});
-  const renderPop = () => {
-    const q = inp.value.trim().toLowerCase();
-    const list = names.filter((x) => !q || x.name.toLowerCase().includes(q)).slice(0, 30);
-    if (!list.length) { pop.classList.add('hidden'); return; }
-    pop.innerHTML = list.map((x) => `<div class="imgopt" data-n="${esc(x.name)}">${esc(x.name)}${x.managed ? `<span class="imgtag">${tr('dk.builtin')}</span>` : ''}</div>`).join('');
-    pop.classList.remove('hidden');
-    pop.querySelectorAll('.imgopt').forEach((o) => o.onmousedown = (e) => { e.preventDefault(); inp.value = o.dataset.n; pop.classList.add('hidden'); });
-  };
-  inp.addEventListener('focus', renderPop);
-  inp.addEventListener('input', renderPop);
-  inp.addEventListener('blur', () => setTimeout(() => pop.classList.add('hidden'), 150));
 }
 
 // Append a dynamic key/value row to list `id`. `cells` is an array of either

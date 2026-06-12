@@ -504,6 +504,7 @@ async fn handle(req: &Req) -> Result<Value> {
         "setup" => start_setup(req),
         "list_sites" => Ok(json!({ "sites": load_sites() })),
         "add_site" => add_site(req).await,
+        "update_site" => update_site(req).await,
         "remove_site" => remove_site(req).await,
         "list_certs" => list_certs().await,
         "set_cert" => set_cert(req).await,
@@ -1222,10 +1223,79 @@ async fn remove_site(req: &Req) -> Result<Value> {
     Ok(json!({ "removed": site_id }))
 }
 
-// ---------------------------------------------------------------------------
-// SSL certificate management (per-site): list each SSL site's cert status and
-// (re)issue / replace its certificate without recreating the whole site.
-// ---------------------------------------------------------------------------
+/// Edit an existing site in place (same id). Mirrors `add_site`'s validation +
+/// cert handling, but reuses the existing id and rolls back to the previous
+/// config on a validation failure. To avoid needless churn (and Let's Encrypt
+/// rate limits), an existing cert is reused when the SSL mode/host is unchanged
+/// and a cert is already present; manual mode keeps the stored cert when no new
+/// PEM is supplied.
+async fn update_site(req: &Req) -> Result<Value> {
+    let lo = layout()?;
+    let site_id = req
+        .site_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("ERR_CODE:nginx.missing_site_id"))?;
+    let mut sites = load_sites();
+    let old = sites
+        .iter()
+        .find(|s| s.id == site_id)
+        .cloned()
+        .ok_or_else(|| anyhow!("ERR_CODE:nginx.site_not_found"))?;
+
+    let mut site = site_from_req(req)?;
+    site.id = old.id.clone();
+
+    if site.ssl {
+        if !site.cert_name.is_empty() {
+            if !named_crt_file(&lo, &site.cert_name).exists() {
+                return Err(anyhow!("ERR_CODE:nginx.cert_not_found"));
+            }
+        } else {
+            let have = lo.cert_store.join(format!("{}.crt", site.id)).exists()
+                && lo.cert_store.join(format!("{}.key", site.id)).exists();
+            match site.cert_mode.as_str() {
+                "manual" => {
+                    let cert = req.cert_pem.as_deref().unwrap_or("");
+                    let key = req.key_pem.as_deref().unwrap_or("");
+                    if !cert.trim().is_empty() && !key.trim().is_empty() {
+                        write_cert_files(&lo, &site, cert, key)?;
+                    } else if !have {
+                        return Err(anyhow!("ERR_CODE:nginx.need_cert_key"));
+                    }
+                }
+                "le" => {
+                    let host_changed =
+                        primary_host(&old.server_name) != primary_host(&site.server_name);
+                    if !have || old.cert_mode != "le" || !old.cert_name.is_empty() || host_changed {
+                        // Needs a (re)issue → detached.
+                        return start_cert_issue(lo, site).await;
+                    }
+                    // else: reuse the existing LE cert as-is.
+                }
+                "self" => {
+                    if !have || old.cert_mode != "self" || !old.cert_name.is_empty() {
+                        gen_self_signed(&lo, &site).await?;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    write_site_conf(&lo, &site).await?;
+    if let Err(e) = validate_and_reload(&lo).await {
+        // Roll back to the previous configuration.
+        let _ = write_site_conf(&lo, &old).await;
+        let _ = validate_and_reload(&lo).await;
+        return Err(e);
+    }
+    sites.retain(|s| s.id != site.id);
+    sites.push(site.clone());
+    save_sites(&sites)?;
+    Ok(json!({ "site": site }))
+}
 
 /// List every managed site's SSL/cert status: { id, server_name, ssl,
 /// cert_mode, has_cert, not_after } so the UI can show a cert management table.
@@ -1701,7 +1771,10 @@ async fn write_site_conf(lo: &Layout, site: &Site) -> Result<()> {
         ));
     } else {
         conf.push_str(&format!(
-            "server {{\n    listen 80;\n    server_name {server_name};\n\n{body}}}\n"
+            "server {{\n    listen 80;\n    server_name {server_name};\n\
+             \n    location ^~ /.well-known/acme-challenge/ {{\n        root {www}/_acme;\n    }}\n\
+             \n{body}}}\n",
+            www = lo.www_ref
         ));
     }
 

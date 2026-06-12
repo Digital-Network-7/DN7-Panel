@@ -30,14 +30,40 @@ def ver_key(v):
 
 def notes_for(rev_range):
     raw = sh("git", "log", rev_range, "--no-merges", "--pretty=format:%s")
-    out = []
+    # Conventional-commit grouping: parse `type(scope): subject`, drop noise
+    # types (chore/ci/docs/…), tag the rest, and order by importance so the
+    # changelog reads cleanly.
+    DROP = {"chore", "ci", "build", "docs", "style", "test", "release", "refactor", "deps", "wip"}
+    TAG = {
+        "feat": "Feature", "feature": "Feature", "fix": "Fix", "bugfix": "Fix",
+        "perf": "Performance", "security": "Security", "sec": "Security",
+        "ui": "UI", "api": "API", "i18n": "i18n",
+    }
+    PRIORITY = {"Feature": 0, "Fix": 1, "Performance": 2, "Security": 3, "UI": 4, "API": 5, "i18n": 6}
+    import re
+    items = []  # (priority, tag, subject)
     for line in raw.splitlines():
         s = line.strip()
         if not s or s.lower().startswith("merge "):
             continue
-        out.append(s)
-        if len(out) >= 40:
+        m = re.match(r"^([a-zA-Z][\w]*)(?:\([^)]*\))?!?:\s*(.+)$", s)
+        if m:
+            typ = m.group(1).lower()
+            if typ in DROP:
+                continue
+            tag = TAG.get(typ, typ.capitalize())
+            subject = m.group(2).strip()
+        else:
+            tag, subject = None, s  # unprefixed: keep as-is, lowest priority
+        prio = PRIORITY.get(tag, 9) if tag else 10
+        items.append((prio, tag, subject))
+        if len(items) >= 60:
             break
+    # Stable sort by priority (preserves chronological order within a group).
+    items.sort(key=lambda x: x[0])
+    out = []
+    for _, tag, subject in items[:40]:
+        out.append(f"{tag}: {subject}" if tag else subject)
     return out
 
 
