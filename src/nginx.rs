@@ -1146,11 +1146,51 @@ fn new_site_id() -> String {
     )
 }
 
+/// Remove panel-owned conf files that could shadow a fresh write: temporary
+/// ACME challenge confs (always disposable) and orphaned `dn7-<id>.conf` files
+/// whose site no longer exists (leftovers from an interrupted attempt). A stale
+/// conf with the same `server_name` loading before the live one makes nginx
+/// answer from the wrong block — which breaks HTTP-01 validation (404).
+fn cleanup_orphan_confs(lo: &Layout) {
+    use std::collections::HashSet;
+    let live: HashSet<String> = load_sites().into_iter().map(|s| s.id).collect();
+    let rd = match std::fs::read_dir(&lo.confd) {
+        Ok(rd) => rd,
+        Err(_) => return,
+    };
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(id) = name
+            .strip_prefix("dn7-")
+            .and_then(|s| s.strip_suffix(".conf"))
+        {
+            if !live.contains(id) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        } else if name.starts_with("acme-") && name.ends_with(".conf") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// True if another managed site (≠ `exclude_id`) already uses `server_name` —
+/// two server blocks with the same name on :80 conflict (nginx serves the
+/// first-loaded one), which silently breaks the other site + its HTTP-01.
+fn server_name_taken(server_name: &str, exclude_id: &str) -> bool {
+    load_sites()
+        .iter()
+        .any(|s| s.id != exclude_id && s.server_name == server_name)
+}
+
 /// Add a site. For SSL with Let's Encrypt, issuance runs detached (returns an
 /// op_id); otherwise the site is generated + validated synchronously.
 async fn add_site(req: &Req) -> Result<Value> {
     let lo = layout()?;
+    cleanup_orphan_confs(&lo);
     let site = site_from_req(req)?;
+    if server_name_taken(&site.server_name, &site.id) {
+        return Err(anyhow!("ERR_CODE:nginx.duplicate_domain"));
+    }
 
     // Prepare certs.
     if site.ssl {
@@ -1245,6 +1285,10 @@ async fn update_site(req: &Req) -> Result<Value> {
 
     let mut site = site_from_req(req)?;
     site.id = old.id.clone();
+    if server_name_taken(&site.server_name, &site.id) {
+        return Err(anyhow!("ERR_CODE:nginx.duplicate_domain"));
+    }
+    cleanup_orphan_confs(&lo);
 
     if site.ssl {
         if !site.cert_name.is_empty() {
@@ -1674,8 +1718,11 @@ async fn write_site_conf(lo: &Layout, site: &Site, acme: &[(String, String)]) ->
             "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\
              \n    location / {{\n        return 301 https://$host$request_uri;\n    }}\n}}\n\n"
         ));
+        // `listen ... ssl http2` (not the `http2 on;` directive) so the config
+        // is valid on nginx older than 1.25.1 too (newer nginx just warns it's
+        // deprecated).
         conf.push_str(&format!(
-            "server {{\n    listen 443 ssl;\n    http2 on;\n    server_name {server_name};\n\
+            "server {{\n    listen 443 ssl http2;\n    server_name {server_name};\n\
              \n    ssl_certificate {crt};\n    ssl_certificate_key {key};\n\
              \n{body}}}\n"
         ));
