@@ -14,6 +14,10 @@ function VTerm(host, send) {
   let grid, alt = null, cx = 0, cy = 0, sgr = { fg: DEF_FG, bg: DEF_BG, bold: false, inv: false };
   let top = 0, bot = rows - 1, curVisible = true;
   let saved = null;
+  // Scrollback: lines that scroll off the top of the main screen are kept here
+  // so the user can wheel/scroll up to review past output.
+  let scrollback = [];
+  const SCROLLBACK_MAX = 1000;
 
   function makeGrid() { const g = []; for (let r = 0; r < rows; r++) { const row = []; for (let c = 0; c < cols; c++) row.push(blank()); g.push(row); } return g; }
   grid = makeGrid();
@@ -28,7 +32,20 @@ function VTerm(host, send) {
     schedule();
   }
 
-  function scrollUp(n) { for (let k = 0; k < n; k++) { grid.splice(top, 1); const row = []; for (let c = 0; c < cols; c++) row.push(blank()); grid.splice(bot, 0, row); } }
+  function scrollUp(n) {
+    for (let k = 0; k < n; k++) {
+      const removed = grid.splice(top, 1)[0];
+      // Keep lines leaving the top of the MAIN screen (full-screen scroll only —
+      // not a partial DECSTBM region, not the alt screen) as scrollback.
+      if (alt === null && top === 0) {
+        scrollback.push(removed);
+        if (scrollback.length > SCROLLBACK_MAX) scrollback.shift();
+      }
+      const row = [];
+      for (let c = 0; c < cols; c++) row.push(blank());
+      grid.splice(bot, 0, row);
+    }
+  }
   function lineFeed() { if (cy === bot) scrollUp(1); else cy = Math.min(rows - 1, cy + 1); }
   function putChar(ch) {
     if (cx >= cols) { cx = 0; lineFeed(); }
@@ -43,6 +60,7 @@ function VTerm(host, send) {
     else for (let c = 0; c < cols; c++) row[c] = blank();
   }
   function eraseInDisplay(mode) {
+    if (mode === 3) scrollback = []; // ED 3 (\e[3J): also clear scrollback
     if (mode === 2 || mode === 3) { grid = makeGrid(); cx = 0; cy = 0; return; }
     if (mode === 0) { eraseInLine(0); for (let r = cy + 1; r < rows; r++) grid[r] = grid[r].map(blank); }
     else if (mode === 1) { for (let r = 0; r < cy; r++) grid[r] = grid[r].map(blank); eraseInLine(1); }
@@ -150,29 +168,38 @@ function VTerm(host, send) {
   // ---- Render (rAF-batched) ----
   let raf = 0;
   function schedule() { if (!raf) raf = requestAnimationFrame(render); }
+  function renderRow(row, cursorCol) {
+    let line = '', curStyle = null, span = '';
+    const flush = () => { if (span) { line += `<span style="${curStyle}">${span}</span>`; span = ''; } };
+    for (let c = 0; c < row.length; c++) {
+      const cell = row[c];
+      const isCur = c === cursorCol;
+      let fg = cell.fg < 0 ? DEF_FG : cell.fg, bg = cell.bg;
+      if (cell.inv) { const t = fg; fg = bg < 0 ? DEF_BG : bg; bg = t < 0 ? DEF_FG : t; }
+      let style = `color:${isCur ? '#05080f' : (COLORS[fg] || COLORS[DEF_FG])}`;
+      const bgc = isCur ? '#cfe3ff' : (bg >= 0 ? COLORS[bg] : '');
+      if (bgc) style += `;background:${bgc}`;
+      if (cell.bold) style += ';font-weight:700';
+      if (style !== curStyle) { flush(); curStyle = style; }
+      span += cell.ch === ' ' ? '\u00a0' : esc(cell.ch);
+    }
+    flush();
+    return line;
+  }
   function render() {
     raf = 0;
+    // Keep the view pinned to the bottom unless the user scrolled up to read.
+    const atBottom = host.scrollTop + host.clientHeight >= host.scrollHeight - 4;
     let html = '';
+    // Scrollback only on the main screen (full-screen apps own the alt screen).
+    if (alt === null) {
+      for (let r = 0; r < scrollback.length; r++) html += renderRow(scrollback[r], -1) + '\n';
+    }
     for (let r = 0; r < rows; r++) {
-      const row = grid[r];
-      let line = '', curStyle = null, span = '';
-      const flush = () => { if (span) { line += `<span style="${curStyle}">${span}</span>`; span = ''; } };
-      for (let c = 0; c < cols; c++) {
-        const cell = row[c];
-        const isCur = curVisible && r === cy && c === cx;
-        let fg = cell.fg < 0 ? DEF_FG : cell.fg, bg = cell.bg;
-        if (cell.inv) { const t = fg; fg = bg < 0 ? DEF_BG : bg; bg = t < 0 ? DEF_FG : t; }
-        let style = `color:${isCur ? '#05080f' : (COLORS[fg] || COLORS[DEF_FG])}`;
-        const bgc = isCur ? '#cfe3ff' : (bg >= 0 ? COLORS[bg] : '');
-        if (bgc) style += `;background:${bgc}`;
-        if (cell.bold) style += ';font-weight:700';
-        if (style !== curStyle) { flush(); curStyle = style; }
-        span += cell.ch === ' ' ? '\u00a0' : esc(cell.ch);
-      }
-      flush();
-      html += line + '\n';
+      html += renderRow(grid[r], curVisible && r === cy ? cx : -1) + '\n';
     }
     host.innerHTML = html;
+    if (atBottom) host.scrollTop = host.scrollHeight;
   }
 
   // ---- Input ----
@@ -199,8 +226,23 @@ function VTerm(host, send) {
   }
   const onKey = (e) => {
     if (e.metaKey && (e.key === 'c' || e.key === 'v')) return; // allow copy/paste
+    // Shift + PageUp/PageDown/Home/End scroll the local scrollback view (mouse
+    // wheel works natively); they're not forwarded to the shell.
+    if (e.shiftKey && (e.key === 'PageUp' || e.key === 'PageDown' || e.key === 'Home' || e.key === 'End')) {
+      e.preventDefault();
+      const page = host.clientHeight * 0.9;
+      if (e.key === 'PageUp') host.scrollTop -= page;
+      else if (e.key === 'PageDown') host.scrollTop += page;
+      else if (e.key === 'Home') host.scrollTop = 0;
+      else host.scrollTop = host.scrollHeight;
+      return;
+    }
     const bytes = keyToBytes(e);
-    if (bytes !== '') { e.preventDefault(); send(JSON.stringify({ type: 'data', data: bytes })); }
+    if (bytes !== '') {
+      e.preventDefault();
+      send(JSON.stringify({ type: 'data', data: bytes }));
+      host.scrollTop = host.scrollHeight; // typing jumps back to the prompt
+    }
   };
   const onPaste = (e) => { e.preventDefault(); const t = (e.clipboardData || window.clipboardData).getData('text'); if (t) send(JSON.stringify({ type: 'data', data: t })); };
   host.setAttribute('tabindex', '0');
