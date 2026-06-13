@@ -56,28 +56,49 @@ function renderMysql(v) {
 function confirmKeepData() { return new Promise((res) => { modal(tr('my.del_title'), `<p style="margin:0 0 16px">${tr('my.del_desc')}</p><div class="row" style="justify-content:flex-end"><button class="btn sec" id="kdCancel">${tr('common.cancel')}</button><button class="btn sec" id="kdKeep">${tr('my.keep_data')}</button><button class="btn danger" id="kdDrop">${tr('my.drop_with_data')}</button></div>`, (close) => { $('kdCancel').onclick = () => { close(); res(null); }; $('kdKeep').onclick = () => { close(); res(true); }; $('kdDrop').onclick = () => { close(); res(false); }; }); }); }
 
 function myInstall(reload) {
-  // Engine+version merged into one picker; default MariaDB 11.4.
-  const OPTS = [
-    { v: 'mariadb|11.4', label: 'MariaDB 11.4' },
-    { v: 'mariadb|10.11', label: 'MariaDB 10.11' },
-    { v: 'mariadb|10.6', label: 'MariaDB 10.6' },
-    { v: 'mysql|8.4', label: 'MySQL 8.4' },
-    { v: 'mysql|8.0', label: 'MySQL 8.0' },
-    { v: 'mysql|5.7', label: 'MySQL 5.7' },
-  ];
+  // Engine + version are separate selects (default MariaDB 11.4).
+  const VER = { mariadb: ['11.4', '10.11', '10.6'], mysql: ['8.4', '8.0', '5.7'] };
+  const EYE = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const EYE_OFF = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.24A9 9 0 0 1 12 4c6.5 0 10 7 10 7a13 13 0 0 1-1.67 2.4M6.6 6.6A13 13 0 0 0 2 12s3.5 7 10 7a9 9 0 0 0 3.4-.66"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M2 2l20 20"/></svg>';
+  const genPw = (n) => {
+    const cs = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+    const a = new Uint8Array(n);
+    if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(a); else for (let i = 0; i < n; i++) a[i] = Math.floor(Math.random() * 256);
+    return Array.from(a).map((b) => cs[b % cs.length]).join('');
+  };
+  const verOpts = (eng) => VER[eng].map((x, i) => `<option value="${x}"${i === 0 ? ' selected' : ''}>${x}</option>`).join('');
   modal(tr('my.create_db'), `
     <div class="formgrid">
-      <div><label class="lbl">${tr('my.engine_version')}</label><select id="miEv" class="field">${OPTS.map((o) => `<option value="${o.v}"${o.v === 'mariadb|11.4' ? ' selected' : ''}>${o.label}</option>`).join('')}</select></div>
-      <div><label class="lbl">${tr('my.ext_port')}</label><input id="miPort" class="field" type="number" placeholder="3306" /></div>
-      <div style="display:flex;align-items:flex-end"><label style="display:flex;gap:7px;align-items:center"><input type="checkbox" id="miExpose" checked /> ${tr('my.expose')}</label></div>
+      <div><label class="lbl">${tr('my.engine')}</label><select id="miEngine" class="field"><option value="mariadb" selected>MariaDB</option><option value="mysql">MySQL</option></select></div>
+      <div><label class="lbl">${tr('my.version')}</label><select id="miVer" class="field">${verOpts('mariadb')}</select></div>
     </div>
-    <p class="mut" style="font-size:12px;margin-top:10px">${tr('my.root_auto')}</p>
+    <div class="formgrid" style="margin-top:12px">
+      <div><label class="lbl">${tr('my.username')}</label><input id="miUser" class="field" value="root" autocomplete="off" /></div>
+      <div><label class="lbl">${tr('my.password')}</label><div class="pwf"><input id="miPw" class="field" type="password" value="${genPw(12)}" autocomplete="new-password" /><button type="button" class="pwf-eye" id="miPwEye" title="${tr('set.show')}">${EYE}</button></div></div>
+    </div>
+    <div class="row" style="align-items:center;gap:14px;margin-top:16px">
+      <label class="switch" style="padding:0"><input type="checkbox" id="miExpose" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('my.expose')}</b></span></label>
+      <span class="sp" style="flex:1"></span>
+      <div id="miPortWrap" style="display:flex;align-items:center;gap:8px"><label class="lbl" style="margin:0;white-space:nowrap">${tr('my.ext_port_label')}</label><input id="miPort" class="field" type="number" placeholder="3306" style="max-width:130px" /></div>
+    </div>
+    <p class="mut" style="font-size:12px;margin-top:10px">${tr('my.cred_note')}</p>
     <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn" id="miGo">${tr('my.create')}</button></div>
     <div class="hidden" id="miJob" style="margin-top:14px"></div>`, (close) => {
-    $('miExpose').onchange = () => { $('miPort').disabled = !$('miExpose').checked; };
+    $('miEngine').onchange = () => { $('miVer').innerHTML = verOpts($('miEngine').value); };
+    // Password field: hidden by default; eye toggles persistent reveal; typing
+    // briefly reveals the freshly-entered characters, then re-masks.
+    const pwi = $('miPw'), eye = $('miPwEye');
+    let shown = false, t;
+    eye.onclick = () => { shown = !shown; pwi.type = shown ? 'text' : 'password'; eye.innerHTML = shown ? EYE_OFF : EYE; eye.title = shown ? tr('set.hide') : tr('set.show'); };
+    pwi.addEventListener('input', () => { if (shown) return; pwi.type = 'text'; clearTimeout(t); t = setTimeout(() => { if (!shown) pwi.type = 'password'; }, 900); });
+    const syncExpose = () => { $('miPortWrap').classList.toggle('hidden', !$('miExpose').checked); };
+    $('miExpose').onchange = syncExpose; syncExpose();
     $('miGo').onclick = () => {
-      const [engine, version] = $('miEv').value.split('|');
-      const body = { op: 'install', engine, version, expose: $('miExpose').checked };
+      const engine = $('miEngine').value, version = $('miVer').value;
+      const username = $('miUser').value.trim() || 'root';
+      const password = pwi.value;
+      if (password.length < 6 || password.length > 128) { toast(tr('set.pw_len'), 'err'); return; }
+      const body = { op: 'install', engine, version, username, password, expose: $('miExpose').checked };
       if (body.expose && $('miPort').value) body.port = Number($('miPort').value);
       $('miGo').disabled = true; $('miJob').classList.remove('hidden');
       op('mysql', body).then((r) => renderJob($('miJob'), 'mysql', r.op_id, 'mysql:install', { onDone: () => { toast(tr('my.db_created'), 'ok'); close(); reload(); }, onError: () => { $('miGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('miGo').disabled = false; });

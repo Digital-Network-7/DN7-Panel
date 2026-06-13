@@ -124,6 +124,10 @@ struct Manifest {
     /// at-rest-encrypted root password (nonce:cipher), via crate::crypto.
     root_enc: String,
     created_at: i64,
+    /// The primary admin account name shown to the user (default "root"). When
+    /// non-root, an additional full-privilege account is created at install.
+    #[serde(default)]
+    admin_user: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -573,6 +577,27 @@ fn start_install(req: &Req) -> Result<Value> {
         None
     };
 
+    // Admin account name (default root) + optional explicit password.
+    let admin_user = req
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("root")
+        .to_string();
+    if admin_user != "root" && !valid_ident(&admin_user, false) {
+        return Err(anyhow!("ERR_CODE:mysql.user_name_rules"));
+    }
+    let password = match req.password.as_deref().map(str::trim) {
+        Some(p) if !p.is_empty() => {
+            if p.len() < 6 || p.len() > 128 {
+                return Err(anyhow!("ERR_CODE:mysql.bad_password"));
+            }
+            Some(p.to_string())
+        }
+        _ => None,
+    };
+
     // Single-instance: refuse if one already exists (the user manages multiple
     // databases inside it, not multiple instances).
     if load_manifest(INSTANCE_ID).is_ok() {
@@ -586,7 +611,17 @@ fn start_install(req: &Req) -> Result<Value> {
     let op_t = op_id.clone();
     let inst_t = inst_id.clone();
     tokio::spawn(async move {
-        match run_install_detached(&op_t, &engine, &version, port, &inst_t).await {
+        match run_install_detached(
+            &op_t,
+            &engine,
+            &version,
+            port,
+            &inst_t,
+            password,
+            &admin_user,
+        )
+        .await
+        {
             Ok(()) => op_finish(&op_t, "done", "", &inst_t),
             Err(e) => op_finish(&op_t, "error", &e.to_string(), ""),
         }
@@ -603,6 +638,8 @@ async fn run_install_detached(
     version: &str,
     port: Option<i64>,
     inst_id: &str,
+    password: Option<String>,
+    admin_user: &str,
 ) -> Result<()> {
     let dkr = dkr()?;
     let image = image_ref(engine, version);
@@ -626,8 +663,8 @@ async fn run_install_detached(
     op_push(op_id, &pmsg("my.creating_volume", &[]));
     create_volume(&dkr, &volume, inst_id, engine).await?;
 
-    // 3. Generate + encrypt the root password.
-    let password = gen_password();
+    // 3. Use the provided root password, or generate one; store encrypted.
+    let password = password.unwrap_or_else(gen_password);
     let root_enc = crate::crypto::encrypt(&password);
 
     // 4. Create + start the container.
@@ -656,6 +693,7 @@ async fn run_install_detached(
         port,
         root_enc,
         created_at: now_secs(),
+        admin_user: admin_user.to_string(),
     };
     save_manifest(&m)?;
 
@@ -664,6 +702,19 @@ async fn run_install_detached(
     // queries fail until this completes, so block the op until it's truly ready.
     op_push(op_id, &pmsg("my.waiting_ready", &[]));
     if wait_ready(&container, &password, op_id, 180).await {
+        // When the admin account isn't root, create it as a full-privilege user
+        // sharing the same password (root stays the panel's internal superuser).
+        if admin_user != "root" && valid_ident(admin_user, false) {
+            let esc_user = sql_escape(admin_user);
+            let esc_pw = sql_escape(&password);
+            let create =
+                format!("CREATE USER IF NOT EXISTS '{esc_user}'@'%' IDENTIFIED BY '{esc_pw}';");
+            let grant =
+                format!("GRANT ALL PRIVILEGES ON *.* TO '{esc_user}'@'%' WITH GRANT OPTION;");
+            let _ = run_stmt(&container, &password, &create).await;
+            let _ = run_stmt(&container, &password, &grant).await;
+            let _ = run_stmt(&container, &password, "FLUSH PRIVILEGES;").await;
+        }
         op_push(op_id, &pmsg("my.install_done", &[]));
     } else {
         // Don't hard-fail: the container exists and may still come up. Surface
@@ -873,11 +924,16 @@ async fn remove_instance(req: &Req) -> Result<Value> {
 async fn credentials(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
     let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let user = if m.admin_user.is_empty() {
+        "root".to_string()
+    } else {
+        m.admin_user.clone()
+    };
     Ok(json!({
         "host": "127.0.0.1",
         "port": m.port,
         "exposed": m.port.is_some(),
-        "user": "root",
+        "user": user,
         "password": password,
         "engine": m.engine,
         "version": m.version,
