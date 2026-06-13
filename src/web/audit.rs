@@ -18,9 +18,40 @@ use serde::{Deserialize, Serialize};
 /// File name under the data dir.
 const FILE: &str = "audit.log";
 /// Trim once the log exceeds this size.
-const MAX_BYTES: u64 = 4 * 1024 * 1024; // 4 MiB
+const MAX_BYTES: u64 = 8 * 1024 * 1024; // 8 MiB
 /// Tail to keep when trimming.
-const KEEP_BYTES: u64 = 2 * 1024 * 1024; // 2 MiB
+const KEEP_BYTES: u64 = 4 * 1024 * 1024; // 4 MiB
+
+tokio::task_local! {
+    /// Per-request context (client IP + sanitized request headers), set by the
+    /// entry-gate middleware so any audit record made while handling the request
+    /// can attach them without threading them through every handler signature.
+    static REQ_CTX: RequestCtx;
+}
+
+/// Per-request audit context.
+#[derive(Clone, Default)]
+pub struct RequestCtx {
+    pub ip: String,
+    pub headers: String,
+}
+
+/// Run `fut` with the given request context bound (so `record*` can read the
+/// client IP + sanitized headers from any depth without extra parameters).
+pub async fn scope<F>(ctx: RequestCtx, fut: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    REQ_CTX.scope(ctx, fut).await
+}
+
+fn ctx_ip() -> String {
+    REQ_CTX.try_with(|c| c.ip.clone()).unwrap_or_default()
+}
+
+fn ctx_headers() -> String {
+    REQ_CTX.try_with(|c| c.headers.clone()).unwrap_or_default()
+}
 
 /// One audit record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,9 +70,16 @@ pub struct Entry {
     /// Short human detail (error text, or extra context). May be empty.
     #[serde(default)]
     pub detail: String,
-    /// Source IP when known (logins). May be empty.
+    /// Source IP when known. May be empty.
     #[serde(default)]
     pub ip: String,
+    /// Sanitized request headers (one "Name: value" per line). May be empty.
+    #[serde(default)]
+    pub headers: String,
+    /// Sanitized response snapshot (JSON, secrets redacted, truncated). Empty
+    /// for failures (the error goes in `detail`) and for non-op records.
+    #[serde(default)]
+    pub response: String,
 }
 
 fn path() -> PathBuf {
@@ -59,13 +97,37 @@ fn clip(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
-/// Record an action (no source IP).
+/// Record an action. Client IP + request headers are taken from the per-request
+/// context (set by the entry-gate middleware) when available.
 pub fn record(actor: &str, action: &str, target: &str, ok: bool, detail: &str) {
-    record_ip(actor, action, target, ok, detail, "");
+    write_entry(actor, action, target, ok, detail, "", "");
 }
 
-/// Record an action with a source IP (used by login).
+/// Record an action with an explicit source IP (login, where the IP is computed
+/// from the connection / proxy headers). Falls back to the context IP if empty.
 pub fn record_ip(actor: &str, action: &str, target: &str, ok: bool, detail: &str, ip: &str) {
+    write_entry(actor, action, target, ok, detail, ip, "");
+}
+
+/// Record a channel op (docker/nginx/mysql) including a sanitized response.
+pub fn record_op(actor: &str, action: &str, target: &str, ok: bool, detail: &str, response: &str) {
+    write_entry(actor, action, target, ok, detail, "", response);
+}
+
+fn write_entry(
+    actor: &str,
+    action: &str,
+    target: &str,
+    ok: bool,
+    detail: &str,
+    ip: &str,
+    response: &str,
+) {
+    let ip = if ip.is_empty() {
+        ctx_ip()
+    } else {
+        ip.to_string()
+    };
     let entry = Entry {
         ts: now_secs(),
         actor: if actor.is_empty() {
@@ -77,7 +139,9 @@ pub fn record_ip(actor: &str, action: &str, target: &str, ok: bool, detail: &str
         target: clip(target, 96),
         ok,
         detail: clip(detail, 240),
-        ip: clip(ip, 64),
+        ip: clip(&ip, 64),
+        headers: clip(&ctx_headers(), 2000),
+        response: clip(response, 4000),
     };
     let line = match serde_json::to_string(&entry) {
         Ok(s) => s,
@@ -168,6 +232,8 @@ mod tests {
             ok: true,
             detail: String::new(),
             ip: String::new(),
+            headers: String::new(),
+            response: String::new(),
         };
         let s = serde_json::to_string(&e).unwrap();
         let back: Entry = serde_json::from_str(&s).unwrap();
