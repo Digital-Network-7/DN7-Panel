@@ -206,7 +206,9 @@ pub async fn run_web_container_exec(
                 cmd: Some(vec![
                     "/bin/sh".to_string(),
                     "-c".to_string(),
-                    "if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi"
+                    // Adapt to whatever interactive shell the image ships, in
+                    // order of preference: bash -> sh -> ash (busybox/alpine).
+                    "for s in /bin/bash /bin/sh /bin/ash; do [ -x \"$s\" ] && exec \"$s\"; done; exec /bin/sh"
                         .to_string(),
                 ]),
                 ..Default::default()

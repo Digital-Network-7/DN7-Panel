@@ -180,25 +180,82 @@ function dkVolumes() {
   }).catch((e) => { $('dkVList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
 
-function dkCreateForm(image, info) {
+function dkCreateForm() {
+  // Fetch host capacity (CPU/mem caps) and the network list up front so the
+  // Resources / Network tabs can be populated.
+  Promise.all([
+    op('docker', { op: 'info' }).catch(() => ({})),
+    op('docker', { op: 'list_networks' }).catch(() => ({ networks: [] })),
+  ]).then(([info, nd]) => dkCreateModal(info || {}, (nd && nd.networks) || []));
+}
+
+function dkCreateModal(info, networks) {
+  const hostCpus = Number(info.host_cpus) || 0;
+  const hostMem = Number(info.host_mem_bytes) || 0;
+  const cpuMax = hostCpus > 0 ? hostCpus : 2;
+  const memMaxMb = hostMem > 0 ? (hostMem / 1048576) : 0;
+  const memMaxTxt = memMaxMb > 0 ? memMaxMb.toFixed(2) + 'MB' : '';
+  const netOpts = `<option value="">${tr('dk.net_default')}</option>` +
+    networks.filter((n) => n.name !== 'host' && n.name !== 'none')
+      .map((n) => `<option value="${esc(n.name)}" data-subnet="${esc(n.subnet || '')}">${esc(n.name)}</option>`).join('');
   modal(tr('dk.create_container'), `
-    <div class="formgrid">
-      <div class="full"><label class="lbl">${tr('dk.image')}</label><select id="ccImg" class="field"><option value="">${tr('dk.image_ph')}</option></select></div>
-      <div><label class="lbl">${tr('dk.ctn_name')}</label><input id="ccName" class="field" placeholder="my-app" /></div>
-      <div><label class="lbl">${tr('dk.restart_policy')}</label><select id="ccRestart" class="field"><option value="unless-stopped">unless-stopped</option><option value="always">always</option><option value="no">no</option></select></div>
-      <div class="full"><label class="lbl">${tr('dk.start_cmd')}</label><input id="ccCmd" class="field" placeholder="${tr('dk.cmd_ph')}" /></div>
-      <div class="full" style="margin-top:2px">
+    <div class="subtabs" id="ccTabs">
+      <button data-s="basic" class="on">${tr('dk.tab_basic')}</button>
+      <button data-s="net">${tr('dk.tab_networks')}</button>
+      <button data-s="ports">${tr('dk.tab_ports')}</button>
+      <button data-s="vol">${tr('dk.tab_volumes')}</button>
+      <button data-s="res">${tr('dk.tab_resources')}</button>
+      <button data-s="env">${tr('dk.tab_env')}</button>
+    </div>
+    <div id="ccBasic">
+      <div class="formgrid">
+        <div class="full"><label class="lbl">${tr('dk.image')}</label><select id="ccImg" class="field"><option value="">${tr('dk.image_ph')}</option></select></div>
+        <div><label class="lbl">${tr('dk.ctn_name')}</label><input id="ccName" class="field" placeholder="my-app" /></div>
+        <div><label class="lbl">${tr('dk.restart_policy')}</label><select id="ccRestart" class="field"><option value="unless-stopped">unless-stopped</option><option value="always">always</option><option value="no">no</option></select></div>
+        <div class="full"><label class="lbl">${tr('dk.start_cmd')}</label><input id="ccCmd" class="field" placeholder="${tr('dk.cmd_ph')}" /></div>
+      </div>
+      <div style="margin-top:10px">
         <label class="switch"><input type="checkbox" id="ccTty" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.alloc_tty')}</b><span>${tr('dk.alloc_tty_d')}</span></span></label>
         <label class="switch"><input type="checkbox" id="ccStart" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.start_after')}</b><span>${tr('dk.start_after_d')}</span></span></label>
       </div>
-      <div class="full"><label class="lbl">${tr('dk.port_map')}</label><div class="kvlist" id="ccPorts"></div><button type="button" class="kvadd" id="ccPortsAdd">${tr('dk.add_port')}</button></div>
-      <div class="full"><label class="lbl">${tr('dk.env')}</label><div class="kvlist" id="ccEnv"></div><button type="button" class="kvadd" id="ccEnvAdd">${tr('dk.add_env')}</button></div>
-      <div class="full"><label class="lbl">${tr('dk.volumes')}</label><div class="kvlist" id="ccVol"></div><button type="button" class="kvadd" id="ccVolAdd">${tr('dk.add_vol')}</button></div>
+    </div>
+    <div id="ccNet" class="hidden">
+      <div class="formgrid">
+        <div class="full"><label class="lbl">${tr('dk.net_join')}</label><select id="ccNetSel" class="field">${netOpts}</select></div>
+        <div><label class="lbl">${tr('dk.mac_addr')}</label><div class="row" style="gap:6px;flex-wrap:nowrap"><input id="ccMac" class="field mono" placeholder="02:42:ac:11:00:02" style="flex:1" /><button type="button" class="btn sec sm" id="ccMacGen" title="${tr('dk.gen_random')}">⟳</button></div></div>
+        <div><label class="lbl">${tr('dk.ipv4_addr')}</label><div class="row" style="gap:6px;flex-wrap:nowrap"><input id="ccIpv4" class="field mono" placeholder="172.20.0.10" style="flex:1" /><button type="button" class="btn sec sm" id="ccIpv4Gen" title="${tr('dk.gen_random')}">⟳</button></div></div>
+        <div><label class="lbl">${tr('dk.hostname')}</label><input id="ccHost" class="field" placeholder="web-01" /></div>
+        <div><label class="lbl">${tr('dk.domainname')}</label><input id="ccDomain" class="field" placeholder="example.com" /></div>
+        <div class="full"><label class="lbl">${tr('dk.dns')}</label><input id="ccDns" class="field mono" placeholder="1.1.1.1 8.8.8.8" /><p class="formnote" style="margin-top:5px">${tr('dk.dns_hint')}</p></div>
+      </div>
+      <p class="formnote" style="margin-top:8px">${tr('dk.net_static_hint')}</p>
+    </div>
+    <div id="ccPortsT" class="hidden">
+      <label class="lbl">${tr('dk.port_map')}</label><div class="kvlist" id="ccPorts"></div><button type="button" class="kvadd" id="ccPortsAdd">${tr('dk.add_port')}</button>
+    </div>
+    <div id="ccVolT" class="hidden">
+      <label class="lbl">${tr('dk.volumes')}</label><div class="kvlist" id="ccVol"></div><button type="button" class="kvadd" id="ccVolAdd">${tr('dk.add_vol')}</button>
+    </div>
+    <div id="ccRes" class="hidden">
+      <div class="formgrid">
+        <div><label class="lbl">${tr('dk.cpu_weight')}</label><input id="ccCpuShares" class="field" type="number" min="0" value="1024" /><p class="formnote" style="margin-top:5px">${tr('dk.cpu_weight_hint')}</p></div>
+        <div><label class="lbl">${tr('dk.cpu_limit')}</label><input id="ccCpus" class="field" type="number" min="0" max="${cpuMax}" step="0.1" value="0" /><p class="formnote" style="margin-top:5px">${tr('dk.cpu_limit_hint', { n: cpuMax })}</p></div>
+        <div class="full"><label class="lbl">${tr('dk.mem_limit')}</label><input id="ccMem" class="field" type="number" min="0" value="0" /><p class="formnote" style="margin-top:5px">${memMaxTxt ? tr('dk.mem_limit_hint', { n: memMaxTxt }) : tr('dk.mem_limit_off')}</p></div>
+      </div>
+      <label class="switch" style="margin-top:12px"><input type="checkbox" id="ccPriv" /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.privileged')}</b><span>${tr('dk.privileged_d')}</span></span></label>
+    </div>
+    <div id="ccEnvT" class="hidden">
+      <label class="lbl">${tr('dk.env')}</label><div class="kvlist" id="ccEnv"></div><button type="button" class="kvadd" id="ccEnvAdd">${tr('dk.add_env')}</button>
     </div>
     <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="ccGo">${tr('dk.create')}</button></div>
-    <div class="hidden" id="ccJob" style="margin-top:14px"></div>`, (close) => {
-    // Image picker: a select of all local images (built-in ones included).
-    loadImageOptions(image);
+    <div class="hidden" id="ccJob" style="margin-top:14px"></div>`, (close, root) => {
+    loadImageOptions();    // Tab switching.
+    const panes = { basic: 'ccBasic', net: 'ccNet', ports: 'ccPortsT', vol: 'ccVolT', res: 'ccRes', env: 'ccEnvT' };
+    const tabs = root.querySelector('#ccTabs');
+    tabs.querySelectorAll('button').forEach((btn) => btn.onclick = () => {
+      tabs.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === btn));
+      Object.keys(panes).forEach((s) => root.querySelector('#' + panes[s]).classList.toggle('hidden', btn.dataset.s !== s));
+    });
     // Dynamic row helpers.
     const portRow = (v) => kvRow('ccPorts', [
       { ph: tr('dk.host_port'), val: v && v.h }, { sep: ':' }, { ph: tr('dk.container_port'), val: v && v.c },
@@ -212,17 +269,53 @@ function dkCreateForm(image, info) {
     $('ccPortsAdd').onclick = () => portRow();
     $('ccEnvAdd').onclick = () => envRow();
     $('ccVolAdd').onclick = () => volRow();
-    // No default rows — ports/env/volumes start empty.
+    // Network tab wiring: random MAC/IPv4 generators.
+    $('ccMac').value = randMac();
+    $('ccMacGen').onclick = () => { $('ccMac').value = randMac(); };
+    const curSubnet = () => { const o = $('ccNetSel').options[$('ccNetSel').selectedIndex]; return o ? (o.dataset.subnet || '') : ''; };
+    $('ccIpv4Gen').onclick = () => { const ip = randIpFromSubnet(curSubnet()); if (ip) $('ccIpv4').value = ip; else toast(tr('dk.ipv4_need_subnet'), 'err'); };
+    $('ccNetSel').onchange = () => { const ip = randIpFromSubnet(curSubnet()); $('ccIpv4').value = ip || ''; };
     $('ccGo').onclick = () => {
       const image = $('ccImg').value.trim(); if (!image) return toast(tr('dk.need_image'), 'err');
       const ports = readKv('ccPorts').map((r) => ({ host: Number(r[0]), container: Number(r[1]), proto: r.proto || 'tcp' })).filter((p) => p.host && p.container);
       const env = readKv('ccEnv').map((r) => (r[0] ? r[0] + '=' + (r[1] || '') : '')).filter(Boolean);
       const volumes = readKv('ccVol').map((r) => ({ host: r[0], container: r[1], readonly: !!r.ro })).filter((vv) => vv.host && vv.container);
-      const body = { op: 'create_container', image, name: $('ccName').value.trim() || undefined, restart: $('ccRestart').value, ports, env, volumes, command: $('ccCmd').value.trim() || undefined, tty: $('ccTty').checked, start: $('ccStart').checked };
+      const network = $('ccNetSel').value || undefined;
+      const mac = $('ccMac').value.trim();
+      const ipv4 = $('ccIpv4').value.trim();
+      const dns = $('ccDns').value.trim().split(/[\s,]+/).filter(Boolean);
+      const cpuShares = Number($('ccCpuShares').value) || 0;
+      const cpusV = Number($('ccCpus').value) || 0;
+      const memV = Number($('ccMem').value) || 0;
+      const body = {
+        op: 'create_container', image, name: $('ccName').value.trim() || undefined, restart: $('ccRestart').value,
+        ports, env, volumes, command: $('ccCmd').value.trim() || undefined, tty: $('ccTty').checked, start: $('ccStart').checked,
+        network, mac: network && mac ? mac : undefined, ipv4: network && ipv4 ? ipv4 : undefined,
+        hostname: $('ccHost').value.trim() || undefined, domainname: $('ccDomain').value.trim() || undefined,
+        dns: dns.length ? dns : undefined, cpu_shares: cpuShares || undefined,
+        cpus: cpusV > 0 ? String(cpusV) : undefined, memory: memV > 0 ? memV + 'm' : undefined,
+        privileged: $('ccPriv').checked || undefined,
+      };
       $('ccGo').disabled = true; $('ccJob').classList.remove('hidden');
       op('docker', body).then((r) => renderJob($('ccJob'), 'docker', r.op_id, '', { onDone: () => { toast(tr('dk.ctn_created'), 'ok'); close(); switchTab('docker'); }, onError: () => { $('ccGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ccGo').disabled = false; });
     };
-  });
+  }, true);
+}
+
+// Generate a locally-administered random unicast MAC (02:xx:xx:xx:xx:xx).
+function randMac() {
+  const h = () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0');
+  return ['02', h(), h(), h(), h(), h()].join(':');
+}
+
+// Suggest a random host address inside an IPv4 subnet (last octet 2–251).
+// Editable by the user; only a convenience for user-defined networks.
+function randIpFromSubnet(subnet) {
+  if (!subnet || subnet.indexOf('/') < 0) return '';
+  const base = subnet.split('/')[0].split('.');
+  if (base.length !== 4) return '';
+  base[3] = String(2 + Math.floor(Math.random() * 250));
+  return base.join('.');
 }
 
 // Populate the create-form image dropdown with all local images (built-in ones
@@ -286,7 +379,21 @@ function dkNetworks() {
   const body = $('dkBody');
   body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_networks')}</h3><span class="sp"></span><button class="btn sm" id="dkNetNew">${tr('dk.create_network')}</button><button class="btn sec sm" id="dkRefN">${tr('dk.refresh')}</button></div><div id="dkNList">` + loading() + '</div>';
   $('dkRefN').onclick = dkNetworks;
-  $('dkNetNew').onclick = () => modal(tr('dk.create_network'), `<label class="lbl">${tr('dk.net_name')}</label><input id="nnName" class="field" style="margin-bottom:16px" /><div class="row" style="justify-content:flex-end"><button class="btn" id="nnGo">${tr('dk.create')}</button></div>`, (close) => { $('nnGo').onclick = () => op('docker', { op: 'create_network', name: $('nnName').value.trim() }).then(() => { close(); toast(tr('common.created'), 'ok'); dkNetworks(); }).catch((e) => toast(e.message, 'err')); });
+  $('dkNetNew').onclick = () => modal(tr('dk.create_network'), `
+    <div class="formgrid">
+      <div><label class="lbl">${tr('dk.net_name')}</label><input id="nnName" class="field" placeholder="my-net" /></div>
+      <div><label class="lbl">${tr('dk.net_mode')}</label><select id="nnDriver" class="field"><option value="bridge">bridge</option><option value="macvlan">macvlan</option><option value="ipvlan">ipvlan</option><option value="overlay">overlay</option></select></div>
+      <div><label class="lbl">${tr('dk.net_subnet')}</label><input id="nnSubnet" class="field mono" placeholder="172.20.0.0/16" /></div>
+      <div><label class="lbl">${tr('dk.net_gateway')}</label><input id="nnGateway" class="field mono" placeholder="172.20.0.1" /></div>
+      <div class="full"><label class="lbl">${tr('dk.net_iprange')}</label><input id="nnRange" class="field mono" placeholder="172.20.5.0/24" /></div>
+    </div>
+    <p class="formnote" style="margin-top:8px">${tr('dk.net_ipam_hint')}</p>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="nnGo">${tr('dk.create')}</button></div>`, (close) => {
+    $('nnGo').onclick = () => op('docker', {
+      op: 'create_network', name: $('nnName').value.trim(), driver: $('nnDriver').value,
+      subnet: $('nnSubnet').value.trim() || undefined, gateway: $('nnGateway').value.trim() || undefined, ip_range: $('nnRange').value.trim() || undefined,
+    }).then(() => { close(); toast(tr('common.created'), 'ok'); dkNetworks(); }).catch((e) => toast(e.message, 'err'));
+  });
   op('docker', { op: 'list_networks' }).then((d) => {
     let h = `<table class="optable"><tr><th>${tr('dk.col_name')}</th><th>${tr('dk.col_driver')}</th><th>${tr('dk.col_scope')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
     (d.networks || []).forEach((n) => { h += `<tr><td>${esc(n.name)}</td><td class="mut">${esc(n.driver)}</td><td class="mut">${esc(n.scope)}</td><td class="act">${['bridge', 'host', 'none'].includes(n.name) ? `<span class="mut" style="font-size:12px">${tr('dk.builtin')}</span>` : `<button class="btn sm danger" data-rm="${esc(n.name)}">${tr('dk.delete')}</button>`}</td></tr>`; });

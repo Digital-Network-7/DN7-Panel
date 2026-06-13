@@ -91,6 +91,31 @@ struct Req {
     start: Option<bool>,
     #[serde(default)]
     network: Option<String>,
+    // network create options
+    #[serde(default)]
+    driver: Option<String>,
+    #[serde(default)]
+    subnet: Option<String>,
+    #[serde(default)]
+    gateway: Option<String>,
+    #[serde(default)]
+    ip_range: Option<String>,
+    // create_container: networking endpoint options
+    #[serde(default)]
+    mac: Option<String>,
+    #[serde(default)]
+    ipv4: Option<String>,
+    #[serde(default)]
+    hostname: Option<String>,
+    #[serde(default)]
+    domainname: Option<String>,
+    #[serde(default)]
+    dns: Option<Vec<String>>,
+    // create_container: extra resource limits
+    #[serde(default)]
+    cpu_shares: Option<i64>,
+    #[serde(default)]
+    privileged: Option<bool>,
     // optional command override (argv, whitespace-split client-side or here)
     #[serde(default)]
     command: Option<String>,
@@ -440,9 +465,50 @@ async fn handle(req: &Req) -> Result<Value> {
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_network_name"))?;
             validate_name(name)?;
+            // Driver (whitelisted; default bridge).
+            let driver = req
+                .driver
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("bridge");
+            if !net_driver_allowed(driver) {
+                return Err(anyhow!("ERR_CODE:docker.bad_net_driver"));
+            }
+            // Optional IPv4 IPAM config.
+            let subnet = opt_trim(&req.subnet);
+            let gateway = opt_trim(&req.gateway);
+            let ip_range = opt_trim(&req.ip_range);
+            if let Some(s) = subnet.as_deref() {
+                valid_cidr(s)?;
+            }
+            if let Some(g) = gateway.as_deref() {
+                valid_ipv4(g)?;
+            }
+            if let Some(r) = ip_range.as_deref() {
+                valid_cidr(r)?;
+            }
+            // Gateway / range only make sense with a subnet.
+            if subnet.is_none() && (gateway.is_some() || ip_range.is_some()) {
+                return Err(anyhow!("ERR_CODE:docker.net_range_needs_subnet"));
+            }
+            let ipam = if subnet.is_some() {
+                bollard::models::Ipam {
+                    config: Some(vec![bollard::models::IpamConfig {
+                        subnet,
+                        gateway,
+                        ip_range,
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }
+            } else {
+                Default::default()
+            };
             let opts = bollard::network::CreateNetworkOptions {
                 name: name.to_string(),
-                driver: "bridge".to_string(),
+                driver: driver.to_string(),
+                ipam,
                 ..Default::default()
             };
             dkr()?
@@ -933,7 +999,11 @@ async fn container_has_shell(dkr: &Docker, id: &str) -> bool {
         .create_exec(
             id,
             bollard::exec::CreateExecOptions {
-                cmd: Some(vec!["/bin/sh", "-c", "true"]),
+                cmd: Some(vec![
+                    "/bin/sh",
+                    "-c",
+                    "for s in /bin/bash /bin/sh /bin/ash; do [ -x \"$s\" ] && exit 0; done; exit 1",
+                ]),
                 attach_stdout: Some(false),
                 attach_stderr: Some(false),
                 ..Default::default()
@@ -1139,11 +1209,21 @@ async fn list_networks() -> Result<Value> {
                 .chars()
                 .take(12)
                 .collect::<String>();
+        // First IPv4 subnet from the IPAM config (so the UI can suggest a
+        // static address when joining this network).
+        let subnet = n
+            .ipam
+            .as_ref()
+            .and_then(|i| i.config.as_ref())
+            .and_then(|cfgs| cfgs.iter().find_map(|c| c.subnet.clone()))
+            .filter(|s| s.contains('.'))
+            .unwrap_or_default();
         items.push(json!({
             "id": id,
             "name": n.name.clone().unwrap_or_default(),
             "driver": n.driver.clone().unwrap_or_default(),
             "scope": n.scope.clone().unwrap_or_default(),
+            "subnet": subnet,
         }));
     }
     Ok(json!({ "networks": items }))
@@ -1401,6 +1481,77 @@ fn restart_allowed(p: &str) -> bool {
     matches!(p, "no" | "unless-stopped" | "always")
 }
 
+/// Trim an optional string and drop it when empty.
+fn opt_trim(s: &Option<String>) -> Option<String> {
+    s.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Whitelisted network drivers offered in the create-network dialog.
+fn net_driver_allowed(d: &str) -> bool {
+    matches!(
+        d,
+        "bridge" | "macvlan" | "ipvlan" | "overlay" | "host" | "none"
+    )
+}
+
+/// Validate an IPv4 dotted-quad address (no port, no CIDR suffix).
+fn valid_ipv4(s: &str) -> Result<()> {
+    let ok = s.parse::<std::net::Ipv4Addr>().is_ok();
+    if !ok {
+        return Err(anyhow!("ERR_CODE:docker.bad_ipv4"));
+    }
+    Ok(())
+}
+
+/// Validate an IPv4 CIDR block like `172.20.0.0/16`.
+fn valid_cidr(s: &str) -> Result<()> {
+    let (addr, prefix) = s
+        .split_once('/')
+        .ok_or_else(|| anyhow!("ERR_CODE:docker.bad_cidr"))?;
+    if addr.parse::<std::net::Ipv4Addr>().is_err() {
+        return Err(anyhow!("ERR_CODE:docker.bad_cidr"));
+    }
+    match prefix.parse::<u8>() {
+        Ok(p) if p <= 32 => Ok(()),
+        _ => Err(anyhow!("ERR_CODE:docker.bad_cidr")),
+    }
+}
+
+/// Validate a MAC address: six colon-separated hex octets, e.g. `02:42:ac:11:00:02`.
+fn valid_mac(s: &str) -> Result<()> {
+    let parts: Vec<&str> = s.split(':').collect();
+    let ok = parts.len() == 6
+        && parts
+            .iter()
+            .all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit()));
+    if !ok {
+        return Err(anyhow!("ERR_CODE:docker.bad_mac"));
+    }
+    Ok(())
+}
+
+/// Validate a hostname / domainname label set per RFC 1123 (letters, digits,
+/// hyphen, dots between labels; max 253 chars).
+fn valid_hostname(s: &str) -> Result<()> {
+    if s.is_empty() || s.len() > 253 {
+        return Err(anyhow!("ERR_CODE:docker.bad_hostname"));
+    }
+    let ok = s.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    });
+    if !ok {
+        return Err(anyhow!("ERR_CODE:docker.bad_hostname"));
+    }
+    Ok(())
+}
+
 /// Validate a container name: docker allows [a-zA-Z0-9][a-zA-Z0-9_.-]+.
 fn validate_name(s: &str) -> Result<()> {
     if s.len() > 128 {
@@ -1614,6 +1765,94 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
 
     let tty = req.tty.unwrap_or(false);
 
+    // CPU weight (cpu-shares). Default 1024 (docker's own default). 0 or unset
+    // means "leave at default".
+    let cpu_shares: Option<i64> = match req.cpu_shares {
+        Some(v) if v > 0 => {
+            if !(2..=262144).contains(&v) {
+                return Err(anyhow!("ERR_CODE:docker.cpu_shares_range"));
+            }
+            Some(v)
+        }
+        _ => None,
+    };
+
+    let privileged = req.privileged.unwrap_or(false);
+
+    // DNS servers (validated IPv4 each).
+    let mut dns: Vec<String> = Vec::new();
+    if let Some(list) = &req.dns {
+        if list.len() > 8 {
+            return Err(anyhow!("ERR_CODE:docker.too_many_dns"));
+        }
+        for d in list {
+            let d = d.trim();
+            if d.is_empty() {
+                continue;
+            }
+            valid_ipv4(d)?;
+            dns.push(d.to_string());
+        }
+    }
+
+    // Hostname / domainname (optional).
+    let hostname = match opt_trim(&req.hostname) {
+        Some(h) => {
+            valid_hostname(&h)?;
+            Some(h)
+        }
+        None => None,
+    };
+    let domainname = match opt_trim(&req.domainname) {
+        Some(d) => {
+            valid_hostname(&d)?;
+            Some(d)
+        }
+        None => None,
+    };
+
+    // Per-endpoint network options: static IPv4 and/or MAC address. These are
+    // only honoured when a (user-defined) network is selected.
+    let mac = match opt_trim(&req.mac) {
+        Some(m) => {
+            valid_mac(&m)?;
+            Some(m)
+        }
+        None => None,
+    };
+    let ipv4 = match opt_trim(&req.ipv4) {
+        Some(ip) => {
+            valid_ipv4(&ip)?;
+            Some(ip)
+        }
+        None => None,
+    };
+    if (mac.is_some() || ipv4.is_some()) && network.is_none() {
+        return Err(anyhow!("ERR_CODE:docker.endpoint_needs_network"));
+    }
+
+    // Build the per-network endpoint config when MAC/IPv4 are requested.
+    let networking_config = match (&network, mac.is_some() || ipv4.is_some()) {
+        (Some(net), true) => {
+            let mut endpoints = HashMap::new();
+            endpoints.insert(
+                net.clone(),
+                bollard::models::EndpointSettings {
+                    ipam_config: ipv4.clone().map(|ip| bollard::models::EndpointIpamConfig {
+                        ipv4_address: Some(ip),
+                        ..Default::default()
+                    }),
+                    mac_address: mac.clone(),
+                    ..Default::default()
+                },
+            );
+            Some(bollard::container::NetworkingConfig {
+                endpoints_config: endpoints,
+            })
+        }
+        _ => None,
+    };
+
     // Optional command override.
     let cmd: Option<Vec<String>> = match req
         .command
@@ -1635,6 +1874,9 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
         },
         nano_cpus,
         memory,
+        cpu_shares,
+        privileged: Some(privileged),
+        dns: if dns.is_empty() { None } else { Some(dns) },
         network_mode: network.clone(),
         ..Default::default()
     };
@@ -1645,12 +1887,15 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
         env: if env.is_empty() { None } else { Some(env) },
         tty: Some(tty),
         open_stdin: Some(tty),
+        hostname,
+        domainname,
         exposed_ports: if exposed.is_empty() {
             None
         } else {
             Some(exposed)
         },
         host_config: Some(host_config),
+        networking_config,
         ..Default::default()
     };
 
@@ -2672,6 +2917,17 @@ mod tests {
             restart: None,
             start: None,
             network: None,
+            driver: None,
+            subnet: None,
+            gateway: None,
+            ip_range: None,
+            mac: None,
+            ipv4: None,
+            hostname: None,
+            domainname: None,
+            dns: None,
+            cpu_shares: None,
+            privileged: None,
             command: None,
             tty: None,
             cpus: None,
@@ -2823,6 +3079,67 @@ mod tests {
             spec.config.cmd.as_ref().unwrap(),
             &vec!["sleep".to_string(), "infinity".to_string()]
         );
+    }
+
+    #[test]
+    fn validates_network_fields() {
+        assert!(valid_ipv4("172.20.0.5").is_ok());
+        assert!(valid_ipv4("999.1.1.1").is_err());
+        assert!(valid_ipv4("172.20.0.5/24").is_err());
+        assert!(valid_cidr("172.20.0.0/16").is_ok());
+        assert!(valid_cidr("172.20.0.0/33").is_err());
+        assert!(valid_cidr("172.20.0.0").is_err());
+        assert!(valid_mac("02:42:ac:11:00:02").is_ok());
+        assert!(valid_mac("02-42-ac-11-00-02").is_err());
+        assert!(valid_mac("02:42:ac:11:00").is_err());
+        assert!(valid_hostname("web-01").is_ok());
+        assert!(valid_hostname("web.example.com").is_ok());
+        assert!(valid_hostname("-bad").is_err());
+        assert!(valid_hostname("bad_underscore").is_err());
+        assert!(net_driver_allowed("bridge"));
+        assert!(net_driver_allowed("macvlan"));
+        assert!(!net_driver_allowed("weird"));
+    }
+
+    #[test]
+    fn build_create_spec_endpoint_and_resources() {
+        let mut req = mk_req("nginx");
+        req.network = Some("mynet".into());
+        req.ipv4 = Some("172.20.0.10".into());
+        req.mac = Some("02:42:ac:14:00:0a".into());
+        req.hostname = Some("web-01".into());
+        req.domainname = Some("example.com".into());
+        req.dns = Some(vec!["1.1.1.1".into(), "8.8.8.8".into()]);
+        req.cpu_shares = Some(2048);
+        req.privileged = Some(true);
+        let (spec, _) = build_create_spec(&req).unwrap();
+        let hc = spec.config.host_config.as_ref().unwrap();
+        assert_eq!(hc.cpu_shares, Some(2048));
+        assert_eq!(hc.privileged, Some(true));
+        assert_eq!(hc.dns.as_ref().unwrap().len(), 2);
+        assert_eq!(spec.config.hostname.as_deref(), Some("web-01"));
+        assert_eq!(spec.config.domainname.as_deref(), Some("example.com"));
+        let nc = spec.config.networking_config.as_ref().unwrap();
+        let ep = nc.endpoints_config.get("mynet").unwrap();
+        assert_eq!(ep.mac_address.as_deref(), Some("02:42:ac:14:00:0a"));
+        assert_eq!(
+            ep.ipam_config.as_ref().unwrap().ipv4_address.as_deref(),
+            Some("172.20.0.10")
+        );
+    }
+
+    #[test]
+    fn build_create_spec_rejects_endpoint_without_network() {
+        let mut req = mk_req("nginx");
+        req.ipv4 = Some("172.20.0.10".into());
+        assert!(build_create_spec(&req).is_err());
+    }
+
+    #[test]
+    fn build_create_spec_rejects_bad_cpu_shares() {
+        let mut req = mk_req("nginx");
+        req.cpu_shares = Some(1);
+        assert!(build_create_spec(&req).is_err());
     }
 
     #[test]
