@@ -19,6 +19,7 @@
 //!   {"id","op":"remove","inst","keep_data"?}
 //!   {"id","op":"reset_password","inst"}                 -> {password}
 //!   {"id","op":"change_port","inst","port"?,"expose"}   -> recreate, keep volume
+//!   {"id","op":"switch_version","inst","engine"?,"version"} -> {op_id} (detached)
 //!   {"id","op":"databases","inst"}                      -> [{name,tables,size}]
 //!   {"id","op":"create_database","inst","database"}     create a new schema
 //!   {"id","op":"drop_database","inst","database"}       drop a (non-system) schema
@@ -32,9 +33,9 @@
 //!   {"id","op":"list_ops"} / {"op_log","op_id"} / {"dismiss_op","op_id"}
 //!
 //! Only ONE instance is supported (fixed container `dn7-mysql`); create
-//! multiple databases inside it. Version switching is intentionally NOT offered
-//! because MySQL/MariaDB data directories aren't portable across major versions
-//! (downgrades are unsupported and would corrupt data).
+//! multiple databases inside it. Engine/version switching recreates the
+//! container against the same data volume — the UI warns that major upgrades
+//! or cross-engine swaps may be incompatible and recommends a backup first.
 //! Responses: {"id","ok":true,"data":..} / {"id","ok":false,"error":".."}
 
 use std::collections::HashMap;
@@ -431,6 +432,7 @@ async fn handle(req: &Req) -> Result<Value> {
         "remove" => remove_instance(req).await,
         "reset_password" => reset_password(req).await,
         "change_port" => change_port(req).await,
+        "switch_version" => start_switch(req),
         "databases" => databases(req).await,
         "create_database" => create_database(req).await,
         "drop_database" => drop_database(req).await,
@@ -1072,8 +1074,81 @@ async fn recreate_container(
 }
 
 // ---------------------------------------------------------------------------
-// databases: read-only listing of databases with table count + size.
+// switch_version: change engine and/or version, recreating the container
+// against the SAME data volume (detached so the image pull can stream). The
+// data dir is reused — major upgrades or engine swaps may be incompatible, so
+// the UI warns the user and recommends a backup first.
 // ---------------------------------------------------------------------------
+
+/// Start a detached engine/version switch. Returns `{op_id}` immediately.
+fn start_switch(req: &Req) -> Result<Value> {
+    let m = load_manifest(need_inst(req)?)?;
+    let engine = req
+        .engine
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&m.engine)
+        .to_string();
+    if !valid_engine(&engine) {
+        return Err(anyhow!("ERR_CODE:mysql.bad_engine"));
+    }
+    let version = req
+        .version
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("ERR_CODE:mysql.bad_version"))?
+        .to_string();
+    if !valid_version(&engine, &version) {
+        return Err(anyhow!("ERR_CODE:mysql.bad_version"));
+    }
+    if engine == m.engine && version == m.version {
+        return Err(anyhow!("ERR_CODE:mysql.same_version"));
+    }
+
+    let op_id = new_op_id();
+    op_create(&op_id, "switch", &m.id);
+    let op_t = op_id.clone();
+    tokio::spawn(async move {
+        match run_switch_detached(&op_t, m, &engine, &version).await {
+            Ok(()) => op_finish(&op_t, "done", "", INSTANCE_ID),
+            Err(e) => op_finish(&op_t, "error", &e.to_string(), ""),
+        }
+    });
+    Ok(json!({ "op_id": op_id, "inst_id": INSTANCE_ID }))
+}
+
+/// Pull the new image, recreate the container on the same volume/password/port
+/// with the new engine+version labels, then persist the updated manifest.
+async fn run_switch_detached(
+    op_id: &str,
+    mut m: Manifest,
+    engine: &str,
+    version: &str,
+) -> Result<()> {
+    let dkr = dkr()?;
+    let image = image_ref(engine, version);
+    op_push(op_id, &pmsg("my.pulling", &[image.as_str()]));
+    pull_image(&dkr, &image, op_id).await?;
+
+    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    // Update engine/version on the manifest before recreate so the new
+    // container carries the correct engine label.
+    m.engine = engine.to_string();
+    m.version = version.to_string();
+    op_push(op_id, &pmsg("my.creating_container", &[]));
+    recreate_container(&m, &image, m.port, &password).await?;
+    save_manifest(&m)?;
+
+    op_push(op_id, &pmsg("my.waiting_ready", &[]));
+    if wait_ready(&m.container, &password, op_id, 180).await {
+        op_push(op_id, &pmsg("my.install_done", &[]));
+    } else {
+        op_push(op_id, &pmsg("my.init_timeout", &[]));
+    }
+    Ok(())
+}
 
 /// List databases with table count and on-disk size (from information_schema).
 /// System schemas are flagged so the UI can de-emphasize them.

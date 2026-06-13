@@ -1,6 +1,35 @@
 // =========================================================================
 // MySQL management (DN7 Panel-provisioned instances only)
 // =========================================================================
+
+// Shared password-field widgets (eye toggle + one-tap random generator), used
+// by the install dialog, the new-account dialog, and anywhere a managed
+// password is entered. The generate button lives INSIDE the input, before the
+// eye, so the control stays compact.
+const MY_EYE = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+const MY_EYE_OFF = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.24A9 9 0 0 1 12 4c6.5 0 10 7 10 7a13 13 0 0 1-1.67 2.4M6.6 6.6A13 13 0 0 0 2 12s3.5 7 10 7a9 9 0 0 0 3.4-.66"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M2 2l20 20"/></svg>';
+const MY_DICE = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>';
+function myGenPw(n) {
+  const cs = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  const a = new Uint8Array(n);
+  if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(a); else for (let i = 0; i < n; i++) a[i] = Math.floor(Math.random() * 256);
+  return Array.from(a).map((b) => cs[b % cs.length]).join('');
+}
+// HTML for a password field with an in-field generate button (optional) + eye.
+function myPwFieldHtml(id, val, gen) {
+  const g = gen ? `<button type="button" class="pwf-gen" id="${id}Gen" title="${tr('my.gen_pw')}">${MY_DICE}</button>` : '';
+  return `<div class="pwf${gen ? ' gen' : ''}"><input id="${id}" class="field" type="password" value="${esc(val || '')}" autocomplete="new-password" />${g}<button type="button" class="pwf-eye" id="${id}Eye" title="${tr('set.show')}">${MY_EYE}</button></div>`;
+}
+// Wire the eye toggle, brief reveal-on-type, and (if present) generate button.
+function myWirePw(id) {
+  const pwi = $(id), eye = $(id + 'Eye'), gen = $(id + 'Gen');
+  let shown = false, t;
+  const reveal = (on) => { shown = on; pwi.type = on ? 'text' : 'password'; eye.innerHTML = on ? MY_EYE_OFF : MY_EYE; eye.title = on ? tr('set.hide') : tr('set.show'); };
+  eye.onclick = () => reveal(!shown);
+  pwi.addEventListener('input', () => { if (shown) return; pwi.type = 'text'; clearTimeout(t); t = setTimeout(() => { if (!shown) pwi.type = 'password'; }, 900); });
+  if (gen) gen.onclick = () => { pwi.value = myGenPw(12); reveal(true); };
+}
+
 function renderMysql(v) {
   v.innerHTML = `<div style="padding:8px">${loading(tr('my.detecting'))}</div>`;
   if (getJob('mysql:install')) {
@@ -47,25 +76,32 @@ function renderMysql(v) {
         mk(tr('my.start'), '', () => op('mysql', { op: 'start', inst: m.id }).then(() => { toast(tr('common.started'), 'ok'); reload(); }).catch((e) => toast(e.message, 'err')));
       }
       mk(tr('my.delete'), 'danger', async () => { const keep = await confirmKeepData(); if (keep === null) return; op('mysql', { op: 'remove', inst: m.id, keep_data: keep }).then(() => { toast(tr('common.deleted'), 'ok'); reload(); }).catch((e) => toast(e.message, 'err')); });
-      // Management panel — only meaningful when the instance can serve queries.
-      if (running) myPanel($('myPanel'), m.id, reload);
+      // Management panel — only meaningful once the server accepts queries.
+      if (running && m.ready) myPanel($('myPanel'), m.id, reload);
+      else if (running) myInitWait($('myPanel'), reload);
       else $('myPanel').innerHTML = `<div class="empty">${tr('my.not_running')}</div>`;
     }).catch((e) => { v.innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; });
   }).catch((e) => { v.innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; });
 }
 function confirmKeepData() { return new Promise((res) => { modal(tr('my.del_title'), `<p style="margin:0 0 16px">${tr('my.del_desc')}</p><div class="row" style="justify-content:flex-end"><button class="btn sec" id="kdCancel">${tr('common.cancel')}</button><button class="btn sec" id="kdKeep">${tr('my.keep_data')}</button><button class="btn danger" id="kdDrop">${tr('my.drop_with_data')}</button></div>`, (close) => { $('kdCancel').onclick = () => { close(); res(null); }; $('kdKeep').onclick = () => { close(); res(true); }; $('kdDrop').onclick = () => { close(); res(false); }; }); }); }
 
+// Animated "starting up" state shown while the server is running but not yet
+// accepting queries (fresh init, or after a port change / version switch). It
+// polls `list` and re-renders the whole view once the instance is ready.
+function myInitWait(host, reload) {
+  host.innerHTML = `<div class="card" style="text-align:center;padding:36px 24px">${loading(tr('my.phase_init'))}<p class="mut" style="margin-top:8px;font-size:12.5px">${tr('my.init_wait_desc')}</p></div>`;
+  const tk = setInterval(() => {
+    if (!document.body.contains(host)) { clearInterval(tk); return; }
+    op('mysql', { op: 'list' }).then((d) => {
+      const m = (d.instances || [])[0];
+      if (!m || m.ready || !m.running) { clearInterval(tk); reload(); }
+    }).catch(() => {});
+  }, 2000);
+}
+
 function myInstall(reload) {
   // Engine + version are separate selects (default MariaDB 11.4).
   const VER = { mariadb: ['11.4', '10.11', '10.6'], mysql: ['8.4', '8.0', '5.7'] };
-  const EYE = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
-  const EYE_OFF = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.24A9 9 0 0 1 12 4c6.5 0 10 7 10 7a13 13 0 0 1-1.67 2.4M6.6 6.6A13 13 0 0 0 2 12s3.5 7 10 7a9 9 0 0 0 3.4-.66"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M2 2l20 20"/></svg>';
-  const genPw = (n) => {
-    const cs = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-    const a = new Uint8Array(n);
-    if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(a); else for (let i = 0; i < n; i++) a[i] = Math.floor(Math.random() * 256);
-    return Array.from(a).map((b) => cs[b % cs.length]).join('');
-  };
   const verOpts = (eng) => VER[eng].map((x, i) => `<option value="${x}"${i === 0 ? ' selected' : ''}>${x}</option>`).join('');
   modal(tr('my.create_db'), `
     <div class="formgrid">
@@ -74,7 +110,7 @@ function myInstall(reload) {
     </div>
     <div class="formgrid" style="margin-top:12px">
       <div><label class="lbl">${tr('my.username')}</label><input id="miUser" class="field" value="root" autocomplete="off" /></div>
-      <div><label class="lbl">${tr('my.password')}</label><div class="pwf"><input id="miPw" class="field" type="password" value="${genPw(12)}" autocomplete="new-password" /><button type="button" class="pwf-eye" id="miPwEye" title="${tr('set.show')}">${EYE}</button></div></div>
+      <div><label class="lbl">${tr('my.password')}</label>${myPwFieldHtml('miPw', myGenPw(12), true)}</div>
     </div>
     <div class="row" style="align-items:center;gap:14px;margin-top:16px">
       <label class="switch" style="padding:0"><input type="checkbox" id="miExpose" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('my.expose')}</b></span></label>
@@ -85,18 +121,13 @@ function myInstall(reload) {
     <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn" id="miGo">${tr('my.create')}</button></div>
     <div class="hidden" id="miJob" style="margin-top:14px"></div>`, (close) => {
     $('miEngine').onchange = () => { $('miVer').innerHTML = verOpts($('miEngine').value); };
-    // Password field: hidden by default; eye toggles persistent reveal; typing
-    // briefly reveals the freshly-entered characters, then re-masks.
-    const pwi = $('miPw'), eye = $('miPwEye');
-    let shown = false, t;
-    eye.onclick = () => { shown = !shown; pwi.type = shown ? 'text' : 'password'; eye.innerHTML = shown ? EYE_OFF : EYE; eye.title = shown ? tr('set.hide') : tr('set.show'); };
-    pwi.addEventListener('input', () => { if (shown) return; pwi.type = 'text'; clearTimeout(t); t = setTimeout(() => { if (!shown) pwi.type = 'password'; }, 900); });
+    myWirePw('miPw');
     const syncExpose = () => { $('miPortWrap').classList.toggle('hidden', !$('miExpose').checked); };
     $('miExpose').onchange = syncExpose; syncExpose();
     $('miGo').onclick = () => {
       const engine = $('miEngine').value, version = $('miVer').value;
       const username = $('miUser').value.trim() || 'root';
-      const password = pwi.value;
+      const password = $('miPw').value;
       if (password.length < 6 || password.length > 128) { toast(tr('set.pw_len'), 'err'); return; }
       const body = { op: 'install', engine, version, username, password, expose: $('miExpose').checked };
       if (body.expose && $('miPort').value) body.port = Number($('miPort').value);
@@ -272,18 +303,25 @@ async function myApplyPerms(id, user, host, desired, current) {
   }
 }
 
-// New-account form: identity + password + initial permissions.
+// New-account form: identity + password on a "Basic" tab, per-database access
+// on a separate "Permissions" tab.
 function myUserForm(id) {
   op('mysql', { op: 'databases', inst: id }).then((d) => {
     const dbs = (d.databases || []).filter((x) => !x.system).map((x) => x.name);
     modal(tr('my.new_user'), `
-      <div class="formgrid">
-        <div><label class="lbl">${tr('my.username')}</label><input id="auU" class="field" autocomplete="off" /></div>
-        <div><label class="lbl">${tr('my.src_host')}</label><input id="auH" class="field" value="%" /></div>
-        <div class="full"><label class="lbl">${tr('my.password')}</label><input id="auP" class="field" type="password" autocomplete="new-password" /></div>
+      <div class="subtabs" id="auTabs"><button data-s="basic" class="on">${tr('my.tab_basic')}</button><button data-s="perm">${tr('my.permissions')}</button></div>
+      <div id="auBasic">
+        <div class="formgrid">
+          <div><label class="lbl">${tr('my.username')}</label><input id="auU" class="field" autocomplete="off" /></div>
+          <div><label class="lbl">${tr('my.src_host')}</label><input id="auH" class="field" value="%" /></div>
+          <div class="full"><label class="lbl">${tr('my.password')}</label>${myPwFieldHtml('auP', myGenPw(12), true)}</div>
+        </div>
       </div>
-      ${myPermGrid(dbs, {})}
+      <div id="auPerm" class="hidden">${myPermGrid(dbs, {})}</div>
       <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="auGo">${tr('my.create')}</button></div>`, (close, root) => {
+      myWirePw('auP');
+      const tabs = root.querySelector('#auTabs');
+      tabs.querySelectorAll('button').forEach((btn) => btn.onclick = () => { tabs.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === btn)); root.querySelector('#auBasic').classList.toggle('hidden', btn.dataset.s !== 'basic'); root.querySelector('#auPerm').classList.toggle('hidden', btn.dataset.s !== 'perm'); });
       $('auGo').onclick = async () => {
         const user = $('auU').value.trim(), host = $('auH').value.trim() || '%', pwd = $('auP').value;
         if (!user || !pwd) { toast(tr('set.fill_all'), 'err'); return; }
@@ -310,31 +348,61 @@ function myUserPerms(id, user, host) {
   }).catch((e) => toast(e.message, 'err'));
 }
 
-// ---- Settings: connection info (moved here) + lifecycle ops ----
+// ---- Settings: connection info (moved here) + engine/version + lifecycle ----
 function myMore(id, reload) {
   const b = $('myMBody'); b.innerHTML = loading();
-  const EYE = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
-  const EYE_OFF = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.9 4.24A9 9 0 0 1 12 4c6.5 0 10 7 10 7a13 13 0 0 1-1.67 2.4M6.6 6.6A13 13 0 0 0 2 12s3.5 7 10 7a9 9 0 0 0 3.4-.66"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M2 2l20 20"/></svg>';
+  const VER = { mariadb: ['11.4', '10.11', '10.6'], mysql: ['8.4', '8.0', '5.7'] };
   op('mysql', { op: 'credentials', inst: id }).then((c) => {
+    const curEngine = c.engine || 'mysql', curVersion = c.version || '';
+    const engOpts = ['mariadb', 'mysql'].map((e) => `<option value="${e}"${e === curEngine ? ' selected' : ''}>${e === 'mariadb' ? 'MariaDB' : 'MySQL'}</option>`).join('');
+    const verOpts = (eng, sel) => VER[eng].map((x) => `<option value="${x}"${x === sel ? ' selected' : ''}>${x}</option>`).join('');
     b.innerHTML = `
       <div class="sechead"><h3>${tr('my.conn_info')}</h3></div>
       <table class="kvtbl">
         <tr><th style="width:130px">${tr('my.host')}</th><td class="mono">${esc(c.host || '127.0.0.1')}</td></tr>
         <tr><th>${tr('my.port')}</th><td class="mono">${c.port ? esc(String(c.port)) : `<span class="mut">${tr('my.port_unmapped')}</span>`}</td></tr>
         <tr><th>${tr('my.user')}</th><td class="mono">${esc(c.user || 'root')}</td></tr>
-        <tr><th>${tr('my.password')}</th><td><span class="mono" id="myPwDisp">••••••••••••</span> <button class="pwf-eye" id="myPwEye" style="position:static;display:inline-flex;vertical-align:middle" title="${tr('set.show')}">${EYE}</button></td></tr>
+        <tr><th>${tr('my.password')}</th><td><span class="pwline"><span class="mono" id="myPwDisp">••••••••••••</span><button class="kveye" id="myPwEye" title="${tr('set.show')}">${MY_EYE}</button></span></td></tr>
       </table>
+      <div class="sechead" style="margin-top:18px"><h3>${tr('my.engine_version')}</h3></div>
+      <div class="row" style="align-items:center;gap:8px"><select id="mvEngine" class="field" style="max-width:150px">${engOpts}</select><select id="mvVer" class="field" style="max-width:130px">${verOpts(curEngine, curVersion)}</select><button class="btn sec sm" id="mvGo">${tr('my.switch_apply')}</button></div>
+      <p class="mut" style="font-size:12px;margin-top:8px">${tr('my.switch_warn')}</p>
+      <div class="hidden" id="mvJob" style="margin-top:12px"></div>
       <div class="sechead" style="margin-top:18px"><h3>${tr('my.reset_root')}</h3></div><div class="row"><button class="btn sec sm" id="myReset">${tr('my.reset_show')}</button></div>
       <div class="sechead" style="margin-top:18px"><h3>${tr('my.port_map')}</h3></div><div class="row" style="align-items:center"><label class="switch" style="padding:0"><input type="checkbox" id="myExpose"${c.exposed ? ' checked' : ''} /><span class="swbox"></span><span class="swtxt">${tr('my.expose_short')}</span></label><div id="myPortWrap" style="display:flex;align-items:center;gap:8px"><label class="lbl" style="margin:0">${tr('my.ext_port_label')}</label><input id="myPort" class="field" type="number" value="${c.port || 3306}" placeholder="3306" style="max-width:130px" /></div><button class="btn sec sm" id="myPortGo">${tr('my.apply_recreate')}</button></div>
       <div class="sechead" style="margin-top:18px"><h3>${tr('my.backup')}</h3></div><div class="row"><button class="btn sec sm" id="myBackup">${tr('my.export_dump')}</button></div>
       <div id="myMoreLine" class="ok" style="margin-top:10px"></div>
       <div class="hidden" id="myBackupJob" style="margin-top:12px"></div>`;
+    // Password reveal.
     let shown = false;
-    $('myPwEye').onclick = () => { shown = !shown; $('myPwDisp').textContent = shown ? (c.password || '') : '••••••••••••'; $('myPwEye').innerHTML = shown ? EYE_OFF : EYE; $('myPwEye').title = shown ? tr('set.hide') : tr('set.show'); };
-    const syncExpose = () => { $('myPortWrap').classList.toggle('hidden', !$('myExpose').checked); };
-    $('myExpose').onchange = syncExpose; syncExpose();
+    $('myPwEye').onclick = () => { shown = !shown; $('myPwDisp').textContent = shown ? (c.password || '') : '••••••••••••'; $('myPwEye').innerHTML = shown ? MY_EYE_OFF : MY_EYE; $('myPwEye').title = shown ? tr('set.hide') : tr('set.show'); };
+    // Engine / version switch.
+    $('mvEngine').onchange = () => { $('mvVer').innerHTML = verOpts($('mvEngine').value, ''); };
+    $('mvGo').onclick = async () => {
+      const engine = $('mvEngine').value, version = $('mvVer').value;
+      if (engine === curEngine && version === curVersion) { toast(tr('err.mysql.same_version'), 'err'); return; }
+      if (!await confirmDanger(tr('my.switch_warn'))) return;
+      $('mvGo').disabled = true; $('mvJob').classList.remove('hidden');
+      op('mysql', { op: 'switch_version', inst: id, engine, version }).then((r) => renderJob($('mvJob'), 'mysql', r.op_id, '', { onDone: () => { toast(tr('common.applied'), 'ok'); reload(); }, onError: () => { $('mvGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('mvGo').disabled = false; });
+    };
+    // Port mapping — Apply only enabled when something actually changed.
+    const portRow = () => ({ expose: $('myExpose').checked, port: $('myExpose').checked && $('myPort').value ? Number($('myPort').value) : null });
+    const orig = { expose: !!c.exposed, port: c.port || null };
+    const syncPort = () => {
+      $('myPortWrap').classList.toggle('hidden', !$('myExpose').checked);
+      const cur = portRow();
+      $('myPortGo').disabled = (cur.expose === orig.expose && (cur.port || null) === (orig.port || null));
+    };
+    $('myExpose').onchange = syncPort; $('myPort').addEventListener('input', syncPort); syncPort();
     $('myReset').onclick = () => op('mysql', { op: 'reset_password', inst: id }).then((r) => { $('myMoreLine').textContent = tr('my.new_root_pw') + (r.password || ''); }).catch((e) => toast(e.message, 'err'));
-    $('myPortGo').onclick = () => { const body = { op: 'change_port', inst: id, expose: $('myExpose').checked }; if (body.expose && $('myPort').value) body.port = Number($('myPort').value); op('mysql', body).then(() => { toast(tr('common.applied'), 'ok'); reload(); }).catch((e) => toast(e.message, 'err')); };
+    $('myPortGo').onclick = async () => {
+      const cur = portRow();
+      if (cur.expose === orig.expose && (cur.port || null) === (orig.port || null)) return;
+      if (!await confirmDanger(tr('my.recreate_confirm'))) return;
+      const body = { op: 'change_port', inst: id, expose: cur.expose };
+      if (cur.expose && cur.port) body.port = cur.port;
+      op('mysql', body).then(() => { toast(tr('common.applied'), 'ok'); reload(); }).catch((e) => toast(e.message, 'err'));
+    };
     $('myBackup').onclick = () => { $('myBackup').disabled = true; $('myBackupJob').classList.remove('hidden'); op('mysql', { op: 'backup', inst: id }).then((r) => renderJob($('myBackupJob'), 'mysql', r.op_id, '', { onDone: () => { toast(tr('my.backup') + ' ✓', 'ok'); $('myBackup').disabled = false; }, onError: () => { $('myBackup').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('myBackup').disabled = false; }); };
   }).catch((e) => { b.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
