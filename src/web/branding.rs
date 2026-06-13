@@ -190,6 +190,10 @@ pub fn render_index(tmpl: &str, b: &Branding) -> String {
     };
 
     tmpl.replace("<!--__DN7_HEAD__-->", &head_inject)
+        .replace(
+            "<title>DN7 Panel</title>",
+            &format!("<title>{name}</title>"),
+        )
         .replace("<!--__DN7_BRAND_MARK__-->", &mark)
         .replace("__DN7_BRAND_NAME__", &name)
 }

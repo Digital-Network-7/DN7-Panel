@@ -17,8 +17,6 @@ use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSettings {
-    /// Whether the console is served.
-    pub enabled: bool,
     /// TCP port to bind (0.0.0.0:<port>).
     pub port: u16,
     /// Login account name (default "admin"; user-editable).
@@ -60,6 +58,14 @@ pub struct WebSettings {
     /// Serve the console over HTTPS with a self-signed cert (default off).
     #[serde(default)]
     pub https: bool,
+    /// Session inactivity timeout, in minutes (default 1440 = 24h). Applied
+    /// live to the auth layer.
+    #[serde(default = "default_timeout")]
+    pub session_timeout: u32,
+    /// Authorized client IPs / CIDRs allowed to reach the console. Empty = allow
+    /// any address. Loopback is always allowed (avoids a self-lockout).
+    #[serde(default)]
+    pub allow_ips: Vec<String>,
 }
 
 fn default_username() -> String {
@@ -72,6 +78,11 @@ fn default_entry() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+/// Default session inactivity timeout in minutes (24h).
+fn default_timeout() -> u32 {
+    1440
 }
 
 /// A random 6-char lowercase-alnum safe-entry path ("/xxxxxx").
@@ -106,6 +117,42 @@ pub fn normalize_entry(s: &str) -> Option<String> {
         return None;
     }
     Some(format!("/{t}"))
+}
+
+/// Validate + normalize an authorized-IP allow list: each non-empty entry must
+/// be an IPv4/IPv6 address or CIDR. Returns the deduped list, or None if any
+/// entry is invalid. An empty result means "allow any address".
+pub fn normalize_allow_ips(raw: &[String]) -> Option<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for line in raw {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if !valid_ip_or_cidr(t) {
+            return None;
+        }
+        if !out.iter().any(|x| x == t) {
+            out.push(t.to_string());
+        }
+    }
+    if out.len() > 200 {
+        return None;
+    }
+    Some(out)
+}
+
+/// Whether `s` is a valid IPv4/IPv6 address or CIDR block.
+fn valid_ip_or_cidr(s: &str) -> bool {
+    if let Some((addr, pfx)) = s.split_once('/') {
+        match (addr.parse::<std::net::IpAddr>(), pfx.parse::<u8>()) {
+            (Ok(std::net::IpAddr::V4(_)), Ok(p)) => p <= 32,
+            (Ok(std::net::IpAddr::V6(_)), Ok(p)) => p <= 128,
+            _ => false,
+        }
+    } else {
+        s.parse::<std::net::IpAddr>().is_ok()
+    }
 }
 
 /// `sha256_hex(salt ":" plain)` — the stored verifier / challenge secret.
@@ -175,7 +222,7 @@ fn gen_password() -> String {
 /// returned as `Some` so the caller can show it once (the launch banner); it is
 /// never stored in plaintext or logged. Returns `None` for the plaintext when
 /// an existing file was loaded.
-pub fn load_or_init(default_enabled: bool, default_port: u16) -> (WebSettings, Option<String>) {
+pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
     if let Ok(raw) = std::fs::read_to_string(settings_path()) {
         if let Ok(s) = serde_json::from_str::<WebSettings>(&raw) {
             if !s.pw_hash.is_empty() {
@@ -186,7 +233,6 @@ pub fn load_or_init(default_enabled: bool, default_port: u16) -> (WebSettings, O
     let pw = gen_password();
     let salt = gen_salt();
     let s = WebSettings {
-        enabled: default_enabled,
         // Fresh install: a random high port + secret entry path (printed once in
         // the banner). The provided default_port is only a fallback.
         port: gen_port(),
@@ -202,6 +248,8 @@ pub fn load_or_init(default_enabled: bool, default_port: u16) -> (WebSettings, O
         totp_enabled: false,
         entry_path: gen_entry(),
         https: false,
+        session_timeout: default_timeout(),
+        allow_ips: Vec::new(),
     };
     let _ = default_port;
     if let Err(e) = save(&s) {
@@ -243,7 +291,6 @@ mod tests {
     #[test]
     fn password_is_hashed_irreversibly() {
         let mut s = WebSettings {
-            enabled: true,
             port: 1080,
             username: "admin".into(),
             pw_salt: String::new(),
@@ -257,6 +304,8 @@ mod tests {
             totp_enabled: false,
             entry_path: "/".into(),
             https: false,
+            session_timeout: 1440,
+            allow_ips: Vec::new(),
         };
         let salt = "0123456789abcdef0123456789abcdef";
         s.set_password_hashed(salt, &hash_password(salt, "mySecret!42"));
@@ -273,7 +322,6 @@ mod tests {
     #[test]
     fn reset_regenerates_and_returns_plaintext() {
         let mut s = WebSettings {
-            enabled: true,
             port: 1080,
             username: "bob".into(),
             pw_salt: "aa".into(),
@@ -287,6 +335,8 @@ mod tests {
             totp_enabled: false,
             entry_path: "/".into(),
             https: false,
+            session_timeout: 1440,
+            allow_ips: Vec::new(),
         };
         let pw = s.reset();
         assert_eq!(s.username, "admin"); // account reset
@@ -298,5 +348,22 @@ mod tests {
     #[test]
     fn salt_is_random() {
         assert_ne!(gen_salt(), gen_salt());
+    }
+
+    #[test]
+    fn allow_ip_validation() {
+        assert_eq!(
+            normalize_allow_ips(&["1.2.3.4".into(), " 10.0.0.0/8 ".into(), "".into()]),
+            Some(vec!["1.2.3.4".to_string(), "10.0.0.0/8".to_string()])
+        );
+        // Dedup.
+        assert_eq!(
+            normalize_allow_ips(&["1.2.3.4".into(), "1.2.3.4".into()]),
+            Some(vec!["1.2.3.4".to_string()])
+        );
+        // Bad address / prefix → None.
+        assert!(normalize_allow_ips(&["999.1.1.1".into()]).is_none());
+        assert!(normalize_allow_ips(&["10.0.0.0/40".into()]).is_none());
+        assert!(normalize_allow_ips(&["nonsense".into()]).is_none());
     }
 }

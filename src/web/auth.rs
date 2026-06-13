@@ -31,6 +31,10 @@ pub struct AuthState {
     fails: Mutex<HashMap<String, Vec<Instant>>>,  // source -> failure times
     challenges: Mutex<HashMap<String, Instant>>,  // login nonce -> issued (single use)
     tickets: Mutex<HashMap<String, TicketRec>>,   // one-time WS/download ticket -> owner
+    /// Configurable session inactivity timeout in seconds (0 = use the built-in
+    /// SESSION_TTL default). Set from the persisted settings at startup and on
+    /// every settings save.
+    ttl_secs: std::sync::atomic::AtomicU64,
     /// When true, the session map is persisted to disk (so a panel restart —
     /// e.g. after a self-update — doesn't log everyone out).
     persist: bool,
@@ -76,6 +80,23 @@ impl AuthState {
         let _ = write_sessions(&snapshot);
     }
 
+    /// Set the session inactivity timeout (seconds). 0 falls back to the default.
+    pub fn set_ttl_secs(&self, secs: u64) {
+        self.ttl_secs
+            .store(secs, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The active session inactivity timeout in seconds (configured value, or
+    /// the built-in default when unset/zero).
+    fn ttl_secs(&self) -> u64 {
+        let v = self.ttl_secs.load(std::sync::atomic::Ordering::Relaxed);
+        if v == 0 {
+            SESSION_TTL.as_secs()
+        } else {
+            v
+        }
+    }
+
     /// Whether `source` is currently allowed to attempt a login.
     pub fn login_allowed(&self, source: &str) -> bool {
         let mut m = self.fails.lock().unwrap();
@@ -104,7 +125,7 @@ impl AuthState {
         {
             let mut m = self.sessions.lock().unwrap();
             // Opportunistically prune expired sessions.
-            m.retain(|_, r| now.saturating_sub(r.last) <= SESSION_TTL.as_secs());
+            m.retain(|_, r| now.saturating_sub(r.last) <= self.ttl_secs());
             m.insert(
                 token.clone(),
                 SessionRec {
@@ -134,7 +155,7 @@ impl AuthState {
         let user = {
             let mut m = self.sessions.lock().unwrap();
             match m.get(token).cloned() {
-                Some(rec) if now.saturating_sub(rec.last) <= SESSION_TTL.as_secs() => {
+                Some(rec) if now.saturating_sub(rec.last) <= self.ttl_secs() => {
                     // Debounce disk writes: persist only every few minutes.
                     if now.saturating_sub(rec.last) >= 300 {
                         persist = true;

@@ -45,15 +45,14 @@ type Shared = Arc<WebState>;
 /// Start the web console in a background task (no-op when disabled). Returns
 /// immediately; the server runs for the process lifetime.
 pub fn spawn(cfg: PanelConfig) {
-    let (s, _fresh) = settings::load_or_init(cfg.web_enabled, cfg.web_port);
-    if !s.enabled {
-        tracing::info!("web console disabled; not starting");
-        return;
-    }
+    let (s, _fresh) = settings::load_or_init(cfg.web_port);
     let port = s.port;
     let https = s.https;
+    let ttl_secs = (s.session_timeout.max(1) as u64) * 60;
+    let auth = AuthState::with_store();
+    auth.set_ttl_secs(ttl_secs);
     let state: Shared = Arc::new(WebState {
-        auth: AuthState::with_store(),
+        auth,
         settings: std::sync::Mutex::new(s),
         collector: Mutex::new(Collector::new()),
         cfg,
@@ -146,6 +145,26 @@ async fn serve(state: Shared, port: u16, https: bool) -> anyhow::Result<()> {
 /// the SPA's subsequent `/api` + `/ui` requests pass. Defends against scanners
 /// that don't know the secret path (obscurity layer, not a TLS replacement).
 async fn entry_gate(State(state): State<Shared>, req: Request, next: Next) -> Response {
+    // Authorized-IP allow list (when configured). Loopback is always allowed to
+    // avoid a self-lockout from the local CLI / curl.
+    let allow = state
+        .settings
+        .lock()
+        .map(|s| s.allow_ips.clone())
+        .unwrap_or_default();
+    if !allow.is_empty() {
+        let peer = req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<SocketAddr>>()
+            .map(|ci| ci.0.ip());
+        let ok = match peer {
+            Some(ip) => ip_in_allowlist(&allow, ip),
+            None => true, // can't determine peer (shouldn't happen) — fail open
+        };
+        if !ok {
+            return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+        }
+    }
     let entry = state
         .settings
         .lock()
@@ -182,6 +201,56 @@ fn cookie_value(headers: &header::HeaderMap, name: &str) -> Option<String> {
     raw.split(';')
         .map(|p| p.trim())
         .find_map(|p| p.strip_prefix(&pfx).map(|v| v.to_string()))
+}
+
+/// Whether `ip` is permitted by the authorized-IP allow list. Loopback is
+/// always allowed (avoids locking the local operator out). Entries are exact
+/// IPs or CIDR blocks (validated on save).
+fn ip_in_allowlist(allow: &[String], ip: std::net::IpAddr) -> bool {
+    if ip.is_loopback() {
+        return true;
+    }
+    for entry in allow {
+        if let Some((a, p)) = entry.split_once('/') {
+            if let (Ok(net), Ok(prefix)) = (a.parse::<std::net::IpAddr>(), p.parse::<u8>()) {
+                if cidr_contains(net, prefix, ip) {
+                    return true;
+                }
+            }
+        } else if let Ok(a) = entry.parse::<std::net::IpAddr>() {
+            if a == ip {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether `ip` falls within the `net`/`prefix` CIDR block (v4 or v6).
+fn cidr_contains(net: std::net::IpAddr, prefix: u8, ip: std::net::IpAddr) -> bool {
+    match (net, ip) {
+        (std::net::IpAddr::V4(n), std::net::IpAddr::V4(i)) => {
+            if prefix == 0 {
+                return true;
+            }
+            if prefix > 32 {
+                return false;
+            }
+            let mask = u32::MAX << (32 - prefix);
+            (u32::from(n) & mask) == (u32::from(i) & mask)
+        }
+        (std::net::IpAddr::V6(n), std::net::IpAddr::V6(i)) => {
+            if prefix == 0 {
+                return true;
+            }
+            if prefix > 128 {
+                return false;
+            }
+            let mask = u128::MAX << (128 - prefix);
+            (u128::from(n) & mask) == (u128::from(i) & mask)
+        }
+        _ => false,
+    }
 }
 
 /// Load (or generate + persist) the panel's self-signed TLS cert/key as PEM.
@@ -649,8 +718,9 @@ async fn get_settings(State(state): State<Shared>, headers: header::HeaderMap) -
     // only when the operator chooses to change it.
     Json(json!({
         "ok": true,
-        "data": { "enabled": s.enabled, "port": s.port, "username": s.username, "pw_default": s.pw_default,
+        "data": { "port": s.port, "username": s.username, "pw_default": s.pw_default,
                   "entry_path": s.entry_path, "https": s.https,
+                  "session_timeout": s.session_timeout, "allow_ips": s.allow_ips,
                   "must_setup": s.pw_default || s.username.eq_ignore_ascii_case("admin") }
     }))
     .into_response()
@@ -673,14 +743,18 @@ struct SettingsReq {
     /// the plaintext. Required when changing the password off the default.
     #[serde(default)]
     pw_check: Option<String>,
-    #[serde(default)]
-    enabled: Option<bool>,
     /// Safe-entry path ("/" disables it). Applied live (no restart).
     #[serde(default)]
     entry_path: Option<String>,
     /// Serve over HTTPS (self-signed). Changing requires a restart.
     #[serde(default)]
     https: Option<bool>,
+    /// Session inactivity timeout in minutes. Applied live.
+    #[serde(default)]
+    session_timeout: Option<u32>,
+    /// Authorized client IPs / CIDRs (one per entry). Empty = allow any.
+    #[serde(default)]
+    allow_ips: Option<Vec<String>>,
 }
 
 async fn put_settings(
@@ -743,12 +817,6 @@ async fn put_settings(
             }
             s.username = un.to_string();
         }
-        if let Some(en) = req.enabled {
-            if en != s.enabled {
-                s.enabled = en;
-                needs_restart = true;
-            }
-        }
         // Safe-entry path — applied live (the gate reads it per request).
         if let Some(ep) = &req.entry_path {
             match settings::normalize_entry(ep) {
@@ -761,6 +829,21 @@ async fn put_settings(
             if h != s.https {
                 s.https = h;
                 needs_restart = true;
+            }
+        }
+        // Session inactivity timeout (minutes) — applied live to the auth layer.
+        if let Some(t) = req.session_timeout {
+            if !(1..=43200).contains(&t) {
+                return api_err(StatusCode::BAD_REQUEST, "settings.timeout_range");
+            }
+            s.session_timeout = t;
+            state.auth.set_ttl_secs((t.max(1) as u64) * 60);
+        }
+        // Authorized IP allow list — validated; empty = allow any address.
+        if let Some(ips) = &req.allow_ips {
+            match settings::normalize_allow_ips(ips) {
+                Some(list) => s.allow_ips = list,
+                None => return api_err(StatusCode::BAD_REQUEST, "settings.bad_allow_ip"),
             }
         }
         s.clone()

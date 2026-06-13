@@ -12,13 +12,8 @@ use std::time::Duration;
 /// Print the console banner. Reads (seeding on first run) the web settings so
 /// the password exists, then resolves the host's addresses.
 pub fn print(cfg: &PanelConfig) {
-    let info = crate::web::console_info(cfg.web_enabled, cfg.web_port);
+    let info = crate::web::console_info(cfg.web_port);
     println!();
-    if !info.enabled {
-        println!("  DN7 Panel — 本机控制台已关闭（在「设置」中启用并重启后生效）");
-        println!();
-        return;
-    }
     let port = info.port;
     let scheme = if info.https { "https" } else { "http" };
     let entry = if info.entry_path == "/" {

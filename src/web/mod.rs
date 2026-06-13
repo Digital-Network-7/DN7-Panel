@@ -31,7 +31,6 @@ pub use server::spawn;
 /// that generated it (shown once); otherwise the password is irrecoverable and
 /// the banner points the operator to `dn7 panel reset`.
 pub struct ConsoleInfo {
-    pub enabled: bool,
     pub port: u16,
     pub username: String,
     pub new_password: Option<String>,
@@ -41,10 +40,9 @@ pub struct ConsoleInfo {
     pub https: bool,
 }
 
-pub fn console_info(default_enabled: bool, default_port: u16) -> ConsoleInfo {
-    let (s, fresh) = settings::load_or_init(default_enabled, default_port);
+pub fn console_info(default_port: u16) -> ConsoleInfo {
+    let (s, fresh) = settings::load_or_init(default_port);
     ConsoleInfo {
-        enabled: s.enabled,
         port: s.port,
         username: s.username,
         new_password: fresh,
