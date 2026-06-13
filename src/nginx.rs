@@ -1083,7 +1083,7 @@ fn site_from_req(req: &Req) -> Result<Site> {
         site.locations = validate_locations(locs)?;
     }
 
-    if ssl && !matches!(cert_mode.as_str(), "self" | "le" | "manual") {
+    if ssl && !matches!(cert_mode.as_str(), "self" | "le" | "manual" | "named") {
         return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
     }
     Ok(site)
