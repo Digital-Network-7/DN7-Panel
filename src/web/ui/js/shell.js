@@ -43,7 +43,10 @@ function showApp() {
     $('panelVer').textContent = 'v' + (b.data.version || '?');
     if (b.data.hostname) $('panelVer').title = b.data.hostname;
   }).catch(() => {});
-  api('/api/settings').then((b) => { setUser(b.data.username || 'admin'); }).catch(() => {});
+  api('/api/settings').then((b) => {
+    setUser(b.data.username || 'admin');
+    if (b.data.must_setup) forceAccountSetup(b.data.username, (un) => setUser(un));
+  }).catch(() => {});
   if (window.updateBadge) updateBadge();
   switchTab(S.tab);
 }

@@ -1,7 +1,7 @@
 name: Build Linux Release
 
 # Build Linux release binaries on every push. The version is derived from the
-# latest `v1.1.*` git tag (first release => 1.1.0, then 1.1.1, 1.1.2, ...), so
+# latest `v1.2.*` git tag (first release => 1.2.0, then 1.2.1, 1.2.2, ...), so
 # it never skips a number and isn't coupled to the run counter. Binaries are
 # built for the *musl* targets and statically linked, then signed (Ed25519) and
 # published as a GitHub Release with the binaries + detached `.sig` attached.
@@ -32,15 +32,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Compute next version (1.1.x)
+      - name: Compute next version (1.2.x)
         id: v
         run: |
-          latest=$(git tag -l 'v1.1.*' | sort -V | tail -1)
+          latest=$(git tag -l 'v1.2.*' | sort -V | tail -1)
           if [ -z "$latest" ]; then
-            version="1.1.0"
+            version="1.2.0"
           else
             patch=${latest##*.}
-            version="1.1.$((patch + 1))"
+            version="1.2.$((patch + 1))"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "next version: $version"

@@ -201,9 +201,9 @@ async fn login(
     if !state.auth.login_allowed(&source) {
         return api_err(StatusCode::TOO_MANY_REQUESTS, "auth.rate_limited");
     }
-    let (exp_user, exp_hash) = {
+    let (exp_user, exp_hash, pw_default) = {
         let s = state.settings.lock().unwrap();
-        (s.username.clone(), s.verifier().to_string())
+        (s.username.clone(), s.verifier().to_string(), s.pw_default)
     };
     // Account name must match (case-sensitive), then verify the challenge-
     // response proof against the stored verifier. The nonce must be valid +
@@ -215,7 +215,10 @@ async fn login(
     if user_ok && pw_ok {
         state.auth.clear_failures(&source);
         let token = state.auth.issue();
-        Json(json!({ "ok": true, "token": token })).into_response()
+        // Force first-run credential setup while still on the default account
+        // (username "admin") or the auto-generated default password.
+        let must_setup = pw_default || exp_user.eq_ignore_ascii_case("admin");
+        Json(json!({ "ok": true, "token": token, "must_setup": must_setup })).into_response()
     } else {
         state.auth.record_failure(&source);
         api_err(StatusCode::UNAUTHORIZED, "auth.bad_credentials")
@@ -337,7 +340,8 @@ async fn get_settings(State(state): State<Shared>, headers: header::HeaderMap) -
     // only when the operator chooses to change it.
     Json(json!({
         "ok": true,
-        "data": { "enabled": s.enabled, "port": s.port, "username": s.username, "pw_default": s.pw_default }
+        "data": { "enabled": s.enabled, "port": s.port, "username": s.username, "pw_default": s.pw_default,
+                  "must_setup": s.pw_default || s.username.eq_ignore_ascii_case("admin") }
     }))
     .into_response()
 }
@@ -354,6 +358,11 @@ struct SettingsReq {
     pw_salt: Option<String>,
     #[serde(default)]
     pw_hash: Option<String>,
+    /// `sha256_hex(current_salt ":" new_password)` — lets the server verify the
+    /// new password differs from the current (default) one without ever seeing
+    /// the plaintext. Required when changing the password off the default.
+    #[serde(default)]
+    pw_check: Option<String>,
     #[serde(default)]
     enabled: Option<bool>,
 }
@@ -369,6 +378,8 @@ async fn put_settings(
     let mut needs_restart = false;
     let saved = {
         let mut s = state.settings.lock().unwrap();
+        let was_default = s.pw_default;
+        let cur_hash = s.pw_hash.clone();
         if let Some(p) = req.port {
             if !(1..=65535).contains(&p) {
                 return api_err(StatusCode::BAD_REQUEST, "settings.port_range");
@@ -388,6 +399,15 @@ async fn put_settings(
             if !salt_ok || !hash_ok {
                 return api_err(StatusCode::BAD_REQUEST, "settings.pw_format");
             }
+            // While still on the auto-generated default, require proof that the
+            // new password actually differs from it: pw_check = sha256(current
+            // salt ":" new password) must NOT equal the stored default hash.
+            if was_default {
+                let chk = req.pw_check.clone().unwrap_or_default().to_lowercase();
+                if chk.is_empty() || chk == cur_hash {
+                    return api_err(StatusCode::BAD_REQUEST, "settings.pw_is_default");
+                }
+            }
             s.set_password_hashed(&salt, &hash.to_lowercase());
         }
         if let Some(un) = req.username {
@@ -399,6 +419,11 @@ async fn put_settings(
                     .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
             {
                 return api_err(StatusCode::BAD_REQUEST, "settings.username_format");
+            }
+            // "admin" is the default account name and is not allowed as a chosen
+            // account (the operator must pick their own).
+            if un.eq_ignore_ascii_case("admin") {
+                return api_err(StatusCode::BAD_REQUEST, "settings.username_reserved");
             }
             s.username = un.to_string();
         }

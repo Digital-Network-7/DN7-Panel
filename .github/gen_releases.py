@@ -2,7 +2,7 @@
 """Generate releases.json — the panel's changelog index.
 
 Built in CI on each release from the repo's git history: one entry per
-`v1.1.*` tag (plus the version being released right now, derived from HEAD),
+`v1.*` tag (plus the version being released right now, derived from HEAD),
 each with the commit subjects since the previous tag. Published as a GitHub
 release asset (reachable via `releases/latest/download/releases.json`, no
 api.github.com) and mirrored by dn7.cn, so the panel can show "what's new"
@@ -75,7 +75,7 @@ def main():
     out_path = sys.argv[1] if len(sys.argv) > 1 else "releases.json"
     new_version = os.environ.get("NEW_VERSION", "").strip().lstrip("v")
 
-    tags = [t for t in sh("git", "tag", "-l", "v1.1.*").splitlines() if t.strip()]
+    tags = [t for t in sh("git", "tag", "-l", "v1.*").splitlines() if t.strip()]
     tags.sort(key=ver_key)  # ascending
 
     entries = []
