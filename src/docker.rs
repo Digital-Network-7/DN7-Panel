@@ -43,7 +43,7 @@ use std::sync::{Mutex, OnceLock};
 use anyhow::{anyhow, Result};
 use bollard::Docker;
 use futures_util::StreamExt;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// Connect to the local Docker daemon via its unix socket (or the platform
@@ -64,6 +64,12 @@ struct Req {
     image: Option<String>,
     #[serde(default)]
     mirror: Option<String>,
+    /// Pull from a configured private registry (host prefix); empty = Docker Hub.
+    #[serde(default)]
+    registry: Option<String>,
+    /// Docker settings payload (set_settings).
+    #[serde(default)]
+    settings: Option<Value>,
     #[serde(default, rename = "ref")]
     reference: Option<String>,
     #[serde(default)]
@@ -489,6 +495,11 @@ async fn handle(req: &Req) -> Result<Value> {
                 .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
             Ok(json!({ "disconnected": net }))
         }
+        "list_volumes" => list_volumes().await,
+        "create_volume" => create_volume_op(req).await,
+        "remove_volume" => remove_volume_op(req).await,
+        "get_settings" => Ok(dk_settings_json()),
+        "set_settings" => set_dk_settings(req).await,
         other => Err(anyhow!("unsupported op: {other}")),
     }
 }
@@ -1183,16 +1194,12 @@ async fn inspect_container_networks(req: &Req) -> Result<Value> {
 // ---------------------------------------------------------------------------
 
 fn mirror_allowed(host: &str) -> bool {
-    const ALLOWED: &[&str] = &[
-        "m.daocloud.io",
-        "docker.m.daocloud.io",
-        "dockerproxy.com",
-        "docker.1panel.live",
-        "hub.rat.dev",
-        "mirror.ccs.tencentyun.com",
-        "registry.cn-hangzhou.aliyuncs.com",
-    ];
-    ALLOWED.contains(&host)
+    load_dk_settings().mirrors.iter().any(|m| m == host)
+}
+
+/// Whether `host` is a configured private registry (pull selector).
+fn registry_allowed(host: &str) -> bool {
+    load_dk_settings().registries.iter().any(|r| r == host)
 }
 
 /// Normalize a user image ref to its docker.io form for mirror prefixing.
@@ -1241,19 +1248,33 @@ fn start_pull(req: &Req) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    let registry = req
+        .registry
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
     // Decide the actual pull source and whether a rename is needed afterwards.
-    let (pull_ref, final_ref) = match mirror {
-        Some(host) => {
-            if !mirror_allowed(host) {
-                return Err(anyhow!("ERR_CODE:docker.bad_mirror"));
-            }
-            match docker_io_path(&image) {
-                Some(path) => (format!("{host}/{path}"), Some(with_default_tag(&image))),
-                None => (image.clone(), None),
-            }
+    let (pull_ref, final_ref) = if let Some(reg) = registry {
+        // Private registry: pull `<registry>/<image>` verbatim (no Docker Hub
+        // mirror applies). Validate against the configured list.
+        if !registry_allowed(reg) {
+            return Err(anyhow!("ERR_CODE:docker.bad_registry"));
         }
-        None => (image.clone(), None),
+        (format!("{reg}/{}", with_default_tag(&image)), None)
+    } else {
+        match mirror {
+            Some(host) => {
+                if !mirror_allowed(host) {
+                    return Err(anyhow!("ERR_CODE:docker.bad_mirror"));
+                }
+                match docker_io_path(&image) {
+                    Some(path) => (format!("{host}/{path}"), Some(with_default_tag(&image))),
+                    None => (image.clone(), None),
+                }
+            }
+            None => (image.clone(), None),
+        }
     };
 
     let shown = final_ref
@@ -2169,6 +2190,395 @@ extern "C" {
     fn libc_getuid() -> u32;
 }
 
+// ===========================================================================
+// Volumes + Docker settings (panel mirror/registry lists + daemon.json knobs)
+// ===========================================================================
+
+/// List docker volumes with size/usage. DN7-managed volumes (e.g. the mysql
+/// data volume) are flagged so the UI can protect them from removal.
+async fn list_volumes() -> Result<Value> {
+    let dkr = dkr()?;
+    let resp = dkr
+        .list_volumes(None::<bollard::volume::ListVolumesOptions<String>>)
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    let mut out = Vec::new();
+    for v in resp.volumes.unwrap_or_default() {
+        let managed = v.name.starts_with("dn7-")
+            || v.labels.contains_key("dn7.mysql")
+            || v.labels.contains_key("dn7.managed");
+        let (size, refs) = match &v.usage_data {
+            Some(u) => (
+                if u.size >= 0 {
+                    human_size(u.size as u64)
+                } else {
+                    "-".to_string()
+                },
+                u.ref_count,
+            ),
+            None => ("-".to_string(), -1),
+        };
+        out.push(json!({
+            "name": v.name,
+            "driver": v.driver,
+            "mountpoint": v.mountpoint,
+            "created": v.created_at.unwrap_or_default(),
+            "size": size,
+            "refs": refs,
+            "managed": managed,
+        }));
+    }
+    out.sort_by(|a, b| {
+        a["name"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["name"].as_str().unwrap_or(""))
+    });
+    Ok(json!({ "volumes": out }))
+}
+
+async fn create_volume_op(req: &Req) -> Result<Value> {
+    let name = req
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_volume_name"))?;
+    validate_name(name)?;
+    let opts = bollard::volume::CreateVolumeOptions {
+        name: name.to_string(),
+        driver: "local".to_string(),
+        ..Default::default()
+    };
+    dkr()?
+        .create_volume(opts)
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    Ok(json!({ "created": name }))
+}
+
+async fn remove_volume_op(req: &Req) -> Result<Value> {
+    let name = need_ref(req)?;
+    if name.starts_with("dn7-") {
+        return Err(anyhow!("ERR_CODE:docker.volume_managed"));
+    }
+    let opts = bollard::volume::RemoveVolumeOptions { force: false };
+    dkr()?.remove_volume(&name, Some(opts)).await.map_err(|e| {
+        let raw = e.to_string().to_lowercase();
+        if raw.contains("in use") {
+            anyhow!("ERR_CODE:docker.volume_in_use")
+        } else {
+            anyhow!(friendly_docker_err(&e))
+        }
+    })?;
+    Ok(json!({ "removed": name }))
+}
+
+// ---- Panel-side docker settings store (mirrors/registries + daemon knobs) ----
+
+const DEFAULT_SOCKET: &str = "/var/run/docker.sock";
+
+fn default_mirrors() -> Vec<String> {
+    [
+        "docker.m.daocloud.io",
+        "docker.1panel.live",
+        "hub.rat.dev",
+        "mirror.ccs.tencentyun.com",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+fn d_true() -> bool {
+    true
+}
+fn d_cgroup() -> String {
+    "systemd".to_string()
+}
+fn d_logsize() -> String {
+    "10m".to_string()
+}
+fn d_logfile() -> u32 {
+    3
+}
+fn d_socket() -> String {
+    DEFAULT_SOCKET.to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DockerSettings {
+    #[serde(default = "default_mirrors")]
+    mirrors: Vec<String>,
+    #[serde(default)]
+    registries: Vec<String>,
+    #[serde(default)]
+    ipv6: bool,
+    #[serde(default = "d_true")]
+    iptables: bool,
+    #[serde(default = "d_true")]
+    live_restore: bool,
+    #[serde(default = "d_cgroup")]
+    cgroup_driver: String,
+    #[serde(default = "d_true")]
+    log_rotate: bool,
+    #[serde(default = "d_logsize")]
+    log_max_size: String,
+    #[serde(default = "d_logfile")]
+    log_max_file: u32,
+    #[serde(default = "d_socket")]
+    socket_path: String,
+}
+impl Default for DockerSettings {
+    fn default() -> Self {
+        DockerSettings {
+            mirrors: default_mirrors(),
+            registries: Vec::new(),
+            ipv6: false,
+            iptables: true,
+            live_restore: true,
+            cgroup_driver: d_cgroup(),
+            log_rotate: true,
+            log_max_size: d_logsize(),
+            log_max_file: d_logfile(),
+            socket_path: d_socket(),
+        }
+    }
+}
+
+fn dk_settings_path() -> std::path::PathBuf {
+    crate::paths::data_dir().join("docker-settings.json")
+}
+fn load_dk_settings() -> DockerSettings {
+    std::fs::read_to_string(dk_settings_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<DockerSettings>(&s).ok())
+        .unwrap_or_default()
+}
+fn save_dk_settings(s: &DockerSettings) -> Result<()> {
+    let p = dk_settings_path();
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(&p, serde_json::to_string_pretty(s)?)?;
+    Ok(())
+}
+
+fn dk_settings_json() -> Value {
+    let s = load_dk_settings();
+    json!({
+        "mirrors": s.mirrors,
+        "registries": s.registries,
+        "ipv6": s.ipv6,
+        "iptables": s.iptables,
+        "live_restore": s.live_restore,
+        "cgroup_driver": s.cgroup_driver,
+        "log_rotate": s.log_rotate,
+        "log_max_size": s.log_max_size,
+        "log_max_file": s.log_max_file,
+        "socket_path": s.socket_path,
+        "configured": dk_settings_path().exists(),
+    })
+}
+
+/// A host token (mirror/registry): letters/digits/.-: and an optional /path,
+/// no scheme or shell metacharacters.
+fn valid_host_line(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty()
+        && s.len() <= 200
+        && !s.contains("//")
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '/' | '_'))
+}
+
+/// Validate a docker size like "10m" / "512k" (used for log max-size).
+fn valid_log_size(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty()
+        && s.len() <= 10
+        && s.chars().take(s.len() - 1).all(|c| c.is_ascii_digit())
+        && matches!(s.chars().last(), Some('k' | 'K' | 'm' | 'M' | 'g' | 'G'))
+}
+
+async fn set_dk_settings(req: &Req) -> Result<Value> {
+    let v = req
+        .settings
+        .clone()
+        .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_settings"))?;
+    let incoming: DockerSettings =
+        serde_json::from_value(v).map_err(|_| anyhow!("ERR_CODE:docker.bad_settings"))?;
+
+    // Validate.
+    for m in incoming.mirrors.iter().chain(incoming.registries.iter()) {
+        if !valid_host_line(m) {
+            return Err(anyhow!("ERR_CODE:docker.bad_host_line"));
+        }
+    }
+    if !matches!(incoming.cgroup_driver.as_str(), "systemd" | "cgroupfs") {
+        return Err(anyhow!("ERR_CODE:docker.bad_cgroup"));
+    }
+    if !valid_log_size(&incoming.log_max_size) {
+        return Err(anyhow!("ERR_CODE:docker.bad_log_size"));
+    }
+    if incoming.log_max_file == 0 || incoming.log_max_file > 100 {
+        return Err(anyhow!("ERR_CODE:docker.bad_log_file"));
+    }
+    let sock = incoming.socket_path.trim();
+    if !sock.starts_with('/') || !sock.ends_with(".sock") || sock.len() > 200 {
+        return Err(anyhow!("ERR_CODE:docker.bad_socket"));
+    }
+
+    // Persist the panel-side store first (mirrors/registries take effect for
+    // the pull dialog immediately, independent of the daemon restart).
+    save_dk_settings(&incoming)?;
+
+    // Apply the daemon.json-backed knobs (may restart dockerd). Best-effort with
+    // backup + rollback; surfaces a clear error if the daemon won't come back.
+    apply_daemon_settings(&incoming).await?;
+    Ok(json!({ "ok": true }))
+}
+
+const DAEMON_JSON: &str = "/etc/docker/daemon.json";
+const DROPIN_DIR: &str = "/etc/systemd/system/docker.service.d";
+const DROPIN: &str = "/etc/systemd/system/docker.service.d/dn7-docker.conf";
+
+/// Merge our knobs into daemon.json (preserving unrelated keys), back it up,
+/// write, (re)configure the systemd socket override when needed, restart docker
+/// and verify it comes back — rolling everything back on failure.
+async fn apply_daemon_settings(s: &DockerSettings) -> Result<()> {
+    // Read + parse existing daemon.json (preserve unknown keys).
+    let prev = std::fs::read_to_string(DAEMON_JSON).unwrap_or_default();
+    let mut obj: serde_json::Map<String, Value> = serde_json::from_str(&prev)
+        .ok()
+        .and_then(|v: Value| v.as_object().cloned())
+        .unwrap_or_default();
+
+    obj.insert("ipv6".into(), json!(s.ipv6));
+    if s.ipv6 {
+        obj.entry("fixed-cidr-v6")
+            .or_insert_with(|| json!("fd00:dn7::/48"));
+    } else {
+        obj.remove("fixed-cidr-v6");
+    }
+    obj.insert("iptables".into(), json!(s.iptables));
+    obj.insert("live-restore".into(), json!(s.live_restore));
+    obj.insert(
+        "exec-opts".into(),
+        json!([format!("native.cgroupdriver={}", s.cgroup_driver)]),
+    );
+    if s.log_rotate {
+        obj.insert("log-driver".into(), json!("json-file"));
+        obj.insert(
+            "log-opts".into(),
+            json!({ "max-size": s.log_max_size, "max-file": s.log_max_file.to_string() }),
+        );
+    } else {
+        obj.remove("log-opts");
+    }
+    // Custom socket: daemon.json `hosts` + a systemd drop-in that drops the
+    // unit's `-H fd://` (otherwise dockerd refuses: "hosts conflict").
+    let custom_sock = s.socket_path != DEFAULT_SOCKET && s.socket_path != "/run/docker.sock";
+    let prev_dropin = std::fs::read_to_string(DROPIN).ok();
+    if custom_sock {
+        obj.insert(
+            "hosts".into(),
+            json!([format!("unix://{}", s.socket_path), "fd://"]),
+        );
+    } else {
+        obj.remove("hosts");
+    }
+
+    let body = serde_json::to_string_pretty(&Value::Object(obj))?;
+
+    // Backup + write daemon.json.
+    let backup = format!("{DAEMON_JSON}.dn7-bak");
+    if !prev.is_empty() {
+        let _ = std::fs::write(&backup, &prev);
+    }
+    if let Some(dir) = std::path::Path::new(DAEMON_JSON).parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(DAEMON_JSON, &body)?;
+
+    // systemd drop-in for the socket override.
+    let mut reloaded = false;
+    if custom_sock {
+        std::fs::create_dir_all(DROPIN_DIR)?;
+        let dockerd = which_dockerd();
+        let dropin = format!("[Service]\nExecStart=\nExecStart={dockerd}\n");
+        std::fs::write(DROPIN, dropin)?;
+        let _ = sh("systemctl daemon-reload").await;
+        reloaded = true;
+    } else if prev_dropin.is_some() {
+        let _ = std::fs::remove_file(DROPIN);
+        let _ = sh("systemctl daemon-reload").await;
+        reloaded = true;
+    }
+
+    // Restart docker and verify it comes back.
+    let _ = sh("systemctl restart docker").await;
+    if daemon_back().await {
+        return Ok(());
+    }
+
+    // Rollback: restore daemon.json + drop-in, reload, restart.
+    if prev.is_empty() {
+        let _ = std::fs::remove_file(DAEMON_JSON);
+    } else {
+        let _ = std::fs::write(DAEMON_JSON, &prev);
+    }
+    match prev_dropin {
+        Some(d) => {
+            let _ = std::fs::write(DROPIN, d);
+        }
+        None => {
+            let _ = std::fs::remove_file(DROPIN);
+        }
+    }
+    if reloaded {
+        let _ = sh("systemctl daemon-reload").await;
+    }
+    let _ = sh("systemctl restart docker").await;
+    Err(anyhow!("ERR_CODE:docker.daemon_restart_failed"))
+}
+
+/// Locate the dockerd binary for the systemd ExecStart override.
+fn which_dockerd() -> String {
+    for p in [
+        "/usr/bin/dockerd",
+        "/usr/local/bin/dockerd",
+        "/usr/sbin/dockerd",
+    ] {
+        if std::path::Path::new(p).exists() {
+            return p.to_string();
+        }
+    }
+    "/usr/bin/dockerd".to_string()
+}
+
+/// Poll the daemon for readiness after a restart (up to ~20s).
+async fn daemon_back() -> bool {
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        if let Ok(d) = dkr() {
+            if d.ping().await.is_ok() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Run a shell command, returning success only.
+async fn sh(script: &str) -> Result<bool> {
+    let out = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .output()
+        .await?;
+    Ok(out.status.success())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2213,8 +2623,22 @@ mod tests {
 
     #[test]
     fn mirror_whitelist() {
-        assert!(mirror_allowed("m.daocloud.io"));
+        // The default mirror list (no settings file present) gates the pull.
+        assert!(mirror_allowed("docker.m.daocloud.io"));
         assert!(!mirror_allowed("evil.example.com"));
+        assert!(!registry_allowed("evil.example.com"));
+    }
+
+    #[test]
+    fn host_line_and_log_validation() {
+        assert!(valid_host_line("registry.example.com:5000"));
+        assert!(valid_host_line("docker.m.daocloud.io"));
+        assert!(!valid_host_line("https://x.com"));
+        assert!(!valid_host_line("a b"));
+        assert!(valid_log_size("10m"));
+        assert!(valid_log_size("512k"));
+        assert!(!valid_log_size("10"));
+        assert!(!valid_log_size("abc"));
     }
 
     #[test]
@@ -2236,6 +2660,8 @@ mod tests {
             op: "create_container".into(),
             image: Some(image.into()),
             mirror: None,
+            registry: None,
+            settings: None,
             reference: None,
             tail: None,
             op_id: None,
