@@ -353,3 +353,20 @@
 
 /* ---- Inline note (e.g. SSL auto-renew hint) ---- */
 .formnote { font-size: 12px; color: var(--mut); margin-top: 8px; line-height: 1.5; }
+
+/* ---- Site SSL tab (cert method + toggles) ---- */
+.segbtns { display:inline-flex; border:1px solid var(--line2); border-radius:9px; overflow:hidden; margin-top:6px; }
+.segbtns button { appearance:none; border:0; background:transparent; color:var(--mut); padding:8px 18px; font-size:13px; cursor:pointer; border-right:1px solid var(--line); transition:background .12s,color .12s; }
+.segbtns button:last-child { border-right:0; }
+.segbtns button.on { background:var(--acc-soft); color:var(--fg); font-weight:600; }
+.certlist { display:flex; flex-direction:column; gap:8px; }
+.certopt { display:flex; align-items:flex-start; gap:11px; padding:10px 12px; border:1px solid var(--line); border-radius:9px; cursor:pointer; transition:border-color .12s, background .12s; }
+.certopt:hover { border-color:var(--line2); }
+.certopt.sel { border-color:var(--br); background:var(--acc-soft); }
+.certopt .ck { flex:0 0 16px; width:16px; height:16px; margin-top:2px; border-radius:50%; border:2px solid var(--line2); position:relative; }
+.certopt.sel .ck { border-color:var(--br); }
+.certopt.sel .ck::after { content:''; position:absolute; inset:3px; border-radius:50%; background:var(--br); }
+.certopt .ci { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.certopt .ci b { font-size:13px; }
+.certopt .ci .mut { font-size:11.5px; }
+.ssltoggles { display:flex; flex-direction:column; gap:2px; padding:10px 14px; border:1px solid var(--line); border-radius:10px; background:var(--panel2); }

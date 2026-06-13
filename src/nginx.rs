@@ -76,6 +76,16 @@ struct Req {
     #[serde(default)]
     websockets: Option<bool>,
     #[serde(default)]
+    force_ssl: Option<bool>,
+    #[serde(default)]
+    http2: Option<bool>,
+    #[serde(default)]
+    hsts: Option<bool>,
+    #[serde(default)]
+    hsts_sub: Option<bool>,
+    #[serde(default)]
+    trust_proxy: Option<bool>,
+    #[serde(default)]
     locations: Option<Vec<Location>>, // custom path rules
 }
 
@@ -112,10 +122,26 @@ struct Site {
     block_attacks: bool,
     #[serde(default)]
     websockets: bool,
+    /// HTTPS feature toggles. `force_ssl` (HTTP→HTTPS redirect) and `http2`
+    /// default on for backward compatibility; the rest default off.
+    #[serde(default = "default_true")]
+    force_ssl: bool,
+    #[serde(default = "default_true")]
+    http2: bool,
+    #[serde(default)]
+    hsts: bool,
+    #[serde(default)]
+    hsts_sub: bool,
+    #[serde(default)]
+    trust_proxy: bool,
     /// Extra path rules layered on top of the main location (NPM "custom
     /// locations"): each forwards a path prefix to a host[:port].
     #[serde(default)]
     locations: Vec<Location>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// A custom path rule (NPM-style "custom location"): forward a path prefix to a
@@ -995,7 +1021,8 @@ fn layout() -> Result<Layout> {
 /// isn't matched by the `dn7-<id>.conf` orphan cleanup.
 fn ensure_shared_conf() {
     let path = std::path::Path::new(HOST_CONFD).join("00-dn7-maps.conf");
-    let body = "map $http_upgrade $dn7_conn_upgrade {\n    default upgrade;\n    '' close;\n}\n";
+    let body = "map $http_upgrade $dn7_conn_upgrade {\n    default upgrade;\n    '' close;\n}\n\n\
+                map $http_x_forwarded_proto $dn7_fwd_proto {\n    default $http_x_forwarded_proto;\n    '' $scheme;\n}\n";
     if std::fs::read_to_string(&path).ok().as_deref() != Some(body) {
         let _ = std::fs::create_dir_all(HOST_CONFD);
         let _ = std::fs::write(&path, body);
@@ -1046,6 +1073,11 @@ fn site_from_req(req: &Req) -> Result<Site> {
         cache: req.cache.unwrap_or(false),
         block_attacks: req.block_attacks.unwrap_or(false),
         websockets: req.websockets.unwrap_or(true),
+        force_ssl: req.force_ssl.unwrap_or(true),
+        http2: req.http2.unwrap_or(true),
+        hsts: req.hsts.unwrap_or(false),
+        hsts_sub: req.hsts_sub.unwrap_or(false),
+        trust_proxy: req.trust_proxy.unwrap_or(false),
         locations: Vec::new(),
     };
 
@@ -1915,17 +1947,45 @@ async fn write_site_conf(lo: &Layout, site: &Site, acme: &[(String, String)]) ->
                 format!("{}/cert-{}.key", lo.cert_ref, site.cert_name),
             )
         };
-        // HTTP -> HTTPS redirect (with any in-flight ACME challenge served first).
+        // HTTP block: redirect to HTTPS (Force SSL) or serve the site over HTTP
+        // too. The ACME challenge is always answered first.
+        if site.force_ssl {
+            conf.push_str(&format!(
+                "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\
+                 \n    location / {{\n        return 301 https://$host$request_uri;\n    }}\n}}\n\n"
+            ));
+        } else {
+            conf.push_str(&format!(
+                "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\n{body}}}\n\n"
+            ));
+        }
+        // HTTPS block.
+        let listen443 = if site.http2 {
+            "listen 443 ssl http2;"
+        } else {
+            "listen 443 ssl;"
+        };
+        let mut sec = String::new();
+        if site.trust_proxy {
+            // Honour a trusted front proxy / CDN's real-client + protocol headers.
+            sec.push_str(
+                "    set_real_ip_from 0.0.0.0/0;\n    set_real_ip_from ::/0;\n\
+                 \x20   real_ip_header X-Forwarded-For;\n    real_ip_recursive on;\n",
+            );
+        }
+        if site.hsts {
+            let sub = if site.hsts_sub {
+                "; includeSubDomains"
+            } else {
+                ""
+            };
+            sec.push_str(&format!(
+                "    add_header Strict-Transport-Security \"max-age=63072000{sub}\" always;\n"
+            ));
+        }
         conf.push_str(&format!(
-            "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\
-             \n    location / {{\n        return 301 https://$host$request_uri;\n    }}\n}}\n\n"
-        ));
-        // `listen ... ssl http2` (not the `http2 on;` directive) so the config
-        // is valid on nginx older than 1.25.1 too (newer nginx just warns it's
-        // deprecated).
-        conf.push_str(&format!(
-            "server {{\n    listen 443 ssl http2;\n    server_name {server_name};\n\
-             \n    ssl_certificate {crt};\n    ssl_certificate_key {key};\n\
+            "server {{\n    {listen443}\n    server_name {server_name};\n\
+             \n    ssl_certificate {crt};\n    ssl_certificate_key {key};\n{sec}\
              \n{body}}}\n"
         ));
     } else {
@@ -1952,6 +2012,13 @@ async fn render_location(lo: &Layout, site: &Site) -> Result<String> {
     }
 
     let is_proxy = matches!(site.kind.as_str(), "proxy_host" | "proxy_container");
+    // When trusting an upstream proxy, forward its declared protocol instead of
+    // our own connection scheme.
+    let fwd = if site.trust_proxy {
+        "$dn7_fwd_proto"
+    } else {
+        "$scheme"
+    };
     match site.kind.as_str() {
         "proxy_host" | "proxy_container" => {
             let upstream = resolve_upstream(lo, site).await?;
@@ -1961,6 +2028,7 @@ async fn render_location(lo: &Layout, site: &Site) -> Result<String> {
                 &upstream,
                 site.websockets,
                 false,
+                fwd,
             ));
             // Optional: long-cache static assets (still proxied upstream).
             if site.cache {
@@ -1970,6 +2038,7 @@ async fn render_location(lo: &Layout, site: &Site) -> Result<String> {
                     &upstream,
                     site.websockets,
                     true,
+                    fwd,
                 ));
             }
         }
@@ -2001,6 +2070,7 @@ async fn render_location(lo: &Layout, site: &Site) -> Result<String> {
             &upstream,
             l.websockets,
             false,
+            fwd,
         ));
     }
 
@@ -2028,6 +2098,7 @@ fn proxy_location(
     upstream: &str,
     websockets: bool,
     cache: bool,
+    fwd_proto: &str,
 ) -> String {
     let mut b = String::new();
     b.push_str(&format!("    location {path} {{\n"));
@@ -2035,7 +2106,9 @@ fn proxy_location(
     b.push_str("        proxy_set_header Host $host;\n");
     b.push_str("        proxy_set_header X-Real-IP $remote_addr;\n");
     b.push_str("        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n");
-    b.push_str("        proxy_set_header X-Forwarded-Proto $scheme;\n");
+    b.push_str(&format!(
+        "        proxy_set_header X-Forwarded-Proto {fwd_proto};\n"
+    ));
     if websockets {
         b.push_str("        proxy_http_version 1.1;\n");
         b.push_str("        proxy_set_header Upgrade $http_upgrade;\n");
@@ -2559,6 +2632,11 @@ mod tests {
             cache: false,
             block_attacks: false,
             websockets: true,
+            force_ssl: true,
+            http2: true,
+            hsts: false,
+            hsts_sub: false,
+            trust_proxy: false,
             locations: Vec::new(),
         }
     }

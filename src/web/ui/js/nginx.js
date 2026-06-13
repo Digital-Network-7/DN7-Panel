@@ -74,26 +74,71 @@ function ngAddSite(reload, site) {
     </div>
     <div class="ftab-pane" data-p="ssl">
       <label class="switch"><input type="checkbox" id="nsSsl" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.enable_https')}</b><span>${tr('ng.enable_https_d')}</span></span></label>
-      <div class="hidden" id="nsCertWrap" style="margin-top:12px"><label class="lbl">${tr('ng.cert_mode')}</label><select id="nsCert" class="field"><option value="le">${tr('ng.cm_le')}</option><option value="manual">${tr('ng.cm_manual')}</option><option value="self">${tr('ng.cm_self')}</option><option value="named">${tr('ng.cm_named')}</option></select></div>
-      <div class="full hidden" id="nsNamedWrap" style="margin-top:10px"><label class="lbl">${tr('ng.select_cert')}</label><select id="nsNamed" class="field"></select></div>
-      <div class="full hidden" id="nsManual" style="margin-top:10px"><label class="lbl">${tr('ng.cert_pem')}</label><textarea id="nsCertPem" class="field" rows="3" placeholder="${editing ? tr('ng.keep_cert_ph') : ''}"></textarea><label class="lbl" style="margin-top:8px">${tr('ng.key_pem')}</label><textarea id="nsKeyPem" class="field" rows="3" placeholder="${editing ? tr('ng.keep_cert_ph') : ''}"></textarea></div>
-      <p class="formnote" id="nsAutoRenew">${tr('ng.autorenew_note')}</p>
+      <div class="hidden" id="nsSslBody" style="margin-top:16px">
+        <label class="lbl">${tr('ng.cert_method')}</label>
+        <div class="segbtns" id="nsCertMethod">
+          <button type="button" class="on" data-m="auto">${tr('ng.cm_auto')}</button>
+          <button type="button" data-m="self">${tr('ng.cm_self')}</button>
+        </div>
+        <div id="nsAutoWrap" style="margin-top:14px">
+          <div class="row" style="align-items:center;margin-bottom:8px"><span class="lbl" style="flex:1;margin:0">${tr('ng.same_domain_certs')}</span><button type="button" class="btn sm sec" id="nsReqCert">${tr('ng.request_cert')}</button></div>
+          <div id="nsCertList" class="certlist"></div>
+          <div class="hidden" id="nsReqJob" style="margin-top:10px"></div>
+        </div>
+        <div class="ssltoggles" style="margin-top:16px">
+          <label class="switch"><input type="checkbox" id="nsForceSsl" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.force_ssl')}</b><span>${tr('ng.force_ssl_d')}</span></span></label>
+          <label class="switch"><input type="checkbox" id="nsHttp2" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.http2')}</b><span>${tr('ng.http2_d')}</span></span></label>
+          <label class="switch"><input type="checkbox" id="nsHsts" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.hsts')}</b><span>${tr('ng.hsts_d')}</span></span></label>
+          <label class="switch"><input type="checkbox" id="nsHstsSub" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.hsts_sub')}</b><span>${tr('ng.hsts_sub_d')}</span></span></label>
+          <label class="switch"><input type="checkbox" id="nsTrustProxy" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.trust_proxy')}</b><span>${tr('ng.trust_proxy_d')}</span></span></label>
+        </div>
+        <p class="formnote">${tr('ng.autorenew_note')}</p>
+      </div>
     </div>
     <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="nsGo">${editing ? tr('ng.save') : tr('ng.create')}</button></div>
     <div class="hidden" id="nsJob" style="margin-top:14px"></div>`, (close) => {
     document.querySelectorAll('#nsTabs button').forEach((b) => b.onclick = () => {
       document.querySelectorAll('#nsTabs button').forEach((x) => x.className = x === b ? 'on' : '');
       document.querySelectorAll('.ftab-pane').forEach((p) => p.className = 'ftab-pane' + (p.dataset.p === b.dataset.t ? ' on' : ''));
+      if (b.dataset.t === 'ssl' && $('nsSsl').checked && certMethod === 'auto') loadCertList();
     });
 
-    let named = [];
-    op('nginx', { op: 'list_named_certs' }).then((d) => {
-      named = (d.certs || []).filter((c) => c.has_cert);
-      $('nsNamed').innerHTML = named.length
-        ? named.map((c) => `<option value="${esc(c.name)}">${esc(c.name)}${c.domain ? ' (' + esc(c.domain) + ')' : ''}</option>`).join('')
-        : `<option value="">${tr('ng.named_empty')}</option>`;
-      if (editing && site.cert_name) $('nsNamed').value = site.cert_name;
-    }).catch(() => {});
+    // SSL state: 'auto' (Let's Encrypt — reuse a matching cert or issue one) or
+    // 'self' (self-signed). `selectedCert` is the chosen library cert name, ''
+    // means "issue a new Let's Encrypt cert", null means "not yet decided".
+    let certMethod = 'auto';
+    let selectedCert = null;
+    let domainCerts = [];
+    const baseDomain = (d) => { const p = (d || '').split('.').filter(Boolean); return p.length <= 2 ? p.join('.') : p.slice(-2).join('.'); };
+    const certCovers = (cd, host) => {
+      if (!cd || !host) return false;
+      if (cd === host) return true;
+      if (cd.startsWith('*.')) return host.endsWith(cd.slice(1)) && host.split('.').length === cd.split('.').length;
+      return false;
+    };
+    const renderCertList = () => {
+      const list = $('nsCertList'); if (!list) return;
+      const host = $('nsName').value.trim();
+      if (selectedCert === null) {
+        if (editing && site.cert_name) selectedCert = site.cert_name;
+        else { const m = domainCerts.find((c) => certCovers(c.domain, host)); selectedCert = m ? m.name : ''; }
+      }
+      let h = `<label class="certopt${selectedCert === '' ? ' sel' : ''}" data-cert=""><span class="ck"></span><span class="ci"><b>${tr('ng.use_new_le')}</b><span class="mut">${tr('ng.use_new_le_d')}</span></span></label>`;
+      domainCerts.forEach((c) => {
+        const meta = `${esc(c.name)}${c.not_after ? ' · ' + tr('ng.col_expire') + ' ' + esc(c.not_after) : ''}`;
+        h += `<label class="certopt${selectedCert === c.name ? ' sel' : ''}" data-cert="${esc(c.name)}"><span class="ck"></span><span class="ci"><b>${esc(c.domain || c.name)}</b><span class="mut">${meta}</span></span></label>`;
+      });
+      list.innerHTML = h;
+      list.querySelectorAll('.certopt').forEach((o) => o.onclick = () => { selectedCert = o.dataset.cert; renderCertList(); });
+    };
+    const loadCertList = () => {
+      const base = baseDomain($('nsName').value.trim());
+      $('nsCertList').innerHTML = loading();
+      op('nginx', { op: 'list_named_certs' }).then((d) => {
+        domainCerts = (d.certs || []).filter((c) => c.has_cert && base && baseDomain(c.domain) === base);
+        renderCertList();
+      }).catch(() => { domainCerts = []; renderCertList(); });
+    };
 
     let containers = [];
     op('nginx', { op: 'list_containers' }).then((d) => { containers = d.containers || []; if ($('nsKind').value === 'proxy_container') { kindFields(); prefillKind(); } }).catch(() => {});
@@ -176,19 +221,39 @@ function ngAddSite(reload, site) {
     $('nsLocAdd').onclick = () => locRow();
     if (editing && site.locations) site.locations.forEach((l) => locRow(l));
 
-    $('nsSsl').onchange = () => { $('nsCertWrap').classList.toggle('hidden', !$('nsSsl').checked); certFields(); };
-    const certFields = () => {
-      const on = $('nsSsl').checked;
-      const m = $('nsCert').value;
-      $('nsManual').classList.toggle('hidden', !(on && m === 'manual'));
-      $('nsNamedWrap').classList.toggle('hidden', !(on && m === 'named'));
+    $('nsSsl').onchange = () => {
+      $('nsSslBody').classList.toggle('hidden', !$('nsSsl').checked);
+      if ($('nsSsl').checked && certMethod === 'auto') loadCertList();
     };
-    $('nsCert') && ($('nsCert').onchange = certFields);
+    $('nsCertMethod').querySelectorAll('button').forEach((b) => b.onclick = () => {
+      certMethod = b.dataset.m;
+      $('nsCertMethod').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+      $('nsAutoWrap').classList.toggle('hidden', certMethod !== 'auto');
+      if (certMethod === 'auto') loadCertList();
+    });
+    $('nsReqCert').onclick = () => {
+      const host = $('nsName').value.trim();
+      if (!host) return toast(tr('ng.need_domain'), 'err');
+      $('nsReqCert').disabled = true; $('nsReqJob').classList.remove('hidden'); $('nsReqJob').innerHTML = `<div class="mut">${tr('ng.submitting')}</div>`;
+      const done = () => { toast(tr('ng.cert_created'), 'ok'); $('nsReqCert').disabled = false; $('nsReqJob').classList.add('hidden'); selectedCert = host; loadCertList(); };
+      op('nginx', { op: 'create_cert', cert_name: host, cert_mode: 'le', server_name: host }).then((r) => {
+        if (r.op_id) renderJob($('nsReqJob'), 'nginx', r.op_id, '', { onDone: done, onError: () => { $('nsReqCert').disabled = false; } });
+        else done();
+      }).catch((e) => { toast(e.message, 'err'); $('nsReqCert').disabled = false; $('nsReqJob').classList.add('hidden'); });
+    };
     if (editing && site.ssl) {
       $('nsSsl').checked = true;
-      $('nsCertWrap').classList.remove('hidden');
-      $('nsCert').value = site.cert_name ? 'named' : (site.cert_mode || 'le');
-      certFields();
+      $('nsSslBody').classList.remove('hidden');
+      certMethod = site.cert_mode === 'self' ? 'self' : 'auto';
+      $('nsCertMethod').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.m === certMethod));
+      $('nsAutoWrap').classList.toggle('hidden', certMethod !== 'auto');
+      selectedCert = site.cert_name ? site.cert_name : (site.cert_mode === 'le' ? '' : null);
+      $('nsForceSsl').checked = site.force_ssl !== false;
+      $('nsHttp2').checked = site.http2 !== false;
+      $('nsHsts').checked = !!site.hsts;
+      $('nsHstsSub').checked = !!site.hsts_sub;
+      $('nsTrustProxy').checked = !!site.trust_proxy;
+      if (certMethod === 'auto') loadCertList();
     }
 
     const collectLocs = () => Array.from($('nsLocs').querySelectorAll('.locrule')).map((w) => ({
@@ -207,9 +272,18 @@ function ngAddSite(reload, site) {
       else if (k === 'proxy_container') { body.scheme = $('nsScheme').value; body.container = $('nsCtn').value.trim(); body.container_port = Number($('nsCtnPort').value); if (!body.container) return toast(tr('ng.need_container'), 'err'); }
       else { body.root = $('nsRoot').value.trim(); if (!body.root) return toast(tr('ng.need_static_dir'), 'err'); if (!editing && !staticUpload.mode) return toast(tr('ng.need_upload'), 'err'); }
       if (body.ssl) {
-        body.cert_mode = $('nsCert').value;
-        if (body.cert_mode === 'manual') { body.cert_pem = $('nsCertPem').value; body.key_pem = $('nsKeyPem').value; }
-        else if (body.cert_mode === 'named') { body.cert_name = $('nsNamed').value; if (!body.cert_name) return toast(tr('ng.need_named'), 'err'); }
+        if (certMethod === 'self') {
+          body.cert_mode = 'self';
+        } else if (selectedCert) {
+          body.cert_mode = 'named'; body.cert_name = selectedCert;
+        } else {
+          body.cert_mode = 'le'; // auto, no existing cert → issue Let's Encrypt
+        }
+        body.force_ssl = $('nsForceSsl').checked;
+        body.http2 = $('nsHttp2').checked;
+        body.hsts = $('nsHsts').checked;
+        body.hsts_sub = $('nsHstsSub').checked;
+        body.trust_proxy = $('nsTrustProxy').checked;
       }
       const okMsg = editing ? tr('ng.site_updated') : tr('ng.site_created');
       $('nsGo').disabled = true; $('nsJob').classList.remove('hidden'); $('nsJob').innerHTML = `<div class="mut">${tr('ng.submitting')}</div>`;
