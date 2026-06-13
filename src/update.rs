@@ -30,6 +30,11 @@ pub const PHASE_DOWNLOADING: u8 = 2;
 pub const PHASE_INSTALLING: u8 = 3;
 pub const PHASE_ERROR: u8 = 4;
 
+/// Exit code the panel uses after a successful self-update, signalling the
+/// supervisor to re-exec itself immediately (single combined restart) instead
+/// of respawning the panel and re-exec'ing a version_check interval later.
+pub const EXIT_UPDATED: i32 = 77;
+
 static PHASE: AtomicU8 = AtomicU8::new(PHASE_IDLE);
 static PROGRESS: AtomicU64 = AtomicU64::new(0);
 static TOTAL_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -416,7 +421,7 @@ pub async fn run_self_update(cfg: &PanelConfig) {
         Ok(_) => {
             tracing::info!("upgrade complete; exiting for restart");
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            std::process::exit(0);
+            std::process::exit(EXIT_UPDATED);
         }
         Err(e) => {
             tracing::warn!("self-update failed: {e}");

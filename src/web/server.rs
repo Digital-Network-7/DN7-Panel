@@ -50,7 +50,7 @@ pub fn spawn(cfg: PanelConfig) {
     }
     let port = s.port;
     let state: Shared = Arc::new(WebState {
-        auth: AuthState::new(),
+        auth: AuthState::with_store(),
         settings: std::sync::Mutex::new(s),
         collector: Mutex::new(Collector::new()),
         cfg,

@@ -98,11 +98,25 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
         let c = child.as_mut().unwrap();
         tokio::select! {
             status = c.wait() => {
+                let updated = matches!(&status, Ok(s) if s.code() == Some(crate::update::EXIT_UPDATED));
                 match status {
                     Ok(s) => tracing::warn!("panel exited with {s}; restarting"),
                     Err(e) => tracing::warn!("panel wait error: {e}; restarting"),
                 }
                 child = None;
+                // If the panel exited because a self-update swapped in a newer
+                // binary (signalled by EXIT_UPDATED), re-exec the supervisor
+                // *now* so both halves come up on the new version in a single
+                // restart — instead of respawning the panel here and then
+                // re-exec'ing (a second, disruptive restart) up to a
+                // version_check interval later. The panel is already gone, so
+                // there's nothing to kill first.
+                if updated || on_disk_is_newer(&cfg) {
+                    tracing::info!("panel exited for self-update; re-exec'ing supervisor now");
+                    _lock.release();
+                    reexec_supervisor();
+                    // reexec only returns on failure; fall through to restart.
+                }
                 tokio::time::sleep(Duration::from_secs(cfg.restart_backoff_secs)).await;
             }
             _ = version_check.tick() => {

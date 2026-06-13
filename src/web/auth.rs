@@ -27,15 +27,45 @@ const TICKET_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub struct AuthState {
-    sessions: Mutex<HashMap<String, Instant>>, // token -> last access (sliding)
+    sessions: Mutex<HashMap<String, u64>>, // token -> last access (unix secs, sliding)
     fails: Mutex<HashMap<String, Vec<Instant>>>, // source -> failure times
     challenges: Mutex<HashMap<String, Instant>>, // login nonce -> issued (single use)
-    tickets: Mutex<HashMap<String, Instant>>,  // one-time WS/download ticket -> issued
+    tickets: Mutex<HashMap<String, Instant>>, // one-time WS/download ticket -> issued
+    /// When true, the session map is persisted to disk (so a panel restart —
+    /// e.g. after a self-update — doesn't log everyone out).
+    persist: bool,
 }
 
 impl AuthState {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Construct with on-disk session persistence, loading any still-valid
+    /// sessions left by a previous run so a restart doesn't force re-login.
+    pub fn with_store() -> Self {
+        let s = Self {
+            persist: true,
+            ..Self::default()
+        };
+        if let Some(map) = load_sessions() {
+            let now = now_secs();
+            let live: HashMap<String, u64> = map
+                .into_iter()
+                .filter(|(_, t)| now.saturating_sub(*t) <= SESSION_TTL.as_secs())
+                .collect();
+            *s.sessions.lock().unwrap() = live;
+        }
+        s
+    }
+
+    fn save_sessions(&self) {
+        if !self.persist {
+            return;
+        }
+        let snapshot = self.sessions.lock().unwrap().clone();
+        let _ = write_sessions(&snapshot);
     }
 
     /// Whether `source` is currently allowed to attempt a login.
@@ -62,11 +92,14 @@ impl AuthState {
     /// Mint a new session token.
     pub fn issue(&self) -> String {
         let token = random_token();
-        let mut m = self.sessions.lock().unwrap();
-        let now = Instant::now();
-        // Opportunistically prune expired sessions.
-        m.retain(|_, created| now.duration_since(*created) <= SESSION_TTL);
-        m.insert(token.clone(), now);
+        let now = now_secs();
+        {
+            let mut m = self.sessions.lock().unwrap();
+            // Opportunistically prune expired sessions.
+            m.retain(|_, last| now.saturating_sub(*last) <= SESSION_TTL.as_secs());
+            m.insert(token.clone(), now);
+        }
+        self.save_sessions();
         token
     }
 
@@ -77,20 +110,33 @@ impl AuthState {
         if token.is_empty() {
             return false;
         }
-        let mut m = self.sessions.lock().unwrap();
-        let now = Instant::now();
-        match m.get(token) {
-            Some(last) if now.duration_since(*last) <= SESSION_TTL => {
-                m.insert(token.to_string(), now); // slide the window
-                true
+        let now = now_secs();
+        let mut persist = false;
+        let ok = {
+            let mut m = self.sessions.lock().unwrap();
+            match m.get(token).copied() {
+                Some(last) if now.saturating_sub(last) <= SESSION_TTL.as_secs() => {
+                    m.insert(token.to_string(), now); // slide the window
+                                                      // Debounce disk writes: only persist the slide if it moved
+                                                      // by a few minutes (active sessions don't thrash the file).
+                    if now.saturating_sub(last) >= 300 {
+                        persist = true;
+                    }
+                    true
+                }
+                _ => false,
             }
-            _ => false,
+        };
+        if persist {
+            self.save_sessions();
         }
+        ok
     }
 
     /// Invalidate a session (logout).
     pub fn revoke(&self, token: &str) {
         self.sessions.lock().unwrap().remove(token);
+        self.save_sessions();
     }
 
     /// Mint a one-time login challenge nonce (hex). The client proves knowledge
@@ -152,6 +198,44 @@ fn random_token() -> String {
     let mut rng = rand::thread_rng();
     (0..48).map(|_| HEX[rng.gen_range(0..16)] as char).collect()
 }
+
+/// Current wall-clock time in unix seconds (0 on the impossible clock error).
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn sessions_path() -> std::path::PathBuf {
+    crate::paths::data_dir().join("sessions.json")
+}
+
+/// Load persisted sessions (token -> last-access unix secs). None on any error.
+fn load_sessions() -> Option<HashMap<String, u64>> {
+    let s = std::fs::read_to_string(sessions_path()).ok()?;
+    serde_json::from_str(&s).ok()
+}
+
+/// Persist the session map. Tokens are sensitive, so the file is written 0600.
+fn write_sessions(map: &HashMap<String, u64>) -> std::io::Result<()> {
+    let path = sessions_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let data = serde_json::to_string(map).unwrap_or_else(|_| "{}".to_string());
+    std::fs::write(&path, data)?;
+    set_file_perms_600(&path);
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_file_perms_600(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+#[cfg(not(unix))]
+fn set_file_perms_600(_path: &std::path::Path) {}
 
 /// Constant-time-ish password comparison (avoids early-exit timing leak).
 pub fn password_matches(expected: &str, given: &str) -> bool {
