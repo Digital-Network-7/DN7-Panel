@@ -16,14 +16,19 @@ function myGenPw(n) {
   return Array.from(a).map((b) => cs[b % cs.length]).join('');
 }
 // HTML for a password field with an in-field generate button (optional) + eye.
-function myPwFieldHtml(id, val, gen) {
+// `vis` starts the field revealed (plain text) rather than masked.
+function myPwFieldHtml(id, val, gen, vis) {
   const g = gen ? `<button type="button" class="pwf-gen" id="${id}Gen" title="${tr('my.gen_pw')}">${MY_DICE}</button>` : '';
-  return `<div class="pwf${gen ? ' gen' : ''}"><input id="${id}" class="field" type="password" value="${esc(val || '')}" autocomplete="new-password" />${g}<button type="button" class="pwf-eye" id="${id}Eye" title="${tr('set.show')}">${MY_EYE}</button></div>`;
+  const type = vis ? 'text' : 'password';
+  const eyeIcon = vis ? MY_EYE_OFF : MY_EYE;
+  const eyeTitle = vis ? tr('set.hide') : tr('set.show');
+  return `<div class="pwf${gen ? ' gen' : ''}"><input id="${id}" class="field" type="${type}" value="${esc(val || '')}" autocomplete="new-password" />${g}<button type="button" class="pwf-eye" id="${id}Eye" title="${eyeTitle}">${eyeIcon}</button></div>`;
 }
 // Wire the eye toggle, brief reveal-on-type, and (if present) generate button.
-function myWirePw(id) {
+// `startShown` keeps the field revealed initially (matches a `vis` field HTML).
+function myWirePw(id, startShown) {
   const pwi = $(id), eye = $(id + 'Eye'), gen = $(id + 'Gen');
-  let shown = false, t;
+  let shown = !!startShown, t;
   const reveal = (on) => { shown = on; pwi.type = on ? 'text' : 'password'; eye.innerHTML = on ? MY_EYE_OFF : MY_EYE; eye.title = on ? tr('set.hide') : tr('set.show'); };
   eye.onclick = () => reveal(!shown);
   pwi.addEventListener('input', () => { if (shown) return; pwi.type = 'text'; clearTimeout(t); t = setTimeout(() => { if (!shown) pwi.type = 'password'; }, 900); });
@@ -349,7 +354,7 @@ function myUserForm(id) {
           <div><label class="lbl">${tr('my.username')}</label><input id="auU" class="field" autocomplete="off" /></div>
           <div><label class="lbl">${tr('my.host_mode')}</label><select id="auHostMode" class="field"><option value="%">${tr('my.host_any')}</option><option value="localhost">${tr('my.host_local')}</option><option value="custom">${tr('my.host_custom')}</option></select></div>
           <div class="full hidden" id="auHostCustomWrap"><label class="lbl">${tr('my.src_host')}</label><input id="auHostCustom" class="field" placeholder="192.168.1.%" /></div>
-          <div class="full"><label class="lbl">${tr('my.password')}</label>${myPwFieldHtml('auP', myGenPw(12), true)}</div>
+          <div class="full"><label class="lbl">${tr('my.password')}</label>${myPwFieldHtml('auP', '', true, true)}</div>
         </div>
       </div>
       <div id="auPerm" class="hidden">
@@ -371,7 +376,7 @@ function myUserForm(id) {
         <label class="switch" style="padding:0;margin-top:16px"><input type="checkbox" id="auSsl" /><span class="swbox"></span><span class="swtxt">${tr('my.require_ssl')}</span></label>
       </div>
       <div class="row" style="justify-content:flex-end;margin-top:18px"><button class="btn" id="auGo">${tr('my.create')}</button></div>`, (close, root) => {
-      myWirePw('auP');
+      myWirePw('auP', true);
       const tabs = root.querySelector('#auTabs');
       tabs.querySelectorAll('button').forEach((btn) => btn.onclick = () => { tabs.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === btn)); ['basic', 'perm', 'adv'].forEach((s) => root.querySelector('#au' + s.charAt(0).toUpperCase() + s.slice(1)).classList.toggle('hidden', btn.dataset.s !== s)); });
       const hostMode = $('auHostMode');
