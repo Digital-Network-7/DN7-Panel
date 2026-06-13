@@ -15,24 +15,42 @@ function updateBadge() {
 
 function openUpdate() {
   const body = `
-    <div class="row" style="justify-content:space-between;align-items:center">
-      <div>${tr('upd.current')} <b id="uCur">…</b></div>
-      <button class="btn sec sm" id="uCheck">${tr('upd.check')}</button>
-    </div>
-    <div id="uResult" style="margin-top:14px"></div>
-    <div id="uProg" class="hidden" style="margin-top:14px">
-      <div class="prog"><i></i></div>
-      <div class="job-line" id="uProgTxt"></div>
-    </div>
-    <div class="card" style="margin-top:16px;background:var(--panel2)">
-      <h3>${tr('upd.settings')}</h3>
-      <label class="switch"><input type="checkbox" id="uAuto"/><span class="swbox"></span><span class="swtxt"><b>${tr('upd.auto')}</b><span>${tr('upd.auto_d')}</span></span></label>
-      <label class="lbl" style="margin-top:10px">${tr('upd.source')}</label>
-      <select id="uSource" class="field">
-        <option value="auto">${tr('upd.src_auto')}</option>
-        <option value="github">GitHub</option>
-        <option value="dn7">Digital Network 7</option>
-      </select>
+    <div class="upd">
+      <div class="upd-hero">
+        <div class="upd-appicon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+        </div>
+        <div class="upd-ver" id="uCur">…</div>
+        <div class="upd-state" id="uState">${tr('upd.checking')}</div>
+        <div class="upd-cta" id="uCta"></div>
+        <button class="upd-recheck" id="uCheck">${tr('upd.check')}</button>
+      </div>
+      <div id="uProg" class="upd-prog hidden">
+        <div class="prog"><i></i></div>
+        <div class="job-line" id="uProgTxt"></div>
+      </div>
+      <div id="uChangelog"></div>
+      <div class="upd-sec">
+        <div class="upd-sec-h">${tr('upd.source')}</div>
+        <div class="upd-group" id="uSources">${loading()}</div>
+      </div>
+      <div class="upd-sec">
+        <div class="upd-sec-h">${tr('upd.settings')}</div>
+        <div class="upd-group">
+          <div class="upd-row">
+            <div class="upd-row-t"><b>${tr('upd.auto')}</b><span>${tr('upd.auto_d')}</span></div>
+            <label class="switch" style="padding:0"><input type="checkbox" id="uAuto"/><span class="swbox"></span></label>
+          </div>
+          <div class="upd-row">
+            <div class="upd-row-t"><b>${tr('upd.source')}</b></div>
+            <select id="uSource" class="field" style="width:auto;min-width:172px">
+              <option value="auto">${tr('upd.src_auto')}</option>
+              <option value="github">GitHub</option>
+              <option value="dn7">Digital Network 7</option>
+            </select>
+          </div>
+        </div>
+      </div>
     </div>`;
   modal(tr('upd.title'), body, (close) => {
     UPD.close = close;
@@ -40,7 +58,6 @@ function openUpdate() {
       $('uAuto').checked = !!b.data.auto;
       $('uSource').value = b.data.source_pref || 'auto';
     }).catch(() => {});
-    api('/api/update/status').then((b) => { $('uCur').textContent = 'v' + b.data.current; }).catch(() => {});
     $('uCheck').onclick = runUpdCheck;
     $('uAuto').onchange = saveUpdCfg;
     $('uSource').onchange = saveUpdCfg;
@@ -57,29 +74,36 @@ function saveUpdCfg() {
 function srcLabel(name) { return name === 'dn7' ? 'Digital Network 7' : 'GitHub'; }
 
 function runUpdCheck() {
-  const r = $('uResult'); if (!r) return;
-  r.innerHTML = loading(tr('upd.checking'), 2);
+  const state = $('uState'); if (!state) return;
+  const cur = $('uCur'), cta = $('uCta'), srcBox = $('uSources');
+  state.textContent = tr('upd.checking'); state.className = 'upd-state';
+  if (cta) cta.innerHTML = '';
+  if (srcBox) srcBox.innerHTML = loading();
   api('/api/update/check', { method: 'POST' }).then((b) => {
     const d = b.data, dot = $('verDot');
     if (dot) dot.classList.toggle('hidden', !d.has_update);
-    let html = '';
+    if (cur) cur.textContent = 'v' + d.current;
     if (d.has_update) {
-      html += `<div class="ok" style="font-size:14px;margin-bottom:10px">${tr('upd.found', { latest: esc(d.latest), current: esc(d.current) })}</div>`;
-      html += `<button class="btn" id="uApply">${tr('upd.apply_to', { latest: esc(d.latest) })}</button>`;
-      html += '<div id="uChangelog"></div>';
+      state.className = 'upd-state avail';
+      state.textContent = tr('upd.avail', { latest: d.latest });
+      cta.innerHTML = `<button class="btn" id="uApply">${tr('upd.apply_to', { latest: esc(d.latest) })}</button>`;
+      $('uApply').onclick = applyUpdate;
+      loadChangelog();
     } else if (d.latest) {
-      html += `<div class="mut" style="margin-bottom:6px">${tr('upd.latest', { current: esc(d.current) })}</div>`;
+      state.className = 'upd-state ok';
+      state.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>${esc(tr('upd.uptodate'))}`;
     } else {
-      html += `<div class="err" style="margin-bottom:6px">${tr('upd.no_source')}</div>`;
+      state.className = 'upd-state err';
+      state.textContent = tr('upd.no_source');
     }
-    html += '<div style="margin-top:12px">' + (d.sources || []).map((s) => {
-      const tag = s.ok ? `<span class="chip on">${tr('upd.kbps', { n: s.kbps })}</span>` : `<span class="chip warn">${tr('upd.conn_fail')}</span>`;
-      const star = (s.name === d.source) ? ` <span style="color:var(--cy)">${tr('upd.cur_src')}</span>` : '';
-      return `<div class="row" style="justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)"><span>${srcLabel(s.name)}${star}</span>${tag}</div>`;
-    }).join('') + '</div>';
-    r.innerHTML = html;
-    if (d.has_update) { $('uApply').onclick = applyUpdate; loadChangelog(); }
-  }).catch((e) => { r.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+    if (srcBox) {
+      srcBox.innerHTML = (d.sources || []).map((s) => {
+        const tag = s.ok ? `<span class="chip on">${tr('upd.kbps', { n: s.kbps })}</span>` : `<span class="chip warn">${tr('upd.conn_fail')}</span>`;
+        const star = (s.name === d.source) ? `<span class="upd-cursrc">${tr('upd.cur_src')}</span>` : '';
+        return `<div class="upd-row"><div class="upd-row-t"><b>${srcLabel(s.name)}</b>${star}</div>${tag}</div>`;
+      }).join('') || `<div class="upd-row"><span class="mut">${tr('upd.no_source')}</span></div>`;
+    }
+  }).catch((e) => { state.className = 'upd-state err'; state.textContent = e.message; if (srcBox) srcBox.innerHTML = ''; });
 }
 
 // Fetch + render "what's new": the notes for every version this update brings
@@ -94,12 +118,12 @@ function loadChangelog() {
     const entry = (e) => `<div class="cl-entry"><div class="cl-ver">v${esc(e.version)}${e.date ? ' · ' + esc(e.date) : ''}</div>`
       + (e.notes && e.notes.length ? '<ul class="cl-notes">' + e.notes.map((n) => `<li>${esc(n)}</li>`).join('') + '</ul>' : '')
       + '</div>';
-    let html = `<div class="cl-title">${tr('upd.changelog')}</div>` + entry(entries[0]);
+    let html = entry(entries[0]);
     if (entries.length > 1) {
       html += `<div id="uClMore" class="hidden">${entries.slice(1).map(entry).join('')}</div>`;
       html += `<button class="cl-toggle" id="uClToggle">${tr('upd.view_all', { n: entries.length })}</button>`;
     }
-    host.innerHTML = `<div class="upd-cl">${html}</div>`;
+    host.innerHTML = `<div class="upd-sec"><div class="upd-sec-h">${tr('upd.changelog')}</div><div class="upd-group upd-cl">${html}</div></div>`;
     if (entries.length > 1) {
       $('uClToggle').onclick = () => {
         const more = $('uClMore'); const closed = more.classList.contains('hidden');
