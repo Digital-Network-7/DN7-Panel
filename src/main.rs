@@ -54,6 +54,17 @@ fn main() -> Result<()> {
         return run_reset();
     }
 
+    // `port` subcommand: change the console port (random when no value given).
+    if role.as_deref() == Some("port") {
+        return run_set_port(std::env::args().nth(2));
+    }
+
+    // `access` / `entry` subcommand: change the secret safe-entry path (random
+    // when no value given). `dn7 panel access [/path]`.
+    if matches!(role.as_deref(), Some("access") | Some("entry")) {
+        return run_set_entry(std::env::args().nth(2));
+    }
+
     // Install to the canonical location (/var/dn7/panel/dn7-panel) on the
     // top-level (supervisor) launch, so the operator never has to create dirs
     // and every respawn/self-update uses a stable path. The panel role is an
@@ -197,12 +208,75 @@ fn run_reset() -> Result<()> {
     println!("  DN7 Panel 账号密码已重置：");
     println!("    账号 username → admin");
     println!("    密码 password → {pw}");
+    if let Some(url) = web::access_url(&banner::best_host()) {
+        println!("    访问地址 url  → {url}");
+    }
     println!("  （仅显示一次，请妥善保存；忘记可再次运行 dn7 panel reset）");
     println!();
     // Make a running instance pick up the new credentials: stop the panel-role
     // child so the supervisor respawns it (it reloads web.json on start).
     restart_panel_child();
     Ok(())
+}
+
+/// `dn7 panel port [N]` — set the console port (random high port when omitted).
+fn run_set_port(arg: Option<String>) -> Result<()> {
+    require_console_owner();
+    let port = match arg.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => match s.parse::<u16>() {
+            Ok(p) if p >= 1 => Some(p),
+            _ => {
+                eprintln!("端口无效：请输入 1-65535 之间的数字，或省略以随机生成。");
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
+    let new_port = web::console_port_set(port)?;
+    println!();
+    println!("  DN7 Panel 端口已更新 → {new_port}");
+    if let Some(url) = web::access_url(&banner::best_host()) {
+        println!("  新的访问地址 → {url}");
+    }
+    println!("  （需重启面板后生效，正在重启……）");
+    println!();
+    restart_panel_child();
+    Ok(())
+}
+
+/// `dn7 panel access [/path]` — set the secret safe-entry path (random when
+/// omitted). Takes effect immediately (no restart needed).
+fn run_set_entry(arg: Option<String>) -> Result<()> {
+    require_console_owner();
+    let entry = web::console_entry_set(arg)?;
+    println!();
+    if entry == "/" {
+        println!("  DN7 Panel 安全入口已关闭（登录页在根路径 / 可直接访问）。");
+    } else {
+        println!("  DN7 Panel 安全入口已更新 → {entry}");
+    }
+    if let Some(url) = web::access_url(&banner::best_host()) {
+        println!("  新的访问地址 → {url}");
+    }
+    println!();
+    restart_panel_child();
+    Ok(())
+}
+
+/// Guard: only the install owner (or root) may run console-management commands.
+fn require_console_owner() {
+    let uid = current_uid();
+    match web::console_owner_uid() {
+        None => {
+            eprintln!("控制台尚未初始化：请先启动一次 DN7 Panel。");
+            std::process::exit(1);
+        }
+        Some(owner) if uid != 0 && uid != owner => {
+            eprintln!("无权操作：请以初始安装用户(uid={owner})或 root 身份运行。当前 uid={uid}。");
+            std::process::exit(1);
+        }
+        _ => {}
+    }
 }
 
 /// The process's real uid (for the reset owner check).

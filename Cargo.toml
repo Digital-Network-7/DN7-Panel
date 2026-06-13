@@ -56,6 +56,11 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 # Strong, salted password hashing for nginx Access List HTTP Basic Auth
 # (bcrypt $2b$ — GPU-resistant; verified by the host nginx via crypt()). Pure Rust.
 bcrypt = "0.15"
+# Optional HTTPS for the panel itself (self-signed). Pin the rustls `ring`
+# provider (already in the tree via reqwest) so the musl-static build stays
+# C-toolchain-free (avoids aws-lc-rs).
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 
 [profile.release]
 opt-level = 3

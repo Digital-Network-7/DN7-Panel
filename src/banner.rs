@@ -20,29 +20,43 @@ pub fn print(cfg: &PanelConfig) {
         return;
     }
     let port = info.port;
+    let scheme = if info.https { "https" } else { "http" };
+    let entry = if info.entry_path == "/" {
+        String::new()
+    } else {
+        info.entry_path.clone()
+    };
     let internal = internal_ip();
     let public = public_ip();
 
     println!("  ┌─ DN7 Panel ──────────────────────────────────");
     match &public {
         Some(pip) => {
-            println!("  │  控制台 console  →  http://{pip}:{port}");
-            println!("  │                  →  http://{internal}:{port}  (内网)");
+            println!("  │  控制台 console  →  {scheme}://{pip}:{port}{entry}");
+            println!("  │                  →  {scheme}://{internal}:{port}{entry}  (内网)");
         }
         None => {
-            println!("  │  控制台 console  →  http://{internal}:{port}");
+            println!("  │  控制台 console  →  {scheme}://{internal}:{port}{entry}");
         }
+    }
+    if !entry.is_empty() {
+        println!("  │  安全入口 entry  →  {entry}  （必须带此路径才能打开登录页）");
     }
     if let Some(pw) = &info.new_password {
         println!("  │  账号 username   →  {}", info.username);
         println!("  │  密码 password   →  {pw}");
-        println!("  │  提示            →  此密码仅显示一次，请妥善保存");
+        println!("  │  提示            →  此密码与上面的端口/安全入口仅显示一次，请妥善保存");
     } else {
         println!("  │  账号 / 密码     →  已设置");
         println!("  │                     （忘记密码可在主机运行: dn7 panel reset）");
     }
     println!("  └──────────────────────────────────────────────");
     println!();
+}
+
+/// Best public-facing host for building an access URL (public IP, else LAN IP).
+pub fn best_host() -> String {
+    public_ip().unwrap_or_else(internal_ip)
 }
 
 /// The host's primary outbound (LAN) IP, via the standard UDP-connect trick:

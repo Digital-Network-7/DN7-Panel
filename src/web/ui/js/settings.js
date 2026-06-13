@@ -1,28 +1,32 @@
 // =========================================================================
-// Settings (tabbed: General / Appearance / Owner Account)
+// Settings (tabbed: General / Appearance)
 // =========================================================================
 function renderSettings(v) {
-  v.innerHTML = '<div class="card">' + loading() + '</div>';
+  v.innerHTML = '<div style="padding:8px">' + loading() + '</div>';
   api('/api/settings').then((sb) => {
     const s = sb.data;
     v.innerHTML = `
-    <div class="subtabs" id="setTabs" style="margin-bottom:16px">
+    <div class="subtabs" id="setTabs" style="margin-bottom:18px">
       <button data-s="general" class="on">${tr('set.tab_general')}</button>
       <button data-s="appear">${tr('set.tab_appearance')}</button>
-      <button data-s="account">${tr('set.tab_account')}</button>
     </div>
     <div id="setGeneral">
-      <div class="card" style="max-width:520px">
-        <h3>${tr('set.port_sec')}</h3>
-        <input id="setPort" class="field" type="number" value="${s.port}" />
-        <label style="display:flex;gap:8px;align-items:center;margin:14px 0"><input type="checkbox" id="setEnabled" ${s.enabled ? 'checked' : ''}/> ${tr('set.enable')}</label>
-        <button class="btn" id="setSave">${tr('set.save')}</button>
-        <div class="err ok" id="setMsg" style="margin-top:10px"></div>
+      <div class="sechead" style="margin-top:0"><h3>${tr('set.console_sec')}</h3></div>
+      <div style="max-width:460px">
+        <label class="switch" style="padding:0"><input type="checkbox" id="setEnabled" ${s.enabled ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('set.enable_local')}</b><span>${tr('set.enable_local_d')}</span></span></label>
+        <label class="lbl" style="margin-top:18px">${tr('set.port_label')}</label>
+        <input id="setPort" class="field" type="number" value="${esc(String(s.port || ''))}" style="max-width:160px" />
+        <p class="formnote" style="margin-top:6px">${tr('set.port_restart_d')}</p>
+        <label class="lbl" style="margin-top:14px">${tr('set.entry')}</label>
+        <div class="row" style="gap:8px"><input id="setEntry" class="field" placeholder="/ab12cd" value="${esc(s.entry_path === '/' ? '' : (s.entry_path || ''))}" style="flex:1" /><button type="button" class="btn sec sm" id="setEntryGen">${tr('set.generate')}</button></div>
+        <p class="formnote" style="margin-top:6px">${tr('set.entry_hint')}</p>
+        <label class="switch" style="padding:0;margin-top:14px"><input type="checkbox" id="setHttps" ${s.https ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('set.https')}</b><span>${tr('set.https_hint')}</span></span></label>
       </div>
+      <div class="row" style="align-items:center;gap:12px;margin-top:18px"><button class="btn" id="setSave">${tr('set.save')}</button><span class="err ok" id="setMsg"></span></div>
     </div>
     <div id="setAppear" class="hidden">
-      <div class="card" style="max-width:520px">
-        <h3>${tr('set.appearance')}</h3>
+      <div class="sechead" style="margin-top:0"><h3>${tr('set.appearance')}</h3></div>
+      <div style="max-width:460px">
         <label class="lbl">${tr('set.language')}</label>
         <select id="brLang" class="field" style="margin-bottom:12px">
           <option value="en">English</option>
@@ -51,67 +55,35 @@ function renderSettings(v) {
           <option value="light">${tr('theme.light')}</option>
           <option value="dark">${tr('theme.dark')}</option>
         </select>
-        <button class="btn" id="brSave">${tr('set.save_appearance')}</button>
-        <div class="err ok" id="brMsg" style="margin-top:10px"></div>
       </div>
-    </div>
-    <div id="setAccount" class="hidden">
-      <div class="card" style="max-width:520px">
-        <h3>${tr('set.owner_account')}</h3>
-        <p class="sub" style="margin:0 0 14px">${tr('set.owner_desc')}</p>
-        <label class="lbl">${tr('set.new_login')}</label>
-        <input id="setUser" class="field" style="margin-bottom:12px" value="${esc(s.username)}" autocomplete="off" />
-        <label class="lbl">${tr('set.new_password')}</label>
-        ${myPwFieldHtml('setPw', '', true)}
-        <div class="sub" style="margin:6px 0 0">${tr('set.keep_pw_hint')}</div>
-        <button class="btn" id="setReset" style="margin-top:16px">${tr('set.reset_owner')}</button>
-        <div class="err ok" id="setAcctMsg" style="margin-top:10px"></div>
-      </div>
+      <div class="row" style="align-items:center;gap:12px"><button class="btn" id="brSave">${tr('set.save_appearance')}</button><span class="err ok" id="brMsg"></span></div>
     </div>`;
 
     // ---- Tabs ----
     const tabs = $('setTabs');
-    const panes = { general: 'setGeneral', appear: 'setAppear', account: 'setAccount' };
     tabs.querySelectorAll('button').forEach((b) => b.onclick = () => {
       tabs.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
-      for (const k in panes) $(panes[k]).classList.toggle('hidden', b.dataset.s !== k);
+      $('setGeneral').classList.toggle('hidden', b.dataset.s !== 'general');
+      $('setAppear').classList.toggle('hidden', b.dataset.s !== 'appear');
     });
 
-    // ---- General (console port / enable) ----
-    $('setSave').onclick = () => {
-      const body = { port: Number($('setPort').value), enabled: $('setEnabled').checked };
-      api('/api/settings', { method: 'POST', body: JSON.stringify(body) })
-        .then((b) => { const m = $('setMsg'); m.className = 'err ok'; m.textContent = tr('common.saved') + (b.needs_restart ? tr('common.restart_hint') : ''); })
-        .catch((e) => { const m = $('setMsg'); m.className = 'err'; m.textContent = e.message; });
+    // ---- General (console port / enable / entry path / https) ----
+    $('setEntryGen').onclick = () => {
+      const cs = 'abcdefghijkmnpqrstuvwxyz23456789';
+      const a = new Uint8Array(6);
+      if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(a); else for (let i = 0; i < 6; i++) a[i] = Math.floor(Math.random() * 256);
+      $('setEntry').value = '/' + Array.from(a).map((b) => cs[b % cs.length]).join('');
     };
-
-    // ---- Owner account reset (login name + password) ----
-    myWirePw('setPw');
-    $('setReset').onclick = () => {
-      const m = $('setAcctMsg');
-      const username = $('setUser').value.trim();
-      const pw = $('setPw').value;
-      const body = { username };
-      if (pw) {
-        if (pw.length < 6 || pw.length > 128) { m.className = 'err'; m.textContent = tr('set.pw_len'); return; }
-        // Hash client-side with a fresh salt so the new password never crosses
-        // the (plaintext-HTTP) wire; the server stores salt + hash verbatim.
-        const salt = randHex(16);
-        body.pw_salt = salt;
-        body.pw_hash = sha256Hex(salt + ':' + pw);
-      }
-      const changedName = username !== s.username;
+    $('setSave').onclick = () => {
+      const m = $('setMsg');
+      const body = {
+        enabled: $('setEnabled').checked,
+        port: Number($('setPort').value),
+        entry_path: $('setEntry').value.trim() || '/',
+        https: $('setHttps').checked,
+      };
       api('/api/settings', { method: 'POST', body: JSON.stringify(body) })
-        .then(() => {
-          if (changedName) {
-            // Changing the login name invalidates the current session identity;
-            // sign out and back in under the new name.
-            m.className = 'err ok'; m.textContent = tr('set.relogin_hint');
-            setTimeout(() => logout(), 1400);
-          } else {
-            m.className = 'err ok'; m.textContent = tr('common.saved'); $('setPw').value = '';
-          }
-        })
+        .then((b) => { m.className = 'err ok'; m.textContent = tr('common.saved') + (b.needs_restart ? tr('common.restart_hint') : ''); })
         .catch((e) => { m.className = 'err'; m.textContent = e.message; });
     };
 

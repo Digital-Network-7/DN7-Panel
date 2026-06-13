@@ -6,9 +6,10 @@ use std::sync::Arc;
 use axum::{
     extract::{
         ws::{WebSocket, WebSocketUpgrade},
-        ConnectInfo, Query, State,
+        ConnectInfo, Query, Request, State,
     },
     http::{header, StatusCode},
+    middleware::Next,
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -50,6 +51,7 @@ pub fn spawn(cfg: PanelConfig) {
         return;
     }
     let port = s.port;
+    let https = s.https;
     let state: Shared = Arc::new(WebState {
         auth: AuthState::with_store(),
         settings: std::sync::Mutex::new(s),
@@ -57,13 +59,13 @@ pub fn spawn(cfg: PanelConfig) {
         cfg,
     });
     tokio::spawn(async move {
-        if let Err(e) = serve(state, port).await {
+        if let Err(e) = serve(state, port, https).await {
             tracing::warn!("web console exited: {e}");
         }
     });
 }
 
-async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
+async fn serve(state: Shared, port: u16, https: bool) -> anyhow::Result<()> {
     let app = Router::new()
         // Public (no auth): the login page + login endpoint.
         .route("/", get(index_page))
@@ -108,17 +110,108 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
         .route("/api/files/download", get(files_download))
         .route("/api/files/upload", post(files_upload))
         .route("/api/nginx/static-upload", post(nginx_static_upload))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            entry_gate,
+        ))
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(%addr, "web console listening");
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await?;
+    if https {
+        // Self-signed HTTPS via rustls (ring provider — musl-static friendly).
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let (cert_pem, key_pem) = ensure_panel_cert()?;
+        let tls = axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem, key_pem).await?;
+        tracing::info!(%addr, "web console listening (https)");
+        axum_server::bind_rustls(addr, tls)
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+            .await?;
+    } else {
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        tracing::info!(%addr, "web console listening");
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await?;
+    }
     Ok(())
+}
+
+/// Safe-entry gate: when a non-"/" entry path is configured, only requests that
+/// (a) carry a valid session token, (b) carry the matching `dn7_entry` cookie,
+/// or (c) hit the entry path itself are served; everything else gets a bare
+/// 404. Visiting the entry path returns the login page and sets the cookie, so
+/// the SPA's subsequent `/api` + `/ui` requests pass. Defends against scanners
+/// that don't know the secret path (obscurity layer, not a TLS replacement).
+async fn entry_gate(State(state): State<Shared>, req: Request, next: Next) -> Response {
+    let entry = state
+        .settings
+        .lock()
+        .map(|s| s.entry_path.clone())
+        .unwrap_or_else(|_| "/".to_string());
+    if entry == "/" || entry.is_empty() {
+        return next.run(req).await;
+    }
+    let token = entry.trim_start_matches('/').to_string();
+    let headers = req.headers();
+    let authed = bearer(headers)
+        .map(|t| state.auth.valid(&t))
+        .unwrap_or(false);
+    let cookie_ok = cookie_value(headers, "dn7_entry").as_deref() == Some(token.as_str());
+    if authed || cookie_ok {
+        return next.run(req).await;
+    }
+    if req.uri().path() == entry {
+        let mut resp = index_page().await.into_response();
+        if let Ok(v) =
+            format!("dn7_entry={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000").parse()
+        {
+            resp.headers_mut().append(header::SET_COOKIE, v);
+        }
+        return resp;
+    }
+    (StatusCode::NOT_FOUND, "Not Found").into_response()
+}
+
+/// Read a named cookie value from the request headers.
+fn cookie_value(headers: &header::HeaderMap, name: &str) -> Option<String> {
+    let raw = headers.get(header::COOKIE)?.to_str().ok()?;
+    let pfx = format!("{name}=");
+    raw.split(';')
+        .map(|p| p.trim())
+        .find_map(|p| p.strip_prefix(&pfx).map(|v| v.to_string()))
+}
+
+/// Load (or generate + persist) the panel's self-signed TLS cert/key as PEM.
+fn ensure_panel_cert() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    let dir = crate::paths::data_dir();
+    let crt = dir.join("panel-tls.crt");
+    let key = dir.join("panel-tls.key");
+    if let (Ok(c), Ok(k)) = (std::fs::read(&crt), std::fs::read(&key)) {
+        if !c.is_empty() && !k.is_empty() {
+            return Ok((c, k));
+        }
+    }
+    let host = sysinfo::System::host_name().unwrap_or_default();
+    let mut sans = vec!["localhost".to_string()];
+    if !host.is_empty() && host != "localhost" {
+        sans.push(host);
+    }
+    let params = rcgen::CertificateParams::new(sans)?;
+    let kp = rcgen::KeyPair::generate()?;
+    let cert = params.self_signed(&kp)?;
+    let cpem = cert.pem();
+    let kpem = kp.serialize_pem();
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(&crt, &cpem)?;
+    std::fs::write(&key, &kpem)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok((cpem.into_bytes(), kpem.into_bytes()))
 }
 
 // ---------------------------------------------------------------------------
@@ -553,6 +646,7 @@ async fn get_settings(State(state): State<Shared>, headers: header::HeaderMap) -
     Json(json!({
         "ok": true,
         "data": { "enabled": s.enabled, "port": s.port, "username": s.username, "pw_default": s.pw_default,
+                  "entry_path": s.entry_path, "https": s.https,
                   "must_setup": s.pw_default || s.username.eq_ignore_ascii_case("admin") }
     }))
     .into_response()
@@ -577,6 +671,12 @@ struct SettingsReq {
     pw_check: Option<String>,
     #[serde(default)]
     enabled: Option<bool>,
+    /// Safe-entry path ("/" disables it). Applied live (no restart).
+    #[serde(default)]
+    entry_path: Option<String>,
+    /// Serve over HTTPS (self-signed). Changing requires a restart.
+    #[serde(default)]
+    https: Option<bool>,
 }
 
 async fn put_settings(
@@ -642,6 +742,20 @@ async fn put_settings(
         if let Some(en) = req.enabled {
             if en != s.enabled {
                 s.enabled = en;
+                needs_restart = true;
+            }
+        }
+        // Safe-entry path — applied live (the gate reads it per request).
+        if let Some(ep) = &req.entry_path {
+            match settings::normalize_entry(ep) {
+                Some(norm) => s.entry_path = norm,
+                None => return api_err(StatusCode::BAD_REQUEST, "settings.bad_entry"),
+            }
+        }
+        // HTTPS toggle — needs a restart to rebind the listener.
+        if let Some(h) = req.https {
+            if h != s.https {
+                s.https = h;
                 needs_restart = true;
             }
         }

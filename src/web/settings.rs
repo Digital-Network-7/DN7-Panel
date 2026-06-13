@@ -53,14 +53,59 @@ pub struct WebSettings {
     pub totp_secret: String,
     #[serde(default)]
     pub totp_enabled: bool,
+    /// Secret "safe entry" path that must prefix the URL to reach the login page
+    /// (e.g. "/ab12cd"). "/" disables the gate. Generated random on first run.
+    #[serde(default = "default_entry")]
+    pub entry_path: String,
+    /// Serve the console over HTTPS with a self-signed cert (default off).
+    #[serde(default)]
+    pub https: bool,
 }
 
 fn default_username() -> String {
     "admin".to_string()
 }
 
+fn default_entry() -> String {
+    "/".to_string()
+}
+
 fn default_true() -> bool {
     true
+}
+
+/// A random 6-char lowercase-alnum safe-entry path ("/xxxxxx").
+pub fn gen_entry() -> String {
+    const CS: &[u8] = b"abcdefghijkmnpqrstuvwxyz23456789";
+    let mut rng = rand::thread_rng();
+    let tok: String = (0..6)
+        .map(|_| CS[rng.gen_range(0..CS.len())] as char)
+        .collect();
+    format!("/{tok}")
+}
+
+/// A random high TCP port (20000..=60000) for a fresh install.
+pub fn gen_port() -> u16 {
+    rand::thread_rng().gen_range(20000..=60000)
+}
+
+/// Validate/normalize a safe-entry path: "/" (disabled) or "/<token>" where the
+/// token is 1..=32 of [A-Za-z0-9_-] and not a reserved route. Returns the
+/// normalized "/<token>" (or "/"), or None if invalid.
+pub fn normalize_entry(s: &str) -> Option<String> {
+    let t = s.trim().trim_start_matches('/').trim_end_matches('/');
+    if t.is_empty() {
+        return Some("/".to_string());
+    }
+    if t.len() > 32
+        || !t
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        || matches!(t, "api" | "ui")
+    {
+        return None;
+    }
+    Some(format!("/{t}"))
 }
 
 /// `sha256_hex(salt ":" plain)` — the stored verifier / challenge secret.
@@ -142,7 +187,9 @@ pub fn load_or_init(default_enabled: bool, default_port: u16) -> (WebSettings, O
     let salt = gen_salt();
     let s = WebSettings {
         enabled: default_enabled,
-        port: default_port,
+        // Fresh install: a random high port + secret entry path (printed once in
+        // the banner). The provided default_port is only a fallback.
+        port: gen_port(),
         username: default_username(),
         pw_hash: hash_password(&salt, &pw),
         pw_salt: salt,
@@ -153,7 +200,10 @@ pub fn load_or_init(default_enabled: bool, default_port: u16) -> (WebSettings, O
         avatar: String::new(),
         totp_secret: String::new(),
         totp_enabled: false,
+        entry_path: gen_entry(),
+        https: false,
     };
+    let _ = default_port;
     if let Err(e) = save(&s) {
         tracing::warn!("could not persist web settings: {e}");
     }
@@ -205,6 +255,8 @@ mod tests {
             avatar: String::new(),
             totp_secret: String::new(),
             totp_enabled: false,
+            entry_path: "/".into(),
+            https: false,
         };
         let salt = "0123456789abcdef0123456789abcdef";
         s.set_password_hashed(salt, &hash_password(salt, "mySecret!42"));
@@ -233,6 +285,8 @@ mod tests {
             avatar: String::new(),
             totp_secret: String::new(),
             totp_enabled: false,
+            entry_path: "/".into(),
+            https: false,
         };
         let pw = s.reset();
         assert_eq!(s.username, "admin"); // account reset
