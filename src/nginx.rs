@@ -1182,6 +1182,50 @@ fn server_name_taken(server_name: &str, exclude_id: &str) -> bool {
         .any(|s| s.id != exclude_id && s.server_name == server_name)
 }
 
+/// Regenerate every managed site's conf from the *current* template and reload
+/// once. Called at panel startup so a config written by an older build (e.g.
+/// the legacy `http2 on;` directive that older nginx rejects) is healed
+/// automatically after an upgrade — instead of lingering and failing `nginx -t`
+/// for every subsequent operation. Best-effort: an SSL site whose cert file is
+/// missing is regenerated as plain HTTP so one broken site can't fail the whole
+/// `nginx -t`; per-site write errors (e.g. a container IP unresolvable while
+/// Docker is still starting) are logged and skipped.
+pub async fn resync_confs() {
+    if !is_setup() {
+        return;
+    }
+    let lo = match layout() {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    cleanup_orphan_confs(&lo);
+    let mut wrote = false;
+    for mut site in load_sites() {
+        if site.ssl {
+            let have = if site.cert_name.is_empty() {
+                lo.cert_store.join(format!("{}.crt", site.id)).exists()
+                    && lo.cert_store.join(format!("{}.key", site.id)).exists()
+            } else {
+                named_crt_file(&lo, &site.cert_name).exists()
+            };
+            if !have {
+                site.ssl = false; // degrade to HTTP so the regenerated conf stays valid
+            }
+        }
+        match write_site_conf(&lo, &site, &[]).await {
+            Ok(()) => wrote = true,
+            Err(e) => tracing::warn!(site = %site.server_name, "resync conf failed: {e}"),
+        }
+    }
+    if wrote {
+        if let Err(e) = validate_and_reload(&lo).await {
+            tracing::warn!("nginx conf resync reload failed: {e}");
+        } else {
+            tracing::info!("nginx site confs resynced to current template");
+        }
+    }
+}
+
 /// Add a site. For SSL with Let's Encrypt, issuance runs detached (returns an
 /// op_id); otherwise the site is generated + validated synchronously.
 async fn add_site(req: &Req) -> Result<Value> {

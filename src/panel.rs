@@ -29,6 +29,12 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     // task; no-op when disabled in settings.
     crate::web::spawn(cfg.clone());
 
+    // Heal any site configs written by an older build (e.g. the legacy
+    // `http2 on;` directive) by regenerating them from the current template.
+    tokio::spawn(async {
+        crate::nginx::resync_confs().await;
+    });
+
     // Background self-update checker (GitHub + dn7.cn). Applies automatically
     // only when auto-update is enabled in settings; otherwise just keeps the
     // "update available" hint warm.
