@@ -56,6 +56,10 @@ struct Req {
     #[serde(default)]
     root: Option<String>, // static (subdir name)
     #[serde(default)]
+    local_root: Option<String>, // static (existing absolute host dir)
+    #[serde(default)]
+    path: Option<String>, // list_dirs: directory to enumerate
+    #[serde(default)]
     ssl: Option<bool>,
     #[serde(default)]
     cert_mode: Option<String>, // "self" | "le" | "manual"
@@ -123,6 +127,10 @@ struct Site {
     container_port: i64,
     #[serde(default)]
     root: String,
+    /// Static site served from an existing absolute host directory (instead of
+    /// the panel-managed `<www>/<root>` upload dir). Empty == upload mode.
+    #[serde(default)]
+    local_root: String,
     #[serde(default)]
     ssl: bool,
     #[serde(default)]
@@ -674,6 +682,7 @@ async fn handle(req: &Req) -> Result<Value> {
             Ok(json!({ "reloaded": true }))
         }
         "list_containers" => list_running_containers().await,
+        "list_dirs" => list_dirs(req).await,
         "list_ops" => Ok(ops_snapshot()),
         "op_log" => Ok(op_log(req.op_id.as_deref().unwrap_or(""))),
         "dismiss_op" => {
@@ -930,6 +939,35 @@ async fn list_running_containers() -> Result<Value> {
     Ok(json!({ "containers": items }))
 }
 
+/// List immediate subdirectories of an absolute host path (for the static-site
+/// "use existing directory" picker). Defaults to "/". Returns dirs only.
+async fn list_dirs(req: &Req) -> Result<Value> {
+    let raw = req.path.as_deref().map(str::trim).unwrap_or("/");
+    let base = if raw.is_empty() { "/" } else { raw };
+    let path = std::path::Path::new(base);
+    if !path.is_absolute() {
+        return Err(anyhow!("ERR_CODE:nginx.local_root_abs"));
+    }
+    let canon =
+        std::fs::canonicalize(path).map_err(|_| anyhow!("ERR_CODE:nginx.local_root_missing"))?;
+    let mut dirs: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&canon) {
+        for ent in rd.flatten() {
+            if ent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                if let Some(name) = ent.file_name().to_str() {
+                    if !name.starts_with('.') {
+                        dirs.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    dirs.sort();
+    let cur = canon.to_string_lossy().to_string();
+    let parent = canon.parent().map(|p| p.to_string_lossy().to_string());
+    Ok(json!({ "path": cur, "parent": parent, "dirs": dirs }))
+}
+
 // ---------------------------------------------------------------------------
 // Validation (no raw config; everything is form-driven and checked).
 // ---------------------------------------------------------------------------
@@ -1114,6 +1152,27 @@ fn conf_path(lo: &Layout, site_id: &str) -> std::path::PathBuf {
     lo.confd.join(format!("dn7-{site_id}.conf"))
 }
 
+/// Validate an existing absolute host directory to serve a static site from.
+/// Returns the canonicalized path. Rejects relative / non-existent / non-dir
+/// paths and a few system-critical roots.
+fn valid_local_root(p: &str) -> Result<String> {
+    let path = std::path::Path::new(p);
+    if !path.is_absolute() {
+        return Err(anyhow!("ERR_CODE:nginx.local_root_abs"));
+    }
+    let canon =
+        std::fs::canonicalize(path).map_err(|_| anyhow!("ERR_CODE:nginx.local_root_missing"))?;
+    if !canon.is_dir() {
+        return Err(anyhow!("ERR_CODE:nginx.local_root_not_dir"));
+    }
+    let s = canon.to_string_lossy().to_string();
+    const DENY: [&str; 6] = ["/", "/etc", "/root", "/proc", "/sys", "/boot"];
+    if DENY.iter().any(|d| s == *d) {
+        return Err(anyhow!("ERR_CODE:nginx.local_root_denied"));
+    }
+    Ok(s)
+}
+
 /// Build a site from the request, validating every field.
 fn site_from_req(req: &Req) -> Result<Site> {
     let server_name = req
@@ -1147,6 +1206,7 @@ fn site_from_req(req: &Req) -> Result<Site> {
         container: String::new(),
         container_port: 0,
         root: String::new(),
+        local_root: String::new(),
         ssl,
         cert_mode: cert_mode.clone(),
         cert_name: cert_name.clone(),
@@ -1195,16 +1255,28 @@ fn site_from_req(req: &Req) -> Result<Site> {
             site.container_port = port;
         }
         "static" => {
-            let r = req
-                .root
+            // Two sources: an existing absolute host directory (local_root), or
+            // a panel-managed upload dir under <www>/<root>.
+            let local = req
+                .local_root
                 .as_deref()
                 .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_static_dir"))?;
-            if !valid_root_segment(r) {
-                return Err(anyhow!("ERR_CODE:nginx.bad_static_dir_name"));
+                .filter(|s| !s.is_empty());
+            if let Some(p) = local {
+                let abs = valid_local_root(p)?;
+                site.local_root = abs;
+            } else {
+                let r = req
+                    .root
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_static_dir"))?;
+                if !valid_root_segment(r) {
+                    return Err(anyhow!("ERR_CODE:nginx.bad_static_dir_name"));
+                }
+                site.root = r.to_string();
             }
-            site.root = r.to_string();
         }
         _ => return Err(anyhow!("ERR_CODE:nginx.unknown_site_kind")),
     }
@@ -2475,7 +2547,11 @@ async fn render_location(lo: &Layout, site: &Site, strip_auth: bool) -> Result<S
             }
         }
         "static" => {
-            let root = format!("{}/{}", lo.www_ref, site.root);
+            let root = if site.local_root.is_empty() {
+                format!("{}/{}", lo.www_ref, site.root)
+            } else {
+                site.local_root.clone()
+            };
             out.push_str(&format!(
                 "    root {root};\n    index index.html index.htm;\n\n    location / {{\n        try_files $uri $uri/ =404;\n    }}\n"
             ));
@@ -3123,6 +3199,7 @@ mod tests {
             container: "app".into(),
             container_port: 3000,
             root: "site1".into(),
+            local_root: String::new(),
             ssl,
             cert_mode: "self".into(),
             cert_name: String::new(),

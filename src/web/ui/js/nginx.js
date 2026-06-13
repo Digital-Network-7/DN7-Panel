@@ -61,7 +61,7 @@ function ngHostsTab(v) {
     let h = `<table class="optable"><tr><th>${tr('ng.col_domain')}</th><th>${tr('ng.col_type')}</th><th>${tr('ng.col_target')}</th><th>${tr('ng.col_access')}</th><th>${tr('ng.col_ssl')}</th><th class="act">${tr('ng.col_actions')}</th></tr>`;
     sites.forEach((s) => {
       const sch = s.scheme === 'https' ? 'https://' : (s.kind === 'static' ? '' : 'http://');
-      let target = s.kind === 'proxy_host' ? esc(sch + s.target_url) : s.kind === 'proxy_container' ? esc(`${sch}${s.container}:${s.container_port}`) : esc('/' + s.root);
+      let target = s.kind === 'proxy_host' ? esc(sch + s.target_url) : s.kind === 'proxy_container' ? esc(`${sch}${s.container}:${s.container_port}`) : esc(s.local_root ? s.local_root : '/' + s.root);
       if (s.locations && s.locations.length) target += ` <span class="mut">${tr('ng.rules_count', { n: s.locations.length })}</span>`;
       const acc = s.access_id && accById[s.access_id] ? `<span class="chip">${esc(accById[s.access_id])}</span>` : `<span class="mut">${tr('ng.access_public')}</span>`;
       h += `<tr><td><b>${esc(s.server_name)}</b></td><td class="mut">${esc(kindLabel(s.kind))}</td><td class="mono" style="font-size:12px">${target}</td><td>${acc}</td><td>${sslLabel(s, modes)}</td><td class="act"><button class="btn sm sec" data-edit="${esc(s.id)}">${tr('ng.edit_site')}</button><button class="btn sm danger" data-rm="${esc(s.id)}">${tr('ng.delete')}</button></td></tr>`;
@@ -218,6 +218,10 @@ function ngAddSite(reload, site) {
     }).catch(() => {});
 
     const staticUpload = { mode: null, zip: null, files: [] };
+    // Static-site source: 'upload' (managed www subdir) or 'local' (existing
+    // host directory). `setStaticSource` is wired when the static fields render.
+    let staticSource = 'upload';
+    let setStaticSource = () => {};
 
     const kindFields = () => {
       const k = $('nsKind').value;
@@ -231,14 +235,35 @@ function ngAddSite(reload, site) {
         $('nsKindFields').innerHTML = `<div class="formgrid">${proto}<div><label class="lbl">${tr('ng.container')}</label><select id="nsCtn" class="field">${opts}</select></div><div><label class="lbl">${tr('ng.container_port')}</label><input id="nsCtnPort" class="field" type="number" placeholder="80" /></div></div>`;
       } else {
         $('nsKindFields').innerHTML = `
-          <label class="lbl">${tr('ng.static_dirname')}</label><input id="nsRoot" class="field" placeholder="mysite" style="margin-bottom:10px" />
-          <label class="lbl">${tr('ng.upload_content')}</label>
-          <div class="dropz" id="nsDrop"><b>${tr('ng.drop_a')}</b>${tr('ng.drop_b')}<br/><span style="font-size:11.5px">${editing ? tr('ng.drop_keep') : tr('ng.drop_sub')}</span></div>
-          <input type="file" id="nsZip" accept=".zip" class="hidden" />
-          <input type="file" id="nsDir" webkitdirectory multiple class="hidden" />
-          <div class="row" style="gap:8px;margin-top:8px"><button type="button" class="btn sm sec" id="nsPickZip">${tr('ng.pick_zip')}</button><button type="button" class="btn sm sec" id="nsPickDir">${tr('ng.pick_dir')}</button></div>
-          <div class="uplist" id="nsUpList"></div>`;
+          <label class="lbl">${tr('ng.static_source')}</label>
+          <div class="segbtns" id="nsSrc">
+            <button type="button" class="on" data-s="upload">${tr('ng.src_upload')}</button>
+            <button type="button" data-s="local">${tr('ng.src_local')}</button>
+          </div>
+          <div id="nsSrcUpload" style="margin-top:12px">
+            <label class="lbl">${tr('ng.static_dirname')}</label><input id="nsRoot" class="field" placeholder="mysite" style="margin-bottom:10px" />
+            <label class="lbl">${tr('ng.upload_content')}</label>
+            <div class="dropz" id="nsDrop"><b>${tr('ng.drop_a')}</b>${tr('ng.drop_b')}<br/><span style="font-size:11.5px">${editing ? tr('ng.drop_keep') : tr('ng.drop_sub')}</span></div>
+            <input type="file" id="nsZip" accept=".zip" class="hidden" />
+            <input type="file" id="nsDir" webkitdirectory multiple class="hidden" />
+            <div class="row" style="gap:8px;margin-top:8px"><button type="button" class="btn sm sec" id="nsPickZip">${tr('ng.pick_zip')}</button><button type="button" class="btn sm sec" id="nsPickDir">${tr('ng.pick_dir')}</button></div>
+            <div class="uplist" id="nsUpList"></div>
+          </div>
+          <div id="nsSrcLocal" class="hidden" style="margin-top:12px">
+            <label class="lbl">${tr('ng.local_dir')}</label>
+            <div class="row" style="gap:8px"><input id="nsLocalRoot" class="field" placeholder="/var/www/example" style="flex:1" readonly /><button type="button" class="btn sec sm" id="nsBrowse">${tr('ng.browse')}</button></div>
+            <p class="formnote" style="margin-top:6px">${tr('ng.local_dir_hint')}</p>
+          </div>`;
+        setStaticSource = (s) => {
+          staticSource = s;
+          $('nsSrc').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.s === s));
+          $('nsSrcUpload').classList.toggle('hidden', s !== 'upload');
+          $('nsSrcLocal').classList.toggle('hidden', s !== 'local');
+        };
+        $('nsSrc').querySelectorAll('button').forEach((b) => b.onclick = () => setStaticSource(b.dataset.s));
+        $('nsBrowse').onclick = () => ngDirPicker((p) => { $('nsLocalRoot').value = p; });
         wireStaticPickers();
+        setStaticSource(staticSource);
       }
     };
     const wireStaticPickers = () => {
@@ -268,7 +293,13 @@ function ngAddSite(reload, site) {
         }
         if ($('nsCtnPort')) $('nsCtnPort').value = site.container_port || '';
       } else if (site.kind === 'static' && $('nsRoot')) {
-        $('nsRoot').value = site.root || '';
+        if (site.local_root) {
+          setStaticSource('local');
+          if ($('nsLocalRoot')) $('nsLocalRoot').value = site.local_root;
+        } else {
+          setStaticSource('upload');
+          $('nsRoot').value = site.root || '';
+        }
       }
     };
 
@@ -352,7 +383,7 @@ function ngAddSite(reload, site) {
       if (!body.server_name) return toast(tr('ng.need_domain'), 'err');
       if (k === 'proxy_host') { body.scheme = $('nsScheme').value; const p = $('nsTarget').value.trim(); if (!p) return toast(tr('ng.need_host_port'), 'err'); body.target_url = /^\d+$/.test(p) ? '127.0.0.1:' + p : p; }
       else if (k === 'proxy_container') { body.scheme = $('nsScheme').value; body.container = $('nsCtn').value.trim(); body.container_port = Number($('nsCtnPort').value); if (!body.container) return toast(tr('ng.need_container'), 'err'); }
-      else { body.root = $('nsRoot').value.trim(); if (!body.root) return toast(tr('ng.need_static_dir'), 'err'); if (!editing && !staticUpload.mode) return toast(tr('ng.need_upload'), 'err'); }
+      else { if (staticSource === 'local') { const lr = ($('nsLocalRoot') ? $('nsLocalRoot').value.trim() : ''); if (!lr) return toast(tr('ng.need_local_dir'), 'err'); body.local_root = lr; } else { body.root = $('nsRoot').value.trim(); if (!body.root) return toast(tr('ng.need_static_dir'), 'err'); if (!editing && !staticUpload.mode) return toast(tr('ng.need_upload'), 'err'); } }
       if (body.ssl) {
         if (certMethod === 'self') {
           body.cert_mode = 'self';
@@ -370,7 +401,7 @@ function ngAddSite(reload, site) {
       const okMsg = editing ? tr('ng.site_updated') : tr('ng.site_created');
       $('nsGo').disabled = true; $('nsJob').classList.remove('hidden'); $('nsJob').innerHTML = `<div class="mut">${tr('ng.submitting')}</div>`;
       try {
-        if (k === 'static' && staticUpload.mode) { $('nsJob').innerHTML = `<div class="mut">${tr('ng.uploading')}</div>`; await uploadStatic(body.root, staticUpload); }
+        if (k === 'static' && staticSource === 'upload' && staticUpload.mode) { $('nsJob').innerHTML = `<div class="mut">${tr('ng.uploading')}</div>`; await uploadStatic(body.root, staticUpload); }
       } catch (e) { toast(tr('ng.upload_failed') + '：' + e.message, 'err'); $('nsJob').innerHTML = ''; $('nsGo').disabled = false; return; }
       op('nginx', body).then((r) => {
         if (r.op_id) renderJob($('nsJob'), 'nginx', r.op_id, '', { onDone: () => { toast(okMsg, 'ok'); close(); reload(); }, onError: () => { $('nsGo').disabled = false; } });
@@ -597,4 +628,33 @@ function ngSettingsTab(v) {
       op('nginx', bodyReq).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); $('ngDsSave').disabled = false; }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('ngDsSave').disabled = false; });
     };
   }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+}
+
+// Host directory picker (for static sites served from an existing directory).
+// Navigates the host filesystem via the nginx `list_dirs` op (admin-gated).
+function ngDirPicker(onPick) {
+  modal(tr('ng.pick_dir_title'), `
+    <div class="mono mut" id="dpPath" style="font-size:12px;margin-bottom:8px;word-break:break-all">/</div>
+    <div class="tablescroll" style="max-height:300px"><div id="dpList">${loading()}</div></div>
+    <div class="row" style="justify-content:space-between;margin-top:14px"><button class="btn sec" id="dpUp">${tr('ng.dir_up')}</button><button class="btn" id="dpSelect">${tr('ng.select_dir')}</button></div>`, (close) => {
+    let cur = '/';
+    let parent = null;
+    const load = (p) => {
+      $('dpList').innerHTML = loading();
+      op('nginx', { op: 'list_dirs', path: p }).then((d) => {
+        cur = d.path || '/';
+        parent = d.parent || null;
+        $('dpPath').textContent = cur;
+        const dirs = d.dirs || [];
+        $('dpList').innerHTML = dirs.length
+          ? dirs.map((n) => `<button type="button" class="dpitem" data-d="${esc(n)}"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>${esc(n)}</button>`).join('')
+          : `<div class="empty">${tr('ng.dir_empty')}</div>`;
+        $('dpList').querySelectorAll('[data-d]').forEach((b) => b.onclick = () => load((cur.endsWith('/') ? cur : cur + '/') + b.dataset.d));
+        $('dpUp').disabled = !parent;
+      }).catch((e) => { $('dpList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+    };
+    $('dpUp').onclick = () => { if (parent) load(parent); };
+    $('dpSelect').onclick = () => { onPick(cur); close(); };
+    load('/');
+  });
 }

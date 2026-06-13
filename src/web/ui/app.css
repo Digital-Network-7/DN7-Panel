@@ -510,3 +510,7 @@ table.kvtbl th { text-align:left; color:var(--mut); font-weight:500; }
 .pwline { display:inline-flex; align-items:center; gap:8px; line-height:1; }
 .kveye { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; padding:0; border:none; background:none; color:var(--mut); cursor:pointer; border-radius:6px; }
 .kveye:hover { color:var(--fg); background:var(--hov); }
+
+/* Host directory picker (static site "existing directory" source) */
+.dpitem { display:block; width:100%; text-align:left; background:none; border:none; border-bottom:1px solid var(--line); color:var(--fg); padding:9px 10px; cursor:pointer; font-size:13px; }
+.dpitem:hover { background:var(--hov); }
