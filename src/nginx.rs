@@ -2129,6 +2129,12 @@ fn default_behavior(g: &WebGlobal) -> String {
 /// Write the catch-all default-server conf (HTTP + HTTPS) per the saved
 /// settings, generating a self-signed default cert for the HTTPS listener.
 async fn write_default_conf(lo: &Layout, g: &WebGlobal) -> Result<()> {
+    // The distro nginx ships its own default vhost (e.g. Debian/Ubuntu
+    // `/etc/nginx/sites-enabled/default`) which ALSO marks `default_server` —
+    // two default servers on the same port make `nginx -t` fail with
+    // "a duplicate default server". Disable it so our catch-all can win.
+    disable_distro_default_site();
+
     let behavior = default_behavior(g);
     // Default cert for the 443 catch-all (so unmatched SNI doesn't fall through
     // to the first real site's certificate).
@@ -2139,14 +2145,35 @@ async fn write_default_conf(lo: &Layout, g: &WebGlobal) -> Result<()> {
     }
     let crt_ref = format!("{}/default.crt", lo.cert_ref);
     let key_ref = format!("{}/default.key", lo.cert_ref);
+    // Match the per-site 443 listen options (`ssl http2`) so nginx doesn't warn
+    // "protocol options redefined" for the shared :443 socket.
     let conf = format!(
         "server {{\n    listen 80 default_server;\n    server_name _;\n{behavior}}}\n\n\
-         server {{\n    listen 443 ssl default_server;\n    server_name _;\n\
+         server {{\n    listen 443 ssl http2 default_server;\n    server_name _;\n\
          \x20   ssl_certificate {crt_ref};\n    ssl_certificate_key {key_ref};\n{behavior}}}\n"
     );
     std::fs::create_dir_all(HOST_CONFD)?;
     std::fs::write(default_conf_path(), conf)?;
     Ok(())
+}
+
+/// Disable a distro's bundled default vhost (which carries its own
+/// `default_server`) by renaming it aside, so the panel's catch-all is the only
+/// default server. Reversible: the file is renamed, not deleted. Best-effort.
+fn disable_distro_default_site() {
+    for p in [
+        "/etc/nginx/sites-enabled/default",
+        "/etc/nginx/conf.d/default.conf",
+    ] {
+        let path = std::path::Path::new(p);
+        // symlink_metadata so we also catch (and move) a symlink, even dangling.
+        if path.symlink_metadata().is_ok() {
+            let aside = format!("{p}.dn7-disabled");
+            if std::fs::rename(path, &aside).is_ok() {
+                tracing::info!("disabled distro nginx default site: {p} -> {aside}");
+            }
+        }
+    }
 }
 
 /// Best-effort parse of a PEM cert's notAfter (expiry) as an ISO date string.

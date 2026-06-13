@@ -103,12 +103,12 @@ function ngAddSite(reload, site) {
         </select></div>
         <div class="full" id="nsKindFields"></div>
       </div>
+      <div style="margin-top:14px"><label class="lbl">${tr('ng.access_label')}</label><select id="nsAccess" class="field"><option value="">${tr('ng.access_public')}</option></select><p class="formnote" style="margin-top:6px">${tr('ng.access_hint')}</p></div>
       <div style="margin-top:8px">
         <label class="switch"><input type="checkbox" id="nsCache" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.sw_cache')}</b><span>${tr('ng.sw_cache_d')}</span></span></label>
         <label class="switch"><input type="checkbox" id="nsBlock" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.sw_block')}</b><span>${tr('ng.sw_block_d')}</span></span></label>
         <label class="switch"><input type="checkbox" id="nsWs" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.sw_ws')}</b><span>${tr('ng.sw_ws_d')}</span></span></label>
       </div>
-      <div style="margin-top:14px"><label class="lbl">${tr('ng.access_label')}</label><select id="nsAccess" class="field"><option value="">${tr('ng.access_public')}</option></select><p class="formnote" style="margin-top:6px">${tr('ng.access_hint')}</p></div>
     </div>
     <div class="ftab-pane" data-p="rules">
       <p class="mut" style="font-size:12.5px;margin:0 0 12px">${tr('ng.rules_intro')}</p>
@@ -574,20 +574,19 @@ function ngSettingsTab(v) {
   op('nginx', { op: 'get_settings' }).then((d) => {
     const ds = (d.default_site) || { mode: '404', redirect_url: '' };
     body.innerHTML = `
-      <div class="card" style="max-width:560px">
-        <h3>${tr('ng.default_site')}</h3>
-        <p class="mut" style="font-size:12.5px;margin:0 0 14px">${tr('ng.default_site_desc')}</p>
+      <div class="sechead" style="margin-top:0"><h3>${tr('ng.default_site')}</h3></div>
+      <p class="mut" style="font-size:12.5px;margin:0 0 16px;max-width:620px">${tr('ng.default_site_desc')}</p>
+      <div style="max-width:420px">
         <label class="lbl">${tr('ng.default_behavior')}</label>
-        <select id="ngDsMode" class="field" style="margin-bottom:12px">
+        <select id="ngDsMode" class="field" style="margin-bottom:14px">
           <option value="404">${tr('ng.ds_404')}</option>
           <option value="welcome">${tr('ng.ds_welcome')}</option>
           <option value="444">${tr('ng.ds_444')}</option>
           <option value="redirect">${tr('ng.ds_redirect')}</option>
         </select>
-        <div id="ngDsRedirectWrap" class="hidden"><label class="lbl">${tr('ng.ds_redirect_url')}</label><input id="ngDsUrl" class="field" placeholder="https://example.com" value="${esc(ds.redirect_url || '')}" style="margin-bottom:12px" /></div>
-        <button class="btn" id="ngDsSave">${tr('ng.save')}</button>
-        <div class="err ok" id="ngDsMsg" style="margin-top:10px"></div>
-      </div>`;
+        <div id="ngDsRedirectWrap" class="hidden"><label class="lbl">${tr('ng.ds_redirect_url')}</label><input id="ngDsUrl" class="field" placeholder="https://example.com" value="${esc(ds.redirect_url || '')}" style="margin-bottom:14px" /></div>
+      </div>
+      <div class="row" style="align-items:center;gap:12px"><button class="btn" id="ngDsSave">${tr('ng.save')}</button><span class="err ok" id="ngDsMsg"></span></div>`;
     $('ngDsMode').value = ds.mode || '404';
     const sync = () => $('ngDsRedirectWrap').classList.toggle('hidden', $('ngDsMode').value !== 'redirect');
     $('ngDsMode').onchange = sync; sync();
