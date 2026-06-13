@@ -26,7 +26,6 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -278,131 +277,17 @@ struct Location {
 }
 
 // ---------------------------------------------------------------------------
-// Detached operation registry (setup + cert issuance).
+// Detached operation registry (setup + cert issuance) — see `opreg` submodule.
 // ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-struct OpState {
-    kind: String,   // "setup" | "cert"
-    target: String, // mode (setup) or domain (cert)
-    status: String, // "running" | "done" | "error"
-    error: String,
-    lines: Vec<String>,
-}
-
-fn ops() -> &'static Mutex<HashMap<String, OpState>> {
-    static OPS: OnceLock<Mutex<HashMap<String, OpState>>> = OnceLock::new();
-    OPS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn new_op_id() -> String {
-    static N: AtomicU64 = AtomicU64::new(1);
-    format!("nop{}", N.fetch_add(1, Ordering::Relaxed))
-}
-
-fn op_create(op_id: &str, kind: &str, target: &str) {
-    if let Ok(mut m) = ops().lock() {
-        m.insert(
-            op_id.to_string(),
-            OpState {
-                kind: kind.to_string(),
-                target: target.to_string(),
-                status: "running".to_string(),
-                error: String::new(),
-                lines: Vec::new(),
-            },
-        );
-    }
-}
-
-/// Build a localizable progress line for the op log: a sentinel-delimited
-/// `MSG` record the web console maps to `msg.<code>` (positional `{0}`, `{1}`…
-/// args). An arg prefixed with `@` is itself a translation key resolved on the
-/// client. Plain command output is pushed verbatim and rendered as-is.
-fn pmsg(code: &str, args: &[&str]) -> String {
-    let mut s = format!("\u{1e}MSG\u{1e}{code}");
-    for a in args {
-        s.push('\u{1e}');
-        s.push_str(a);
-    }
-    s
-}
-
-fn op_push(op_id: &str, line: &str) {
-    if line.is_empty() {
-        return;
-    }
-    if let Ok(mut m) = ops().lock() {
-        if let Some(o) = m.get_mut(op_id) {
-            o.lines.push(line.to_string());
-            let len = o.lines.len();
-            if len > 400 {
-                o.lines.drain(0..len - 400);
-            }
-        }
-    }
-}
-
-fn op_finish(op_id: &str, status: &str, error: &str) {
-    if let Ok(mut m) = ops().lock() {
-        if let Some(o) = m.get_mut(op_id) {
-            o.status = status.to_string();
-            o.error = error.to_string();
-        }
-    }
-}
-
-/// Estimate 0..100 progress for the setup op (host nginx package install has no
-/// reliable percentage, so this is indeterminate). Returns -1 (indeterminate).
-fn pull_pct(_lines: &[String], _status: &str) -> i64 {
-    -1
-}
-
-fn ops_snapshot() -> Value {
-    let m = match ops().lock() {
-        Ok(m) => m,
-        Err(_) => return json!({ "ops": [] }),
-    };
-    let list: Vec<Value> = m
-        .iter()
-        .map(|(id, o)| {
-            json!({
-                "op_id": id,
-                "kind": o.kind,
-                "target": o.target,
-                "status": o.status,
-                "error": o.error,
-                "pct": pull_pct(&o.lines, &o.status),
-                "last_line": o.lines.last().cloned().unwrap_or_default(),
-            })
-        })
-        .collect();
-    json!({ "ops": list })
-}
-
-fn op_log(op_id: &str) -> Value {
-    let m = match ops().lock() {
-        Ok(m) => m,
-        Err(_) => return json!({ "lines": [], "status": "error", "error": "lock" }),
-    };
-    match m.get(op_id) {
-        Some(o) => json!({
-            "lines": o.lines,
-            "status": o.status,
-            "error": o.error,
-            "kind": o.kind,
-            "target": o.target,
-            "pct": pull_pct(&o.lines, &o.status),
-        }),
-        None => json!({ "lines": [], "status": "gone", "error": "" }),
-    }
-}
-
-fn op_dismiss(op_id: &str) {
-    if let Ok(mut m) = ops().lock() {
-        m.remove(op_id);
-    }
-}
+mod opreg;
+use opreg::{new_op_id, op_create, op_dismiss, op_finish, op_log, op_push, ops_snapshot, pmsg};
+mod certparse;
+mod validate;
+use validate::{
+    norm_scheme, primary_host, valid_access_name, valid_auth_username, valid_cert_name,
+    valid_client_address, valid_container_name, valid_host_token, valid_location_path, valid_port,
+    valid_redirect_url, valid_root_segment, valid_server_name,
+};
 
 // ---------------------------------------------------------------------------
 // State directory layout (persisted under the panel runtime dir).
@@ -495,17 +380,6 @@ fn save_named_certs(certs: &[NamedCert]) -> Result<()> {
     Ok(())
 }
 
-/// A cert name: a single filesystem-safe token (letters/digits/_-.), 1..=64.
-fn valid_cert_name(s: &str) -> bool {
-    let s = s.trim();
-    !s.is_empty()
-        && s.len() <= 64
-        && s != "."
-        && s != ".."
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-}
-
 fn named_crt_file(lo: &Layout, name: &str) -> std::path::PathBuf {
     lo.cert_store.join(format!("cert-{name}.crt"))
 }
@@ -558,33 +432,7 @@ fn new_access_id() -> String {
     format!("al{:08x}", rand::random::<u32>())
 }
 
-/// Validate an access-list display name (1..=64, no control chars / quotes).
-fn valid_access_name(s: &str) -> bool {
-    let s = s.trim();
-    !s.is_empty()
-        && s.chars().count() <= 64
-        && !s.chars().any(|c| c.is_control() || c == '"' || c == '\\')
-}
-
-/// Validate a basic-auth username (no ':' — the htpasswd field separator).
-fn valid_auth_username(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 64
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '@'))
-}
-
-/// Validate a client address for allow/deny: "all", or an IPv4/IPv6/CIDR token.
-fn valid_client_address(s: &str) -> bool {
-    let s = s.trim();
-    if s.eq_ignore_ascii_case("all") {
-        return true;
-    }
-    !s.is_empty()
-        && s.len() <= 64
-        && s.chars()
-            .all(|c| c.is_ascii_hexdigit() || matches!(c, '.' | ':' | '/'))
-}
+// Access-list validators live in the `validate` submodule.
 
 /// Compute a strong, salted password hash for nginx HTTP Basic Auth: bcrypt
 /// (`$2b$…`), which the host nginx verifies via `crypt()`. Salted and
@@ -1086,64 +934,8 @@ async fn list_running_containers() -> Result<Value> {
 // Validation (no raw config; everything is form-driven and checked).
 // ---------------------------------------------------------------------------
 
-/// A server_name: one or more space-free hostnames (letters/digits/.-/* and _).
-/// Wildcards (`*.example.com`) and `_` (catch-all) are allowed.
-fn valid_server_name(s: &str) -> bool {
-    let s = s.trim();
-    if s.is_empty() || s.len() > 255 {
-        return false;
-    }
-    s.split_whitespace().all(|h| {
-        !h.is_empty()
-            && h.len() <= 253
-            && h.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '*' | '_'))
-    })
-}
-
-/// The first hostname of a server_name (used for cert CN / acme domain).
-fn primary_host(server_name: &str) -> String {
-    server_name
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_string()
-}
-
-/// A proxy target host[:port] or container name — no scheme, no path, no shell
-/// metacharacters. We build the final `http://host:port` ourselves.
-fn valid_host_token(s: &str) -> bool {
-    let s = s.trim();
-    !s.is_empty()
-        && s.len() <= 255
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':'))
-}
-
-/// A container name (docker's own charset).
-fn valid_container_name(s: &str) -> bool {
-    let s = s.trim();
-    !s.is_empty()
-        && s.len() <= 128
-        && !s.starts_with('-')
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
-}
-
-/// A static webroot subdirectory name (single path segment, no separators).
-fn valid_root_segment(s: &str) -> bool {
-    let s = s.trim();
-    !s.is_empty()
-        && s.len() <= 64
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-        && s != "."
-        && s != ".."
-}
-
-fn valid_port(p: i64) -> bool {
-    (1..=65535).contains(&p)
-}
+// Validators (valid_server_name, primary_host, valid_host_token, …) live in
+// the `validate` submodule.
 
 // ---------------------------------------------------------------------------
 // Setup: install host nginx OR create the docker nginx container. Detached.
@@ -1152,12 +944,8 @@ fn valid_port(p: i64) -> bool {
 fn start_setup(req: &Req) -> Result<Value> {
     let _ = req;
     const SETUP_OP: &str = "setup";
-    if let Ok(m) = ops().lock() {
-        if let Some(o) = m.get(SETUP_OP) {
-            if o.status == "running" {
-                return Ok(json!({ "op_id": SETUP_OP, "already_running": true }));
-            }
-        }
+    if opreg::op_running(SETUP_OP) {
+        return Ok(json!({ "op_id": SETUP_OP, "already_running": true }));
     }
     if !is_root() {
         return Err(anyhow!("ERR_CODE:nginx.need_root"));
@@ -1448,25 +1236,6 @@ fn site_from_req(req: &Req) -> Result<Site> {
         return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
     }
     Ok(site)
-}
-
-/// Normalize an upstream scheme to "http" or "https" (default http).
-fn norm_scheme(s: Option<&str>) -> String {
-    match s.map(str::trim) {
-        Some("https") => "https".to_string(),
-        _ => "http".to_string(),
-    }
-}
-
-/// A location prefix: starts with '/', no spaces or shell metacharacters, and
-/// stays within a sane length. We embed it literally into a `location` block.
-fn valid_location_path(s: &str) -> bool {
-    let s = s.trim();
-    s.starts_with('/')
-        && s.len() <= 200
-        && s.chars().all(|c| {
-            c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '~' | ':' | '@')
-        })
 }
 
 /// Validate + normalize a list of custom path rules.
@@ -2342,15 +2111,7 @@ async fn set_default_site(req: &Req) -> Result<Value> {
     Ok(json!({ "ok": true }))
 }
 
-/// Validate a redirect target URL (http/https, no quotes/whitespace/newlines).
-fn valid_redirect_url(s: &str) -> bool {
-    (s.starts_with("http://") || s.starts_with("https://"))
-        && s.len() <= 2048
-        && !s
-            .chars()
-            .any(|c| c.is_whitespace() || c == '"' || c == '\\')
-}
-
+// `valid_redirect_url` lives in the `validate` submodule.
 fn default_conf_path() -> std::path::PathBuf {
     std::path::Path::new(HOST_CONFD).join("00-dn7-default.conf")
 }
@@ -2389,90 +2150,9 @@ async fn write_default_conf(lo: &Layout, g: &WebGlobal) -> Result<()> {
 }
 
 /// Best-effort parse of a PEM cert's notAfter (expiry) as an ISO date string.
-/// Uses rcgen's dependency `x509-parser`-free approach: we only have rcgen +
-/// instant-acme, so parse the ASN.1 validity minimally. Returns "" on failure.
+/// Implemented in the `certparse` submodule (minimal ASN.1 walk).
 fn cert_not_after(pem: &str) -> Option<String> {
-    // Decode the first CERTIFICATE block's DER.
-    let der = pem_first_cert_der(pem)?;
-    parse_not_after(&der)
-}
-
-/// Extract DER bytes of the first PEM "CERTIFICATE" block.
-fn pem_first_cert_der(pem: &str) -> Option<Vec<u8>> {
-    let begin = "-----BEGIN CERTIFICATE-----";
-    let end = "-----END CERTIFICATE-----";
-    let start = pem.find(begin)? + begin.len();
-    let stop = pem[start..].find(end)? + start;
-    let b64: String = pem[start..stop].split_whitespace().collect();
-    base64_decode(&b64)
-}
-
-/// Minimal base64 decoder (standard alphabet) for the cert body.
-fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    fn val(c: u8) -> Option<u8> {
-        match c {
-            b'A'..=b'Z' => Some(c - b'A'),
-            b'a'..=b'z' => Some(c - b'a' + 26),
-            b'0'..=b'9' => Some(c - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    }
-    let mut out = Vec::new();
-    let mut buf = 0u32;
-    let mut bits = 0;
-    for &c in s.as_bytes() {
-        if c == b'=' {
-            break;
-        }
-        let v = val(c)?;
-        buf = (buf << 6) | v as u32;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((buf >> bits) as u8);
-        }
-    }
-    Some(out)
-}
-
-/// Walk the DER of an X.509 cert to the Validity.notAfter time and format it as
-/// "YYYY-MM-DD". Best-effort; returns None if the structure isn't as expected.
-fn parse_not_after(der: &[u8]) -> Option<String> {
-    // Find the first UTCTime (0x17) or GeneralizedTime (0x18) that looks like a
-    // validity date. The Validity sequence holds notBefore then notAfter, so we
-    // take the SECOND such time value.
-    let mut times = Vec::new();
-    let mut i = 0;
-    while i + 2 < der.len() {
-        let tag = der[i];
-        if tag == 0x17 || tag == 0x18 {
-            let len = der[i + 1] as usize;
-            if len > 0 && len < 40 && i + 2 + len <= der.len() {
-                if let Ok(s) = std::str::from_utf8(&der[i + 2..i + 2 + len]) {
-                    times.push((tag, s.to_string()));
-                }
-                i += 2 + len;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    let (tag, val) = times.get(1).or_else(|| times.first())?;
-    // UTCTime: YYMMDDHHMMSSZ ; GeneralizedTime: YYYYMMDDHHMMSSZ
-    let (yyyy, rest) = if *tag == 0x17 {
-        // YY -> 20YY (certs are well past 2000).
-        let yy: i32 = val.get(0..2)?.parse().ok()?;
-        let full = if yy < 50 { 2000 + yy } else { 1900 + yy };
-        (full, &val[2..])
-    } else {
-        let y: i32 = val.get(0..4)?.parse().ok()?;
-        (y, &val[4..])
-    };
-    let mm = rest.get(0..2)?;
-    let dd = rest.get(2..4)?;
-    Some(format!("{yyyy}-{mm}-{dd}"))
+    certparse::cert_not_after(pem)
 }
 
 /// Reload nginx (`nginx -s reload`).
