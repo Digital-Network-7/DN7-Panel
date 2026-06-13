@@ -22,7 +22,7 @@ const IC = {
 const TABS = [
   { key: 'dash', tkey: 'tab.dash', ic: IC.dash },
   { key: 'term', tkey: 'tab.term', ic: IC.term },
-  { key: 'docker', label: 'Docker', ic: IC.docker, admin: true },
+  { key: 'docker', tkey: 'tab.docker', ic: IC.docker, admin: true },
   { key: 'nginx', tkey: 'tab.website', ic: IC.nginx, admin: true },
   { key: 'mysql', tkey: 'tab.databases', ic: IC.mysql, admin: true },
   { key: 'files', tkey: 'tab.files', ic: IC.files },
