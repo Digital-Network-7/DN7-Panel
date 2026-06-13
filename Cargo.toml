@@ -34,6 +34,9 @@ instant-acme = "0.7"
 # Async traits / stream helpers used by the docker + acme integrations.
 futures = "0.3"
 bytes = "1"
+# Stream adapters: wrap an AsyncRead as a Stream for chunked HTTP download
+# responses (no full-file buffering). Pure Rust, musl-safe.
+tokio-util = { version = "0.7", features = ["io"] }
 # Local web management console: in-process HTTP server (axum). Pure Rust, musl-safe.
 axum = { version = "0.7", features = ["ws"] }
 # Embed the split web-console assets (css/js modules) into the binary at compile

@@ -521,6 +521,7 @@ dependencies = [
  "sysinfo",
  "tar",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "zip",

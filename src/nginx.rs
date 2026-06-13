@@ -421,13 +421,14 @@ fn named_key_file(lo: &Layout, name: &str) -> std::path::PathBuf {
 /// Public entrypoint for the web console's static-site upload. `mode` is "zip"
 /// (extract `body` as a ZIP archive) or "file" (write `body` as a single file
 /// at `rel` within the webroot). `clear` wipes the webroot first. Returns the
-/// number of files written.
+/// number of files written. `temp` is a host temp file holding the streamed
+/// upload body (never buffered fully in memory).
 pub async fn web_static_upload(
     root: &str,
     mode: &str,
     rel: Option<&str>,
     clear: bool,
-    body: &[u8],
+    temp: &std::path::Path,
 ) -> Result<usize> {
     let lo = layout()?;
     if !valid_root_segment(root) {
@@ -449,7 +450,10 @@ pub async fn web_static_upload(
         }
     }
     match mode {
-        "zip" => extract_zip(body, &dest),
+        "zip" => {
+            let f = std::fs::File::open(temp)?;
+            extract_zip_from(f, &dest)
+        }
         "file" => {
             let rel = rel.ok_or_else(|| anyhow!("ERR_CODE:nginx.missing_file_path"))?;
             let safe = sanitize_rel(rel).ok_or_else(|| anyhow!("ERR_CODE:nginx.bad_file_path"))?;
@@ -457,7 +461,7 @@ pub async fn web_static_upload(
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&target, body)?;
+            std::fs::copy(temp, &target)?; // streamed copy, bounded memory
             Ok(1)
         }
         _ => Err(anyhow!("ERR_CODE:nginx.unknown_upload_mode")),
@@ -493,8 +497,10 @@ fn sanitize_rel(rel: &str) -> Option<std::path::PathBuf> {
 
 /// Extract a ZIP archive (pure-Rust `zip` crate) into `dest`, guarding against
 /// path traversal. Returns the number of files written.
-fn extract_zip(body: &[u8], dest: &std::path::Path) -> Result<usize> {
-    let reader = std::io::Cursor::new(body);
+fn extract_zip_from<R: std::io::Read + std::io::Seek>(
+    reader: R,
+    dest: &std::path::Path,
+) -> Result<usize> {
     let mut zip = zip::ZipArchive::new(reader).map_err(|e| anyhow!("无法读取 ZIP：{e}"))?;
     let mut count = 0usize;
     for i in 0..zip.len() {

@@ -9,6 +9,9 @@
 //! CPU% needs two samples spaced by a short interval, so a `list` request
 //! refreshes the process CPU usage, waits briefly, refreshes again, then reads.
 
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+
 use serde::Serialize;
 use serde_json::{json, Value};
 use sysinfo::System;
@@ -29,27 +32,83 @@ struct ProcRow {
     time: i64,
 }
 
-/// Public entrypoint for the local web console: a one-shot process snapshot.
-pub async fn web_snapshot(limit: usize) -> Value {
-    let mut sys = System::new();
-    snapshot(&mut sys, limit.clamp(1, 50)).await
+/// Background-sampled snapshot (Top-50 by CPU and by memory + total memory).
+/// Requests read the most recent sample instead of scanning the whole process
+/// table (twice, with a 400ms delay) on every call.
+#[derive(Default, Clone)]
+struct Cached {
+    ready: bool,
+    total_mem: u64,
+    by_cpu: Vec<ProcRow>,
+    by_mem: Vec<ProcRow>,
 }
 
-/// Take a process snapshot: refresh CPU twice (so CPU% is meaningful), then
-/// return the union of the Top-`limit` by CPU and Top-`limit` by memory, each
-/// list pre-sorted, plus the host's total memory for percentage display.
-async fn snapshot(sys: &mut System, limit: usize) -> Value {
-    // First CPU sample.
+const CACHE_TOP: usize = 50;
+/// How often the background sampler refreshes the process table (also the CPU%
+/// averaging window, since a persistent `System` handle accumulates the delta).
+const SAMPLE_INTERVAL: Duration = Duration::from_secs(3);
+
+fn cache() -> &'static Mutex<Cached> {
+    static CACHE: OnceLock<Mutex<Cached>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(Cached::default()))
+}
+
+/// Start the background sampler once. It owns a persistent `System` handle and
+/// refreshes it on an interval, storing each computed snapshot in the cache —
+/// so request handlers never scan the process table or sleep.
+fn ensure_sampler() {
+    static STARTED: OnceLock<()> = OnceLock::new();
+    STARTED.get_or_init(|| {
+        tokio::spawn(async {
+            let mut sys = System::new();
+            // Prime the CPU baseline; the next refresh yields a real delta.
+            sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+            sys.refresh_cpu_usage();
+            loop {
+                tokio::time::sleep(SAMPLE_INTERVAL).await;
+                sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
+                sys.refresh_cpu_usage();
+                sys.refresh_memory();
+                let snap = compute(&sys, CACHE_TOP);
+                *cache().lock().unwrap() = snap;
+            }
+        });
+    });
+}
+
+/// Public entrypoint for the local web console: return the latest background
+/// sample (Top-`limit`). On the very first call before the sampler has produced
+/// a sample, falls back to a single one-shot snapshot so the response isn't
+/// empty; thereafter all calls are served instantly from the cache.
+pub async fn web_snapshot(limit: usize) -> Value {
+    ensure_sampler();
+    let lim = limit.clamp(1, CACHE_TOP);
+    {
+        let c = cache().lock().unwrap();
+        if c.ready {
+            return json!({
+                "total_mem": c.total_mem,
+                "by_cpu": c.by_cpu.iter().take(lim).collect::<Vec<_>>(),
+                "by_mem": c.by_mem.iter().take(lim).collect::<Vec<_>>(),
+            });
+        }
+    }
+    // Cold start: one-shot snapshot (the only path that pays the sampling cost).
+    let mut sys = System::new();
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
     sys.refresh_cpu_usage();
-    // Brief wait so the second sample yields a real CPU delta.
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All);
     sys.refresh_cpu_usage();
     sys.refresh_memory();
+    let c = compute(&sys, lim);
+    json!({ "total_mem": c.total_mem, "by_cpu": c.by_cpu, "by_mem": c.by_mem })
+}
 
+/// Build the Top-`limit` by-CPU and by-memory rankings from an already-refreshed
+/// `System` handle (no sleeping, no extra scan).
+fn compute(sys: &System, limit: usize) -> Cached {
     let total_mem = sys.total_memory();
-
     // Resolve uid -> name once (rebuilding the user DB per row is expensive).
     let users = sysinfo::Users::new_with_refreshed_list();
 
@@ -57,9 +116,7 @@ async fn snapshot(sys: &mut System, limit: usize) -> Value {
         .processes()
         .values()
         // Exclude threads: on Linux sysinfo lists a process's threads as
-        // separate entries with the SAME name and (near) identical cpu/mem,
-        // which is what produced the "duplicate" rows. Keep only real
-        // processes (thread_kind() == None).
+        // separate entries with the SAME name and (near) identical cpu/mem.
         .filter(|p| p.thread_kind().is_none())
         .map(|p| ProcRow {
             pid: p.pid().as_u32(),
@@ -79,7 +136,6 @@ async fn snapshot(sys: &mut System, limit: usize) -> Value {
         })
         .collect();
 
-    // Top by CPU.
     rows.sort_by(|a, b| {
         b.cpu
             .partial_cmp(&a.cpu)
@@ -87,15 +143,15 @@ async fn snapshot(sys: &mut System, limit: usize) -> Value {
     });
     let by_cpu: Vec<ProcRow> = rows.iter().take(limit).cloned().collect();
 
-    // Top by memory.
     rows.sort_by(|a, b| b.mem.cmp(&a.mem));
     let by_mem: Vec<ProcRow> = rows.iter().take(limit).cloned().collect();
 
-    json!({
-        "total_mem": total_mem,
-        "by_cpu": by_cpu,
-        "by_mem": by_mem,
-    })
+    Cached {
+        ready: true,
+        total_mem,
+        by_cpu,
+        by_mem,
+    }
 }
 
 /// A readable process name: prefer the executable/command name; fall back to

@@ -6,8 +6,13 @@
 //! `web::server`; there is no backend relay.
 
 use std::path::Path;
+use std::pin::Pin;
 
 use anyhow::{anyhow, Result};
+use bytes::Bytes;
+
+/// A chunked byte stream used for streaming downloads (no full-file buffering).
+pub type ByteStream = Pin<Box<dyn futures::Stream<Item = std::io::Result<Bytes>> + Send>>;
 
 /// Chunk size for streaming file content (256 KiB).
 const CHUNK: usize = 256 * 1024;
@@ -177,6 +182,12 @@ fn unique_suffix() -> String {
     static N: AtomicU64 = AtomicU64::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
     format!("{}-{}", std::process::id(), n)
+}
+
+/// A unique temp-file path for staging a streamed upload before it's written to
+/// its final destination (host file / container archive).
+pub fn temp_upload_path() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("dn7-up-{}", unique_suffix()))
 }
 
 /// Run `sh -c '<script>' sh "<arg>"` inside the container via the daemon exec
@@ -504,44 +515,80 @@ pub async fn web_host_delete(path: &str, as_user: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Read a whole host file → (file name, bytes). Refuses directories. Runs as
-/// `as_user` when set.
-pub async fn web_host_read(path: &str, as_user: Option<&str>) -> Result<(String, Vec<u8>)> {
+/// Open a host file for **streaming** download → (file name, byte stream).
+/// Refuses directories. When `as_user` is set the read runs as that system
+/// user (a `su` child whose stdout is streamed; OS perms enforced).
+pub async fn web_host_read_stream(
+    path: &str,
+    as_user: Option<&str>,
+) -> Result<(String, ByteStream)> {
     let name = Path::new(path)
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "download".to_string());
     if let Some(u) = as_user {
+        use std::process::Stdio;
         check_abs(path)?;
-        let (code, out) = run_as_user(u, "[ -f \"$1\" ] && cat -- \"$1\"", path, None).await?;
-        if code != 0 {
-            return Err(anyhow!("文件不存在或无权限"));
-        }
-        return Ok((name, out));
+        let mut child = tokio::process::Command::new("su")
+            .args([
+                "-s",
+                "/bin/sh",
+                "-c",
+                "[ -f \"$1\" ] || exit 9; exec cat -- \"$1\"",
+                u,
+                "sh",
+                path,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| anyhow!("无法以用户身份读取：{e}"))?;
+        let stdout = child.stdout.take().ok_or_else(|| anyhow!("无法读取文件"))?;
+        // Reap the child once its stdout is drained (avoids a zombie).
+        tokio::spawn(async move {
+            let _ = child.wait().await;
+        });
+        return Ok((name, Box::pin(tokio_util::io::ReaderStream::new(stdout))));
     }
     let md = tokio::fs::metadata(path).await?;
     if md.is_dir() {
         return Err(anyhow!("不能下载目录"));
     }
-    let bytes = tokio::fs::read(path).await?;
-    Ok((name, bytes))
+    let file = tokio::fs::File::open(path).await?;
+    Ok((name, Box::pin(tokio_util::io::ReaderStream::new(file))))
 }
 
-/// Write bytes to a host file (overwrite/create). Runs as `as_user` when set.
-pub async fn web_host_write(path: &str, bytes: &[u8], as_user: Option<&str>) -> Result<()> {
-    if path.trim().is_empty() {
+/// Write an already-staged temp file to a host destination, **streaming** the
+/// bytes (never holding the whole file in memory). Runs as `as_user` when set.
+pub async fn web_host_write_file(dest: &str, temp: &Path, as_user: Option<&str>) -> Result<()> {
+    if dest.trim().is_empty() {
         return Err(anyhow!("路径不能为空"));
     }
     if let Some(u) = as_user {
-        check_abs(path)?;
-        let (code, _) = run_as_user(u, "cat > \"$1\"", path, Some(bytes)).await?;
-        return if code == 0 {
+        use std::process::Stdio;
+        use tokio::io::AsyncWriteExt;
+        check_abs(dest)?;
+        let mut child = tokio::process::Command::new("su")
+            .args(["-s", "/bin/sh", "-c", "cat > \"$1\"", u, "sh", dest])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| anyhow!("无法以用户身份写入：{e}"))?;
+        if let Some(mut si) = child.stdin.take() {
+            let mut f = tokio::fs::File::open(temp).await?;
+            let _ = tokio::io::copy(&mut f, &mut si).await; // streamed, chunked
+            let _ = si.shutdown().await;
+        }
+        let out = child.wait_with_output().await.map_err(|e| anyhow!("{e}"))?;
+        return if out.status.success() {
             Ok(())
         } else {
             Err(anyhow!("写入失败（无权限？）"))
         };
     }
-    tokio::fs::write(path, bytes).await?;
+    tokio::fs::copy(temp, dest).await?; // chunked copy, bounded memory
     Ok(())
 }
 
@@ -611,9 +658,11 @@ pub async fn web_ctn_delete(container: &str, path: &str) -> Result<()> {
     ctn_exec_ok(container, "rm -rf \"$1\"", path).await
 }
 
-/// Read a whole file out of a container → (file name, bytes), via the archive
-/// (tar) API. Buffers the file in memory (web console transfers are modest).
-pub async fn web_ctn_read(container: &str, path: &str) -> Result<(String, Vec<u8>)> {
+/// Open a file in a container for **streaming** download → (file name, byte
+/// stream), via the archive (tar) API. The tar header is parsed up front (to
+/// learn the name + size), then content bytes are forwarded chunk-by-chunk as
+/// they arrive — never buffering the whole file.
+pub async fn web_ctn_read_stream(container: &str, path: &str) -> Result<(String, ByteStream)> {
     use futures::StreamExt;
 
     if !valid_container_ref(container) {
@@ -626,20 +675,18 @@ pub async fn web_ctn_read(container: &str, path: &str) -> Result<(String, Vec<u8
     };
     let mut stream = dkr.download_from_container(container, Some(opts));
 
+    // Read just enough leading bytes to parse the 512-byte tar header.
     let mut header: Vec<u8> = Vec::with_capacity(512);
-    let mut begun = false;
-    let mut remaining: u64 = 0;
+    let mut leftover: Bytes = Bytes::new();
     let mut name = String::from("download");
-    let mut content: Vec<u8> = Vec::new();
-
+    let mut remaining: u64 = 0;
+    let mut begun = false;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| anyhow!(friendly_archive_err(&e)))?;
-        let mut data: &[u8] = &chunk;
-        if !begun {
+        if header.len() < 512 {
             let need = 512 - header.len();
-            let take = need.min(data.len());
-            header.extend_from_slice(&data[..take]);
-            data = &data[take..];
+            let take = need.min(chunk.len());
+            header.extend_from_slice(&chunk[..take]);
             if header.len() < 512 {
                 continue;
             }
@@ -651,34 +698,54 @@ pub async fn web_ctn_read(container: &str, path: &str) -> Result<(String, Vec<u8
             name = n;
             remaining = size;
             begun = true;
-        }
-        if remaining > 0 && !data.is_empty() {
-            let content_len = (remaining as usize).min(data.len());
-            content.extend_from_slice(&data[..content_len]);
-            remaining -= content_len as u64;
-        }
-        if begun && remaining == 0 {
+            leftover = chunk.slice(take..); // content bytes already in this chunk
             break;
         }
     }
     if !begun {
         return Err(anyhow!("文件不存在"));
     }
-    Ok((name, content))
+    // Emit the leftover content first, then keep pulling from the archive
+    // stream until `remaining` content bytes have been forwarded.
+    let s = futures::stream::unfold(
+        (stream, remaining, leftover),
+        |(mut stream, mut remaining, mut leftover)| async move {
+            if remaining == 0 {
+                return None;
+            }
+            if !leftover.is_empty() {
+                let n = (remaining as usize).min(leftover.len());
+                let out = leftover.split_to(n);
+                remaining -= n as u64;
+                return Some((Ok(out), (stream, remaining, leftover)));
+            }
+            match stream.next().await {
+                Some(Ok(chunk)) => {
+                    let n = (remaining as usize).min(chunk.len());
+                    let out = chunk.slice(0..n);
+                    remaining -= n as u64;
+                    Some((Ok(out), (stream, remaining, Bytes::new())))
+                }
+                Some(Err(e)) => Some((
+                    Err(std::io::Error::other(friendly_archive_err(&e))),
+                    (stream, 0, Bytes::new()),
+                )),
+                None => None,
+            }
+        },
+    );
+    Ok((name, Box::pin(s)))
 }
 
-/// Write bytes into a container at `dest_path` (via a host temp file + the
-/// archive API). Works on shell-less images.
-pub async fn web_ctn_write(container: &str, dest_path: &str, bytes: &[u8]) -> Result<()> {
+/// Upload an already-staged temp file into a container at `dest_path` via the
+/// archive (tar) API (the tar body is streamed from the temp file). Works on
+/// shell-less images.
+pub async fn web_ctn_write_file(container: &str, dest_path: &str, temp: &Path) -> Result<()> {
     if !valid_container_ref(container) {
         return Err(anyhow!("invalid container reference"));
     }
     check_abs(dest_path)?;
-    let temp_path = std::env::temp_dir().join(format!("dn7-ctn-web-{}", unique_suffix()));
-    tokio::fs::write(&temp_path, bytes).await?;
-    let res = ctn_upload_file(container, &temp_path, dest_path).await;
-    let _ = tokio::fs::remove_file(&temp_path).await;
-    res
+    ctn_upload_file(container, temp, dest_path).await
 }
 
 #[cfg(test)]
