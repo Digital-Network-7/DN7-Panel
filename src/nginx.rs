@@ -87,6 +87,8 @@ struct Req {
     trust_proxy: Option<bool>,
     #[serde(default)]
     locations: Option<Vec<Location>>, // custom path rules
+    #[serde(default)]
+    extra_conf: Option<String>, // raw nginx directives injected into the server block
 }
 
 /// A managed site, persisted in the manifest and regenerated into one conf file.
@@ -138,6 +140,10 @@ struct Site {
     /// locations"): each forwards a path prefix to a host[:port].
     #[serde(default)]
     locations: Vec<Location>,
+    /// Raw nginx directives, injected verbatim into the serving server block(s).
+    /// Validated by `nginx -t` on save (invalid input rolls back).
+    #[serde(default)]
+    extra_conf: String,
 }
 
 fn default_true() -> bool {
@@ -159,6 +165,16 @@ struct Location {
     /// Enable WebSocket upgrade headers for this path.
     #[serde(default)]
     websockets: bool,
+    /// Upstream kind: "host" (target host:port) | "container" (docker
+    /// container). Empty == host (backward compatible).
+    #[serde(default)]
+    kind: String,
+    /// Docker container name (when `kind == "container"`).
+    #[serde(default)]
+    container: String,
+    /// Container port to proxy to (when `kind == "container"`).
+    #[serde(default)]
+    container_port: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -1079,6 +1095,7 @@ fn site_from_req(req: &Req) -> Result<Site> {
         hsts_sub: req.hsts_sub.unwrap_or(false),
         trust_proxy: req.trust_proxy.unwrap_or(false),
         locations: Vec::new(),
+        extra_conf: String::new(),
     };
 
     match kind.as_str() {
@@ -1131,6 +1148,12 @@ fn site_from_req(req: &Req) -> Result<Site> {
         site.locations = validate_locations(locs)?;
     }
 
+    // Optional raw nginx directives (validated structurally here; nginx -t is
+    // the final gate when the conf is written).
+    let extra = req.extra_conf.as_deref().unwrap_or("").trim();
+    validate_extra_conf(extra)?;
+    site.extra_conf = extra.to_string();
+
     if ssl && !matches!(cert_mode.as_str(), "self" | "le" | "manual" | "named") {
         return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
     }
@@ -1161,28 +1184,97 @@ fn validate_locations(locs: &[Location]) -> Result<Vec<Location>> {
     let mut out = Vec::new();
     for l in locs {
         let path = l.path.trim();
-        let target = l.target.trim();
-        // Skip fully-empty rows (UI may submit blank trailing rows).
-        if path.is_empty() && target.is_empty() {
-            continue;
+        let kind = if l.kind.trim() == "container" {
+            "container"
+        } else {
+            "host"
+        };
+        if kind == "container" {
+            let container = l.container.trim();
+            // Skip fully-empty rows.
+            if path.is_empty() && container.is_empty() {
+                continue;
+            }
+            if !valid_location_path(path) {
+                return Err(anyhow!("路径规则需以 / 开头且不含空格等特殊字符：{path}"));
+            }
+            if !valid_container_name(container) {
+                return Err(anyhow!("ERR_CODE:nginx.bad_container"));
+            }
+            if !valid_port(l.container_port) {
+                return Err(anyhow!("ERR_CODE:nginx.bad_container_port"));
+            }
+            out.push(Location {
+                path: path.to_string(),
+                scheme: norm_scheme(Some(&l.scheme)),
+                target: String::new(),
+                websockets: l.websockets,
+                kind: "container".to_string(),
+                container: container.to_string(),
+                container_port: l.container_port,
+            });
+        } else {
+            let target = l.target.trim();
+            // Skip fully-empty rows (UI may submit blank trailing rows).
+            if path.is_empty() && target.is_empty() {
+                continue;
+            }
+            if !valid_location_path(path) {
+                return Err(anyhow!("路径规则需以 / 开头且不含空格等特殊字符：{path}"));
+            }
+            if !valid_host_token(target) {
+                return Err(anyhow!("路径规则目标格式不正确（host[:port]）：{target}"));
+            }
+            out.push(Location {
+                path: path.to_string(),
+                scheme: norm_scheme(Some(&l.scheme)),
+                target: target.to_string(),
+                websockets: l.websockets,
+                kind: "host".to_string(),
+                container: String::new(),
+                container_port: 0,
+            });
         }
-        if !valid_location_path(path) {
-            return Err(anyhow!("路径规则需以 / 开头且不含空格等特殊字符：{path}"));
-        }
-        if !valid_host_token(target) {
-            return Err(anyhow!("路径规则目标格式不正确（host[:port]）：{target}"));
-        }
-        out.push(Location {
-            path: path.to_string(),
-            scheme: norm_scheme(Some(&l.scheme)),
-            target: target.to_string(),
-            websockets: l.websockets,
-        });
     }
     if out.len() > 50 {
         return Err(anyhow!("ERR_CODE:nginx.too_many_rules"));
     }
     Ok(out)
+}
+
+/// Structural validation of raw custom nginx directives. The authoritative
+/// syntax check is `nginx -t` (run when the conf is written, with rollback on
+/// failure); here we only reject oversized input and stray control characters.
+fn validate_extra_conf(s: &str) -> Result<()> {
+    if s.len() > 20000 {
+        return Err(anyhow!("ERR_CODE:nginx.extra_conf_too_long"));
+    }
+    if s.chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        return Err(anyhow!("ERR_CODE:nginx.extra_conf_bad"));
+    }
+    Ok(())
+}
+
+/// Indent raw custom directives into the server block. Empty when blank.
+fn render_extra_conf(raw: &str) -> String {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("\n    # custom configuration\n");
+    for line in raw.lines() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            s.push('\n');
+        } else {
+            s.push_str("    ");
+            s.push_str(line);
+            s.push('\n');
+        }
+    }
+    s
 }
 
 fn new_site_id() -> String {
@@ -1888,24 +1980,26 @@ async fn published_host_port(target: &str, container_port: i64) -> Option<u16> {
 async fn resolve_upstream(_lo: &Layout, site: &Site) -> Result<String> {
     match site.kind.as_str() {
         "proxy_host" => Ok(with_scheme_port(&site.target_url, &site.scheme)),
-        "proxy_container" => {
-            if let Some(hp) = published_host_port(&site.container, site.container_port).await {
-                // Reachable + restart-stable via the host's published port.
-                Ok(format!("127.0.0.1:{hp}"))
-            } else {
-                // Not published — fall back to the container's bridge IP (the
-                // host can route to docker0). Less stable, but works.
-                let ip = container_ip(&site.container).await.ok_or_else(|| {
-                    anyhow!(
-                        "容器 {} 未映射端口 {} 到宿主机，且无法解析其 IP；请为容器发布该端口后重试",
-                        site.container,
-                        site.container_port
-                    )
-                })?;
-                Ok(format!("{}:{}", ip, site.container_port))
-            }
-        }
+        "proxy_container" => resolve_container_upstream(&site.container, site.container_port).await,
         _ => Ok(String::new()),
+    }
+}
+
+/// Resolve a container's `host:port` upstream for the host nginx: prefer the
+/// published host port (`127.0.0.1:<hostport>`, restart-stable), otherwise fall
+/// back to the container's bridge IP.
+async fn resolve_container_upstream(container: &str, container_port: i64) -> Result<String> {
+    if let Some(hp) = published_host_port(container, container_port).await {
+        Ok(format!("127.0.0.1:{hp}"))
+    } else {
+        let ip = container_ip(container).await.ok_or_else(|| {
+            anyhow!(
+                "容器 {} 未映射端口 {} 到宿主机，且无法解析其 IP；请为容器发布该端口后重试",
+                container,
+                container_port
+            )
+        })?;
+        Ok(format!("{ip}:{container_port}"))
     }
 }
 
@@ -1937,6 +2031,7 @@ async fn write_site_conf(lo: &Layout, site: &Site, acme: &[(String, String)]) ->
     let acme_loc = acme_challenge_locations(acme);
 
     let mut conf = String::new();
+    let extra = render_extra_conf(&site.extra_conf);
     if site.ssl {
         let (crt, key) = if site.cert_name.is_empty() {
             (
@@ -1959,7 +2054,7 @@ async fn write_site_conf(lo: &Layout, site: &Site, acme: &[(String, String)]) ->
             ));
         } else {
             conf.push_str(&format!(
-                "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\n{body}}}\n\n"
+                "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\n{extra}{body}}}\n\n"
             ));
         }
         // HTTPS block.
@@ -1989,11 +2084,11 @@ async fn write_site_conf(lo: &Layout, site: &Site, acme: &[(String, String)]) ->
         conf.push_str(&format!(
             "server {{\n    {listen443}\n    server_name {server_name};\n\
              \n    ssl_certificate {crt};\n    ssl_certificate_key {key};\n{sec}\
-             \n{body}}}\n"
+             \n{extra}{body}}}\n"
         ));
     } else {
         conf.push_str(&format!(
-            "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\n{body}}}\n"
+            "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\n{extra}{body}}}\n"
         ));
     }
 
@@ -2066,7 +2161,11 @@ async fn render_location(lo: &Layout, site: &Site) -> Result<String> {
         if l.path == "/" && is_proxy {
             continue;
         }
-        let upstream = with_scheme_port(&l.target, &l.scheme);
+        let upstream = if l.kind == "container" {
+            resolve_container_upstream(&l.container, l.container_port).await?
+        } else {
+            with_scheme_port(&l.target, &l.scheme)
+        };
         out.push_str(&proxy_location(
             &l.path,
             &l.scheme,
@@ -2671,6 +2770,7 @@ mod tests {
             hsts_sub: false,
             trust_proxy: false,
             locations: Vec::new(),
+            extra_conf: String::new(),
         }
     }
 
@@ -2716,6 +2816,9 @@ mod tests {
             scheme: "http".into(),
             target: "127.0.0.1:3001".into(),
             websockets: true,
+            kind: "host".into(),
+            container: String::new(),
+            container_port: 0,
         }];
         let body = render_location(&lo, &site).await.unwrap();
         assert!(body.contains("location /api {"));

@@ -63,6 +63,7 @@ function ngAddSite(reload, site) {
       <button class="on" data-t="detail">${tr('ng.tab_detail')}</button>
       <button data-t="rules">${tr('ng.tab_rules')}</button>
       <button data-t="ssl">${tr('ng.tab_ssl')}</button>
+      <button data-t="conf">${tr('ng.tab_conf')}</button>
     </div>
     <div class="ftab-pane on" data-p="detail">
       <div class="formgrid">
@@ -106,6 +107,11 @@ function ngAddSite(reload, site) {
         </div>
         <p class="formnote">${tr('ng.autorenew_note')}</p>
       </div>
+    </div>
+    <div class="ftab-pane" data-p="conf">
+      <p class="mut" style="font-size:12.5px;margin:0 0 10px">${tr('ng.conf_intro')}</p>
+      <textarea id="nsConf" class="field mono confbox" rows="13" spellcheck="false" placeholder="${tr('ng.conf_ph')}"></textarea>
+      <p class="formnote">${tr('ng.conf_note')}</p>
     </div>
     <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="nsGo">${editing ? tr('ng.save') : tr('ng.create')}</button></div>
     <div class="hidden" id="nsJob" style="margin-top:14px"></div>`, (close) => {
@@ -153,7 +159,21 @@ function ngAddSite(reload, site) {
     };
 
     let containers = [];
-    op('nginx', { op: 'list_containers' }).then((d) => { containers = d.containers || []; if ($('nsKind').value === 'proxy_container') { kindFields(); prefillKind(); } }).catch(() => {});
+    // Build <option>s for a location-rule container picker, preserving a
+    // selected value even if the container list hasn't loaded (or no longer
+    // lists it).
+    const ctnOptsHtml = (sel) => {
+      let opts = containers.map((c) => `<option value="${esc(c.name)}"${c.name === sel ? ' selected' : ''}>${esc(c.name)}${c.ports ? ' · ' + esc(c.ports) : ''}</option>`).join('');
+      if (sel && !containers.some((c) => c.name === sel)) opts = `<option value="${esc(sel)}" selected>${esc(sel)}</option>` + opts;
+      if (!opts) opts = `<option value="">${tr('ng.no_running_ctn')}</option>`;
+      return opts;
+    };
+    op('nginx', { op: 'list_containers' }).then((d) => {
+      containers = d.containers || [];
+      if ($('nsKind').value === 'proxy_container') { kindFields(); prefillKind(); }
+      // Refresh any location-rule container pickers built before the list arrived.
+      $('nsLocs').querySelectorAll('.lr-ctn').forEach((s) => { s.innerHTML = ctnOptsHtml(s.value); });
+    }).catch(() => {});
 
     const staticUpload = { mode: null, zip: null, files: [] };
 
@@ -216,18 +236,35 @@ function ngAddSite(reload, site) {
       $('nsCache').checked = !!site.cache;
       $('nsBlock').checked = !!site.block_attacks;
       $('nsWs').checked = site.websockets !== false;
+      $('nsConf').value = site.extra_conf || '';
     }
     $('nsKind').onchange = kindFields; kindFields(); prefillKind();
 
     const locRow = (v) => {
       v = v || {};
+      const isCtn = v.kind === 'container';
       const wrap = el('div', { class: 'locrule' });
       wrap.innerHTML = `
-        <div class="lr-head"><input class="field lr-path" placeholder="/api" value="${esc(v.path || '')}" /><button type="button" class="rm">×</button></div>
-        <div class="lr-row"><select class="field proto lr-scheme"><option value="http">HTTP</option><option value="https">HTTPS</option></select><input class="field lr-target" placeholder="127.0.0.1:3001" value="${esc(v.target || '')}" /></div>
+        <div class="lr-head"><input class="field lr-path" placeholder="/api" value="${esc(v.path || '')}" /><button type="button" class="lr-del" title="${tr('ng.delete')}"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+        <div class="lr-row">
+          <select class="field proto lr-kind"><option value="host">${tr('ng.loc_host')}</option><option value="container">${tr('ng.loc_container')}</option></select>
+          <select class="field proto lr-scheme"><option value="http">HTTP</option><option value="https">HTTPS</option></select>
+          <input class="field lr-target" placeholder="127.0.0.1:3001" value="${esc(v.target || '')}" />
+          <select class="field lr-ctn">${ctnOptsHtml(v.container || '')}</select>
+          <input class="field lr-ctnport" type="number" placeholder="80" value="${v.container_port || ''}" />
+        </div>
         <label class="switch" style="padding:8px 0 2px"><input type="checkbox" class="lr-ws"${v.websockets ? ' checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.sw_ws')}</b></span></label>`;
+      const kindSel = wrap.querySelector('.lr-kind');
+      kindSel.value = isCtn ? 'container' : 'host';
       if (v.scheme === 'https') wrap.querySelector('.lr-scheme').value = 'https';
-      wrap.querySelector('.rm').onclick = () => wrap.remove();
+      const syncKind = () => {
+        const ctn = kindSel.value === 'container';
+        wrap.querySelector('.lr-target').classList.toggle('hidden', ctn);
+        wrap.querySelector('.lr-ctn').classList.toggle('hidden', !ctn);
+        wrap.querySelector('.lr-ctnport').classList.toggle('hidden', !ctn);
+      };
+      kindSel.onchange = syncKind; syncKind();
+      wrap.querySelector('.lr-del').onclick = () => wrap.remove();
       $('nsLocs').appendChild(wrap);
     };
     $('nsLocAdd').onclick = () => locRow();
@@ -258,16 +295,17 @@ function ngAddSite(reload, site) {
       if (certMethod === 'auto') loadCertList();
     }
 
-    const collectLocs = () => Array.from($('nsLocs').querySelectorAll('.locrule')).map((w) => ({
-      path: w.querySelector('.lr-path').value.trim(),
-      scheme: w.querySelector('.lr-scheme').value,
-      target: w.querySelector('.lr-target').value.trim(),
-      websockets: w.querySelector('.lr-ws').checked,
-    })).filter((l) => l.path || l.target);
+    const collectLocs = () => Array.from($('nsLocs').querySelectorAll('.locrule')).map((w) => {
+      const kind = w.querySelector('.lr-kind').value;
+      const l = { path: w.querySelector('.lr-path').value.trim(), scheme: w.querySelector('.lr-scheme').value, websockets: w.querySelector('.lr-ws').checked, kind };
+      if (kind === 'container') { l.container = w.querySelector('.lr-ctn').value.trim(); l.container_port = Number(w.querySelector('.lr-ctnport').value) || 0; }
+      else { l.target = w.querySelector('.lr-target').value.trim(); }
+      return l;
+    }).filter((l) => l.path || l.target || l.container);
 
     $('nsGo').onclick = async () => {
       const k = $('nsKind').value;
-      const body = { op: editing ? 'update_site' : 'add_site', server_name: $('nsName').value.trim(), kind: k, ssl: $('nsSsl').checked, cache: $('nsCache').checked, block_attacks: $('nsBlock').checked, websockets: $('nsWs').checked, locations: collectLocs() };
+      const body = { op: editing ? 'update_site' : 'add_site', server_name: $('nsName').value.trim(), kind: k, ssl: $('nsSsl').checked, cache: $('nsCache').checked, block_attacks: $('nsBlock').checked, websockets: $('nsWs').checked, locations: collectLocs(), extra_conf: $('nsConf').value };
       if (editing) body.site_id = site.id;
       if (!body.server_name) return toast(tr('ng.need_domain'), 'err');
       if (k === 'proxy_host') { body.scheme = $('nsScheme').value; const p = $('nsTarget').value.trim(); if (!p) return toast(tr('ng.need_host_port'), 'err'); body.target_url = /^\d+$/.test(p) ? '127.0.0.1:' + p : p; }

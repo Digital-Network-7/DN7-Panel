@@ -260,7 +260,8 @@
   .switch .swtxt span { font-size:11.5px; color:var(--mut); }
   /* Form tabs (segmented control inside a modal). */
   .ftabs { display:flex; gap:4px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:4px; margin-bottom:16px; }
-  .ftabs button { flex:1; background:none; border:none; color:var(--mut); padding:8px; border-radius:7px; cursor:pointer; font-size:13px; }
+  .ftabs button { flex:1; background:none; border:none; color:var(--mut); padding:8px; border-radius:7px; cursor:pointer; font-size:13px; transition:background .14s,color .14s; }
+  .ftabs button:hover:not(.on) { background:var(--hov); color:var(--fg); }
   .ftabs button.on { background:linear-gradient(135deg,rgba(59,130,246,.3),rgba(139,92,246,.3)); color:#fff; }
   .ftab-pane { display:none; } .ftab-pane.on { display:block; }
   /* Path-rule cards (NPM-style custom locations). */
@@ -268,8 +269,19 @@
   .locrule .lr-head { display:flex; align-items:center; gap:8px; margin-bottom:9px; }
   .locrule .lr-head .field { flex:1; }
   .locrule .lr-row { display:flex; align-items:center; gap:8px; }
-  .locrule .lr-row .field.proto { flex:0 0 90px; }
-  .locadd { font-size:12.5px; color:var(--cy); cursor:pointer; background:none; border:none; padding:4px 0; }
+  .locrule .lr-row .field.proto { flex:0 0 116px; }
+  .locrule .lr-row .lr-target, .locrule .lr-row .lr-ctn { flex:1; min-width:0; }
+  .locrule .lr-row .lr-ctnport { flex:0 0 96px; }
+  /* Delete-rule button: subtle icon button that turns red on hover. */
+  .locrule .lr-del { flex:0 0 auto; width:32px; height:32px; display:inline-flex; align-items:center; justify-content:center;
+    border-radius:8px; border:1px solid var(--line); background:var(--hov); color:var(--mut); cursor:pointer; transition:color .14s,border-color .14s,background .14s; }
+  .locrule .lr-del:hover { color:var(--err); border-color:rgba(251,113,133,.45); background:rgba(251,113,133,.12); }
+  /* "Add path rule": centered secondary button. */
+  .locadd { display:block; margin:4px auto 0; font-size:12.5px; color:var(--fg); cursor:pointer;
+    background:var(--hov); border:1px solid var(--line); border-radius:9px; padding:9px 18px; transition:border-color .14s,background .14s; }
+  .locadd:hover { border-color:var(--line2); background:var(--acc-soft); }
+  /* Custom nginx config textarea. */
+  .confbox { width:100%; resize:vertical; min-height:240px; line-height:1.55; font-size:12.5px; tab-size:2; white-space:pre; overflow-wrap:normal; overflow-x:auto; }
   /* Static-upload dropzone. */
   .dropz { border:1.5px dashed var(--line2); border-radius:12px; padding:22px; text-align:center; color:var(--mut); font-size:13px; cursor:pointer; transition:border-color .15s,background .15s; }
   .dropz:hover, .dropz.drag { border-color:var(--cy); background:var(--hov); }
