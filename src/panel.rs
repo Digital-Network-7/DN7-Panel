@@ -35,6 +35,9 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
         crate::nginx::resync_confs().await;
     });
 
+    // Auto-renew Let's Encrypt / self-signed certs before they expire.
+    crate::nginx::spawn_cert_renewal();
+
     // Background self-update checker (GitHub + dn7.cn). Applies automatically
     // only when auto-update is enabled in settings; otherwise just keeps the
     // "update available" hint warm.

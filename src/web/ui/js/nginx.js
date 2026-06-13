@@ -77,6 +77,7 @@ function ngAddSite(reload, site) {
       <div class="hidden" id="nsCertWrap" style="margin-top:12px"><label class="lbl">${tr('ng.cert_mode')}</label><select id="nsCert" class="field"><option value="le">${tr('ng.cm_le')}</option><option value="manual">${tr('ng.cm_manual')}</option><option value="self">${tr('ng.cm_self')}</option><option value="named">${tr('ng.cm_named')}</option></select></div>
       <div class="full hidden" id="nsNamedWrap" style="margin-top:10px"><label class="lbl">${tr('ng.select_cert')}</label><select id="nsNamed" class="field"></select></div>
       <div class="full hidden" id="nsManual" style="margin-top:10px"><label class="lbl">${tr('ng.cert_pem')}</label><textarea id="nsCertPem" class="field" rows="3" placeholder="${editing ? tr('ng.keep_cert_ph') : ''}"></textarea><label class="lbl" style="margin-top:8px">${tr('ng.key_pem')}</label><textarea id="nsKeyPem" class="field" rows="3" placeholder="${editing ? tr('ng.keep_cert_ph') : ''}"></textarea></div>
+      <p class="formnote" id="nsAutoRenew">${tr('ng.autorenew_note')}</p>
     </div>
     <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="nsGo">${editing ? tr('ng.save') : tr('ng.create')}</button></div>
     <div class="hidden" id="nsJob" style="margin-top:14px"></div>`, (close) => {
@@ -253,7 +254,7 @@ function ngCerts() {
   modal(tr('ng.cert_mgr'), `<div id="ngCertBody">${loading()}</div>`, () => {
     const load = () => op('nginx', { op: 'list_named_certs' }).then((d) => {
       const certs = d.certs || [];
-      let h = `<div class="row" style="margin-bottom:12px"><span class="mut" style="font-size:12.5px;flex:1">${tr('ng.cert_lib_intro')}</span><button class="btn sm" id="ngCertNew">${tr('ng.create_cert')}</button></div>`;
+      let h = `<div class="row" style="margin-bottom:12px"><span class="mut" style="font-size:12.5px;flex:1">${tr('ng.cert_lib_intro')}</span><button class="btn sm" id="ngCertNew">${tr('ng.create_cert')}</button></div><p class="formnote" style="margin-top:0;margin-bottom:12px">${tr('ng.autorenew_note')}</p>`;
       if (!certs.length) { h += `<div class="empty">${tr('ng.cert_lib_empty')}</div>`; }
       else {
         h += `<table class="optable"><tr><th>${tr('ng.col_name')}</th><th>${tr('ng.col_domain')}</th><th>${tr('ng.col_mode')}</th><th>${tr('ng.col_expire')}</th><th>${tr('ng.col_used')}</th><th class="act">${tr('ng.col_actions')}</th></tr>`;

@@ -345,3 +345,11 @@
 .upd-cl .cl-notes li { font-size: 12.5px; line-height: 1.7; color: var(--mut); }
 .upd-cl .cl-toggle { margin-top: 4px; background: none; border: none; padding: 2px 0; cursor: pointer; color: var(--br); font-size: 12.5px; }
 .upd-cl .cl-toggle:hover { text-decoration: underline; }
+
+/* ---- Spacing between action buttons in table action cells ---- */
+.optable td.act { white-space: nowrap; }
+.optable td.act .btn + .btn { margin-left: 8px; }
+.optable td.act .actions { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+
+/* ---- Inline note (e.g. SSL auto-renew hint) ---- */
+.formnote { font-size: 12px; color: var(--mut); margin-top: 8px; line-height: 1.5; }
