@@ -55,12 +55,13 @@ function renderMysql(v) {
       const running = m.running;
       const phase = m.phase === 'initializing' ? tr('my.phase_init') : (running ? tr('my.phase_running') : tr('my.phase_stopped'));
       const cls = m.phase === 'initializing' ? 'warn' : (running ? 'on' : 'off');
+      const dotCls = m.phase === 'initializing' ? 'init' : (running ? 'on' : '');
       v.innerHTML = `
         <div class="card" style="margin-bottom:16px">
           <div class="row" style="align-items:center">
             <div style="flex:1">
               <div style="font-size:18px;font-weight:650">${esc(m.engine)} <span class="mut" style="font-size:14px;font-weight:400">${esc(m.version || '')}</span></div>
-              <div class="mut" style="font-size:12.5px;margin-top:3px">${tr('my.port')} ${m.port ? m.port : tr('my.port_unmapped')} · <span class="chip ${cls}"><span class="dot-s ${running ? 'on' : ''}"></span>${phase}</span></div>
+              <div class="mut" style="font-size:12.5px;margin-top:3px">${tr('my.port')} ${m.port ? m.port : tr('my.port_unmapped')} · <span class="chip ${cls}"><span class="dot-s ${dotCls}"></span>${phase}</span></div>
             </div>
             <div class="actions" id="myLifecycle"></div>
           </div>
