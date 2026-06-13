@@ -408,6 +408,7 @@ function ngAddSite(reload, site) {
         else { toast(okMsg, 'ok'); close(); reload(); }
       }).catch((e) => { toast(e.message, 'err'); $('nsJob').innerHTML = ''; $('nsGo').disabled = false; });
     };
+    bindDirty('nsGo');
   });
 }
 
@@ -520,6 +521,7 @@ function ngCreateCert(reload) {
         else { toast(tr('ng.cert_created'), 'ok'); close(); reload(); }
       }).catch((e) => { toast(e.message, 'err'); $('ccJob').innerHTML = ''; $('ccGo').disabled = false; });
     };
+    bindDirty('ccGo');
   });
 }
 
@@ -595,6 +597,7 @@ function ngAccessForm(reload, al) {
       $('alGo').disabled = true;
       op('nginx', body).then(() => { toast(editing ? tr('common.saved') : tr('common.created'), 'ok'); close(); reload(); }).catch((e) => { toast(e.message, 'err'); $('alGo').disabled = false; });
     };
+    bindDirty('alGo');
   });
 }
 
@@ -611,6 +614,7 @@ function ngSettingsTab(v) {
       <div style="max-width:560px">
         <div class="sechead" style="margin-top:0"><h3>${tr('ng.default_site')}</h3></div>
         <p class="mut" style="font-size:12.5px;margin:0 0 14px">${tr('ng.default_site_desc')}</p>
+        <div id="ngDsBox">
         <label class="lbl">${tr('ng.default_behavior')}</label>
         <select id="ngDsMode" class="field" style="max-width:300px;margin-bottom:12px">
           <option value="404">${tr('ng.ds_404')}</option>
@@ -620,9 +624,11 @@ function ngSettingsTab(v) {
         </select>
         <div id="ngDsRedirectWrap" class="hidden"><label class="lbl">${tr('ng.ds_redirect_url')}</label><input id="ngDsUrl" class="field" placeholder="https://example.com" value="${esc(ds.redirect_url || '')}" style="margin-bottom:12px" /></div>
         <div class="row" style="align-items:center;gap:12px"><button class="btn sm" id="ngDsSave">${tr('ng.save')}</button><span class="err ok" id="ngDsMsg"></span></div>
+        </div>
 
         <div class="sechead" style="margin-top:26px"><h3>${tr('ng.perf_sec')}</h3></div>
         <p class="mut" style="font-size:12.5px;margin:0 0 14px">${tr('ng.perf_desc')}</p>
+        <div id="ngTuneBox">
         <div class="formgrid">
           <div><label class="lbl">${tr('ng.t_cmbs')}</label><input id="ngCmbs" class="field" value="${esc(t.client_max_body_size || '1m')}" placeholder="1m" /></div>
           <div><label class="lbl">${tr('ng.t_chdr')}</label><input id="ngChdr" class="field" value="${esc(t.client_header_buffer_size || '1k')}" placeholder="1k" /></div>
@@ -636,6 +642,7 @@ function ngSettingsTab(v) {
         </div>
         <div class="row" style="align-items:center;gap:12px;margin-top:16px"><button class="btn sm" id="ngTuneSave">${tr('ng.save')}</button><span class="err ok" id="ngTuneMsg"></span></div>
         <p class="formnote" style="margin-top:10px">${tr('ng.perf_note')}</p>
+        </div>
       </div>`;
 
     // Default site.
@@ -646,8 +653,9 @@ function ngSettingsTab(v) {
       const m = $('ngDsMsg');
       const bodyReq = { op: 'set_default_site', default_mode: $('ngDsMode').value, redirect_url: $('ngDsUrl') ? $('ngDsUrl').value.trim() : '' };
       $('ngDsSave').disabled = true;
-      op('nginx', bodyReq).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); $('ngDsSave').disabled = false; }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('ngDsSave').disabled = false; });
+      op('nginx', bodyReq).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); if ($('ngDsSave')._dirtyReset) $('ngDsSave')._dirtyReset(); }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('ngDsSave').disabled = false; });
     };
+    bindDirty('ngDsSave', 'ngDsBox');
 
     // Performance / tuning.
     const syncGz = () => $('ngGzipWrap').classList.toggle('hidden', !$('ngGzip').checked);
@@ -665,8 +673,9 @@ function ngSettingsTab(v) {
         gzip_comp_level: Number($('ngGcl').value),
       };
       $('ngTuneSave').disabled = true;
-      op('nginx', bodyReq).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); $('ngTuneSave').disabled = false; }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('ngTuneSave').disabled = false; });
+      op('nginx', bodyReq).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); if ($('ngTuneSave')._dirtyReset) $('ngTuneSave')._dirtyReset(); }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('ngTuneSave').disabled = false; });
     };
+    bindDirty('ngTuneSave', 'ngTuneBox');
   }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
 

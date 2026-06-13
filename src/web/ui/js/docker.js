@@ -261,6 +261,7 @@ function dkPullForm() {
       $('plGo').disabled = true; $('plJob').classList.remove('hidden');
       op('docker', { op: 'pull_image', image, mirror, registry }).then((r) => renderJob($('plJob'), 'docker', r.op_id, '', { onDone: () => { toast(tr('dk.pull_done'), 'ok'); close(); if (S.tab === 'docker') renderDocker($('view')); }, onError: () => { $('plGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('plGo').disabled = false; });
     };
+    bindDirty('plGo');
   });
 }
 
@@ -269,7 +270,7 @@ function dkVolumes() {
   const body = $('dkBody');
   body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_volumes')}</h3><span class="sp"></span><button class="btn sm" id="dkVolNew">${tr('dk.vol_new')}</button><button class="btn sec sm" id="dkRefV">${tr('dk.refresh')}</button></div><div id="dkVList">${loading()}</div>`;
   $('dkRefV').onclick = dkVolumes;
-  $('dkVolNew').onclick = () => modal(tr('dk.vol_new'), `<label class="lbl">${tr('dk.vol_name')}</label><input id="dvName" class="field" placeholder="myapp-data" style="margin-bottom:16px" /><div class="row" style="justify-content:flex-end"><button class="btn" id="dvGo">${tr('dk.create')}</button></div>`, (close) => { $('dvGo').onclick = () => { const name = $('dvName').value.trim(); if (!name) return; op('docker', { op: 'create_volume', name }).then(() => { close(); toast(tr('common.created'), 'ok'); dkVolumes(); }).catch((e) => toast(e.message, 'err')); }; });
+  $('dkVolNew').onclick = () => modal(tr('dk.vol_new'), `<label class="lbl">${tr('dk.vol_name')}</label><input id="dvName" class="field" placeholder="myapp-data" style="margin-bottom:16px" /><div class="row" style="justify-content:flex-end"><button class="btn" id="dvGo">${tr('dk.create')}</button></div>`, (close) => { $('dvGo').onclick = () => { const name = $('dvName').value.trim(); if (!name) return; op('docker', { op: 'create_volume', name }).then(() => { close(); toast(tr('common.created'), 'ok'); dkVolumes(); }).catch((e) => toast(e.message, 'err')); }; bindDirty('dvGo'); });
   op('docker', { op: 'list_volumes' }).then((d) => {
     const list = d.volumes || [];
     if (!list.length) { $('dkVList').innerHTML = `<div class="empty">${tr('dk.no_volumes')}</div>`; return; }
@@ -376,9 +377,9 @@ function dkCreateModal(info, networks, opts) {
     $('ccVolAdd').onclick = () => volRow();
     // Network tab wiring: random MAC/IPv4 generators.
     $('ccMac').value = randMac();
-    $('ccMacGen').onclick = () => { $('ccMac').value = randMac(); };
+    $('ccMacGen').onclick = () => { $('ccMac').value = randMac(); $('ccMac').dispatchEvent(new Event('input', { bubbles: true })); };
     const curSubnet = () => { const o = $('ccNetSel').options[$('ccNetSel').selectedIndex]; return o ? (o.dataset.subnet || '') : ''; };
-    $('ccIpv4Gen').onclick = () => { const ip = randIpFromSubnet(curSubnet()); if (ip) $('ccIpv4').value = ip; else toast(tr('dk.ipv4_need_subnet'), 'err'); };
+    $('ccIpv4Gen').onclick = () => { const ip = randIpFromSubnet(curSubnet()); if (ip) { $('ccIpv4').value = ip; $('ccIpv4').dispatchEvent(new Event('input', { bubbles: true })); } else toast(tr('dk.ipv4_need_subnet'), 'err'); };
     $('ccNetSel').onchange = () => { const ip = randIpFromSubnet(curSubnet()); $('ccIpv4').value = ip || ''; };
     // Pre-fill from an existing container (edit / upgrade).
     if (prefill) {
@@ -438,6 +439,7 @@ function dkCreateModal(info, networks, opts) {
     $('ccGo').onclick = () => {
       if (opts.confirmMsg) { confirmDanger(opts.confirmMsg).then((ok) => { if (ok) doSubmit(); }); } else doSubmit();
     };
+    bindDirty('ccGo', root);
   }, true);
 }
 
@@ -497,7 +499,7 @@ function dkUpgradeForm(id, name) {
         const names = (im.images || []).map((x) => x.name).filter((n) => n && n !== '<none>:<none>');
         $('ugImg').innerHTML = `<option value="">${tr('dk.upgrade_pick')}</option>` + names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
       }).catch(() => {});
-      $('ugImg').onchange = () => { if ($('ugImg').value) $('ugImgText').value = $('ugImg').value; };
+      $('ugImg').onchange = () => { if ($('ugImg').value) $('ugImgText').value = $('ugImg').value; $('ugImgText').dispatchEvent(new Event('input', { bubbles: true })); };
       $('ugGo').onclick = () => {
         const target = $('ugImgText').value.trim() || $('ugImg').value.trim();
         if (!target) return toast(tr('dk.need_image'), 'err');
@@ -508,6 +510,7 @@ function dkUpgradeForm(id, name) {
           op('docker', body).then((r) => renderJob($('ugJob'), 'docker', r.op_id, '', { onDone: () => { toast(tr('dk.upgraded'), 'ok'); close(); switchTab('docker'); }, onError: () => { $('ugGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ugGo').disabled = false; });
         });
       };
+      bindDirty('ugGo');
     });
   }).catch((e) => toast(e.message, 'err'));
 }
@@ -516,6 +519,7 @@ function dkUpgradeForm(id, name) {
 function dkRenameForm(id, name, reload) {
   modal(tr('dk.rename') + ' · ' + name, `<label class="lbl">${tr('dk.new_name')}</label><input id="rnName" class="field" value="${esc(name)}" style="margin-bottom:16px" /><div class="row" style="justify-content:flex-end"><button class="btn" id="rnGo">${tr('dk.rename')}</button></div>`, (close) => {
     $('rnGo').onclick = () => { const nn = $('rnName').value.trim(); if (!nn) return; op('docker', { op: 'rename_container', ref: id, new_name: nn }).then(() => { close(); toast(tr('dk.renamed'), 'ok'); reload && reload(); }).catch((e) => toast(e.message, 'err')); };
+    bindDirty('rnGo');
   });
 }
 
@@ -660,6 +664,7 @@ function dkNetworks() {
       op: 'create_network', name: $('nnName').value.trim(), driver: $('nnDriver').value,
       subnet: $('nnSubnet').value.trim() || undefined, gateway: $('nnGateway').value.trim() || undefined, ip_range: $('nnRange').value.trim() || undefined,
     }).then(() => { close(); toast(tr('common.created'), 'ok'); dkNetworks(); }).catch((e) => toast(e.message, 'err'));
+    bindDirty('nnGo');
   });
   op('docker', { op: 'list_networks' }).then((d) => {
     let h = `<table class="optable"><tr><th>${tr('dk.col_name')}</th><th>${tr('dk.col_driver')}</th><th>${tr('dk.col_scope')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
@@ -718,12 +723,15 @@ function dkSettings() {
     // Saving just the lists doesn't restart docker (mirror/registry are panel-side).
     $('dkSaveLists').onclick = () => {
       const m = $('dkListMsg'); $('dkSaveLists').disabled = true;
-      op('docker', { op: 'set_settings', settings: collect() }).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); $('dkSaveLists').disabled = false; }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('dkSaveLists').disabled = false; });
+      op('docker', { op: 'set_settings', settings: collect() }).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); dkSettingsReset(); }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('dkSaveLists').disabled = false; });
     };
     $('dkSaveDaemon').onclick = async () => {
       if (!await confirmDanger(tr('dk.set_restart_confirm'))) return;
       const m = $('dkDaemonMsg'); m.className = 'err ok'; m.textContent = tr('dk.set_applying'); $('dkSaveDaemon').disabled = true;
-      op('docker', { op: 'set_settings', settings: collect() }).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); $('dkSaveDaemon').disabled = false; }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('dkSaveDaemon').disabled = false; });
+      op('docker', { op: 'set_settings', settings: collect() }).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); dkSettingsReset(); }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('dkSaveDaemon').disabled = false; });
     };
+    const dkSettingsReset = () => { if ($('dkSaveLists')._dirtyReset) $('dkSaveLists')._dirtyReset(); if ($('dkSaveDaemon')._dirtyReset) $('dkSaveDaemon')._dirtyReset(); };
+    bindDirty('dkSaveLists', 'dkBody');
+    bindDirty('dkSaveDaemon', 'dkBody');
   }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }

@@ -32,7 +32,7 @@ function myWirePw(id, startShown) {
   const reveal = (on) => { shown = on; pwi.type = on ? 'text' : 'password'; eye.innerHTML = on ? MY_EYE_OFF : MY_EYE; eye.title = on ? tr('set.hide') : tr('set.show'); };
   eye.onclick = () => reveal(!shown);
   pwi.addEventListener('input', () => { if (shown) return; pwi.type = 'text'; clearTimeout(t); t = setTimeout(() => { if (!shown) pwi.type = 'password'; }, 900); });
-  if (gen) gen.onclick = () => { pwi.value = myGenPw(12); reveal(true); };
+  if (gen) gen.onclick = () => { pwi.value = myGenPw(12); reveal(true); pwi.dispatchEvent(new Event('input', { bubbles: true })); };
 }
 
 function renderMysql(v) {
@@ -200,6 +200,7 @@ function myNewDb(id, onDone) {
     $('cdbCs').onchange = () => { $('cdbCol').innerHTML = myColOpts($('cdbCs').value); };
     const go = () => { const name = $('cdbName').value.trim(); if (!name) return; op('mysql', { op: 'create_database', inst: id, database: name, charset: $('cdbCs').value, collation: $('cdbCol').value }).then(() => { close(); toast(tr('common.created'), 'ok'); onDone(); }).catch((e) => toast(e.message, 'err')); };
     $('cdbGo').onclick = go;
+    bindDirty('cdbGo');
     $('cdbName').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
   });
 }
@@ -274,6 +275,7 @@ function myEditColumn(id, db, tbl, col) {
       const dv = $('ecDef').value.trim(); if (dv) body.col_default = dv;
       op('mysql', body).then(() => { close(); toast(tr('my.col_saved'), 'ok'); myColumns(id, db, tbl); }).catch((e) => toast(e.message, 'err'));
     };
+    bindDirty('ecGo');
   });
 }
 
@@ -409,6 +411,7 @@ function myUserForm(id) {
           close(); toast(tr('common.created'), 'ok'); myUsers(id);
         } catch (e) { toast(e.message, 'err'); }
       };
+      bindDirty('auGo', root);
     });
   }).catch((e) => toast(e.message, 'err'));
 }

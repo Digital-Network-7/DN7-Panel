@@ -184,7 +184,10 @@ pub struct ReleaseNote {
 /// Fetch + parse the changelog index from a specific source. GitHub serves it
 /// as a release asset via the deterministic `releases/latest/download/` path
 /// (no api.github.com); dn7.cn mirrors it at `/api/panel/releases`.
-async fn releases_index_from(cfg: &PanelConfig, source: SourceKind) -> Result<Vec<ReleaseNote>> {
+pub async fn releases_index_from(
+    cfg: &PanelConfig,
+    source: SourceKind,
+) -> Result<Vec<ReleaseNote>> {
     let url = match source {
         SourceKind::Github => format!(
             "https://github.com/{}/releases/latest/download/releases.json",
@@ -208,15 +211,6 @@ async fn releases_index_from(cfg: &PanelConfig, source: SourceKind) -> Result<Ve
         .unwrap_or(v);
     let list: Vec<ReleaseNote> = serde_json::from_value(arr)?;
     Ok(list)
-}
-
-/// Fetch the changelog index, trying `prefer` first and failing over to the
-/// other source — so "what's new" works whenever EITHER source is reachable.
-pub async fn releases_index(cfg: &PanelConfig, prefer: SourceKind) -> Result<Vec<ReleaseNote>> {
-    match releases_index_from(cfg, prefer).await {
-        Ok(v) => Ok(v),
-        Err(_) => releases_index_from(cfg, prefer.other()).await,
-    }
 }
 
 // ---------------------------------------------------------------------------

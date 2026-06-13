@@ -55,7 +55,7 @@ function editProfile() {
     };
     renderAv();
     $('pfPick').onclick = () => $('pfFile').click();
-    $('pfClear').onclick = () => { state.avatar = ''; renderAv(); };
+    $('pfClear').onclick = () => { state.avatar = ''; renderAv(); $('pfFull').dispatchEvent(new Event('input', { bubbles: true })); };
     $('pfFile').onchange = () => {
       const f = $('pfFile').files[0]; if (!f) return;
       if (f.size > 512 * 1024) { $('pfErr').textContent = tr('set.img_too_big'); return; }
@@ -76,6 +76,7 @@ function editProfile() {
         })
         .catch((e) => { $('pfErr').textContent = e.message; });
     };
+    bindDirty('pfSave');
   });
 }
 
@@ -112,6 +113,7 @@ function changePassword() {
         .catch((e) => { err.textContent = e.message; });
     };
     $('cpSave').onclick = submit;
+    bindDirty('cpSave');
     $('cpPw2').addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
   });
 }
@@ -134,6 +136,7 @@ function twoFactor() {
           .then(() => { S.me.totp_enabled = false; toast(tr('tfa.disabled'), 'ok'); $('modalRoot').innerHTML = ''; })
           .catch((e) => { $('tfErr').textContent = e.message; });
       };
+      bindDirty('tfDisable');
       return;
     }
     // Not enabled → fetch a fresh secret + QR, require a live code to bind.
@@ -155,6 +158,7 @@ function twoFactor() {
           .catch((e) => { $('tfErr').textContent = e.message; });
       };
       $('tfEnable').onclick = submit;
+      bindDirty('tfEnable');
       $('tfCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
     }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
   });
@@ -230,6 +234,7 @@ function umCreate(reload) {
         .then(() => { toast(tr('um.created'), 'ok'); close(); reload(); })
         .catch((e) => { err.textContent = e.message; $('umGo').disabled = false; $('umJob').classList.add('hidden'); });
     };
+    bindDirty('umGo');
   });
 }
 
@@ -260,5 +265,6 @@ function umEdit(u, reload) {
         .then(() => { toast(tr('common.saved'), 'ok'); close(); reload(); })
         .catch((e) => { err.textContent = e.message; });
     };
+    bindDirty('ueGo');
   });
 }

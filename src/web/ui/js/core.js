@@ -7,6 +7,30 @@ function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({
 function $(id) { return document.getElementById(id); }
 function el(tag, attrs, html) { const e = document.createElement(tag); if (attrs) for (const k in attrs) e.setAttribute(k, attrs[k]); if (html != null) e.innerHTML = html; return e; }
 
+// Gate a save/apply/confirm button on "the form actually changed". The button
+// starts disabled; it enables only when a control inside `root` differs from
+// its initial value (so create forms enable once something is entered, and edit
+// forms enable only after a real change). Returns a `reset()` that re-baselines
+// (call it after a successful in-place save so the button disables again).
+function bindDirty(btn, root) {
+  btn = typeof btn === 'string' ? $(btn) : btn;
+  root = typeof root === 'string' ? $(root) : root;
+  if (!btn) return () => {};
+  if (!root) root = btn.closest('.modal-b') || btn.parentElement;
+  if (!root) return () => {};
+  const snap = () => Array.from(root.querySelectorAll('input,select,textarea'))
+    .map((c) => (c.type === 'checkbox' || c.type === 'radio') ? (c.checked ? '1' : '0') : (c.value == null ? '' : c.value))
+    .join('\u0001');
+  let base = snap();
+  const sync = () => { btn.disabled = (snap() === base); };
+  const reset = () => { base = snap(); sync(); };
+  root.addEventListener('input', sync);
+  root.addEventListener('change', sync);
+  sync();
+  btn._dirtyReset = reset;
+  return reset;
+}
+
 // A friendly skeleton loading indicator (shimmer rows + optional caption),
 // reused everywhere in place of a bare spinner / "加载中…" string.
 function loading(text, rows) {

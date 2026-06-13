@@ -107,7 +107,7 @@ function loadChangelog() {
     const current = (b.data && b.data.current) || '';
     if (!entries.length) { host.innerHTML = ''; return; }
     const entry = (e) => `<div class="cl-entry"><div class="cl-ver">v${esc(e.version)}${e.version === current ? `<span class="cl-cur">${tr('upd.current')}</span>` : ''}${e.date ? '<span class="cl-date">' + esc(e.date) + '</span>' : ''}</div>`
-      + (e.notes && e.notes.length ? '<ul class="cl-notes">' + e.notes.map((n) => `<li>${esc(n)}</li>`).join('') + '</ul>' : '')
+      + (e.notes && e.notes.length ? '<ul class="cl-notes">' + e.notes.map((n) => `<li>${esc(n)}</li>`).join('') + '</ul>' : `<div class="cl-empty mut">${tr('upd.no_notes')}</div>`)
       + '</div>';
     let html = entry(entries[0]);
     if (entries.length > 1) {

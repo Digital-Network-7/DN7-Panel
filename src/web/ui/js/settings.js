@@ -94,6 +94,7 @@ function renderSettings(v) {
         $('aiOk').onclick = () => {
           allowIps = $('aiText').value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
           $('setAllowIp').value = ipDisplay();
+          $('setAllowIp').dispatchEvent(new Event('input', { bubbles: true }));
           close();
         };
       });
@@ -108,9 +109,10 @@ function renderSettings(v) {
         https: $('setHttps').checked,
       };
       api('/api/settings', { method: 'POST', body: JSON.stringify(body) })
-        .then((b) => { m.className = 'err ok'; m.textContent = tr('common.saved') + (b.needs_restart ? tr('common.restart_hint') : ''); })
+        .then((b) => { m.className = 'err ok'; m.textContent = tr('common.saved') + (b.needs_restart ? tr('common.restart_hint') : ''); if ($('setSave')._dirtyReset) $('setSave')._dirtyReset(); })
         .catch((e) => { m.className = 'err'; m.textContent = e.message; });
     };
+    bindDirty('setSave', 'setGeneral');
 
     // ---- Appearance / branding ----
     $('brLang').value = curLang();
@@ -141,14 +143,15 @@ function renderSettings(v) {
       rd.onload = () => { brState.logo = rd.result; brRenderPrev(); };
       rd.readAsDataURL(f);
     };
-    $('brLogoClear').onclick = () => { brState.logo = ''; $('brLogoFile').value = ''; brRenderPrev(); };
+    $('brLogoClear').onclick = () => { brState.logo = ''; $('brLogoFile').value = ''; brRenderPrev(); $('brName').dispatchEvent(new Event('input', { bubbles: true })); };
     $('brAccent').oninput = () => { brState.accent = $('brAccent').value; $('brAccentVal').textContent = brState.accent; };
-    $('brAccentClear').onclick = () => { brState.accent = ''; brRenderPrev(); };
+    $('brAccentClear').onclick = () => { brState.accent = ''; brRenderPrev(); $('brName').dispatchEvent(new Event('input', { bubbles: true })); };
     $('brSave').onclick = () => {
       const body = { panel_name: $('brName').value, theme_default: $('brTheme').value, accent: brState.accent, logo: brState.logo };
       api('/api/branding', { method: 'POST', body: JSON.stringify(body) })
         .then(() => { const m = $('brMsg'); m.className = 'err ok'; m.textContent = tr('set.saving_refresh'); setTimeout(() => location.reload(), 600); })
         .catch((e) => { const m = $('brMsg'); m.className = 'err'; m.textContent = e.message; });
     };
+    bindDirty('brSave', 'setAppear');
   }).catch((e) => { v.innerHTML = '<div class="card">' + tr('common.loadfail') + esc(e.message) + '</div>'; });
 }
