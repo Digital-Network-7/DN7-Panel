@@ -25,15 +25,17 @@ function renderNginx(v) {
     $('ngRef').onclick = () => renderNginx(v);
     $('ngAdd').onclick = () => ngAddSite(() => renderNginx(v));
     $('ngCert').onclick = () => ngCerts();
-    op('nginx', { op: 'list_sites' }).then((d) => {
+    Promise.all([op('nginx', { op: 'list_sites' }), op('nginx', { op: 'list_named_certs' })]).then(([d, cd]) => {
       const sites = d.sites || [];
+      const modes = {};
+      (cd.certs || []).forEach((c) => { modes[c.name] = c.cert_mode; });
       if (!sites.length) { $('ngSites').innerHTML = `<div class="empty">${tr('ng.no_sites')}</div>`; return; }
       let h = `<table class="optable"><tr><th>${tr('ng.col_domain')}</th><th>${tr('ng.col_type')}</th><th>${tr('ng.col_target')}</th><th>${tr('ng.col_ssl')}</th><th class="act">${tr('ng.col_actions')}</th></tr>`;
       sites.forEach((s) => {
         const sch = s.scheme === 'https' ? 'https://' : (s.kind === 'static' ? '' : 'http://');
         let target = s.kind === 'proxy_host' ? esc(sch + s.target_url) : s.kind === 'proxy_container' ? esc(`${sch}${s.container}:${s.container_port}`) : esc('/' + s.root);
         if (s.locations && s.locations.length) target += ` <span class="mut">${tr('ng.rules_count', { n: s.locations.length })}</span>`;
-        h += `<tr><td><b>${esc(s.server_name)}</b></td><td class="mut">${esc(kindLabel(s.kind))}</td><td class="mono" style="font-size:12px">${target}</td><td>${s.ssl ? `<span class="chip on">${tr('ng.yes')}</span>` : `<span class="chip">${tr('ng.no')}</span>`}</td><td class="act"><button class="btn sm sec" data-edit="${esc(s.id)}">${tr('ng.edit_site')}</button><button class="btn sm danger" data-rm="${esc(s.id)}">${tr('ng.delete')}</button></td></tr>`;
+        h += `<tr><td><b>${esc(s.server_name)}</b></td><td class="mut">${esc(kindLabel(s.kind))}</td><td class="mono" style="font-size:12px">${target}</td><td>${sslLabel(s, modes)}</td><td class="act"><button class="btn sm sec" data-edit="${esc(s.id)}">${tr('ng.edit_site')}</button><button class="btn sm danger" data-rm="${esc(s.id)}">${tr('ng.delete')}</button></td></tr>`;
       });
       $('ngSites').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
       document.querySelectorAll('#ngSites [data-edit]').forEach((b) => b.onclick = () => { const s = sites.find((x) => String(x.id) === b.dataset.edit); if (s) ngAddSite(() => renderNginx(v), s); });
@@ -42,6 +44,17 @@ function renderNginx(v) {
   }).catch((e) => { v.innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; });
 }
 function kindLabel(k) { return { proxy_host: tr('ng.kind_proxy_host'), proxy_container: tr('ng.kind_proxy_container'), static: tr('ng.kind_static') }[k] || k; }
+
+// SSL column label: show the certificate kind (Let's Encrypt / self-signed /
+// custom) instead of a plain yes/no. `modes` maps a library cert name → mode.
+function sslLabel(s, modes) {
+  if (!s.ssl) return `<span class="chip">${tr('ng.ssl_off')}</span>`;
+  const m = (s.cert_name && modes[s.cert_name]) || s.cert_mode || 'named';
+  if (m === 'le') return `<span class="chip on">Let's Encrypt</span>`;
+  if (m === 'self') return `<span class="chip">${tr('ng.cm_self')}</span>`;
+  if (m === 'manual') return `<span class="chip on">${tr('ng.cm_manual')}</span>`;
+  return `<span class="chip on">${tr('ng.yes')}</span>`;
+}
 
 function ngAddSite(reload, site) {
   const editing = !!site;
@@ -354,7 +367,17 @@ function ngCreateCert(reload) {
       <div class="full"><label class="lbl">${tr('ng.cert_name')}</label><input id="ccName" class="field" placeholder="${tr('ng.cert_name_ph')}" /></div>
       <div class="full"><label class="lbl">${tr('ng.cert_mode')}</label><select id="ccMode" class="field"><option value="le">${tr('ng.cm_le')}</option><option value="manual">${tr('ng.cm_manual')}</option><option value="self">${tr('ng.cm_self')}</option></select></div>
       <div class="full" id="ccDomainWrap"><label class="lbl">${tr('ng.domain')}</label><input id="ccDomain" class="field" placeholder="example.com" /></div>
-      <div class="full hidden" id="ccManual"><label class="lbl">${tr('ng.cert_pem')}</label><textarea id="ccCert" class="field" rows="3"></textarea><label class="lbl" style="margin-top:8px">${tr('ng.key_pem')}</label><textarea id="ccKey" class="field" rows="3"></textarea></div>
+      <div class="full hidden" id="ccManual">
+        <label class="lbl">${tr('ng.cert_key_file')}</label>
+        <div class="filepick"><button type="button" class="btn sm sec" id="ccKeyBtn">${tr('ng.choose_file')}</button><span class="fp-name" id="ccKeyName">${tr('ng.no_file')}</span></div>
+        <input type="file" id="ccKeyFile" class="hidden" />
+        <label class="lbl" style="margin-top:10px">${tr('ng.cert_file')}</label>
+        <div class="filepick"><button type="button" class="btn sm sec" id="ccCertBtn">${tr('ng.choose_file')}</button><span class="fp-name" id="ccCertName">${tr('ng.no_file')}</span></div>
+        <input type="file" id="ccCertFile" class="hidden" />
+        <label class="lbl" style="margin-top:10px">${tr('ng.chain_file')} <span class="mut">${tr('ng.optional_suffix')}</span></label>
+        <div class="filepick"><button type="button" class="btn sm sec" id="ccChainBtn">${tr('ng.choose_file')}</button><span class="fp-name" id="ccChainName">${tr('ng.no_file')}</span></div>
+        <input type="file" id="ccChainFile" class="hidden" />
+      </div>
     </div>
     <p class="mut" style="font-size:12px;margin-top:6px" id="ccHint"></p>
     <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="ccGo">${tr('ng.create')}</button></div>
@@ -366,11 +389,30 @@ function ngCreateCert(reload) {
       $('ccHint').textContent = m === 'le' ? tr('ng.hint_le') : m === 'self' ? tr('ng.hint_self') : tr('ng.hint_manual');
     };
     $('ccMode').onchange = sync; sync();
+
+    // Custom-certificate file imports: read PEM text from local files. Key and
+    // certificate are required; the chain/intermediate is optional.
+    const pem = { key: '', cert: '', chain: '' };
+    const wirePick = (btn, input, name, slot) => {
+      $(btn).onclick = () => $(input).click();
+      $(input).onchange = (e) => {
+        const f = e.target.files[0]; if (!f) return;
+        f.text().then((t) => { pem[slot] = t; $(name).textContent = f.name; });
+      };
+    };
+    wirePick('ccKeyBtn', 'ccKeyFile', 'ccKeyName', 'key');
+    wirePick('ccCertBtn', 'ccCertFile', 'ccCertName', 'cert');
+    wirePick('ccChainBtn', 'ccChainFile', 'ccChainName', 'chain');
+
     $('ccGo').onclick = () => {
       const mode = $('ccMode').value;
       const body = { op: 'create_cert', cert_name: $('ccName').value.trim(), cert_mode: mode };
       if (!body.cert_name) return toast(tr('ng.need_cert_name'), 'err');
-      if (mode === 'manual') { body.cert_pem = $('ccCert').value; body.key_pem = $('ccKey').value; }
+      if (mode === 'manual') {
+        if (!pem.key || !pem.cert) return toast(tr('ng.need_cert_files'), 'err');
+        body.cert_pem = pem.cert + (pem.chain ? '\n' + pem.chain : '');
+        body.key_pem = pem.key;
+      }
       else { body.server_name = $('ccDomain').value.trim(); if (!body.server_name) return toast(tr('ng.need_domain'), 'err'); }
       $('ccGo').disabled = true; $('ccJob').classList.remove('hidden'); $('ccJob').innerHTML = `<div class="mut">${tr('ng.submitting')}</div>`;
       op('nginx', body).then((r) => {

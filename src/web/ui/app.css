@@ -278,7 +278,12 @@
   .imgtag { font-size:10.5px; color:var(--mut); border:1px solid var(--line2); border-radius:99px; padding:1px 7px; }
 
   /* ---- Modal ---- */
-  .mask { position:fixed; inset:0; background:rgba(4,7,13,0.62); backdrop-filter:blur(3px); z-index:50; display:flex; align-items:center; justify-content:center; padding:20px; }
+  /* Anchor modals near the top so the dialog doesn't jump vertically when its
+     content grows/shrinks (e.g. toggling SSL options). max-height keeps it in
+     view; the inner body scrolls. */
+  .mask { position:fixed; inset:0; background:rgba(4,7,13,0.62); backdrop-filter:blur(3px); z-index:50; display:flex; align-items:flex-start; justify-content:center; padding:6vh 20px 20px; }
+  .filepick { display:flex; align-items:center; gap:10px; margin-top:6px; }
+  .filepick .fp-name { font-size:12px; color:var(--mut); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .modal { background:var(--panel-solid); border:1px solid var(--line2); border-radius:16px; box-shadow:var(--shadow); width:760px; max-width:100%; max-height:88vh; display:flex; flex-direction:column; overflow:hidden; }
   .modal.big { width:1000px; height:80vh; }
   .modal-h { display:flex; align-items:center; gap:12px; padding:15px 18px; border-bottom:1px solid var(--line); }
@@ -296,7 +301,7 @@
   /* Container-terminal modal: a centered panel over a dark backdrop (reuses the
      .mask for the dimmed/blurred background). Sized to a comfortable terminal,
      not full-viewport. */
-  .term-mask { z-index:60; }
+  .term-mask { z-index:60; align-items:center; padding:20px; }
   .term-overlay { position:relative; width:min(900px,94vw); height:min(560px,82vh); box-shadow:var(--shadow); border-radius:12px; }
   .term-overlay .term-wrap { height:100%; }
   @media (max-width:720px){ .term-overlay { width:96vw; height:86vh; } }

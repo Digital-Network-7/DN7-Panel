@@ -4,8 +4,8 @@
 function renderTerm(v) {
   v.innerHTML = `<div class="term-page"><div class="term-wrap" style="flex:1;min-height:0"><div class="term-bar"><span class="dot-s on" id="tStatus"></span><span id="tLabel">${tr('term.host')}</span><span class="sp"></span><span class="mut">${tr('term.hint')}</span></div><div class="vterm" id="vterm"></div></div></div>`;
   ticket()
-    .then((t) => mountTerminal($('vterm'), $('tStatus'), `/api/terminal?ticket=${encodeURIComponent(t)}`))
-    .catch((e) => { const d = $('tStatus'); if (d) d.className = 'dot-s'; toast(e.message, 'err'); });
+    .then((t) => { const host = $('vterm'); if (!host) return; mountTerminal(host, $('tStatus'), `/api/terminal?ticket=${encodeURIComponent(t)}`); })
+    .catch((e) => { const d = $('tStatus'); if (d) d.className = 'dot-s'; if ($('vterm')) toast(e.message, 'err'); });
 }
 // Open a terminal in the given host element against a WS path; returns cleanup.
 function mountTerminal(hostEl, statusDot, wsPath) {
