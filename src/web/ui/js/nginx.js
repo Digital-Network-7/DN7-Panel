@@ -1,6 +1,8 @@
 // =========================================================================
 // Nginx management (presented as the "Website" section)
 // =========================================================================
+// Active Website sub-tab: 'hosts' | 'access' | 'certs' | 'settings'.
+let ngTab = 'hosts';
 function renderNginx(v) {
   v.innerHTML = `<div style="padding:8px">${loading(tr('ng.detecting'))}</div>`;
   if (getJob('nginx:setup')) {
@@ -21,27 +23,53 @@ function renderNginx(v) {
       $('ngSetup').onclick = () => { $('ngSetup').disabled = true; $('ngSetupJob').classList.remove('hidden'); op('nginx', { op: 'setup' }).then((r) => renderJob($('ngSetupJob'), 'nginx', r.op_id, 'nginx:setup', { onDone: () => { toast(tr('ng.init_done'), 'ok'); setTimeout(() => renderNginx(v), 600); }, onError: () => { $('ngSetup').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ngSetup').disabled = false; }); };
       return;
     }
-    v.innerHTML = `<div class="row" style="margin-bottom:14px"><span class="chip on">${tr('ng.running')}</span><span class="sp" style="flex:1"></span><button class="btn sm" id="ngAdd">${tr('ng.add_site')}</button><button class="btn sec sm" id="ngCert">${tr('ng.ssl_cert')}</button><button class="btn sec sm" id="ngRef">${tr('ng.refresh')}</button></div><div id="ngSites">${loading()}</div>`;
-    $('ngRef').onclick = () => renderNginx(v);
-    $('ngAdd').onclick = () => ngAddSite(() => renderNginx(v));
-    $('ngCert').onclick = () => ngCerts();
-    Promise.all([op('nginx', { op: 'list_sites' }), op('nginx', { op: 'list_named_certs' })]).then(([d, cd]) => {
-      const sites = d.sites || [];
-      const modes = {};
-      (cd.certs || []).forEach((c) => { modes[c.name] = c.cert_mode; });
-      if (!sites.length) { $('ngSites').innerHTML = `<div class="empty">${tr('ng.no_sites')}</div>`; return; }
-      let h = `<table class="optable"><tr><th>${tr('ng.col_domain')}</th><th>${tr('ng.col_type')}</th><th>${tr('ng.col_target')}</th><th>${tr('ng.col_ssl')}</th><th class="act">${tr('ng.col_actions')}</th></tr>`;
-      sites.forEach((s) => {
-        const sch = s.scheme === 'https' ? 'https://' : (s.kind === 'static' ? '' : 'http://');
-        let target = s.kind === 'proxy_host' ? esc(sch + s.target_url) : s.kind === 'proxy_container' ? esc(`${sch}${s.container}:${s.container_port}`) : esc('/' + s.root);
-        if (s.locations && s.locations.length) target += ` <span class="mut">${tr('ng.rules_count', { n: s.locations.length })}</span>`;
-        h += `<tr><td><b>${esc(s.server_name)}</b></td><td class="mut">${esc(kindLabel(s.kind))}</td><td class="mono" style="font-size:12px">${target}</td><td>${sslLabel(s, modes)}</td><td class="act"><button class="btn sm sec" data-edit="${esc(s.id)}">${tr('ng.edit_site')}</button><button class="btn sm danger" data-rm="${esc(s.id)}">${tr('ng.delete')}</button></td></tr>`;
-      });
-      $('ngSites').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
-      document.querySelectorAll('#ngSites [data-edit]').forEach((b) => b.onclick = () => { const s = sites.find((x) => String(x.id) === b.dataset.edit); if (s) ngAddSite(() => renderNginx(v), s); });
-      document.querySelectorAll('#ngSites [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('ng.confirm_rm_site'))) op('nginx', { op: 'remove_site', site_id: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); renderNginx(v); }).catch((e) => toast(e.message, 'err')); });
-    }).catch((e) => { $('ngSites').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+    v.innerHTML = `
+      <div class="subtabs" id="ngTabs" style="margin-bottom:16px">
+        <button data-t="hosts">${tr('ng.tab_hosts')}</button>
+        <button data-t="access">${tr('ng.tab_access')}</button>
+        <button data-t="certs">${tr('ng.tab_certs')}</button>
+        <button data-t="settings">${tr('ng.tab_settings')}</button>
+      </div>
+      <div id="ngBody"></div>`;
+    const tabs = $('ngTabs');
+    const sel = (t) => {
+      ngTab = t;
+      tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
+      if (t === 'access') ngAccessTab(v);
+      else if (t === 'certs') ngCertsTab(v);
+      else if (t === 'settings') ngSettingsTab(v);
+      else ngHostsTab(v);
+    };
+    tabs.querySelectorAll('button').forEach((b) => b.onclick = () => sel(b.dataset.t));
+    sel(ngTab);
   }).catch((e) => { v.innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; });
+}
+
+// ---- Tab 1: Proxy Hosts (the managed site list) ----
+function ngHostsTab(v) {
+  const body = $('ngBody');
+  body.innerHTML = `<div class="row" style="margin-bottom:14px"><span class="chip on">${tr('ng.running')}</span><span class="sp" style="flex:1"></span><button class="btn sm" id="ngAdd">${tr('ng.add_site')}</button><button class="btn sec sm" id="ngRef">${tr('ng.refresh')}</button></div><div id="ngSites">${loading()}</div>`;
+  $('ngRef').onclick = () => ngHostsTab(v);
+  $('ngAdd').onclick = () => ngAddSite(() => ngHostsTab(v));
+  Promise.all([op('nginx', { op: 'list_sites' }), op('nginx', { op: 'list_named_certs' }), op('nginx', { op: 'list_access' })]).then(([d, cd, ad]) => {
+    const sites = d.sites || [];
+    const modes = {};
+    (cd.certs || []).forEach((c) => { modes[c.name] = c.cert_mode; });
+    const accById = {};
+    (ad.access || []).forEach((a) => { accById[a.id] = a.name; });
+    if (!sites.length) { $('ngSites').innerHTML = `<div class="empty">${tr('ng.no_sites')}</div>`; return; }
+    let h = `<table class="optable"><tr><th>${tr('ng.col_domain')}</th><th>${tr('ng.col_type')}</th><th>${tr('ng.col_target')}</th><th>${tr('ng.col_access')}</th><th>${tr('ng.col_ssl')}</th><th class="act">${tr('ng.col_actions')}</th></tr>`;
+    sites.forEach((s) => {
+      const sch = s.scheme === 'https' ? 'https://' : (s.kind === 'static' ? '' : 'http://');
+      let target = s.kind === 'proxy_host' ? esc(sch + s.target_url) : s.kind === 'proxy_container' ? esc(`${sch}${s.container}:${s.container_port}`) : esc('/' + s.root);
+      if (s.locations && s.locations.length) target += ` <span class="mut">${tr('ng.rules_count', { n: s.locations.length })}</span>`;
+      const acc = s.access_id && accById[s.access_id] ? `<span class="chip">${esc(accById[s.access_id])}</span>` : `<span class="mut">${tr('ng.access_public')}</span>`;
+      h += `<tr><td><b>${esc(s.server_name)}</b></td><td class="mut">${esc(kindLabel(s.kind))}</td><td class="mono" style="font-size:12px">${target}</td><td>${acc}</td><td>${sslLabel(s, modes)}</td><td class="act"><button class="btn sm sec" data-edit="${esc(s.id)}">${tr('ng.edit_site')}</button><button class="btn sm danger" data-rm="${esc(s.id)}">${tr('ng.delete')}</button></td></tr>`;
+    });
+    $('ngSites').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
+    document.querySelectorAll('#ngSites [data-edit]').forEach((b) => b.onclick = () => { const s = sites.find((x) => String(x.id) === b.dataset.edit); if (s) ngAddSite(() => ngHostsTab(v), s); });
+    document.querySelectorAll('#ngSites [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('ng.confirm_rm_site'))) op('nginx', { op: 'remove_site', site_id: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); ngHostsTab(v); }).catch((e) => toast(e.message, 'err')); });
+  }).catch((e) => { $('ngSites').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
 function kindLabel(k) { return { proxy_host: tr('ng.kind_proxy_host'), proxy_container: tr('ng.kind_proxy_container'), static: tr('ng.kind_static') }[k] || k; }
 
@@ -80,6 +108,7 @@ function ngAddSite(reload, site) {
         <label class="switch"><input type="checkbox" id="nsBlock" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.sw_block')}</b><span>${tr('ng.sw_block_d')}</span></span></label>
         <label class="switch"><input type="checkbox" id="nsWs" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.sw_ws')}</b><span>${tr('ng.sw_ws_d')}</span></span></label>
       </div>
+      <div style="margin-top:14px"><label class="lbl">${tr('ng.access_label')}</label><select id="nsAccess" class="field"><option value="">${tr('ng.access_public')}</option></select><p class="formnote" style="margin-top:6px">${tr('ng.access_hint')}</p></div>
     </div>
     <div class="ftab-pane" data-p="rules">
       <p class="mut" style="font-size:12.5px;margin:0 0 12px">${tr('ng.rules_intro')}</p>
@@ -179,6 +208,13 @@ function ngAddSite(reload, site) {
       if ($('nsKind').value === 'proxy_container') { kindFields(); prefillKind(); }
       // Refresh any location-rule container pickers built before the list arrived.
       $('nsLocs').querySelectorAll('.lr-ctn').forEach((s) => { s.innerHTML = ctnOptsHtml(s.value); });
+    }).catch(() => {});
+
+    // Populate the Access list dropdown (assign an access list to this host).
+    op('nginx', { op: 'list_access' }).then((d) => {
+      const sel = $('nsAccess'); if (!sel) return;
+      (d.access || []).forEach((a) => { const o = document.createElement('option'); o.value = a.id; o.textContent = a.name; sel.appendChild(o); });
+      if (editing && site.access_id) sel.value = site.access_id;
     }).catch(() => {});
 
     const staticUpload = { mode: null, zip: null, files: [] };
@@ -311,7 +347,7 @@ function ngAddSite(reload, site) {
 
     $('nsGo').onclick = async () => {
       const k = $('nsKind').value;
-      const body = { op: editing ? 'update_site' : 'add_site', server_name: $('nsName').value.trim(), kind: k, ssl: $('nsSsl').checked, cache: $('nsCache').checked, block_attacks: $('nsBlock').checked, websockets: $('nsWs').checked, locations: collectLocs(), extra_conf: $('nsConf').value };
+      const body = { op: editing ? 'update_site' : 'add_site', server_name: $('nsName').value.trim(), kind: k, ssl: $('nsSsl').checked, cache: $('nsCache').checked, block_attacks: $('nsBlock').checked, websockets: $('nsWs').checked, locations: collectLocs(), extra_conf: $('nsConf').value, access_id: ($('nsAccess') ? $('nsAccess').value : '') };
       if (editing) body.site_id = site.id;
       if (!body.server_name) return toast(tr('ng.need_domain'), 'err');
       if (k === 'proxy_host') { body.scheme = $('nsScheme').value; const p = $('nsTarget').value.trim(); if (!p) return toast(tr('ng.need_host_port'), 'err'); body.target_url = /^\d+$/.test(p) ? '127.0.0.1:' + p : p; }
@@ -368,29 +404,29 @@ async function uploadStatic(root, su) {
   }
 }
 
-// SSL certificate library (standalone named certs). Per-site certificates are
-// managed from each site's Edit dialog (SSL tab).
-function ngCerts() {
-  modal(tr('ng.cert_mgr'), `<div id="ngCertBody">${loading()}</div>`, () => {
-    const load = () => op('nginx', { op: 'list_named_certs' }).then((d) => {
-      const certs = d.certs || [];
-      let h = `<div class="row" style="margin-bottom:12px"><span class="mut" style="font-size:12.5px;flex:1">${tr('ng.cert_lib_intro')}</span><button class="btn sm" id="ngCertNew">${tr('ng.create_cert')}</button></div><p class="formnote" style="margin-top:0;margin-bottom:12px">${tr('ng.autorenew_note')}</p>`;
-      if (!certs.length) { h += `<div class="empty">${tr('ng.cert_lib_empty')}</div>`; }
-      else {
-        h += `<table class="optable"><tr><th>${tr('ng.col_name')}</th><th>${tr('ng.col_domain')}</th><th>${tr('ng.col_mode')}</th><th>${tr('ng.col_expire')}</th><th>${tr('ng.col_used')}</th><th class="act">${tr('ng.col_actions')}</th></tr>`;
-        certs.forEach((c) => {
-          const modeLabel = { le: tr('ng.mode_le'), self: tr('ng.mode_self'), manual: tr('ng.mode_manual') }[c.cert_mode] || c.cert_mode;
-          const used = (c.used_by && c.used_by.length) ? esc(c.used_by.join('、')) : `<span class="mut">${tr('ng.unused')}</span>`;
-          h += `<tr><td><b>${esc(c.name)}</b>${c.has_cert ? '' : ` <span class="chip warn">${tr('ng.missing')}</span>`}</td><td class="mut">${esc(c.domain || '-')}</td><td class="mut">${esc(modeLabel)}</td><td class="mono" style="font-size:12px">${esc(c.not_after || '-')}</td><td style="font-size:12px">${used}</td><td class="act"><button class="btn sm danger" data-del="${esc(c.name)}">${tr('ng.delete')}</button></td></tr>`;
-        });
-        h += '</table>';
-      }
-      $('ngCertBody').innerHTML = '<div class="tablewrap">' + h + '</div>';
-      $('ngCertNew').onclick = () => ngCreateCert(load);
-      document.querySelectorAll('#ngCertBody [data-del]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('ng.confirm_del_cert', { name: b.dataset.del }))) op('nginx', { op: 'delete_cert', cert_name: b.dataset.del }).then(() => { toast(tr('common.deleted'), 'ok'); load(); }).catch((e) => toast(e.message, 'err')); });
-    }).catch((e) => { $('ngCertBody').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
-    load();
-  });
+// ---- Tab 3: Certificates (standalone named cert library) ----
+// Per-site certificates are managed from each site's Edit dialog (SSL tab).
+function ngCertsTab(v) {
+  const body = $('ngBody');
+  const load = () => op('nginx', { op: 'list_named_certs' }).then((d) => {
+    const certs = d.certs || [];
+    let h = `<div class="row" style="margin-bottom:12px"><span class="mut" style="font-size:12.5px;flex:1">${tr('ng.cert_lib_intro')}</span><button class="btn sm" id="ngCertNew">${tr('ng.create_cert')}</button></div><p class="formnote" style="margin-top:0;margin-bottom:12px">${tr('ng.autorenew_note')}</p>`;
+    if (!certs.length) { h += `<div class="empty">${tr('ng.cert_lib_empty')}</div>`; }
+    else {
+      h += `<table class="optable"><tr><th>${tr('ng.col_name')}</th><th>${tr('ng.col_domain')}</th><th>${tr('ng.col_mode')}</th><th>${tr('ng.col_expire')}</th><th>${tr('ng.col_used')}</th><th class="act">${tr('ng.col_actions')}</th></tr>`;
+      certs.forEach((c) => {
+        const modeLabel = { le: tr('ng.mode_le'), self: tr('ng.mode_self'), manual: tr('ng.mode_manual') }[c.cert_mode] || c.cert_mode;
+        const used = (c.used_by && c.used_by.length) ? esc(c.used_by.join('、')) : `<span class="mut">${tr('ng.unused')}</span>`;
+        h += `<tr><td><b>${esc(c.name)}</b>${c.has_cert ? '' : ` <span class="chip warn">${tr('ng.missing')}</span>`}</td><td class="mut">${esc(c.domain || '-')}</td><td class="mut">${esc(modeLabel)}</td><td class="mono" style="font-size:12px">${esc(c.not_after || '-')}</td><td style="font-size:12px">${used}</td><td class="act"><button class="btn sm danger" data-del="${esc(c.name)}">${tr('ng.delete')}</button></td></tr>`;
+      });
+      h += '</table>';
+    }
+    body.innerHTML = '<div class="tablewrap">' + h + '</div>';
+    $('ngCertNew').onclick = () => ngCreateCert(load);
+    document.querySelectorAll('#ngBody [data-del]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('ng.confirm_del_cert', { name: b.dataset.del }))) op('nginx', { op: 'delete_cert', cert_name: b.dataset.del }).then(() => { toast(tr('common.deleted'), 'ok'); load(); }).catch((e) => toast(e.message, 'err')); });
+  }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+  body.innerHTML = loading();
+  load();
 }
 
 // Create a standalone named certificate (self-signed / LE / manual).
@@ -454,4 +490,112 @@ function ngCreateCert(reload) {
       }).catch((e) => { toast(e.message, 'err'); $('ccJob').innerHTML = ''; $('ccGo').disabled = false; });
     };
   });
+}
+
+// ---- Tab 2: Access Lists (HTTP Basic Auth + IP allow/deny) ----
+function ngAccessTab(v) {
+  const body = $('ngBody');
+  const load = () => op('nginx', { op: 'list_access' }).then((d) => {
+    const lists = d.access || [];
+    let h = `<div class="row" style="margin-bottom:12px"><span class="mut" style="font-size:12.5px;flex:1">${tr('ng.access_intro')}</span><button class="btn sm" id="ngAccNew">${tr('ng.access_new')}</button></div>`;
+    if (!lists.length) { h += `<div class="empty">${tr('ng.access_empty')}</div>`; }
+    else {
+      h += `<table class="optable"><tr><th>${tr('ng.col_name')}</th><th>${tr('ng.access_users')}</th><th>${tr('ng.access_rules')}</th><th>${tr('ng.col_used')}</th><th class="act">${tr('ng.col_actions')}</th></tr>`;
+      lists.forEach((a) => {
+        const used = (a.used_by && a.used_by.length) ? esc(a.used_by.join('、')) : `<span class="mut">${tr('ng.unused')}</span>`;
+        h += `<tr><td><b>${esc(a.name)}</b></td><td class="mut">${(a.users || []).length}</td><td class="mut">${(a.clients || []).length}</td><td style="font-size:12px">${used}</td><td class="act"><button class="btn sm sec" data-edit="${esc(a.id)}">${tr('ng.edit_site')}</button><button class="btn sm danger" data-del="${esc(a.id)}">${tr('ng.delete')}</button></td></tr>`;
+      });
+      h += '</table>';
+    }
+    body.innerHTML = '<div class="tablewrap">' + h + '</div>';
+    $('ngAccNew').onclick = () => ngAccessForm(load, null);
+    document.querySelectorAll('#ngBody [data-edit]').forEach((b) => b.onclick = () => { const a = lists.find((x) => x.id === b.dataset.edit); if (a) ngAccessForm(load, a); });
+    document.querySelectorAll('#ngBody [data-del]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('ng.confirm_del_access'))) op('nginx', { op: 'delete_access', access_id: b.dataset.del }).then(() => { toast(tr('common.deleted'), 'ok'); load(); }).catch((e) => toast(e.message, 'err')); });
+  }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+  body.innerHTML = loading();
+  load();
+}
+
+// Create / edit an access list (auth users + allow-deny rules).
+function ngAccessForm(reload, al) {
+  const editing = !!al;
+  modal(editing ? tr('ng.access_edit_title') : tr('ng.access_new'), `
+    <div class="formgrid">
+      <div class="full"><label class="lbl">${tr('ng.access_name')}</label><input id="alName" class="field" placeholder="${tr('ng.access_name_ph')}" value="${editing ? esc(al.name) : ''}" /></div>
+    </div>
+    <div class="sechead" style="margin-top:14px"><h3>${tr('ng.access_users')}</h3><span class="sp"></span><button type="button" class="btn sm sec" id="alAddUser">${tr('ng.access_add_user')}</button></div>
+    <div id="alUsers"></div>
+    <div class="sechead" style="margin-top:14px"><h3>${tr('ng.access_rules')}</h3><span class="sp"></span><button type="button" class="btn sm sec" id="alAddRule">${tr('ng.access_add_rule')}</button></div>
+    <p class="formnote" style="margin-top:0">${tr('ng.access_rules_hint')}</p>
+    <div id="alRules"></div>
+    <div class="ssltoggles" style="margin-top:16px">
+      <label class="switch"><input type="checkbox" id="alSatisfy"${editing && al.satisfy === 'all' ? ' checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.access_satisfy_all')}</b><span>${tr('ng.access_satisfy_all_d')}</span></span></label>
+      <label class="switch"><input type="checkbox" id="alPassAuth"${editing && al.pass_auth ? ' checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.access_pass_auth')}</b><span>${tr('ng.access_pass_auth_d')}</span></span></label>
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="alGo">${editing ? tr('ng.save') : tr('ng.create')}</button></div>`, (close) => {
+    const userRow = (u) => {
+      u = u || {};
+      const w = el('div', { class: 'locrule' });
+      w.innerHTML = `<div class="lr-row"><input class="field au-user" placeholder="${tr('ng.access_username')}" value="${esc(u.username || '')}" /><input class="field au-pw" type="text" placeholder="${u.username ? tr('ng.access_pw_keep') : tr('ng.access_password')}" autocomplete="new-password" /><button type="button" class="lr-del" title="${tr('ng.delete')}"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>`;
+      w.querySelector('.lr-del').onclick = () => w.remove();
+      $('alUsers').appendChild(w);
+    };
+    const ruleRow = (c) => {
+      c = c || {};
+      const w = el('div', { class: 'locrule' });
+      w.innerHTML = `<div class="lr-row"><select class="field proto ar-dir"><option value="allow">${tr('ng.access_allow')}</option><option value="deny">${tr('ng.access_deny')}</option></select><input class="field ar-addr" placeholder="${tr('ng.access_addr_ph')}" value="${esc(c.address || '')}" /><button type="button" class="lr-del" title="${tr('ng.delete')}"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>`;
+      if (c.directive === 'deny') w.querySelector('.ar-dir').value = 'deny';
+      w.querySelector('.lr-del').onclick = () => w.remove();
+      $('alRules').appendChild(w);
+    };
+    $('alAddUser').onclick = () => userRow();
+    $('alAddRule').onclick = () => ruleRow();
+    if (editing) {
+      (al.users || []).forEach((u) => userRow(u));
+      (al.clients || []).forEach((c) => ruleRow(c));
+    }
+    $('alGo').onclick = () => {
+      const name = $('alName').value.trim();
+      if (!name) return toast(tr('ng.need_access_name'), 'err');
+      const users = Array.from($('alUsers').querySelectorAll('.locrule')).map((w) => ({ username: w.querySelector('.au-user').value.trim(), password: w.querySelector('.au-pw').value })).filter((u) => u.username);
+      const clients = Array.from($('alRules').querySelectorAll('.locrule')).map((w) => ({ directive: w.querySelector('.ar-dir').value, address: w.querySelector('.ar-addr').value.trim() })).filter((c) => c.address);
+      const body = { op: 'save_access', name, satisfy: $('alSatisfy').checked ? 'all' : 'any', pass_auth: $('alPassAuth').checked, users, clients };
+      if (editing) body.access_id = al.id;
+      $('alGo').disabled = true;
+      op('nginx', body).then(() => { toast(editing ? tr('common.saved') : tr('common.created'), 'ok'); close(); reload(); }).catch((e) => { toast(e.message, 'err'); $('alGo').disabled = false; });
+    };
+  });
+}
+
+// ---- Tab 4: Settings (default site for unmatched requests) ----
+function ngSettingsTab(v) {
+  const body = $('ngBody');
+  body.innerHTML = loading();
+  op('nginx', { op: 'get_settings' }).then((d) => {
+    const ds = (d.default_site) || { mode: '404', redirect_url: '' };
+    body.innerHTML = `
+      <div class="card" style="max-width:560px">
+        <h3>${tr('ng.default_site')}</h3>
+        <p class="mut" style="font-size:12.5px;margin:0 0 14px">${tr('ng.default_site_desc')}</p>
+        <label class="lbl">${tr('ng.default_behavior')}</label>
+        <select id="ngDsMode" class="field" style="margin-bottom:12px">
+          <option value="404">${tr('ng.ds_404')}</option>
+          <option value="welcome">${tr('ng.ds_welcome')}</option>
+          <option value="444">${tr('ng.ds_444')}</option>
+          <option value="redirect">${tr('ng.ds_redirect')}</option>
+        </select>
+        <div id="ngDsRedirectWrap" class="hidden"><label class="lbl">${tr('ng.ds_redirect_url')}</label><input id="ngDsUrl" class="field" placeholder="https://example.com" value="${esc(ds.redirect_url || '')}" style="margin-bottom:12px" /></div>
+        <button class="btn" id="ngDsSave">${tr('ng.save')}</button>
+        <div class="err ok" id="ngDsMsg" style="margin-top:10px"></div>
+      </div>`;
+    $('ngDsMode').value = ds.mode || '404';
+    const sync = () => $('ngDsRedirectWrap').classList.toggle('hidden', $('ngDsMode').value !== 'redirect');
+    $('ngDsMode').onchange = sync; sync();
+    $('ngDsSave').onclick = () => {
+      const m = $('ngDsMsg');
+      const bodyReq = { op: 'set_default_site', default_mode: $('ngDsMode').value, redirect_url: $('ngDsUrl') ? $('ngDsUrl').value.trim() : '' };
+      $('ngDsSave').disabled = true;
+      op('nginx', bodyReq).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); $('ngDsSave').disabled = false; }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('ngDsSave').disabled = false; });
+    };
+  }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }

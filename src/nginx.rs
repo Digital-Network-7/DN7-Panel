@@ -89,6 +89,25 @@ struct Req {
     locations: Option<Vec<Location>>, // custom path rules
     #[serde(default)]
     extra_conf: Option<String>, // raw nginx directives injected into the server block
+    // Access list reference on a site (empty = public/none).
+    #[serde(default)]
+    access_id: Option<String>,
+    // Access list management (create/update/delete).
+    #[serde(default)]
+    name: Option<String>, // access list display name
+    #[serde(default)]
+    satisfy: Option<String>, // "any" | "all"
+    #[serde(default)]
+    pass_auth: Option<bool>, // forward Authorization header upstream
+    #[serde(default)]
+    users: Option<Vec<AccessUserInput>>, // basic-auth users (username + optional new password)
+    #[serde(default)]
+    clients: Option<Vec<AccessClient>>, // allow/deny IP rules
+    // Default-site (Settings) configuration.
+    #[serde(default)]
+    default_mode: Option<String>, // "404" | "welcome" | "444" | "redirect"
+    #[serde(default)]
+    redirect_url: Option<String>,
 }
 
 /// A managed site, persisted in the manifest and regenerated into one conf file.
@@ -144,10 +163,91 @@ struct Site {
     /// Validated by `nginx -t` on save (invalid input rolls back).
     #[serde(default)]
     extra_conf: String,
+    /// Access list id controlling this site (HTTP Basic Auth + IP allow/deny).
+    /// Empty == publicly accessible.
+    #[serde(default)]
+    access_id: String,
 }
 
 fn default_true() -> bool {
     true
+}
+
+// ---------------------------------------------------------------------------
+// Access lists (NPM-style): HTTP Basic Auth users + IP allow/deny rules, with
+// "satisfy any/all" and an option to forward (or strip) the Authorization
+// header upstream. Assigned to proxy hosts by id.
+// ---------------------------------------------------------------------------
+
+/// A stored access list. Passwords are kept only as nginx-htpasswd hashes
+/// (`{SHA}…`), never in plaintext.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AccessList {
+    id: String,
+    name: String,
+    /// "any" | "all" — how auth and IP rules combine (nginx `satisfy`).
+    #[serde(default)]
+    satisfy: String,
+    /// Forward the client's Authorization header to the upstream (else strip).
+    #[serde(default)]
+    pass_auth: bool,
+    #[serde(default)]
+    users: Vec<AccessUser>,
+    #[serde(default)]
+    clients: Vec<AccessClient>,
+}
+
+/// A basic-auth credential: the username and its precomputed htpasswd hash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AccessUser {
+    username: String,
+    /// nginx-compatible hash, e.g. `{SHA}base64(sha1(password))`.
+    #[serde(default)]
+    hash: String,
+}
+
+/// An allow/deny rule against a client address (IP, CIDR, or "all").
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct AccessClient {
+    /// "allow" | "deny".
+    directive: String,
+    /// IP / CIDR / "all".
+    address: String,
+}
+
+/// New/changed user input from the client (password is plaintext, optional on
+/// edit — empty keeps the existing hash).
+#[derive(Debug, Clone, Deserialize, Default)]
+struct AccessUserInput {
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    password: String,
+}
+
+/// Default-site behaviour for requests matching no managed server_name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DefaultSite {
+    /// "404" | "welcome" | "444" | "redirect".
+    mode: String,
+    #[serde(default)]
+    redirect_url: String,
+}
+
+impl Default for DefaultSite {
+    fn default() -> Self {
+        DefaultSite {
+            mode: "404".to_string(),
+            redirect_url: String::new(),
+        }
+    }
+}
+
+/// Global website settings (persisted in `websettings.json`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct WebGlobal {
+    #[serde(default)]
+    default_site: DefaultSite,
 }
 
 /// A custom path rule (NPM-style "custom location"): forward a path prefix to a
@@ -414,6 +514,134 @@ fn named_key_file(lo: &Layout, name: &str) -> std::path::PathBuf {
 }
 
 // ---------------------------------------------------------------------------
+// Access-list store + global website settings.
+// ---------------------------------------------------------------------------
+
+fn access_file() -> std::path::PathBuf {
+    base_dir().join("access.json")
+}
+fn access_dir() -> std::path::PathBuf {
+    base_dir().join("access")
+}
+fn htpasswd_path(id: &str) -> std::path::PathBuf {
+    access_dir().join(format!("{id}.htpasswd"))
+}
+fn websettings_file() -> std::path::PathBuf {
+    base_dir().join("websettings.json")
+}
+
+fn load_access() -> Vec<AccessList> {
+    std::fs::read_to_string(access_file())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<AccessList>>(&s).ok())
+        .unwrap_or_default()
+}
+fn save_access(lists: &[AccessList]) -> Result<()> {
+    std::fs::create_dir_all(base_dir())?;
+    std::fs::write(access_file(), serde_json::to_string_pretty(lists)?)?;
+    Ok(())
+}
+fn load_webglobal() -> WebGlobal {
+    std::fs::read_to_string(websettings_file())
+        .ok()
+        .and_then(|s| serde_json::from_str::<WebGlobal>(&s).ok())
+        .unwrap_or_default()
+}
+fn save_webglobal(g: &WebGlobal) -> Result<()> {
+    std::fs::create_dir_all(base_dir())?;
+    std::fs::write(websettings_file(), serde_json::to_string_pretty(g)?)?;
+    Ok(())
+}
+
+/// An access-list id (random, filesystem-safe).
+fn new_access_id() -> String {
+    format!("al{:08x}", rand::random::<u32>())
+}
+
+/// Validate an access-list display name (1..=64, no control chars / quotes).
+fn valid_access_name(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty()
+        && s.chars().count() <= 64
+        && !s.chars().any(|c| c.is_control() || c == '"' || c == '\\')
+}
+
+/// Validate a basic-auth username (no ':' — the htpasswd field separator).
+fn valid_auth_username(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '@'))
+}
+
+/// Validate a client address for allow/deny: "all", or an IPv4/IPv6/CIDR token.
+fn valid_client_address(s: &str) -> bool {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("all") {
+        return true;
+    }
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit() || matches!(c, '.' | ':' | '/'))
+}
+
+/// base64-encode (standard alphabet, padded) — for the `{SHA}` htpasswd hash.
+fn base64_encode(data: &[u8]) -> String {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        out.push(T[(b0 >> 2) as usize] as char);
+        out.push(T[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            T[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(b2 & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Compute an nginx-compatible `{SHA}` password hash (base64 of SHA-1). nginx
+/// understands this scheme natively (no system crypt dependency).
+fn htpasswd_hash(password: &str) -> String {
+    use sha1::{Digest, Sha1};
+    let mut h = Sha1::new();
+    h.update(password.as_bytes());
+    format!("{{SHA}}{}", base64_encode(&h.finalize()))
+}
+
+/// Write (or remove) an access list's htpasswd file from its stored hashes.
+fn write_htpasswd(list: &AccessList) -> Result<()> {
+    let path = htpasswd_path(&list.id);
+    if list.users.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return Ok(());
+    }
+    std::fs::create_dir_all(access_dir())?;
+    let mut body = String::new();
+    for u in &list.users {
+        body.push_str(&format!("{}:{}\n", u.username, u.hash));
+    }
+    std::fs::write(&path, body)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // World-readable: nginx worker processes read this per request.
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Static-site content upload (ZIP extraction / per-file), used by the web
 // console's "static" site type. Writes into <www_store>/<root>/.
 // ---------------------------------------------------------------------------
@@ -557,6 +785,11 @@ async fn handle(req: &Req) -> Result<Value> {
         "list_named_certs" => list_named_certs().await,
         "create_cert" => create_cert(req).await,
         "delete_cert" => delete_cert(req).await,
+        "list_access" => list_access().await,
+        "save_access" => save_access_op(req).await,
+        "delete_access" => delete_access_op(req).await,
+        "get_settings" => get_web_settings().await,
+        "set_default_site" => set_default_site(req).await,
         "reload" => {
             reload().await?;
             Ok(json!({ "reloaded": true }))
@@ -1102,6 +1335,7 @@ fn site_from_req(req: &Req) -> Result<Site> {
         trust_proxy: req.trust_proxy.unwrap_or(false),
         locations: Vec::new(),
         extra_conf: String::new(),
+        access_id: String::new(),
     };
 
     match kind.as_str() {
@@ -1159,6 +1393,18 @@ fn site_from_req(req: &Req) -> Result<Site> {
     let extra = req.extra_conf.as_deref().unwrap_or("").trim();
     validate_extra_conf(extra)?;
     site.extra_conf = extra.to_string();
+
+    // Optional access list reference — must exist when set.
+    let access_id = req
+        .access_id
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+    if !access_id.is_empty() && !load_access().iter().any(|a| a.id == access_id) {
+        return Err(anyhow!("ERR_CODE:nginx.access_not_found"));
+    }
+    site.access_id = access_id;
 
     if ssl && !matches!(cert_mode.as_str(), "self" | "le" | "manual" | "named") {
         return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
@@ -1375,6 +1621,14 @@ pub async fn resync_confs() {
         match write_site_conf(&lo, &site, &[]).await {
             Ok(()) => wrote = true,
             Err(e) => tracing::warn!(site = %site.server_name, "resync conf failed: {e}"),
+        }
+    }
+    // Re-apply the default-site catch-all if it has been configured.
+    if websettings_file().exists() {
+        if let Err(e) = write_default_conf(&lo, &load_webglobal()).await {
+            tracing::warn!("default-site conf resync failed: {e}");
+        } else {
+            wrote = true;
         }
     }
     if wrote {
@@ -1822,6 +2076,281 @@ async fn delete_cert(req: &Req) -> Result<Value> {
     Ok(json!({ "deleted": name }))
 }
 
+// ---------------------------------------------------------------------------
+// Access lists: list / create-or-update / delete, plus default-site settings.
+// ---------------------------------------------------------------------------
+
+/// server_names of sites currently using each access list id.
+fn sites_using_access() -> HashMap<String, Vec<String>> {
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for s in load_sites() {
+        if !s.access_id.is_empty() {
+            map.entry(s.access_id).or_default().push(s.server_name);
+        }
+    }
+    map
+}
+
+/// List access lists (without password hashes), with usage info.
+async fn list_access() -> Result<Value> {
+    let lists = load_access();
+    let in_use = sites_using_access();
+    let out: Vec<Value> = lists
+        .iter()
+        .map(|a| {
+            json!({
+                "id": a.id,
+                "name": a.name,
+                "satisfy": if a.satisfy == "all" { "all" } else { "any" },
+                "pass_auth": a.pass_auth,
+                "users": a.users.iter().map(|u| json!({ "username": u.username })).collect::<Vec<_>>(),
+                "clients": a.clients,
+                "used_by": in_use.get(&a.id).cloned().unwrap_or_default(),
+            })
+        })
+        .collect();
+    Ok(json!({ "access": out }))
+}
+
+/// Create (no access_id) or update (existing access_id) an access list.
+async fn save_access_op(req: &Req) -> Result<Value> {
+    let _ = layout()?; // require setup
+    let name = req
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_access_name"))?
+        .to_string();
+    if !valid_access_name(&name) {
+        return Err(anyhow!("ERR_CODE:nginx.bad_access_name"));
+    }
+    let satisfy = match req.satisfy.as_deref().unwrap_or("any") {
+        "all" => "all",
+        _ => "any",
+    }
+    .to_string();
+    let pass_auth = req.pass_auth.unwrap_or(false);
+
+    // Validate clients.
+    let mut clients = Vec::new();
+    for c in req.clients.clone().unwrap_or_default() {
+        let dir = if c.directive == "deny" {
+            "deny"
+        } else {
+            "allow"
+        };
+        if !valid_client_address(&c.address) {
+            return Err(anyhow!("ERR_CODE:nginx.bad_client_addr"));
+        }
+        clients.push(AccessClient {
+            directive: dir.to_string(),
+            address: c.address.trim().to_string(),
+        });
+    }
+
+    let mut lists = load_access();
+    let existing_id = req
+        .access_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let old = existing_id
+        .as_ref()
+        .and_then(|id| lists.iter().find(|a| &a.id == id).cloned());
+
+    // Build the user list: a provided password (re)hashes; an empty password on
+    // an existing username reuses the stored hash.
+    let mut users = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for u in req.users.clone().unwrap_or_default() {
+        let username = u.username.trim().to_string();
+        if username.is_empty() {
+            continue;
+        }
+        if !valid_auth_username(&username) {
+            return Err(anyhow!("ERR_CODE:nginx.bad_auth_user"));
+        }
+        if !seen.insert(username.clone()) {
+            return Err(anyhow!("ERR_CODE:nginx.dup_auth_user"));
+        }
+        let hash = if !u.password.is_empty() {
+            if u.password.len() > 128 {
+                return Err(anyhow!("ERR_CODE:nginx.bad_auth_pw"));
+            }
+            htpasswd_hash(&u.password)
+        } else {
+            // Reuse an existing hash for this username (edit without new pw).
+            old.as_ref()
+                .and_then(|o| o.users.iter().find(|x| x.username == username))
+                .map(|x| x.hash.clone())
+                .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_auth_pw"))?
+        };
+        users.push(AccessUser { username, hash });
+    }
+
+    let id = existing_id.clone().unwrap_or_else(new_access_id);
+    let list = AccessList {
+        id: id.clone(),
+        name,
+        satisfy,
+        pass_auth,
+        users,
+        clients,
+    };
+    write_htpasswd(&list)?;
+    // Persist into the manifest (replace or append).
+    lists.retain(|a| a.id != id);
+    lists.push(list);
+    save_access(&lists)?;
+
+    // Rewrite the confs of any sites using this list, then reload.
+    rewrite_sites_using_access(&id).await?;
+    Ok(json!({ "id": id }))
+}
+
+/// Delete an access list (refused while a site still uses it).
+async fn delete_access_op(req: &Req) -> Result<Value> {
+    let id = req
+        .access_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("ERR_CODE:nginx.missing_access_id"))?;
+    let in_use = sites_using_access();
+    if let Some(sites) = in_use.get(id) {
+        if !sites.is_empty() {
+            return Err(anyhow!("访问列表仍被站点使用：{}", sites.join("、")));
+        }
+    }
+    let mut lists = load_access();
+    let before = lists.len();
+    lists.retain(|a| a.id != id);
+    if lists.len() == before {
+        return Err(anyhow!("ERR_CODE:nginx.access_not_found"));
+    }
+    save_access(&lists)?;
+    let _ = std::fs::remove_file(htpasswd_path(id));
+    Ok(json!({ "deleted": id }))
+}
+
+/// Rewrite + reload the confs of every site referencing `access_id`.
+async fn rewrite_sites_using_access(access_id: &str) -> Result<()> {
+    let lo = layout()?;
+    let mut touched = false;
+    for site in load_sites() {
+        if site.access_id == access_id {
+            // Skip SSL sites whose cert is missing (keeps nginx -t valid).
+            let mut s = site.clone();
+            if s.ssl {
+                let have = if s.cert_name.is_empty() {
+                    lo.cert_store.join(format!("{}.crt", s.id)).exists()
+                } else {
+                    named_crt_file(&lo, &s.cert_name).exists()
+                };
+                if !have {
+                    s.ssl = false;
+                }
+            }
+            if let Err(e) = write_site_conf(&lo, &s, &[]).await {
+                tracing::warn!(site = %s.server_name, "access rewrite failed: {e}");
+            } else {
+                touched = true;
+            }
+        }
+    }
+    if touched {
+        validate_and_reload(&lo).await?;
+    }
+    Ok(())
+}
+
+/// Current website settings (default-site behaviour).
+async fn get_web_settings() -> Result<Value> {
+    let g = load_webglobal();
+    Ok(json!({
+        "default_site": { "mode": g.default_site.mode, "redirect_url": g.default_site.redirect_url },
+        "configured": websettings_file().exists(),
+    }))
+}
+
+/// Save the default-site behaviour and (re)write the catch-all conf.
+async fn set_default_site(req: &Req) -> Result<Value> {
+    let lo = layout()?;
+    let mode = match req.default_mode.as_deref().unwrap_or("404") {
+        m @ ("404" | "welcome" | "444" | "redirect") => m.to_string(),
+        _ => return Err(anyhow!("ERR_CODE:nginx.bad_default_mode")),
+    };
+    let redirect_url = req
+        .redirect_url
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+    if mode == "redirect" && !valid_redirect_url(&redirect_url) {
+        return Err(anyhow!("ERR_CODE:nginx.bad_redirect_url"));
+    }
+    let g = WebGlobal {
+        default_site: DefaultSite { mode, redirect_url },
+    };
+    save_webglobal(&g)?;
+    write_default_conf(&lo, &g).await?;
+    if let Err(e) = validate_and_reload(&lo).await {
+        // Roll back: remove the default conf so nginx stays valid.
+        let _ = std::fs::remove_file(default_conf_path());
+        let _ = reload().await;
+        return Err(e);
+    }
+    Ok(json!({ "ok": true }))
+}
+
+/// Validate a redirect target URL (http/https, no quotes/whitespace/newlines).
+fn valid_redirect_url(s: &str) -> bool {
+    (s.starts_with("http://") || s.starts_with("https://"))
+        && s.len() <= 2048
+        && !s
+            .chars()
+            .any(|c| c.is_whitespace() || c == '"' || c == '\\')
+}
+
+fn default_conf_path() -> std::path::PathBuf {
+    std::path::Path::new(HOST_CONFD).join("00-dn7-default.conf")
+}
+
+/// The per-mode response directives for the default (catch-all) server.
+fn default_behavior(g: &WebGlobal) -> String {
+    match g.default_site.mode.as_str() {
+        "redirect" => format!("    return 301 {};\n", g.default_site.redirect_url),
+        "444" => "    return 444;\n".to_string(),
+        "welcome" => "    default_type text/html;\n    return 200 \"<!doctype html><html lang=en><head><meta charset=utf-8><title>DN7 Panel</title></head><body style='font-family:system-ui,sans-serif;text-align:center;padding:80px 20px;color:#333'><h1 style='margin:0 0 8px'>It works</h1><p style='color:#888'>This server is managed by DN7 Panel.</p></body></html>\";\n".to_string(),
+        _ => "    return 404;\n".to_string(),
+    }
+}
+
+/// Write the catch-all default-server conf (HTTP + HTTPS) per the saved
+/// settings, generating a self-signed default cert for the HTTPS listener.
+async fn write_default_conf(lo: &Layout, g: &WebGlobal) -> Result<()> {
+    let behavior = default_behavior(g);
+    // Default cert for the 443 catch-all (so unmatched SNI doesn't fall through
+    // to the first real site's certificate).
+    let crt = lo.cert_store.join("default.crt");
+    let key = lo.cert_store.join("default.key");
+    if !crt.exists() || !key.exists() {
+        gen_self_signed_to(&crt, &key, "localhost").await?;
+    }
+    let crt_ref = format!("{}/default.crt", lo.cert_ref);
+    let key_ref = format!("{}/default.key", lo.cert_ref);
+    let conf = format!(
+        "server {{\n    listen 80 default_server;\n    server_name _;\n{behavior}}}\n\n\
+         server {{\n    listen 443 ssl default_server;\n    server_name _;\n\
+         \x20   ssl_certificate {crt_ref};\n    ssl_certificate_key {key_ref};\n{behavior}}}\n"
+    );
+    std::fs::create_dir_all(HOST_CONFD)?;
+    std::fs::write(default_conf_path(), conf)?;
+    Ok(())
+}
+
 /// Best-effort parse of a PEM cert's notAfter (expiry) as an ISO date string.
 /// Uses rcgen's dependency `x509-parser`-free approach: we only have rcgen +
 /// instant-acme, so parse the ASN.1 validity minimally. Returns "" on failure.
@@ -2022,7 +2551,7 @@ fn acme_challenge_locations(acme: &[(String, String)]) -> String {
     let mut s = String::new();
     for (token, keyauth) in acme {
         s.push_str(&format!(
-            "\n    location = /.well-known/acme-challenge/{token} {{\n        default_type text/plain;\n        return 200 \"{keyauth}\";\n    }}\n"
+            "\n    location = /.well-known/acme-challenge/{token} {{\n        auth_basic off;\n        allow all;\n        default_type text/plain;\n        return 200 \"{keyauth}\";\n    }}\n"
         ));
     }
     s
@@ -2032,7 +2561,16 @@ fn acme_challenge_locations(acme: &[(String, String)]) -> String {
 /// `acme` is non-empty, the port-80 block also answers those HTTP-01 challenges
 /// inline (used during Let's Encrypt issuance).
 async fn write_site_conf(lo: &Layout, site: &Site, acme: &[(String, String)]) -> Result<()> {
-    let body = render_location(lo, site).await?;
+    // Resolve the assigned access list (if any) and build its directives.
+    let access = if site.access_id.is_empty() {
+        None
+    } else {
+        load_access().into_iter().find(|a| a.id == site.access_id)
+    };
+    let strip_auth = access.as_ref().map(|a| !a.pass_auth).unwrap_or(false);
+    let auth = render_auth_block(access.as_ref());
+
+    let body = render_location(lo, site, strip_auth).await?;
     let server_name = &site.server_name;
     let acme_loc = acme_challenge_locations(acme);
 
@@ -2060,7 +2598,7 @@ async fn write_site_conf(lo: &Layout, site: &Site, acme: &[(String, String)]) ->
             ));
         } else {
             conf.push_str(&format!(
-                "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\n{extra}{body}}}\n\n"
+                "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\n{auth}{extra}{body}}}\n\n"
             ));
         }
         // HTTPS block.
@@ -2090,11 +2628,11 @@ async fn write_site_conf(lo: &Layout, site: &Site, acme: &[(String, String)]) ->
         conf.push_str(&format!(
             "server {{\n    {listen443}\n    server_name {server_name};\n\
              \n    ssl_certificate {crt};\n    ssl_certificate_key {key};\n{sec}\
-             \n{extra}{body}}}\n"
+             \n{auth}{extra}{body}}}\n"
         ));
     } else {
         conf.push_str(&format!(
-            "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\n{extra}{body}}}\n"
+            "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\n{auth}{extra}{body}}}\n"
         ));
     }
 
@@ -2103,11 +2641,55 @@ async fn write_site_conf(lo: &Layout, site: &Site, acme: &[(String, String)]) ->
     Ok(())
 }
 
+/// Build the server-level access-control directives for an access list:
+/// `satisfy`, `allow`/`deny` rules, and `auth_basic` + `auth_basic_user_file`.
+/// Returns an empty string when the list is absent or has no rules.
+fn render_auth_block(access: Option<&AccessList>) -> String {
+    let a = match access {
+        Some(a) => a,
+        None => return String::new(),
+    };
+    let has_auth = !a.users.is_empty();
+    let has_clients = !a.clients.is_empty();
+    if !has_auth && !has_clients {
+        return String::new();
+    }
+    let mut s = String::from("\n");
+    // `satisfy` only matters when both factors are present, but it's harmless
+    // otherwise and makes the intent explicit.
+    if has_auth && has_clients {
+        let mode = if a.satisfy == "all" { "all" } else { "any" };
+        s.push_str(&format!("    satisfy {mode};\n"));
+    }
+    if has_clients {
+        for c in &a.clients {
+            let dir = if c.directive == "deny" {
+                "deny"
+            } else {
+                "allow"
+            };
+            s.push_str(&format!("    {dir} {};\n", c.address));
+        }
+    }
+    if has_auth {
+        s.push_str(&format!(
+            "    auth_basic \"{}\";\n",
+            a.name.replace('"', "")
+        ));
+        s.push_str(&format!(
+            "    auth_basic_user_file {};\n",
+            htpasswd_path(&a.id).display()
+        ));
+    }
+    s.push('\n');
+    s
+}
+
 /// The location block(s) for a site's forwarding kind, plus any NPM-style
 /// options (block-exploits / asset caching / websockets) and custom path rules.
 /// Async because a `proxy_container` site in host mode must resolve the
 /// container's IP (the host's nginx can't resolve a container name).
-async fn render_location(lo: &Layout, site: &Site) -> Result<String> {
+async fn render_location(lo: &Layout, site: &Site, strip_auth: bool) -> Result<String> {
     let mut out = String::new();
 
     // Optional: block common exploit patterns (server-scoped, before locations).
@@ -2133,6 +2715,7 @@ async fn render_location(lo: &Layout, site: &Site) -> Result<String> {
                 site.websockets,
                 false,
                 fwd,
+                strip_auth,
             ));
             // Optional: long-cache static assets (still proxied upstream).
             if site.cache {
@@ -2143,6 +2726,7 @@ async fn render_location(lo: &Layout, site: &Site) -> Result<String> {
                     site.websockets,
                     true,
                     fwd,
+                    strip_auth,
                 ));
             }
         }
@@ -2179,6 +2763,7 @@ async fn render_location(lo: &Layout, site: &Site) -> Result<String> {
             l.websockets,
             false,
             fwd,
+            strip_auth,
         ));
     }
 
@@ -2207,6 +2792,7 @@ fn proxy_location(
     websockets: bool,
     cache: bool,
     fwd_proto: &str,
+    strip_auth: bool,
 ) -> String {
     let mut b = String::new();
     b.push_str(&format!("    location {path} {{\n"));
@@ -2217,6 +2803,10 @@ fn proxy_location(
     b.push_str(&format!(
         "        proxy_set_header X-Forwarded-Proto {fwd_proto};\n"
     ));
+    // Access list with "Pass Auth" off: don't leak the Basic-Auth header upstream.
+    if strip_auth {
+        b.push_str("        proxy_set_header Authorization \"\";\n");
+    }
     if websockets {
         b.push_str("        proxy_http_version 1.1;\n");
         b.push_str("        proxy_set_header Upgrade $http_upgrade;\n");
@@ -2777,6 +3367,7 @@ mod tests {
             trust_proxy: false,
             locations: Vec::new(),
             extra_conf: String::new(),
+            access_id: String::new(),
         }
     }
 
@@ -2784,7 +3375,7 @@ mod tests {
     async fn renders_proxy_host() {
         let lo = lo_test();
         let site = mk_site("proxy_host", false);
-        let body = render_location(&lo, &site).await.unwrap();
+        let body = render_location(&lo, &site, false).await.unwrap();
         assert!(body.contains("proxy_pass http://10.0.0.5:8080;"));
         assert!(body.contains("Upgrade $http_upgrade"));
     }
@@ -2793,7 +3384,7 @@ mod tests {
     async fn renders_static_root() {
         let lo = lo_test();
         let site = mk_site("static", false);
-        let body = render_location(&lo, &site).await.unwrap();
+        let body = render_location(&lo, &site, false).await.unwrap();
         assert!(body.contains("root /tmp/dn7-test-www/site1;"));
     }
 
@@ -2805,7 +3396,7 @@ mod tests {
         site.cache = true;
         site.block_attacks = true;
         site.websockets = false;
-        let body = render_location(&lo, &site).await.unwrap();
+        let body = render_location(&lo, &site, false).await.unwrap();
         // https upstream, asset-cache location, exploit block, no ws headers.
         assert!(body.contains("proxy_pass https://10.0.0.5:8080;"));
         assert!(body.contains("location ~* \\.("));
@@ -2826,7 +3417,7 @@ mod tests {
             container: String::new(),
             container_port: 0,
         }];
-        let body = render_location(&lo, &site).await.unwrap();
+        let body = render_location(&lo, &site, false).await.unwrap();
         assert!(body.contains("location /api {"));
         assert!(body.contains("proxy_pass http://127.0.0.1:3001;"));
     }
@@ -2851,5 +3442,41 @@ mod tests {
             sanitize_rel("./x/./y.js").unwrap(),
             std::path::PathBuf::from("x/y.js")
         );
+    }
+
+    #[test]
+    fn htpasswd_sha_known_vector() {
+        // sha1("test") base64 → qUqP5cyxm6YcTAhz05Hph5gvu9M=
+        assert_eq!(htpasswd_hash("test"), "{SHA}qUqP5cyxm6YcTAhz05Hph5gvu9M=");
+    }
+
+    #[test]
+    fn base64_encode_pads() {
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn access_validators() {
+        assert!(valid_access_name("Internal only"));
+        assert!(!valid_access_name(""));
+        assert!(!valid_access_name("bad\"quote"));
+        assert!(valid_auth_username("bob.smith_1"));
+        assert!(!valid_auth_username("has:colon"));
+        assert!(valid_client_address("all"));
+        assert!(valid_client_address("192.168.0.0/16"));
+        assert!(valid_client_address("2001:db8::/32"));
+        assert!(!valid_client_address("1.2.3.4; rm -rf"));
+    }
+
+    #[test]
+    fn redirect_url_validation() {
+        assert!(valid_redirect_url("https://example.com/path"));
+        assert!(valid_redirect_url("http://a.test"));
+        assert!(!valid_redirect_url("ftp://x"));
+        assert!(!valid_redirect_url("https://a b.com"));
+        assert!(!valid_redirect_url("javascript:alert(1)"));
     }
 }
