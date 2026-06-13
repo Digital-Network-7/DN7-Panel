@@ -455,7 +455,7 @@
 /* ---- Spacing between action buttons in table action cells ---- */
 .optable td.act { white-space: nowrap; }
 .optable td.act .btn + .btn { margin-left: 8px; }
-.optable td.act .actions { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+.optable td.act .actions { display: inline-flex; gap: 8px; flex-wrap: wrap; align-items: center; min-height: 30px; }
 /* Inside a flex `.actions` the gap already spaces buttons — cancel the
    adjacent-button margin so it isn't doubled (matches Website/Files spacing). */
 .optable td.act .actions .btn + .btn { margin-left: 0; }

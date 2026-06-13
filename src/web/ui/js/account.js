@@ -186,7 +186,7 @@ function renderUsers(v) {
       const canManage = !u.is_super && mine > userLevel(u);
       const acts = canManage
         ? `<div class="actions"><button class="btn sm sec" data-edit="${esc(u.username)}">${tr('ng.edit_site')}</button><button class="btn sm danger" data-del="${esc(u.username)}">${tr('ng.delete')}</button></div>`
-        : '<span class="mut">—</span>';
+        : '<div class="actions"><span class="mut">—</span></div>';
       h += `<tr><td><b>${esc(u.username)}</b></td><td class="mut">${esc(u.full_name || '-')}</td><td><span class="role-chip ${roleCls}">${esc(role)}</span></td><td class="mono" style="font-size:12px">${u.uid || '-'}</td><td>${tfa}</td><td class="act">${acts}</td></tr>`;
     });
     h += '</table>';
