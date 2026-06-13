@@ -79,6 +79,7 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
         .route("/api/2fa/enable", post(twofa_enable))
         .route("/api/2fa/disable", post(twofa_disable))
         .route("/api/users", get(users_list).post(users_create))
+        .route("/api/users/update", post(users_update))
         .route("/api/users/delete", post(users_delete))
         .route("/api/info", get(panel_info))
         .route("/api/metrics", get(metrics))
@@ -677,11 +678,14 @@ struct PasswordReq {
     pw_salt: String,
     #[serde(default)]
     pw_hash: String,
+    /// `sha256_hex(current_salt ":" old_password)` — proves the caller knows
+    /// their current password before it can be changed.
     #[serde(default)]
-    pw_check: String,
+    old_verifier: String,
 }
 
-/// POST /api/password — change the caller's own panel password.
+/// POST /api/password — change the caller's own panel password (requires the
+/// current password to be verified first).
 async fn put_password(
     State(state): State<Shared>,
     headers: header::HeaderMap,
@@ -697,13 +701,20 @@ async fn put_password(
         return api_err(StatusCode::BAD_REQUEST, "settings.pw_format");
     }
     let hash = req.pw_hash.to_lowercase();
+    let cur_hash = if a.is_super {
+        state.settings.lock().unwrap().pw_hash.clone()
+    } else {
+        super::users::find(&a.username)
+            .map(|u| u.pw_hash)
+            .unwrap_or_default()
+    };
+    // Verify the current password (its salted hash) before allowing a change.
+    if cur_hash.is_empty() || req.old_verifier.to_lowercase() != cur_hash {
+        return api_err(StatusCode::BAD_REQUEST, "settings.bad_old_password");
+    }
     if a.is_super {
         let saved = {
             let mut s = state.settings.lock().unwrap();
-            if s.pw_default && (req.pw_check.is_empty() || req.pw_check.to_lowercase() == s.pw_hash)
-            {
-                return api_err(StatusCode::BAD_REQUEST, "settings.pw_is_default");
-            }
             s.set_password_hashed(&req.pw_salt, &hash);
             s.clone()
         };
@@ -830,16 +841,34 @@ async fn users_list(State(state): State<Shared>, headers: header::HeaderMap) -> 
         let s = state.settings.lock().unwrap();
         list.push(json!({
             "username": s.username, "role": "admin", "is_super": true,
-            "full_name": s.full_name, "uid": s.owner_uid, "totp_enabled": s.totp_enabled,
+            "full_name": s.full_name, "nickname": s.nickname, "uid": s.owner_uid, "totp_enabled": s.totp_enabled,
         }));
     }
     for u in super::users::load() {
         list.push(json!({
             "username": u.username, "role": u.role, "is_super": false,
-            "full_name": u.full_name, "uid": u.uid, "totp_enabled": u.totp_enabled,
+            "full_name": u.full_name, "nickname": u.nickname, "uid": u.uid, "totp_enabled": u.totp_enabled,
         }));
     }
     Json(json!({ "ok": true, "data": { "users": list } })).into_response()
+}
+
+/// Privilege level: super-admin (owner) 2, admin (sudo) 1, plain user 0.
+fn account_level(a: &Account) -> u8 {
+    if a.is_super {
+        2
+    } else if a.is_admin {
+        1
+    } else {
+        0
+    }
+}
+fn role_level(role: &str) -> u8 {
+    if role == "admin" {
+        1
+    } else {
+        0
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -861,8 +890,17 @@ async fn users_create(
     headers: header::HeaderMap,
     Json(req): Json<CreateUserReq>,
 ) -> Response {
-    if let Err(r) = require_admin(&state, &headers) {
-        return r;
+    let actor = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if !matches!(req.role.as_str(), "admin" | "user") {
+        return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.bad_role"))).into_response();
+    }
+    // May only create an account strictly lower in privilege than oneself
+    // (owner → admin/user; admin → user only).
+    if role_level(&req.role) >= account_level(&actor) {
+        return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
     }
     // Can't collide with the super-admin's login name.
     if req.username == state.settings.lock().unwrap().username {
@@ -883,6 +921,96 @@ async fn users_create(
 }
 
 #[derive(serde::Deserialize)]
+struct UpdateUserReq {
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    full_name: Option<String>,
+    #[serde(default)]
+    nickname: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    pw_salt: Option<String>,
+    #[serde(default)]
+    pw_hash: Option<String>,
+}
+
+/// POST /api/users/update — an owner/admin edits a **lower-privilege** panel
+/// user's profile, role and/or password.
+async fn users_update(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<UpdateUserReq>,
+) -> Response {
+    let actor = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let actor_lvl = account_level(&actor);
+    let target = match super::users::find(&req.username) {
+        Some(t) => t,
+        None => {
+            return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.not_found"))).into_response()
+        }
+    };
+    // Only manage accounts strictly below your own privilege.
+    if actor_lvl <= role_level(&target.role) {
+        return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+    }
+    // Optional role change (also adjusts the sudo group). The new role must
+    // also be strictly below the actor.
+    if let Some(role) = &req.role {
+        if !matches!(role.as_str(), "admin" | "user") {
+            return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.bad_role"))).into_response();
+        }
+        if role_level(role) >= actor_lvl {
+            return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+        }
+        if *role != target.role {
+            if let Err(e) = super::users::set_sudo(&req.username, role == "admin").await {
+                return Json(op_err_body(e)).into_response();
+            }
+        }
+    }
+    // Optional password reset (admin-set; no old password needed).
+    let pw = if req.pw_salt.is_some() || req.pw_hash.is_some() {
+        let salt = req.pw_salt.clone().unwrap_or_default();
+        let hash = req.pw_hash.clone().unwrap_or_default();
+        let salt_ok = salt.len() == 32 && salt.bytes().all(|b| b.is_ascii_hexdigit());
+        let hash_ok = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
+        if !salt_ok || !hash_ok {
+            return api_err(StatusCode::BAD_REQUEST, "settings.pw_format");
+        }
+        Some((salt, hash.to_lowercase()))
+    } else {
+        None
+    };
+    let res = super::users::update(&req.username, |u| {
+        if let Some(f) = &req.full_name {
+            u.full_name = f.trim().chars().take(64).collect();
+        }
+        if let Some(n) = &req.nickname {
+            u.nickname = n.trim().chars().take(40).collect();
+        }
+        if let Some(r) = &req.role {
+            u.role = r.clone();
+        }
+        if let Some((salt, hash)) = &pw {
+            u.pw_salt = salt.clone();
+            u.pw_hash = hash.clone();
+        }
+    });
+    if let Err(e) = res {
+        return Json(op_err_body(e)).into_response();
+    }
+    if let Some(f) = &req.full_name {
+        let _ = super::users::set_full_name(&req.username, f.trim()).await;
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
+#[derive(serde::Deserialize)]
 struct DelUserReq {
     #[serde(default)]
     username: String,
@@ -893,8 +1021,15 @@ async fn users_delete(
     headers: header::HeaderMap,
     Json(req): Json<DelUserReq>,
 ) -> Response {
-    if let Err(r) = require_admin(&state, &headers) {
-        return r;
+    let actor = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    // Only delete accounts strictly below your own privilege.
+    if let Some(t) = super::users::find(&req.username) {
+        if account_level(&actor) <= role_level(&t.role) {
+            return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+        }
     }
     match super::users::delete(&req.username).await {
         Ok(_) => Json(json!({ "ok": true })).into_response(),

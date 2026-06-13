@@ -79,9 +79,11 @@ function editProfile() {
   });
 }
 
-// ---- Change own password ----
+// ---- Change own password (requires the current password) ----
 function changePassword() {
   modal(tr('acct.password'), `
+    <label class="lbl">${tr('acct.old_pw')}</label>
+    <input id="cpOld" class="field" type="password" autocomplete="current-password" style="margin-bottom:12px" />
     <label class="lbl">${tr('setup.new_pw')}</label>
     <input id="cpPw" class="field" type="password" autocomplete="new-password" style="margin-bottom:12px" />
     <label class="lbl">${tr('setup.confirm_pw')}</label>
@@ -90,16 +92,18 @@ function changePassword() {
     <div class="err" id="cpErr" style="margin-top:10px"></div>`, () => {
     const submit = () => {
       const err = $('cpErr'); err.textContent = '';
-      const pw = $('cpPw').value, pw2 = $('cpPw2').value;
+      const oldPw = $('cpOld').value, pw = $('cpPw').value, pw2 = $('cpPw2').value;
+      if (!oldPw) { err.textContent = tr('acct.need_old_pw'); return; }
       if (pw.length < 6 || pw.length > 128) { err.textContent = tr('set.pw_len'); return; }
       if (pw !== pw2) { err.textContent = tr('setup.err_mismatch'); return; }
-      // Fetch the current salt so the server can verify the new password isn't
-      // the default (only enforced for the super-admin while still default).
+      // Fetch the current salt: prove the old password (old_verifier) and salt
+      // the new one — neither plaintext ever crosses the wire.
       fetch('/api/login/challenge')
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(tr('login.err_conn')))))
         .then((c) => {
+          const cur = c.salt || '';
           const salt = randHex(16);
-          const body = { pw_salt: salt, pw_hash: sha256Hex(salt + ':' + pw), pw_check: sha256Hex((c.salt || '') + ':' + pw) };
+          const body = { pw_salt: salt, pw_hash: sha256Hex(salt + ':' + pw), old_verifier: sha256Hex(cur + ':' + oldPw) };
           return api('/api/password', { method: 'POST', body: JSON.stringify(body) });
         })
         .then(() => { toast(tr('common.saved'), 'ok'); $('modalRoot').innerHTML = ''; })
@@ -155,21 +159,38 @@ function twoFactor() {
 }
 
 // ---- User management (admin only) ----
+// Privilege level: owner(super)=2, admin=1, user=0.
+function userLevel(u) { return u.is_super ? 2 : (u.role === 'admin' ? 1 : 0); }
+function myLevel() { const me = S.me || {}; return me.is_super ? 2 : (me.is_admin ? 1 : 0); }
+// Role <option>s the current account may assign (strictly below itself).
+function roleOptions(current) {
+  let h = `<option value="user">${tr('um.user')}</option>`;
+  if (myLevel() >= 2) h += `<option value="admin">${tr('um.admin_sudo')}</option>`;
+  return h.replace(`value="${current}"`, `value="${current}" selected`);
+}
+
 function renderUsers(v) {
   v.innerHTML = `<div class="row" style="margin-bottom:14px"><h3 style="margin:0;font-size:15px">${tr('um.title')}</h3><span class="sp" style="flex:1"></span><button class="btn sm" id="umAdd">${tr('um.add')}</button></div><div id="umBody">${loading()}</div>`;
   $('umAdd').onclick = () => umCreate(() => renderUsers(v));
   api('/api/users').then((b) => {
     const users = (b.data && b.data.users) || [];
+    const mine = myLevel();
     let h = `<table class="optable"><tr><th>${tr('um.account')}</th><th>${tr('acct.full_name')}</th><th>${tr('um.role')}</th><th>UID</th><th>${tr('acct.twofa')}</th><th class="act">${tr('ng.col_actions')}</th></tr>`;
     users.forEach((u) => {
       const role = u.is_super ? tr('um.super') : (u.role === 'admin' ? tr('um.admin') : tr('um.user'));
       const chip = u.is_super ? 'chip on' : (u.role === 'admin' ? 'chip warn' : 'chip');
       const tfa = u.totp_enabled ? `<span class="chip on">${tr('ng.yes')}</span>` : `<span class="chip">${tr('ng.no')}</span>`;
-      const del = u.is_super ? '' : `<button class="btn sm danger" data-del="${esc(u.username)}">${tr('ng.delete')}</button>`;
-      h += `<tr><td><b>${esc(u.username)}</b></td><td class="mut">${esc(u.full_name || '-')}</td><td><span class="${chip}">${esc(role)}</span></td><td class="mono" style="font-size:12px">${u.uid || '-'}</td><td>${tfa}</td><td class="act">${del}</td></tr>`;
+      // Manage only accounts strictly below your own privilege.
+      const canManage = !u.is_super && mine > userLevel(u);
+      const acts = canManage
+        ? `<div class="actions"><button class="btn sm sec" data-edit="${esc(u.username)}">${tr('ng.edit_site')}</button><button class="btn sm danger" data-del="${esc(u.username)}">${tr('ng.delete')}</button></div>`
+        : '<span class="mut">—</span>';
+      h += `<tr><td><b>${esc(u.username)}</b></td><td class="mut">${esc(u.full_name || '-')}</td><td><span class="${chip}">${esc(role)}</span></td><td class="mono" style="font-size:12px">${u.uid || '-'}</td><td>${tfa}</td><td class="act">${acts}</td></tr>`;
     });
     h += '</table>';
     $('umBody').innerHTML = '<div class="tablewrap">' + h + '</div><p class="formnote">' + tr('um.note') + '</p>';
+    const usersByName = {}; users.forEach((u) => usersByName[u.username] = u);
+    document.querySelectorAll('#umBody [data-edit]').forEach((b) => b.onclick = () => umEdit(usersByName[b.dataset.edit], () => renderUsers(v)));
     document.querySelectorAll('#umBody [data-del]').forEach((b) => b.onclick = async () => {
       if (await confirmDanger(tr('um.confirm_del', { name: b.dataset.del }))) {
         api('/api/users/delete', { method: 'POST', body: JSON.stringify({ username: b.dataset.del }) })
@@ -185,7 +206,7 @@ function umCreate(reload) {
     <div class="formgrid">
       <div class="full"><label class="lbl">${tr('um.account')}</label><input id="umUser" class="field" placeholder="${tr('um.account_ph')}" autocomplete="off" /></div>
       <div class="full"><label class="lbl">${tr('acct.full_name')}</label><input id="umFull" class="field" maxlength="64" /></div>
-      <div class="full"><label class="lbl">${tr('um.role')}</label><select id="umRole" class="field"><option value="user">${tr('um.user')}</option><option value="admin">${tr('um.admin_sudo')}</option></select></div>
+      <div class="full"><label class="lbl">${tr('um.role')}</label><select id="umRole" class="field">${roleOptions('user')}</select></div>
       <div class="full"><label class="lbl">${tr('setup.new_pw')}</label><input id="umPw" class="field" type="password" autocomplete="new-password" /></div>
       <div class="full"><label class="lbl">${tr('setup.confirm_pw')}</label><input id="umPw2" class="field" type="password" autocomplete="new-password" /></div>
     </div>
@@ -206,6 +227,35 @@ function umCreate(reload) {
       api('/api/users', { method: 'POST', body: JSON.stringify(body) })
         .then(() => { toast(tr('um.created'), 'ok'); close(); reload(); })
         .catch((e) => { err.textContent = e.message; $('umGo').disabled = false; $('umJob').classList.add('hidden'); });
+    };
+  });
+}
+
+// Edit a lower-privilege user's profile / role / password (owner & admins).
+function umEdit(u, reload) {
+  if (!u) return;
+  modal(tr('um.edit') + '：' + u.username, `
+    <div class="formgrid">
+      <div class="full"><label class="lbl">${tr('acct.full_name')}</label><input id="ueFull" class="field" maxlength="64" value="${esc(u.full_name || '')}" /></div>
+      <div class="full"><label class="lbl">${tr('acct.nickname')}</label><input id="ueNick" class="field" maxlength="40" value="${esc(u.nickname || '')}" /></div>
+      <div class="full"><label class="lbl">${tr('um.role')}</label><select id="ueRole" class="field">${roleOptions(u.role || 'user')}</select></div>
+      <div class="full"><label class="lbl">${tr('um.new_pw_opt')}</label><input id="uePw" class="field" type="password" autocomplete="new-password" placeholder="${tr('set.pw_ph')}" /></div>
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn" id="ueGo">${tr('ng.save')}</button></div>
+    <div class="err" id="ueErr" style="margin-top:10px"></div>`, (close) => {
+    $('ueGo').onclick = () => {
+      const err = $('ueErr'); err.textContent = '';
+      const body = { username: u.username, full_name: $('ueFull').value, nickname: $('ueNick').value, role: $('ueRole').value };
+      const pw = $('uePw').value;
+      if (pw) {
+        if (pw.length < 6 || pw.length > 128) { err.textContent = tr('set.pw_len'); return; }
+        const salt = randHex(16);
+        body.pw_salt = salt;
+        body.pw_hash = sha256Hex(salt + ':' + pw);
+      }
+      api('/api/users/update', { method: 'POST', body: JSON.stringify(body) })
+        .then(() => { toast(tr('common.saved'), 'ok'); close(); reload(); })
+        .catch((e) => { err.textContent = e.message; });
     };
   });
 }

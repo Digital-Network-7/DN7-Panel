@@ -231,6 +231,21 @@ pub fn update<F: FnOnce(&mut PanelUser)>(username: &str, f: F) -> Result<()> {
     save(&users)
 }
 
+/// Grant or revoke the system admin group (sudo/wheel) for a user — used when
+/// an account's role changes between admin and user.
+pub async fn set_sudo(username: &str, on: bool) -> Result<()> {
+    if on {
+        grant_sudo(username).await
+    } else {
+        for group in ["sudo", "wheel"] {
+            if group_exists(group) {
+                let _ = run("gpasswd", &["-d", username, group]).await;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Set the system account's GECOS full-name field (`usermod -c`). Best-effort.
 pub async fn set_full_name(username: &str, full_name: &str) -> Result<()> {
     if getpwnam(username).is_some() {
