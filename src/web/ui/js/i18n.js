@@ -720,6 +720,16 @@ const I18N = {
 const LANG_FULL = { en: 'English', 'zh-CN': '简体中文', 'zh-TW': '繁體中文', ja: '日本語' };
 // A clean line-art globe icon for the switcher (matches the nav/topbar icons).
 const GLOBE_SVG = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 2.7 2.6 15.3 0 18M12 3c-2.6 2.7-2.6 15.3 0 18"/></svg>';
+// Small flag glyphs (simple inline SVG, clipped to a rounded rect by .flag) for
+// the region each language is mainly spoken in. English uses the globe icon.
+const FLAG_SVG = {
+  'zh-CN': '<svg viewBox="0 0 24 18" preserveAspectRatio="xMidYMid slice"><rect width="24" height="18" fill="#de2910"/><g fill="#ffde00" font-family="serif" text-anchor="middle" dominant-baseline="central"><text x="5" y="5.2" font-size="8">★</text><text x="10.5" y="2.1" font-size="3.2">★</text><text x="12.6" y="4.5" font-size="3.2">★</text><text x="12.6" y="7.6" font-size="3.2">★</text><text x="10.5" y="10" font-size="3.2">★</text></g></svg>',
+  'zh-TW': '<svg viewBox="0 0 24 18" preserveAspectRatio="xMidYMid slice"><rect width="24" height="18" fill="#fe0000"/><rect width="12" height="9" fill="#000095"/><circle cx="6" cy="4.5" r="2.7" fill="#fff"/><circle cx="6" cy="4.5" r="1.5" fill="#000095"/></svg>',
+  'ja': '<svg viewBox="0 0 24 18" preserveAspectRatio="xMidYMid slice"><rect width="24" height="18" fill="#fff"/><circle cx="12" cy="9" r="5.2" fill="#bc002d"/></svg>',
+};
+function langIcon(code) {
+  return code === 'en' ? `<span class="flag globe">${GLOBE_SVG}</span>` : `<span class="flag">${FLAG_SVG[code] || ''}</span>`;
+}
 
 function curLang() { return window.__LANG__ || 'en'; }
 
@@ -800,8 +810,8 @@ function toggleLangMenu() {
   pop.className = 'selx-pop lang-pop';
   ['en', 'zh-CN', 'zh-TW', 'ja'].forEach((code) => {
     const o = document.createElement('div');
-    o.className = 'selx-opt' + (code === curLang() ? ' sel' : '');
-    o.textContent = LANG_FULL[code];
+    o.className = 'selx-opt lang-opt' + (code === curLang() ? ' sel' : '');
+    o.innerHTML = `${langIcon(code)}<span>${LANG_FULL[code]}</span>`;
     o.addEventListener('mousedown', (e) => { e.preventDefault(); pop.remove(); setLang(code); });
     pop.appendChild(o);
   });

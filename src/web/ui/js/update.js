@@ -31,10 +31,6 @@ function openUpdate() {
       </div>
       <div id="uChangelog"></div>
       <div class="upd-sec">
-        <div class="upd-sec-h">${tr('upd.source')}</div>
-        <div class="upd-group" id="uSources">${loading()}</div>
-      </div>
-      <div class="upd-sec">
         <div class="upd-sec-h">${tr('upd.settings')}</div>
         <div class="upd-group">
           <div class="upd-row">
@@ -71,14 +67,11 @@ function saveUpdCfg() {
     .then(() => toast(tr('upd.saved'))).catch((e) => toast(e.message, 'err'));
 }
 
-function srcLabel(name) { return name === 'dn7' ? 'Digital Network 7' : 'GitHub'; }
-
 function runUpdCheck() {
   const state = $('uState'); if (!state) return;
-  const cur = $('uCur'), cta = $('uCta'), srcBox = $('uSources');
+  const cur = $('uCur'), cta = $('uCta');
   state.textContent = tr('upd.checking'); state.className = 'upd-state';
   if (cta) cta.innerHTML = '';
-  if (srcBox) srcBox.innerHTML = loading();
   api('/api/update/check', { method: 'POST' }).then((b) => {
     const d = b.data, dot = $('verDot');
     if (dot) dot.classList.toggle('hidden', !d.has_update);
@@ -88,7 +81,6 @@ function runUpdCheck() {
       state.textContent = tr('upd.avail', { latest: d.latest });
       cta.innerHTML = `<button class="btn" id="uApply">${tr('upd.apply_to', { latest: esc(d.latest) })}</button>`;
       $('uApply').onclick = applyUpdate;
-      loadChangelog();
     } else if (d.latest) {
       state.className = 'upd-state ok';
       state.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>${esc(tr('upd.uptodate'))}`;
@@ -96,26 +88,21 @@ function runUpdCheck() {
       state.className = 'upd-state err';
       state.textContent = tr('upd.no_source');
     }
-    if (srcBox) {
-      srcBox.innerHTML = (d.sources || []).map((s) => {
-        const tag = s.ok ? `<span class="chip on">${tr('upd.kbps', { n: s.kbps })}</span>` : `<span class="chip warn">${tr('upd.conn_fail')}</span>`;
-        const star = (s.name === d.source) ? `<span class="upd-cursrc">${tr('upd.cur_src')}</span>` : '';
-        return `<div class="upd-row"><div class="upd-row-t"><b>${srcLabel(s.name)}</b>${star}</div>${tag}</div>`;
-      }).join('') || `<div class="upd-row"><span class="mut">${tr('upd.no_source')}</span></div>`;
-    }
-  }).catch((e) => { state.className = 'upd-state err'; state.textContent = e.message; if (srcBox) srcBox.innerHTML = ''; });
+    loadChangelog();
+  }).catch((e) => { state.className = 'upd-state err'; state.textContent = e.message; });
 }
 
-// Fetch + render "what's new": the notes for every version this update brings
-// (newest first). Shows the latest version expanded; the rest collapse behind a
-// "view all" toggle. Works from whichever source (GitHub / Digital Network 7)
-// is reachable; a fetch failure degrades to a quiet hint.
+// Fetch + render the version history ("what's new"): release notes for the
+// current build and every past version, newest first. The newest entry is
+// expanded; older ones collapse behind a "view all" toggle. The entry matching
+// the running build is tagged. A fetch failure degrades to a quiet hint.
 function loadChangelog() {
   const host = $('uChangelog'); if (!host) return;
   api('/api/update/changelog').then((b) => {
     const entries = (b.data && b.data.entries) || [];
+    const current = (b.data && b.data.current) || '';
     if (!entries.length) { host.innerHTML = ''; return; }
-    const entry = (e) => `<div class="cl-entry"><div class="cl-ver">v${esc(e.version)}${e.date ? ' · ' + esc(e.date) : ''}</div>`
+    const entry = (e) => `<div class="cl-entry"><div class="cl-ver">v${esc(e.version)}${e.version === current ? `<span class="cl-cur">${tr('upd.current')}</span>` : ''}${e.date ? '<span class="cl-date">' + esc(e.date) + '</span>' : ''}</div>`
       + (e.notes && e.notes.length ? '<ul class="cl-notes">' + e.notes.map((n) => `<li>${esc(n)}</li>`).join('') + '</ul>' : '')
       + '</div>';
     let html = entry(entries[0]);

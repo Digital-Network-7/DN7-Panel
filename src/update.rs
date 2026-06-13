@@ -268,8 +268,9 @@ pub async fn check(cfg: &PanelConfig) -> CheckResult {
 // Changelog (release notes between current and latest)
 // ---------------------------------------------------------------------------
 
-/// "What's new" for the update UI: every released version strictly newer than
-/// the running one (i.e. the versions this update would bring), newest first.
+/// "What's new" for the update UI: the release notes for every published
+/// version (current and past), newest first, so users can browse the full
+/// history regardless of whether an update is pending.
 #[derive(Debug, Serialize)]
 pub struct ChangelogResult {
     pub current: String,
@@ -277,8 +278,7 @@ pub struct ChangelogResult {
 }
 
 /// Build the changelog by fetching the release index from the preferred/sticky
-/// source (failing over to the other) and keeping only versions newer than the
-/// running build.
+/// source (failing over to the other), returning all versions newest-first.
 pub async fn changelog(cfg: &PanelConfig) -> ChangelogResult {
     let current = env!("CARGO_PKG_VERSION").to_string();
     let st = UpdateState::load();
@@ -287,7 +287,6 @@ pub async fn changelog(cfg: &PanelConfig) -> ChangelogResult {
         .or_else(|| st.chosen.as_deref().and_then(SourceKind::from_str))
         .unwrap_or(SourceKind::Github);
     let mut entries = fetch::releases_index(cfg, prefer).await.unwrap_or_default();
-    entries.retain(|e| is_newer(&current, &e.version));
     entries.sort_by(|a, b| {
         parse_semver(&b.version)
             .unwrap_or((0, 0, 0))

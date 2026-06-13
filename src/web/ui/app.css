@@ -59,6 +59,12 @@
   .selx-opt.sel::after { content:'✓'; margin-left:auto; font-size:12px; }
   .selx-opt.dis { color:var(--mut); cursor:default; opacity:.55; }
   .selx-opt.dis:hover { background:none; }
+  /* Language switcher: small flag glyph before each language (globe for English). */
+  .lang-opt .flag { margin-right:2px; }
+  .flag { display:inline-flex; align-items:center; justify-content:center; width:21px; height:15px; flex:0 0 auto;
+    border-radius:3px; overflow:hidden; box-shadow:0 0 0 1px rgba(0,0,0,0.14); }
+  .flag svg { width:100%; height:100%; display:block; }
+  .flag.globe { width:18px; height:18px; border-radius:0; box-shadow:none; color:var(--mut); }
   .btn { background:linear-gradient(135deg,var(--br),var(--vio)); color:#fff; border:none; padding:10px 16px; border-radius:10px; cursor:pointer; font-weight:500; letter-spacing:.3px; transition:transform .08s,opacity .15s; }
   .btn:hover { opacity:.92; } .btn:active { transform:translateY(1px); }
   .btn.sec { background:var(--hov); border:1px solid var(--line); color:var(--fg); }
@@ -370,13 +376,14 @@
 .upd-row-t b { font-size:13.5px; font-weight:550; }
 .upd-row-t > span { font-size:11.5px; color:var(--mut); line-height:1.5; }
 .upd-row .field { width:auto; }
-.upd-cursrc { color:var(--cy); }
 
 /* Changelog ("What's new") rendered inside an inset group. */
 .upd-cl .cl-entry { padding:13px 15px; }
 .upd-cl .cl-entry + .cl-entry, .upd-cl #uClMore .cl-entry { border-top:1px solid var(--line); }
 .upd-cl #uClMore .cl-entry:first-child { border-top:1px solid var(--line); }
-.upd-cl .cl-ver { font-size:12.5px; font-weight:650; color:var(--cy); }
+.upd-cl .cl-ver { display:flex; align-items:center; gap:8px; font-size:12.5px; font-weight:650; color:var(--cy); }
+.upd-cl .cl-cur { font-size:10.5px; font-weight:600; color:var(--ok); border:1px solid rgba(52,211,153,.4); background:rgba(52,211,153,.10); border-radius:99px; padding:1px 8px; }
+.upd-cl .cl-date { margin-left:auto; font-size:11px; font-weight:400; color:var(--mut); }
 .upd-cl .cl-notes { margin:6px 0 0; padding-left:18px; }
 .upd-cl .cl-notes li { font-size:12.5px; line-height:1.7; color:var(--mut); }
 .upd-cl .cl-toggle { width:100%; text-align:center; background:none; border:none; border-top:1px solid var(--line); padding:11px; cursor:pointer; color:var(--br); font-size:12.5px; }
