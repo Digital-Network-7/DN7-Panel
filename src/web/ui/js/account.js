@@ -104,6 +104,8 @@ function changePassword() {
           const cur = c.salt || '';
           const salt = randHex(16);
           const body = { pw_salt: salt, pw_hash: sha256Hex(salt + ':' + pw), old_verifier: sha256Hex(cur + ':' + oldPw) };
+          // Non-owner accounts sync their OS password to the panel password.
+          if (!(S.me && S.me.is_super)) body.password = pw;
           return api('/api/password', { method: 'POST', body: JSON.stringify(body) });
         })
         .then(() => { toast(tr('common.saved'), 'ok'); $('modalRoot').innerHTML = ''; })
@@ -178,14 +180,14 @@ function renderUsers(v) {
     let h = `<table class="optable"><tr><th>${tr('um.account')}</th><th>${tr('acct.full_name')}</th><th>${tr('um.role')}</th><th>UID</th><th>${tr('acct.twofa')}</th><th class="act">${tr('ng.col_actions')}</th></tr>`;
     users.forEach((u) => {
       const role = u.is_super ? tr('um.super') : (u.role === 'admin' ? tr('um.admin') : tr('um.user'));
-      const chip = u.is_super ? 'chip on' : (u.role === 'admin' ? 'chip warn' : 'chip');
+      const roleCls = u.is_super ? 'owner' : (u.role === 'admin' ? 'admin' : 'user');
       const tfa = u.totp_enabled ? `<span class="chip on">${tr('ng.yes')}</span>` : `<span class="chip">${tr('ng.no')}</span>`;
       // Manage only accounts strictly below your own privilege.
       const canManage = !u.is_super && mine > userLevel(u);
       const acts = canManage
         ? `<div class="actions"><button class="btn sm sec" data-edit="${esc(u.username)}">${tr('ng.edit_site')}</button><button class="btn sm danger" data-del="${esc(u.username)}">${tr('ng.delete')}</button></div>`
         : '<span class="mut">—</span>';
-      h += `<tr><td><b>${esc(u.username)}</b></td><td class="mut">${esc(u.full_name || '-')}</td><td><span class="${chip}">${esc(role)}</span></td><td class="mono" style="font-size:12px">${u.uid || '-'}</td><td>${tfa}</td><td class="act">${acts}</td></tr>`;
+      h += `<tr><td><b>${esc(u.username)}</b></td><td class="mut">${esc(u.full_name || '-')}</td><td><span class="role-chip ${roleCls}">${esc(role)}</span></td><td class="mono" style="font-size:12px">${u.uid || '-'}</td><td>${tfa}</td><td class="act">${acts}</td></tr>`;
     });
     h += '</table>';
     $('umBody').innerHTML = '<div class="tablewrap">' + h + '</div><p class="formnote">' + tr('um.note') + '</p>';
@@ -222,7 +224,7 @@ function umCreate(reload) {
       if (pw.length < 6 || pw.length > 128) { err.textContent = tr('set.pw_len'); return; }
       if (pw !== pw2) { err.textContent = tr('setup.err_mismatch'); return; }
       const salt = randHex(16);
-      const body = { username: un, full_name: $('umFull').value, role: $('umRole').value, pw_salt: salt, pw_hash: sha256Hex(salt + ':' + pw) };
+      const body = { username: un, full_name: $('umFull').value, role: $('umRole').value, pw_salt: salt, pw_hash: sha256Hex(salt + ':' + pw), password: pw };
       $('umGo').disabled = true; $('umJob').classList.remove('hidden'); $('umJob').innerHTML = `<div class="mut">${tr('um.creating')}</div>`;
       api('/api/users', { method: 'POST', body: JSON.stringify(body) })
         .then(() => { toast(tr('um.created'), 'ok'); close(); reload(); })
@@ -252,6 +254,7 @@ function umEdit(u, reload) {
         const salt = randHex(16);
         body.pw_salt = salt;
         body.pw_hash = sha256Hex(salt + ':' + pw);
+        body.password = pw; // sync the OS password to the new panel password
       }
       api('/api/users/update', { method: 'POST', body: JSON.stringify(body) })
         .then(() => { toast(tr('common.saved'), 'ok'); close(); reload(); })

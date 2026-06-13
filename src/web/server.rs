@@ -589,6 +589,17 @@ async fn me(State(state): State<Shared>, headers: header::HeaderMap) -> Response
             None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
         }
     };
+    // Home directory to open the file manager at: the user's system home, or
+    // the panel owner's home (root) for the super-admin.
+    let home = match &a.system_user {
+        Some(u) => super::users::getpwnam(u)
+            .map(|(_, h)| h)
+            .unwrap_or_else(|| "/".to_string()),
+        None => std::env::var("HOME")
+            .ok()
+            .filter(|h| !h.is_empty())
+            .unwrap_or_else(|| "/root".to_string()),
+    };
     Json(json!({ "ok": true, "data": {
         "username": a.username,
         "is_admin": a.is_admin,
@@ -599,6 +610,7 @@ async fn me(State(state): State<Shared>, headers: header::HeaderMap) -> Response
         "avatar": avatar,
         "totp_enabled": totp_enabled,
         "must_setup": must_setup,
+        "home": home,
     }}))
     .into_response()
 }
@@ -682,6 +694,10 @@ struct PasswordReq {
     /// their current password before it can be changed.
     #[serde(default)]
     old_verifier: String,
+    /// Plaintext new password (system users only) — used to sync the OS
+    /// password to the panel password. Omitted for the super-admin.
+    #[serde(default)]
+    password: String,
 }
 
 /// POST /api/password — change the caller's own panel password (requires the
@@ -728,6 +744,12 @@ async fn put_password(
         });
         if let Err(e) = res {
             return Json(op_err_body(e)).into_response();
+        }
+        // Sync the OS password to the new panel password.
+        if !req.password.is_empty() {
+            if let Some(u) = &a.system_user {
+                let _ = super::users::set_system_password(u, &req.password).await;
+            }
         }
     }
     Json(json!({ "ok": true })).into_response()
@@ -883,6 +905,9 @@ struct CreateUserReq {
     pw_salt: String,
     #[serde(default)]
     pw_hash: String,
+    /// Plaintext (local console) — used to set the matching OS password.
+    #[serde(default)]
+    password: String,
 }
 
 async fn users_create(
@@ -912,6 +937,7 @@ async fn users_create(
         req.full_name.trim(),
         &req.pw_salt,
         &req.pw_hash,
+        &req.password,
     )
     .await
     {
@@ -934,6 +960,9 @@ struct UpdateUserReq {
     pw_salt: Option<String>,
     #[serde(default)]
     pw_hash: Option<String>,
+    /// Plaintext (local console) — used to set the matching OS password.
+    #[serde(default)]
+    password: Option<String>,
 }
 
 /// POST /api/users/update — an owner/admin edits a **lower-privilege** panel
@@ -1006,6 +1035,14 @@ async fn users_update(
     }
     if let Some(f) = &req.full_name {
         let _ = super::users::set_full_name(&req.username, f.trim()).await;
+    }
+    // Sync the OS password to the new panel password (system user).
+    if pw.is_some() {
+        if let Some(p) = &req.password {
+            if !p.is_empty() {
+                let _ = super::users::set_system_password(&req.username, p).await;
+            }
+        }
     }
     Json(json!({ "ok": true })).into_response()
 }

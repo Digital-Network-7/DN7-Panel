@@ -3,7 +3,9 @@
 // =========================================================================
 function renderFiles(v) {
   v.innerHTML = '<div class="files-page" id="fbCard"></div>';
-  fileBrowser($('fbCard'), null, '/');
+  // Open at the account's home directory (root's home for the super-admin).
+  const home = (S.me && S.me.home) || '/';
+  fileBrowser($('fbCard'), null, home);
 }
 function openFileBrowser(title, container) {
   modal(title, '<div id="fbModal"></div>', (close, mask) => { fileBrowser(mask.querySelector('#fbModal'), container, '/'); }, true);

@@ -146,6 +146,36 @@ fn group_exists(group: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Set the system account's password to match the panel password, via
+/// `chpasswd` over stdin (so the plaintext never appears in argv/process list).
+/// No-op when the system account doesn't exist. Lets the user log in at the OS
+/// level (SSH/console) with the same password as the panel.
+pub async fn set_system_password(username: &str, password: &str) -> Result<()> {
+    if getpwnam(username).is_none() {
+        return Ok(());
+    }
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new("chpasswd")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow!("无法执行 chpasswd：{e}"))?;
+    if let Some(mut si) = child.stdin.take() {
+        let _ = si
+            .write_all(format!("{username}:{password}\n").as_bytes())
+            .await;
+        let _ = si.shutdown().await;
+    }
+    let out = child.wait_with_output().await.map_err(|e| anyhow!("{e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("ERR_CODE:users.set_pw_failed"))
+    }
+}
+
 /// Create a panel user **and** the backing system account. `role` is "admin"
 /// (sudo) or "user". The OS password is left locked; the panel password is
 /// stored as salt + hash (plaintext never reaches the server).
@@ -155,6 +185,7 @@ pub async fn create(
     full_name: &str,
     pw_salt: &str,
     pw_hash: &str,
+    password: &str,
 ) -> Result<PanelUser> {
     if !valid_username(username) {
         return Err(anyhow!("ERR_CODE:users.bad_username"));
@@ -186,6 +217,11 @@ pub async fn create(
     }
     if role == "admin" {
         grant_sudo(username).await?;
+    }
+    // Sync the OS account password to the panel password so the user can log in
+    // at the system level (SSH/console) with the same credentials.
+    if !password.is_empty() {
+        set_system_password(username, password).await?;
     }
     let (uid, _home) = getpwnam(username).unwrap_or((0, String::new()));
     let user = PanelUser {
