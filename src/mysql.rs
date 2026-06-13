@@ -127,6 +127,28 @@ struct Req {
     /// row-preview limit (table_rows).
     #[serde(default)]
     limit: Option<i64>,
+    /// database character set + collation (create_database).
+    #[serde(default)]
+    charset: Option<String>,
+    #[serde(default)]
+    collation: Option<String>,
+    /// account authentication plugin (create_user); empty = engine default.
+    #[serde(default)]
+    auth_plugin: Option<String>,
+    /// account resource limits (create_user); 0 = unlimited.
+    #[serde(default)]
+    max_queries: Option<i64>,
+    #[serde(default)]
+    max_connections: Option<i64>,
+    #[serde(default)]
+    max_user_connections: Option<i64>,
+    /// require an encrypted (SSL/TLS) connection for the account (create_user).
+    #[serde(default)]
+    require_ssl: Option<bool>,
+    /// grant/revoke on the cPanel-style `<user>\_%` database prefix instead of a
+    /// single database (grant / revoke).
+    #[serde(default)]
+    prefix: Option<bool>,
 }
 
 /// Persisted per-instance manifest (`<data>/mysql/<id>.json`, 0600).
@@ -1205,10 +1227,31 @@ async fn create_database(req: &Req) -> Result<Value> {
     if SYS.contains(&db) {
         return Err(anyhow!("ERR_CODE:mysql.reserved_db_name"));
     }
+    // Character set + collation: validated as plain charset identifiers so they
+    // can't break out of the statement. Invalid combos are rejected by the
+    // server (surfaced as a friendly error). Defaults: utf8mb4 / unicode_ci.
+    let charset = req
+        .charset
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("utf8mb4");
+    let collation = req
+        .collation
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("utf8mb4_unicode_ci");
+    if !valid_charset_name(charset) {
+        return Err(anyhow!("ERR_CODE:mysql.bad_charset"));
+    }
+    if !valid_charset_name(collation) {
+        return Err(anyhow!("ERR_CODE:mysql.bad_collation"));
+    }
     // Backtick-quote the identifier; valid_ident already restricts the charset.
     let sql = format!(
-        "CREATE DATABASE IF NOT EXISTS `{}` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;",
-        db
+        "CREATE DATABASE IF NOT EXISTS `{}` CHARACTER SET {} COLLATE {};",
+        db, charset, collation
     );
     run_stmt(&m.container, &password, &sql).await?;
     Ok(json!({ "created": db }))
@@ -1561,6 +1604,27 @@ fn ident_quote(s: &str) -> String {
     format!("`{}`", s.replace('`', "``"))
 }
 
+/// Validate a charset / collation name (e.g. "utf8mb4", "utf8mb4_unicode_ci").
+/// These are emitted unquoted in CREATE DATABASE, so restrict to a safe charset.
+fn valid_charset_name(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Validate an authentication plugin against the engine's allowed set. An empty
+/// plugin means "use the engine default".
+fn valid_auth_plugin(engine: &str, plugin: &str) -> bool {
+    match engine {
+        "mysql" => matches!(plugin, "caching_sha2_password" | "mysql_native_password"),
+        "mariadb" => matches!(plugin, "mysql_native_password" | "ed25519"),
+        _ => false,
+    }
+}
+
+/// Clamp/validate a resource limit (queries/connections per hour, etc).
+fn valid_limit(n: i64) -> bool {
+    (0..=10_000_000).contains(&n)
+}
+
 /// List non-system MySQL accounts as {user, host}. Reads mysql.user.
 async fn list_users(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
@@ -1603,7 +1667,9 @@ async fn list_users(req: &Req) -> Result<Value> {
     Ok(json!({ "users": users }))
 }
 
-/// Create a user `'name'@'host'` with a password. Returns nothing extra.
+/// Create a user `'name'@'host'` with a password. Optional advanced options:
+/// an authentication plugin (engine-aware syntax), resource limits, and a
+/// require-SSL flag.
 async fn create_user(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
     let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
@@ -1619,11 +1685,65 @@ async fn create_user(req: &Req) -> Result<Value> {
     if pwd.is_empty() || pwd.len() > 128 {
         return Err(anyhow!("ERR_CODE:mysql.bad_password"));
     }
+
+    // Authentication clause — syntax differs between MySQL and MariaDB.
+    let plugin = req
+        .auth_plugin
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(p) = plugin {
+        if !valid_auth_plugin(&m.engine, p) {
+            return Err(anyhow!("ERR_CODE:mysql.bad_auth_plugin"));
+        }
+    }
+    let esc_pw = sql_escape(pwd);
+    let auth = match (m.engine.as_str(), plugin) {
+        // MySQL: IDENTIFIED WITH <plugin> BY '<pw>'
+        ("mysql", Some(p)) => format!("IDENTIFIED WITH {p} BY '{esc_pw}'"),
+        // MariaDB ed25519: IDENTIFIED VIA ed25519 USING PASSWORD('<pw>')
+        ("mariadb", Some("ed25519")) => {
+            format!("IDENTIFIED VIA ed25519 USING PASSWORD('{esc_pw}')")
+        }
+        // Everything else (incl. native on either engine): IDENTIFIED BY '<pw>'
+        _ => format!("IDENTIFIED BY '{esc_pw}'"),
+    };
+
+    // Resource limits (0 = unlimited / not set). Only emit a WITH clause when
+    // at least one limit is positive.
+    let mq = req.max_queries.unwrap_or(0);
+    let mc = req.max_connections.unwrap_or(0);
+    let muc = req.max_user_connections.unwrap_or(0);
+    for v in [mq, mc, muc] {
+        if !valid_limit(v) {
+            return Err(anyhow!("ERR_CODE:mysql.bad_limit"));
+        }
+    }
+    let mut limit_clause = String::new();
+    if mq > 0 {
+        limit_clause.push_str(&format!(" MAX_QUERIES_PER_HOUR {mq}"));
+    }
+    if mc > 0 {
+        limit_clause.push_str(&format!(" MAX_CONNECTIONS_PER_HOUR {mc}"));
+    }
+    if muc > 0 {
+        limit_clause.push_str(&format!(" MAX_USER_CONNECTIONS {muc}"));
+    }
+    let with = if limit_clause.is_empty() {
+        String::new()
+    } else {
+        format!(" WITH{limit_clause}")
+    };
+    let ssl = if req.require_ssl.unwrap_or(false) {
+        " REQUIRE SSL"
+    } else {
+        ""
+    };
+
     let sql = format!(
-        "CREATE USER '{}'@'{}' IDENTIFIED BY '{}';",
+        "CREATE USER '{}'@'{}' {auth}{ssl}{with};",
         sql_escape(user),
         sql_escape(host),
-        sql_escape(pwd)
     );
     run_stmt(&m.container, &password, &sql).await?;
     Ok(json!({ "created": user, "host": host }))
@@ -1666,7 +1786,11 @@ async fn grant(req: &Req) -> Result<Value> {
         "all" => "ALL PRIVILEGES",
         _ => return Err(anyhow!("ERR_CODE:mysql.bad_priv_type")),
     };
-    let scope = grant_scope(db)?;
+    let scope = if req.prefix.unwrap_or(false) {
+        prefix_scope(user)
+    } else {
+        grant_scope(db)?
+    };
     let sql = format!(
         "GRANT {privs} ON {scope} TO '{}'@'{}'; FLUSH PRIVILEGES;",
         sql_escape(user),
@@ -1686,7 +1810,11 @@ async fn revoke(req: &Req) -> Result<Value> {
     if !valid_ident(user, false) || !valid_ident(host, true) {
         return Err(anyhow!("ERR_CODE:mysql.bad_user_or_host"));
     }
-    let scope = grant_scope(db)?;
+    let scope = if req.prefix.unwrap_or(false) {
+        prefix_scope(user)
+    } else {
+        grant_scope(db)?
+    };
     let sql = format!(
         "REVOKE ALL PRIVILEGES, GRANT OPTION ON {scope} FROM '{}'@'{}'; FLUSH PRIVILEGES;",
         sql_escape(user),
@@ -1705,6 +1833,13 @@ fn grant_scope(db: &str) -> Result<String> {
     } else {
         Err(anyhow!("ERR_CODE:mysql.bad_db_name"))
     }
+}
+
+/// cPanel-style prefix scope: `` `<user>\_%`.* `` — every database whose name
+/// starts with `<user>_`. The underscore is escaped (literal) and `%` stays a
+/// wildcard. The user is already restricted to a safe identifier charset.
+fn prefix_scope(user: &str) -> String {
+    format!("`{}\\_%`.*", user.replace('`', "``"))
 }
 
 /// Run a statement expecting success; surfaces the engine's error message.
@@ -2031,5 +2166,35 @@ mod tests {
         assert_eq!(grant_scope("*").unwrap(), "*.*");
         assert_eq!(grant_scope("mydb").unwrap(), "`mydb`.*");
         assert!(grant_scope("bad db").is_err());
+    }
+
+    #[test]
+    fn prefix_scope_form() {
+        assert_eq!(prefix_scope("app"), "`app\\_%`.*");
+    }
+
+    #[test]
+    fn charset_name_validation() {
+        assert!(valid_charset_name("utf8mb4"));
+        assert!(valid_charset_name("utf8mb4_unicode_ci"));
+        assert!(!valid_charset_name("utf8;DROP"));
+        assert!(!valid_charset_name(""));
+    }
+
+    #[test]
+    fn auth_plugin_validation() {
+        assert!(valid_auth_plugin("mysql", "caching_sha2_password"));
+        assert!(valid_auth_plugin("mariadb", "ed25519"));
+        assert!(!valid_auth_plugin("mysql", "ed25519"));
+        assert!(!valid_auth_plugin("mariadb", "caching_sha2_password"));
+        assert!(!valid_auth_plugin("mysql", "evil_plugin"));
+    }
+
+    #[test]
+    fn limit_validation() {
+        assert!(valid_limit(0));
+        assert!(valid_limit(1000));
+        assert!(!valid_limit(-1));
+        assert!(!valid_limit(100_000_000));
     }
 }

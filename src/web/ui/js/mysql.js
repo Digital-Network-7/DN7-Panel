@@ -171,10 +171,37 @@ function myCrumb(parts) {
 }
 
 // ---- Databases: list ----
+// Curated charset → collation options (kept small; works on both MySQL & MariaDB).
+const MY_CHARSETS = {
+  utf8mb4: ['utf8mb4_unicode_ci', 'utf8mb4_general_ci', 'utf8mb4_bin'],
+  utf8: ['utf8_general_ci', 'utf8_unicode_ci', 'utf8_bin'],
+  latin1: ['latin1_swedish_ci', 'latin1_general_ci', 'latin1_bin'],
+  ascii: ['ascii_general_ci', 'ascii_bin'],
+  gbk: ['gbk_chinese_ci', 'gbk_bin'],
+  big5: ['big5_chinese_ci', 'big5_bin'],
+};
+function myColOpts(cs) { return (MY_CHARSETS[cs] || []).map((x, i) => `<option${i === 0 ? ' selected' : ''}>${x}</option>`).join(''); }
+
+// New-database dialog: name + character set + collation.
+function myNewDb(id, onDone) {
+  const csOpts = Object.keys(MY_CHARSETS).map((c) => `<option${c === 'utf8mb4' ? ' selected' : ''}>${c}</option>`).join('');
+  modal(tr('my.new_db'), `
+    <div><label class="lbl">${tr('my.db_name')}</label><input id="cdbName" class="field" placeholder="myapp" /></div>
+    <div class="formgrid" style="margin-top:12px">
+      <div><label class="lbl">${tr('my.charset')}</label><select id="cdbCs" class="field">${csOpts}</select></div>
+      <div><label class="lbl">${tr('my.collation')}</label><select id="cdbCol" class="field">${myColOpts('utf8mb4')}</select></div>
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:18px"><button class="btn" id="cdbGo">${tr('my.create')}</button></div>`, (close) => {
+    $('cdbCs').onchange = () => { $('cdbCol').innerHTML = myColOpts($('cdbCs').value); };
+    const go = () => { const name = $('cdbName').value.trim(); if (!name) return; op('mysql', { op: 'create_database', inst: id, database: name, charset: $('cdbCs').value, collation: $('cdbCol').value }).then(() => { close(); toast(tr('common.created'), 'ok'); onDone(); }).catch((e) => toast(e.message, 'err')); };
+    $('cdbGo').onclick = go;
+    $('cdbName').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+  });
+}
 function myDbList(id) {
   const b = $('myMBody');
   b.innerHTML = `<div class="sechead"><h3>${tr('my.tab_db')}</h3><span class="sp"></span><button class="btn sm" id="myAddDb">${tr('my.new_db')}</button></div><div id="myDbs">${loading()}</div>`;
-  $('myAddDb').onclick = () => modal(tr('my.new_db'), `<label class="lbl">${tr('my.db_name')}</label><input id="cdbName" class="field" placeholder="myapp" style="margin-bottom:16px" /><div class="row" style="justify-content:flex-end"><button class="btn" id="cdbGo">${tr('my.create')}</button></div>`, (close) => { $('cdbGo').onclick = () => { const name = $('cdbName').value.trim(); if (!name) return; op('mysql', { op: 'create_database', inst: id, database: name }).then(() => { close(); toast(tr('common.created'), 'ok'); myDbList(id); }).catch((e) => toast(e.message, 'err')); }; $('cdbName').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('cdbGo').click(); }); });
+  $('myAddDb').onclick = () => myNewDb(id, () => myDbList(id));
   op('mysql', { op: 'databases', inst: id }).then((d) => {
     const arr = d.databases || [];
     if (!arr.length) { $('myDbs').innerHTML = `<div class="empty">${tr('my.none')}</div>`; return; }
@@ -279,12 +306,13 @@ function myUsers(id) {
 // Build a per-database permission picker. `dbs` is the list of non-system db
 // names, `cur` a map of db→"all"|"ro" (plus "*" for all-databases). Returns the
 // inner HTML; read selections later with myReadPerms().
-function myPermGrid(dbs, cur) {
+function myPermGrid(dbs, cur, noHead) {
   cur = cur || {};
   const opts = (v) => `<option value="none"${!v ? ' selected' : ''}>${tr('my.priv_none')}</option><option value="ro"${v === 'ro' ? ' selected' : ''}>${tr('my.priv_ro')}</option><option value="all"${v === 'all' ? ' selected' : ''}>${tr('my.priv_all')}</option>`;
   let rows = `<tr><td>${tr('my.all_databases')}</td><td><select class="field perm-sel" data-db="*">${opts(cur['*'])}</select></td></tr>`;
   rows += dbs.map((d) => `<tr><td class="mono">${esc(d)}</td><td><select class="field perm-sel" data-db="${esc(d)}">${opts(cur[d])}</select></td></tr>`).join('');
-  return `<div class="sechead" style="margin-top:6px"><h3>${tr('my.db_access')}</h3></div><table class="optable permtbl"><tr><th>${tr('my.db_name')}</th><th style="width:160px">${tr('my.permissions')}</th></tr>${rows}</table>`;
+  const head = noHead ? '' : `<div class="sechead" style="margin-top:6px"><h3>${tr('my.db_access')}</h3></div>`;
+  return `${head}<table class="optable permtbl"><tr><th>${tr('my.db_name')}</th><th style="width:160px">${tr('my.permissions')}</th></tr>${rows}</table>`;
 }
 function myReadPerms(root) {
   const out = {};
@@ -304,31 +332,75 @@ async function myApplyPerms(id, user, host, desired, current) {
   }
 }
 
-// New-account form: identity + password on a "Basic" tab, per-database access
-// on a separate "Permissions" tab.
+// New-account form: identity + password on "Basic", per-database access plus
+// quick-grant shortcuts on "Permissions", and auth/limits on "Advanced".
 function myUserForm(id) {
-  op('mysql', { op: 'databases', inst: id }).then((d) => {
-    const dbs = (d.databases || []).filter((x) => !x.system).map((x) => x.name);
+  Promise.all([op('mysql', { op: 'databases', inst: id }), op('mysql', { op: 'credentials', inst: id })]).then(([dd, cc]) => {
+    const dbs = (dd.databases || []).filter((x) => !x.system).map((x) => x.name);
+    const engine = cc.engine || 'mysql';
+    const plugins = engine === 'mariadb'
+      ? [['', tr('my.auth_default')], ['mysql_native_password', 'mysql_native_password'], ['ed25519', 'ed25519']]
+      : [['', tr('my.auth_default')], ['caching_sha2_password', 'caching_sha2_password'], ['mysql_native_password', 'mysql_native_password']];
+    const plugOpts = plugins.map((p) => `<option value="${p[0]}">${esc(p[1])}</option>`).join('');
     modal(tr('my.new_user'), `
-      <div class="subtabs" id="auTabs"><button data-s="basic" class="on">${tr('my.tab_basic')}</button><button data-s="perm">${tr('my.permissions')}</button></div>
+      <div class="subtabs" id="auTabs"><button data-s="basic" class="on">${tr('my.tab_basic')}</button><button data-s="perm">${tr('my.permissions')}</button><button data-s="adv">${tr('my.tab_advanced')}</button></div>
       <div id="auBasic">
         <div class="formgrid">
           <div><label class="lbl">${tr('my.username')}</label><input id="auU" class="field" autocomplete="off" /></div>
-          <div><label class="lbl">${tr('my.src_host')}</label><input id="auH" class="field" value="%" /></div>
+          <div><label class="lbl">${tr('my.host_mode')}</label><select id="auHostMode" class="field"><option value="%">${tr('my.host_any')}</option><option value="localhost">${tr('my.host_local')}</option><option value="custom">${tr('my.host_custom')}</option></select></div>
+          <div class="full hidden" id="auHostCustomWrap"><label class="lbl">${tr('my.src_host')}</label><input id="auHostCustom" class="field" placeholder="192.168.1.%" /></div>
           <div class="full"><label class="lbl">${tr('my.password')}</label>${myPwFieldHtml('auP', myGenPw(12), true)}</div>
         </div>
       </div>
-      <div id="auPerm" class="hidden">${myPermGrid(dbs, {})}</div>
-      <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="auGo">${tr('my.create')}</button></div>`, (close, root) => {
+      <div id="auPerm" class="hidden">
+        <div class="sechead" style="margin-top:2px"><h3>${tr('my.quick_grant')}</h3></div>
+        <label class="switch" style="padding:0;margin-bottom:10px"><input type="checkbox" id="auDedDb" /><span class="swbox"></span><span class="swtxt"><b>${tr('my.dedicated_db')}</b><span>${tr('my.dedicated_db_hint')}</span></span></label>
+        <div class="hidden" id="auDedDbWrap" style="margin:0 0 12px 4px"><input id="auDedDbName" class="field" placeholder="myapp" style="max-width:280px" /></div>
+        <label class="switch" style="padding:0"><input type="checkbox" id="auPrefix" /><span class="swbox"></span><span class="swtxt"><b>${tr('my.prefix_privs')}</b><span id="auPrefixHint">${tr('my.prefix_privs_hint', { p: '…_' })}</span></span></label>
+        <div class="sechead" style="margin-top:16px"><h3>${tr('my.db_access')}</h3></div>
+        ${myPermGrid(dbs, {}, true)}
+      </div>
+      <div id="auAdv" class="hidden">
+        <div><label class="lbl">${tr('my.auth_plugin')}</label><select id="auPlugin" class="field" style="max-width:300px">${plugOpts}</select></div>
+        <div class="formgrid" style="margin-top:14px">
+          <div><label class="lbl">${tr('my.limit_queries')}</label><input id="auMQ" class="field" type="number" min="0" value="0" /></div>
+          <div><label class="lbl">${tr('my.limit_conns')}</label><input id="auMC" class="field" type="number" min="0" value="0" /></div>
+          <div><label class="lbl">${tr('my.limit_user_conns')}</label><input id="auMUC" class="field" type="number" min="0" value="0" /></div>
+          <div style="display:flex;align-items:flex-end"><span class="mut" style="font-size:12px">${tr('my.limit_hint')}</span></div>
+        </div>
+        <label class="switch" style="padding:0;margin-top:16px"><input type="checkbox" id="auSsl" /><span class="swbox"></span><span class="swtxt">${tr('my.require_ssl')}</span></label>
+      </div>
+      <div class="row" style="justify-content:flex-end;margin-top:18px"><button class="btn" id="auGo">${tr('my.create')}</button></div>`, (close, root) => {
       myWirePw('auP');
       const tabs = root.querySelector('#auTabs');
-      tabs.querySelectorAll('button').forEach((btn) => btn.onclick = () => { tabs.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === btn)); root.querySelector('#auBasic').classList.toggle('hidden', btn.dataset.s !== 'basic'); root.querySelector('#auPerm').classList.toggle('hidden', btn.dataset.s !== 'perm'); });
+      tabs.querySelectorAll('button').forEach((btn) => btn.onclick = () => { tabs.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === btn)); ['basic', 'perm', 'adv'].forEach((s) => root.querySelector('#au' + s.charAt(0).toUpperCase() + s.slice(1)).classList.toggle('hidden', btn.dataset.s !== s)); });
+      const hostMode = $('auHostMode');
+      hostMode.onchange = () => { $('auHostCustomWrap').classList.toggle('hidden', hostMode.value !== 'custom'); };
+      const uIn = $('auU');
+      const syncPrefix = () => { const u = uIn.value.trim() || '…'; $('auPrefixHint').textContent = tr('my.prefix_privs_hint', { p: u + '_' }); };
+      uIn.addEventListener('input', () => { syncPrefix(); if ($('auDedDb').checked && !$('auDedDbName').value.trim()) $('auDedDbName').placeholder = uIn.value.trim() || 'myapp'; });
+      syncPrefix();
+      $('auDedDb').onchange = () => { $('auDedDbWrap').classList.toggle('hidden', !$('auDedDb').checked); if ($('auDedDb').checked) $('auDedDbName').placeholder = uIn.value.trim() || 'myapp'; };
       $('auGo').onclick = async () => {
-        const user = $('auU').value.trim(), host = $('auH').value.trim() || '%', pwd = $('auP').value;
+        const user = uIn.value.trim();
+        const host = hostMode.value === 'custom' ? ($('auHostCustom').value.trim() || '%') : hostMode.value;
+        const pwd = $('auP').value;
         if (!user || !pwd) { toast(tr('set.fill_all'), 'err'); return; }
+        const body = { op: 'create_user', inst: id, username: user, host, password: pwd };
+        if ($('auPlugin').value) body.auth_plugin = $('auPlugin').value;
+        body.max_queries = Number($('auMQ').value) || 0;
+        body.max_connections = Number($('auMC').value) || 0;
+        body.max_user_connections = Number($('auMUC').value) || 0;
+        if ($('auSsl').checked) body.require_ssl = true;
         try {
-          await op('mysql', { op: 'create_user', inst: id, username: user, host, password: pwd });
+          await op('mysql', body);
           await myApplyPerms(id, user, host, myReadPerms(root), {});
+          if ($('auDedDb').checked) {
+            const dbName = $('auDedDbName').value.trim() || user;
+            await op('mysql', { op: 'create_database', inst: id, database: dbName });
+            await op('mysql', { op: 'grant', inst: id, username: user, host, database: dbName, privilege: 'all' });
+          }
+          if ($('auPrefix').checked) await op('mysql', { op: 'grant', inst: id, username: user, host, privilege: 'all', prefix: true });
           close(); toast(tr('common.created'), 'ok'); myUsers(id);
         } catch (e) { toast(e.message, 'err'); }
       };
