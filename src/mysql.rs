@@ -109,6 +109,23 @@ struct Req {
     /// privilege scope: "all" (read+write) | "ro" (read-only) | "custom" later
     #[serde(default)]
     privilege: Option<String>,
+    /// table browsing / column editing.
+    #[serde(default)]
+    table: Option<String>,
+    #[serde(default)]
+    column: Option<String>,
+    #[serde(default)]
+    new_name: Option<String>,
+    /// SQL column type, e.g. "VARCHAR(255)" (modify_column).
+    #[serde(default)]
+    col_type: Option<String>,
+    #[serde(default)]
+    col_null: Option<bool>,
+    #[serde(default)]
+    col_default: Option<String>,
+    /// row-preview limit (table_rows).
+    #[serde(default)]
+    limit: Option<i64>,
 }
 
 /// Persisted per-instance manifest (`<data>/mysql/<id>.json`, 0600).
@@ -417,12 +434,17 @@ async fn handle(req: &Req) -> Result<Value> {
         "databases" => databases(req).await,
         "create_database" => create_database(req).await,
         "drop_database" => drop_database(req).await,
+        "tables" => tables(req).await,
+        "columns" => columns(req).await,
+        "table_rows" => table_rows(req).await,
+        "modify_column" => modify_column(req).await,
         "credentials" => credentials(req).await,
         "list_users" => list_users(req).await,
         "create_user" => create_user(req).await,
         "drop_user" => drop_user(req).await,
         "grant" => grant(req).await,
         "revoke" => revoke(req).await,
+        "user_grants" => user_grants(req).await,
         "backup" => start_backup(req),
         "list_ops" => Ok(ops_snapshot()),
         "op_log" => Ok(op_log(req.op_id.as_deref().unwrap_or(""))),
@@ -1132,6 +1154,315 @@ async fn drop_database(req: &Req) -> Result<Value> {
     let sql = format!("DROP DATABASE `{}`;", db);
     run_stmt(&m.container, &password, &sql).await?;
     Ok(json!({ "dropped": db }))
+}
+
+// ---------------------------------------------------------------------------
+// Table browsing + column editing.
+// ---------------------------------------------------------------------------
+
+/// Unescape a mysql `-B` batch-output field (\t \n \r \\ \0).
+fn unescape_field(s: &str) -> String {
+    if !s.contains('\\') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            match it.next() {
+                Some('t') => out.push('\t'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('0') => out.push('\0'),
+                Some('\\') => out.push('\\'),
+                Some(o) => out.push(o),
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn valid_table(s: &str) -> bool {
+    valid_ident(s, false)
+}
+
+/// List base tables in a database with row estimate, size, and engine.
+async fn tables(req: &Req) -> Result<Value> {
+    let m = load_manifest(need_inst(req)?)?;
+    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let db = req.database.as_deref().map(str::trim).unwrap_or("");
+    if !valid_ident(db, false) {
+        return Err(anyhow!("ERR_CODE:mysql.bad_db_name"));
+    }
+    let sql = format!(
+        "SELECT table_name, COALESCE(table_rows,0), COALESCE(data_length+index_length,0), COALESCE(engine,'') \
+         FROM information_schema.tables WHERE table_schema='{}' AND table_type='BASE TABLE' ORDER BY table_name;",
+        sql_escape(db)
+    );
+    let (code, out) = mysql_exec_query(&m.container, &password, &sql).await?;
+    if code != 0 {
+        return Err(anyhow!(
+            "查询失败：{}",
+            out.trim().chars().take(200).collect::<String>()
+        ));
+    }
+    let mut tbls = Vec::new();
+    for line in out.lines() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+        let mut it = line.split('\t');
+        let name = it.next().unwrap_or("").trim();
+        if name.is_empty() {
+            continue;
+        }
+        let rows: i64 = it.next().unwrap_or("0").trim().parse().unwrap_or(0);
+        let bytes: i64 = it.next().unwrap_or("0").trim().parse().unwrap_or(0);
+        let engine = it.next().unwrap_or("").trim();
+        tbls.push(json!({ "name": name, "rows": rows, "bytes": bytes, "engine": engine }));
+    }
+    Ok(json!({ "tables": tbls }))
+}
+
+/// List a table's columns (name / type / nullable / key / default / extra).
+async fn columns(req: &Req) -> Result<Value> {
+    let m = load_manifest(need_inst(req)?)?;
+    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let db = req.database.as_deref().map(str::trim).unwrap_or("");
+    let tbl = req.table.as_deref().map(str::trim).unwrap_or("");
+    if !valid_ident(db, false) {
+        return Err(anyhow!("ERR_CODE:mysql.bad_db_name"));
+    }
+    if !valid_table(tbl) {
+        return Err(anyhow!("ERR_CODE:mysql.bad_table"));
+    }
+    let sql = format!(
+        "SELECT column_name, column_type, is_nullable, column_key, IFNULL(column_default,'\\0NULL'), extra \
+         FROM information_schema.columns WHERE table_schema='{}' AND table_name='{}' ORDER BY ordinal_position;",
+        sql_escape(db),
+        sql_escape(tbl)
+    );
+    let (code, out) = mysql_exec_query(&m.container, &password, &sql).await?;
+    if code != 0 {
+        return Err(anyhow!(
+            "查询失败：{}",
+            out.trim().chars().take(200).collect::<String>()
+        ));
+    }
+    let mut cols = Vec::new();
+    for line in out.lines() {
+        if line.trim_end().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        let g = |i: usize| f.get(i).map(|s| unescape_field(s)).unwrap_or_default();
+        let name = g(0);
+        if name.is_empty() {
+            continue;
+        }
+        let def_raw = g(4);
+        let default = if def_raw == "\0NULL" {
+            Value::Null
+        } else {
+            json!(def_raw)
+        };
+        cols.push(json!({
+            "name": name, "type": g(1), "nullable": g(2) == "YES",
+            "key": g(3), "default": default, "extra": g(5),
+        }));
+    }
+    Ok(json!({ "columns": cols }))
+}
+
+/// Preview rows of a table (default 100, capped 500) → column names + rows.
+async fn table_rows(req: &Req) -> Result<Value> {
+    let m = load_manifest(need_inst(req)?)?;
+    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let db = req.database.as_deref().map(str::trim).unwrap_or("");
+    let tbl = req.table.as_deref().map(str::trim).unwrap_or("");
+    if !valid_ident(db, false) {
+        return Err(anyhow!("ERR_CODE:mysql.bad_db_name"));
+    }
+    if !valid_table(tbl) {
+        return Err(anyhow!("ERR_CODE:mysql.bad_table"));
+    }
+    let limit = req.limit.unwrap_or(100).clamp(1, 500);
+
+    let col_sql = format!(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema='{}' AND table_name='{}' ORDER BY ordinal_position;",
+        sql_escape(db),
+        sql_escape(tbl)
+    );
+    let (cc, cout) = mysql_exec_query(&m.container, &password, &col_sql).await?;
+    if cc != 0 {
+        return Err(anyhow!(
+            "查询失败：{}",
+            cout.trim().chars().take(200).collect::<String>()
+        ));
+    }
+    let cols: Vec<String> = cout
+        .lines()
+        .map(|l| l.trim_end().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let sql = format!(
+        "SELECT * FROM {}.{} LIMIT {};",
+        ident_quote(db),
+        ident_quote(tbl),
+        limit
+    );
+    let (code, out) = mysql_exec_query(&m.container, &password, &sql).await?;
+    if code != 0 {
+        return Err(anyhow!(
+            "查询失败：{}",
+            out.trim().chars().take(200).collect::<String>()
+        ));
+    }
+    let mut rows = Vec::new();
+    for line in out.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let row: Vec<Value> = line
+            .split('\t')
+            .map(|p| {
+                if p == "NULL" {
+                    Value::Null
+                } else {
+                    json!(unescape_field(p))
+                }
+            })
+            .collect();
+        rows.push(Value::Array(row));
+    }
+    Ok(json!({ "columns": cols, "rows": rows, "limit": limit }))
+}
+
+/// Validate a free-text SQL column-type fragment, e.g. "VARCHAR(255)".
+fn valid_col_type(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '(' | ')' | ',' | ' ' | '\'' | '_'))
+}
+
+/// Modify a column's name / type / nullability / default via ALTER TABLE.
+async fn modify_column(req: &Req) -> Result<Value> {
+    let m = load_manifest(need_inst(req)?)?;
+    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let db = req.database.as_deref().map(str::trim).unwrap_or("");
+    let tbl = req.table.as_deref().map(str::trim).unwrap_or("");
+    let col = req.column.as_deref().map(str::trim).unwrap_or("");
+    let new = req
+        .new_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(col);
+    let ctype = req.col_type.as_deref().map(str::trim).unwrap_or("");
+    if !valid_ident(db, false) {
+        return Err(anyhow!("ERR_CODE:mysql.bad_db_name"));
+    }
+    if !valid_table(tbl) {
+        return Err(anyhow!("ERR_CODE:mysql.bad_table"));
+    }
+    if !valid_ident(col, false) || !valid_ident(new, false) {
+        return Err(anyhow!("ERR_CODE:mysql.bad_column"));
+    }
+    if !valid_col_type(ctype) {
+        return Err(anyhow!("ERR_CODE:mysql.bad_col_type"));
+    }
+    let nullable = req.col_null.unwrap_or(true);
+    let mut sql = format!(
+        "ALTER TABLE {}.{} CHANGE COLUMN {} {} {}",
+        ident_quote(db),
+        ident_quote(tbl),
+        ident_quote(col),
+        ident_quote(new),
+        ctype
+    );
+    sql.push_str(if nullable { " NULL" } else { " NOT NULL" });
+    if let Some(d) = req
+        .col_default
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        sql.push_str(&format!(" DEFAULT '{}'", sql_escape(d)));
+    }
+    sql.push(';');
+    run_stmt(&m.container, &password, &sql).await?;
+    Ok(json!({ "modified": new }))
+}
+
+/// Summarize a user's per-database privileges by parsing SHOW GRANTS, as a map
+/// of database → "all" | "ro" (`*.*` maps to the key "*").
+async fn user_grants(req: &Req) -> Result<Value> {
+    let m = load_manifest(need_inst(req)?)?;
+    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let user = req.username.as_deref().map(str::trim).unwrap_or("");
+    let host = req.host.as_deref().map(str::trim).unwrap_or("%");
+    if !valid_ident(user, false) || !valid_ident(host, true) {
+        return Err(anyhow!("ERR_CODE:mysql.bad_user_or_host"));
+    }
+    let sql = format!(
+        "SHOW GRANTS FOR '{}'@'{}';",
+        sql_escape(user),
+        sql_escape(host)
+    );
+    let (code, out) = mysql_exec_query(&m.container, &password, &sql).await?;
+    if code != 0 {
+        return Err(anyhow!(
+            "查询失败：{}",
+            out.trim().chars().take(200).collect::<String>()
+        ));
+    }
+    let mut grants = serde_json::Map::new();
+    for line in out.lines() {
+        let l = line.trim();
+        let upper = l.to_uppercase();
+        if !upper.starts_with("GRANT ") {
+            continue;
+        }
+        let on = match upper.find(" ON ") {
+            Some(i) => i,
+            None => continue,
+        };
+        let privs = &upper[6..on];
+        let rest = &l[on + 4..];
+        let scope_end = rest.to_uppercase().find(" TO ").unwrap_or(rest.len());
+        let scope = rest[..scope_end].trim();
+        let db = scope
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('`');
+        if db.is_empty() {
+            continue;
+        }
+        let key = if scope.starts_with("*.") {
+            "*".to_string()
+        } else {
+            db.to_string()
+        };
+        let level =
+            if privs.contains("ALL") || (privs.contains("INSERT") && privs.contains("UPDATE")) {
+                "all"
+            } else if privs.contains("SELECT") {
+                "ro"
+            } else {
+                continue; // USAGE / no real privileges
+            };
+        grants.insert(key, json!(level));
+    }
+    Ok(json!({ "grants": grants }))
 }
 
 // ---------------------------------------------------------------------------

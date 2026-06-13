@@ -485,3 +485,17 @@
 .ssltoggles { display:grid; grid-template-columns:1fr 1fr; gap:0 20px; padding:4px 14px; border:1px solid var(--line); border-radius:10px; background:var(--panel2); }
 .ssltoggles .switch { align-items:flex-start; }
 @media (max-width:560px){ .ssltoggles { grid-template-columns:1fr; } }
+
+/* MySQL database browser */
+.linklike { background:none; border:none; padding:0; color:var(--acc); cursor:pointer; font:inherit; font-weight:550; }
+.linklike:hover { text-decoration:underline; }
+.mycrumb { display:flex; align-items:center; gap:8px; font-size:13px; margin:2px 0 4px; }
+.mycrumb-sep { color:var(--mut); }
+.mycrumb-link { background:none; border:none; padding:0; color:var(--acc); cursor:pointer; font:inherit; }
+.mycrumb-link:hover { text-decoration:underline; }
+.mycrumb-cur { color:var(--fg); font-weight:600; }
+.tablescroll { max-height:460px; overflow:auto; border:1px solid var(--line); border-radius:10px; }
+.tablescroll table.datatbl { margin:0; border:none; }
+table.datatbl th { position:sticky; top:0; background:var(--panel2); z-index:1; white-space:nowrap; }
+table.datatbl td { max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12.5px; }
+table.kvtbl th { text-align:left; color:var(--mut); font-weight:500; }
