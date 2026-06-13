@@ -16,6 +16,7 @@
 //! Disabling/changing the port is done from the console's settings page and
 //! persisted; a restart applies a new port.
 
+mod audit;
 mod auth;
 mod branding;
 mod server;

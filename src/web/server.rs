@@ -16,6 +16,7 @@ use axum::{
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
+use super::audit;
 use super::auth::{proof_matches, AuthState};
 use super::branding;
 use super::settings::{self, WebSettings};
@@ -85,6 +86,8 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
         .route("/api/metrics", get(metrics))
         .route("/api/procs", get(procs))
         .route("/api/settings", get(get_settings).post(put_settings))
+        .route("/api/logs", get(logs_list))
+        .route("/api/logs/clear", post(logs_clear))
         .route("/api/branding", get(get_branding).post(put_branding))
         .route("/api/update/status", get(update_status))
         .route(
@@ -326,6 +329,14 @@ async fn login(
         && proof_matches(&req.nonce, &exp_hash, &req.proof);
     if !pw_ok {
         state.auth.record_failure(&source);
+        audit::record_ip(
+            &req.username,
+            "auth.login",
+            "",
+            false,
+            "bad_credentials",
+            &source,
+        );
         return api_err(StatusCode::UNAUTHORIZED, "auth.bad_credentials");
     }
     // Second factor (TOTP) when enabled for this account.
@@ -336,17 +347,25 @@ async fn login(
         }
         if !super::totp::verify(&totp_secret, &req.code) {
             state.auth.record_failure(&source);
+            audit::record_ip(&req.username, "auth.login", "", false, "bad_totp", &source);
             return api_err(StatusCode::UNAUTHORIZED, "auth.bad_totp");
         }
     }
     state.auth.clear_failures(&source);
     let token = state.auth.issue(&req.username);
+    audit::record_ip(&req.username, "auth.login", "", true, "", &source);
     Json(json!({ "ok": true, "token": token, "must_setup": must_setup })).into_response()
 }
 
 async fn logout(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+    let who = current_account(&state, &headers)
+        .map(|a| a.username)
+        .unwrap_or_default();
     if let Some(t) = bearer(&headers) {
         state.auth.revoke(&t);
+    }
+    if !who.is_empty() {
+        audit::record(&who, "auth.logout", "", true, "");
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -407,18 +426,89 @@ async fn panel_info(State(state): State<Shared>, headers: header::HeaderMap) -> 
 async fn dispatch(
     state: &Shared,
     headers: &header::HeaderMap,
+    chan: &str,
     body: Value,
     f: impl std::future::Future<Output = anyhow::Result<Value>>,
 ) -> Response {
     // Docker / Nginx / MySQL management are root-level capabilities — admin only.
-    if let Err(r) = require_admin(state, headers) {
-        return r;
+    let acct = match require_admin(state, headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let op = body
+        .get("op")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let res = f.await;
+    // Record state-changing operations only (skip reads/polls to keep the log
+    // meaningful and small).
+    if !is_read_op(&op) {
+        let target = body
+            .get("inst")
+            .or_else(|| body.get("name"))
+            .or_else(|| body.get("domain"))
+            .or_else(|| body.get("container"))
+            .or_else(|| body.get("database"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let detail = match &res {
+            Ok(_) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        audit::record(
+            &acct.username,
+            &format!("{chan}.{op}"),
+            &target,
+            res.is_ok(),
+            &detail,
+        );
     }
-    let _ = body; // body already parsed by caller
-    match f.await {
+    match res {
         Ok(data) => Json(json!({ "ok": true, "data": data })).into_response(),
         Err(e) => Json(op_err_body(e)).into_response(),
     }
+}
+
+/// Read-only / polling ops we don't write to the audit log.
+fn is_read_op(op: &str) -> bool {
+    matches!(
+        op,
+        "" | "info"
+            | "list"
+            | "list_ops"
+            | "op_log"
+            | "status"
+            | "ps"
+            | "stats"
+            | "logs"
+            | "log"
+            | "inspect"
+            | "get"
+            | "detail"
+            | "read"
+            | "databases"
+            | "tables"
+            | "columns"
+            | "table_rows"
+            | "list_users"
+            | "user_grants"
+            | "credentials"
+            | "images"
+            | "networks"
+            | "volumes"
+            | "df"
+            | "usage"
+            | "ports"
+            | "exists"
+            | "preview"
+            | "validate"
+            | "test"
+            | "check"
+            | "changelog"
+            | "dismiss_op"
+    )
 }
 
 async fn docker_op(
@@ -427,7 +517,7 @@ async fn docker_op(
     Json(body): Json<Value>,
 ) -> Response {
     let fut = crate::docker::web_dispatch(&body);
-    dispatch(&state, &headers, body.clone(), fut).await
+    dispatch(&state, &headers, "docker", body.clone(), fut).await
 }
 
 async fn nginx_op(
@@ -436,7 +526,7 @@ async fn nginx_op(
     Json(body): Json<Value>,
 ) -> Response {
     let fut = crate::nginx::web_dispatch(&body);
-    dispatch(&state, &headers, body.clone(), fut).await
+    dispatch(&state, &headers, "nginx", body.clone(), fut).await
 }
 
 async fn mysql_op(
@@ -445,7 +535,7 @@ async fn mysql_op(
     Json(body): Json<Value>,
 ) -> Response {
     let fut = crate::mysql::web_dispatch(&body);
-    dispatch(&state, &headers, body.clone(), fut).await
+    dispatch(&state, &headers, "mysql", body.clone(), fut).await
 }
 
 // ---------------------------------------------------------------------------
@@ -560,7 +650,57 @@ async fn put_settings(
     if let Err(e) = settings::save(&saved) {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
+    audit::record(
+        &actor_name(&state, &headers),
+        "settings.update",
+        "",
+        true,
+        "",
+    );
     Json(json!({ "ok": true, "needs_restart": needs_restart })).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Audit log (Owner only)
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct LogsQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// GET /api/logs — the audit log, newest first. Super-admin (Owner) only.
+async fn logs_list(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Query(q): Query<LogsQuery>,
+) -> Response {
+    if let Err(r) = require_super(&state, &headers) {
+        return r;
+    }
+    let entries = audit::read(q.limit.unwrap_or(500));
+    Json(json!({ "ok": true, "data": { "entries": entries } })).into_response()
+}
+
+/// POST /api/logs/clear — erase the audit log. Owner only.
+async fn logs_clear(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+    let actor = match require_super(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if let Err(e) = audit::clear() {
+        return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
+    }
+    audit::record(&actor.username, "logs.clear", "", true, "");
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// Best-effort current account name for audit records (empty when unresolved).
+fn actor_name(state: &Shared, headers: &header::HeaderMap) -> String {
+    current_account(state, headers)
+        .map(|a| a.username)
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -752,6 +892,7 @@ async fn put_password(
             }
         }
     }
+    audit::record(&a.username, "account.password", &a.username, true, "");
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -827,6 +968,7 @@ async fn twofa_enable(
     if let Err(e) = write_totp(&state, &a, &secret, true) {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
+    audit::record(&a.username, "account.2fa_enable", &a.username, true, "");
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -847,6 +989,7 @@ async fn twofa_disable(
     if let Err(e) = write_totp(&state, &a, "", false) {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
+    audit::record(&a.username, "account.2fa_disable", &a.username, true, "");
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -941,8 +1084,20 @@ async fn users_create(
     )
     .await
     {
-        Ok(u) => Json(json!({ "ok": true, "data": { "username": u.username } })).into_response(),
-        Err(e) => Json(op_err_body(e)).into_response(),
+        Ok(u) => {
+            audit::record(&actor.username, "user.create", &u.username, true, &req.role);
+            Json(json!({ "ok": true, "data": { "username": u.username } })).into_response()
+        }
+        Err(e) => {
+            audit::record(
+                &actor.username,
+                "user.create",
+                &req.username,
+                false,
+                &e.to_string(),
+            );
+            Json(op_err_body(e)).into_response()
+        }
     }
 }
 
@@ -1044,6 +1199,7 @@ async fn users_update(
             }
         }
     }
+    audit::record(&actor.username, "user.update", &req.username, true, "");
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -1069,8 +1225,20 @@ async fn users_delete(
         }
     }
     match super::users::delete(&req.username).await {
-        Ok(_) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => Json(op_err_body(e)).into_response(),
+        Ok(_) => {
+            audit::record(&actor.username, "user.delete", &req.username, true, "");
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => {
+            audit::record(
+                &actor.username,
+                "user.delete",
+                &req.username,
+                false,
+                &e.to_string(),
+            );
+            Json(op_err_body(e)).into_response()
+        }
     }
 }
 
@@ -1543,6 +1711,13 @@ async fn put_branding(
     if let Err(e) = branding::save(&b) {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
+    audit::record(
+        &actor_name(&state, &headers),
+        "branding.update",
+        "",
+        true,
+        "",
+    );
     Json(json!({ "ok": true, "data": b })).into_response()
 }
 
@@ -1653,5 +1828,6 @@ async fn update_apply(State(state): State<Shared>, headers: header::HeaderMap) -
     tokio::spawn(async move {
         crate::update::run_self_update(&cfg).await;
     });
+    audit::record(&actor_name(&state, &headers), "update.apply", "", true, "");
     Json(json!({ "ok": true, "data": { "started": true } })).into_response()
 }
