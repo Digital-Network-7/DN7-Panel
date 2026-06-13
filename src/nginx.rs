@@ -586,37 +586,11 @@ fn valid_client_address(s: &str) -> bool {
             .all(|c| c.is_ascii_hexdigit() || matches!(c, '.' | ':' | '/'))
 }
 
-/// base64-encode (standard alphabet, padded) — for the `{SHA}` htpasswd hash.
-fn base64_encode(data: &[u8]) -> String {
-    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0];
-        let b1 = *chunk.get(1).unwrap_or(&0);
-        let b2 = *chunk.get(2).unwrap_or(&0);
-        out.push(T[(b0 >> 2) as usize] as char);
-        out.push(T[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            T[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            T[(b2 & 0x3f) as usize] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
-/// Compute an nginx-compatible `{SHA}` password hash (base64 of SHA-1). nginx
-/// understands this scheme natively (no system crypt dependency).
+/// Compute a strong, salted password hash for nginx HTTP Basic Auth: bcrypt
+/// (`$2b$…`), which the host nginx verifies via `crypt()`. Salted and
+/// GPU-resistant — far stronger than the legacy unsalted `{SHA}` scheme.
 fn htpasswd_hash(password: &str) -> String {
-    use sha1::{Digest, Sha1};
-    let mut h = Sha1::new();
-    h.update(password.as_bytes());
-    format!("{{SHA}}{}", base64_encode(&h.finalize()))
+    bcrypt::hash(password, bcrypt::DEFAULT_COST).unwrap_or_default()
 }
 
 /// Write (or remove) an access list's htpasswd file from its stored hashes.
@@ -632,13 +606,70 @@ fn write_htpasswd(list: &AccessList) -> Result<()> {
         body.push_str(&format!("{}:{}\n", u.username, u.hash));
     }
     std::fs::write(&path, body)?;
+    harden_htpasswd_perms(&path);
+    Ok(())
+}
+
+/// Tighten an htpasswd file to the minimum the nginx worker still needs:
+/// owned by nginx's run-user at 0640 when that user can be determined, else
+/// fall back to 0644 (world-readable) so auth never silently breaks. The hashes
+/// are bcrypt, so even the 0644 fallback isn't trivially crackable.
+fn harden_htpasswd_perms(path: &std::path::Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        // World-readable: nginx worker processes read this per request.
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+        if let Some((uid, gid)) = nginx_run_uid_gid() {
+            use std::os::unix::ffi::OsStrExt;
+            if let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) {
+                // SAFETY: `c` is a valid NUL-terminated path; chown just sets
+                // ownership and returns an error code we check.
+                let rc = unsafe { libc::chown(c.as_ptr(), uid, gid) };
+                if rc == 0 {
+                    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o640));
+                    return;
+                }
+            }
+        }
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644));
     }
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
+/// The nginx worker's run-user from `nginx.conf` (`user <name>;`), resolved to
+/// (uid, gid). Workers read auth_basic_user_file, so the htpasswd file must be
+/// readable by this account. Returns None when it can't be determined.
+#[cfg(unix)]
+fn nginx_run_uid_gid() -> Option<(u32, u32)> {
+    let conf = std::fs::read_to_string("/etc/nginx/nginx.conf").ok()?;
+    let mut user = None;
+    for line in conf.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("user ") {
+            let name = rest
+                .trim()
+                .trim_end_matches(';')
+                .split_whitespace()
+                .next()?;
+            if !name.is_empty() && name != "root" {
+                user = Some(name.to_string());
+            }
+            break;
+        }
+    }
+    let user = user?;
+    let c = std::ffi::CString::new(user).ok()?;
+    // SAFETY: getpwnam reads the passwd db for a valid C string and returns a
+    // pointer we immediately copy out of (no retention).
+    unsafe {
+        let pw = libc::getpwnam(c.as_ptr());
+        if pw.is_null() {
+            return None;
+        }
+        Some(((*pw).pw_uid, (*pw).pw_gid))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,6 +1238,16 @@ async fn stream_cmd(op_id: &str, cmd: &str, args: &[&str]) -> Result<()> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| anyhow!("无法执行 {cmd}：{e}"))?;
+    // Drain stderr concurrently so a child that fills the stderr pipe can't
+    // deadlock against us waiting on stdout.
+    let stderr = child.stderr.take();
+    let err_task = tokio::spawn(async move {
+        let mut buf = String::new();
+        if let Some(mut er) = stderr {
+            let _ = er.read_to_string(&mut buf).await;
+        }
+        buf
+    });
     if let Some(out) = child.stdout.take() {
         let mut lines = BufReader::new(out).lines();
         while let Ok(Some(line)) = lines.next_line().await {
@@ -1217,19 +1258,16 @@ async fn stream_cmd(op_id: &str, cmd: &str, args: &[&str]) -> Result<()> {
         .wait()
         .await
         .map_err(|e| anyhow!("{cmd} 执行失败：{e}"))?;
-    if let Some(mut er) = child.stderr.take() {
-        let mut err = String::new();
-        let _ = er.read_to_string(&mut err).await;
-        for line in err
-            .lines()
-            .rev()
-            .take(6)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-        {
-            op_push(op_id, line.trim());
-        }
+    let err = err_task.await.unwrap_or_default();
+    for line in err
+        .lines()
+        .rev()
+        .take(6)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        op_push(op_id, line.trim());
     }
     if !status.success() {
         return Err(anyhow!("{cmd} 返回非零退出码"));
@@ -2028,8 +2066,7 @@ async fn create_cert(req: &Req) -> Result<Value> {
             }
             std::fs::create_dir_all(&lo.cert_store)?;
             std::fs::write(named_crt_file(&lo, &name), cert)?;
-            std::fs::write(named_key_file(&lo, &name), key)?;
-            set_key_perms(&named_key_file(&lo, &name));
+            write_key_file(&named_key_file(&lo, &name), key)?;
         }
         "le" => {
             if domain.is_empty() || !valid_server_name(&domain) {
@@ -2840,7 +2877,35 @@ fn with_scheme_port(host: &str, scheme: &str) -> String {
 fn write_cert_files(lo: &Layout, site: &Site, cert_pem: &str, key_pem: &str) -> Result<()> {
     std::fs::create_dir_all(&lo.cert_store)?;
     std::fs::write(lo.cert_store.join(format!("{}.crt", site.id)), cert_pem)?;
-    std::fs::write(lo.cert_store.join(format!("{}.key", site.id)), key_pem)?;
+    write_key_file(&lo.cert_store.join(format!("{}.key", site.id)), key_pem)?;
+    Ok(())
+}
+
+/// Write a private key file with owner-only (0600) permissions from creation,
+/// so it never lands world-readable even briefly (default umask would make a
+/// plain `write` 0644). All private-key writes go through here.
+fn write_key_file(path: &std::path::Path, pem: &str) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(pem.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, pem)?;
+    }
+    // `.mode()` only applies on create; chmod covers a pre-existing looser file.
+    set_key_perms(path);
     Ok(())
 }
 
@@ -2891,9 +2956,7 @@ async fn gen_self_signed_to(
         .map_err(|e| anyhow!("签发自签证书失败：{e}"))?;
 
     std::fs::write(crt_path, cert.pem())?;
-    std::fs::write(key_path, key_pair.serialize_pem())?;
-    // Keep the private key readable only by us.
-    set_key_perms(key_path);
+    write_key_file(key_path, &key_pair.serialize_pem())?;
     Ok(())
 }
 
@@ -3445,17 +3508,11 @@ mod tests {
     }
 
     #[test]
-    fn htpasswd_sha_known_vector() {
-        // sha1("test") base64 → qUqP5cyxm6YcTAhz05Hph5gvu9M=
-        assert_eq!(htpasswd_hash("test"), "{SHA}qUqP5cyxm6YcTAhz05Hph5gvu9M=");
-    }
-
-    #[test]
-    fn base64_encode_pads() {
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    fn htpasswd_is_bcrypt_and_verifies() {
+        let h = htpasswd_hash("s3cret");
+        assert!(h.starts_with("$2"), "expected a bcrypt hash, got {h}");
+        assert!(bcrypt::verify("s3cret", &h).unwrap());
+        assert!(!bcrypt::verify("wrong", &h).unwrap());
     }
 
     #[test]

@@ -53,6 +53,9 @@ hmac = "0.12"
 sha1 = "0.10"
 # QR code rendering for the 2FA enrollment (otpauth:// URI → SVG). Pure Rust.
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+# Strong, salted password hashing for nginx Access List HTTP Basic Auth
+# (bcrypt $2b$ — GPU-resistant; verified by the host nginx via crypt()). Pure Rust.
+bcrypt = "0.15"
 
 [profile.release]
 opt-level = 3

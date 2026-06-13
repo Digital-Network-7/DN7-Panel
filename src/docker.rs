@@ -2116,6 +2116,15 @@ async fn stream_shell_to_op(op_id: &str, script: &str) -> Result<()> {
         .spawn()
         .map_err(|e| anyhow!("无法执行安装脚本：{e}"))?;
 
+    // Drain stderr concurrently to avoid a stdout/stderr pipe deadlock.
+    let stderr = child.stderr.take();
+    let err_task = tokio::spawn(async move {
+        let mut buf = String::new();
+        if let Some(mut e) = stderr {
+            let _ = e.read_to_string(&mut buf).await;
+        }
+        buf
+    });
     if let Some(out) = child.stdout.take() {
         let mut lines = BufReader::new(out).lines();
         while let Ok(Some(line)) = lines.next_line().await {
@@ -2126,19 +2135,16 @@ async fn stream_shell_to_op(op_id: &str, script: &str) -> Result<()> {
         .wait()
         .await
         .map_err(|e| anyhow!("安装脚本失败：{e}"))?;
-    if let Some(mut e) = child.stderr.take() {
-        let mut err = String::new();
-        let _ = e.read_to_string(&mut err).await;
-        for line in err
-            .lines()
-            .rev()
-            .take(5)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-        {
-            op_push(op_id, line.trim());
-        }
+    let err = err_task.await.unwrap_or_default();
+    for line in err
+        .lines()
+        .rev()
+        .take(5)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        op_push(op_id, line.trim());
     }
     if !status.success() {
         return Err(anyhow!("ERR_CODE:docker.install_script_nonzero"));

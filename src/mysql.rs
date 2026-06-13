@@ -1461,13 +1461,116 @@ async fn table_rows(req: &Req) -> Result<Value> {
     Ok(json!({ "columns": cols, "rows": rows, "limit": limit }))
 }
 
-/// Validate a free-text SQL column-type fragment, e.g. "VARCHAR(255)".
-fn valid_col_type(s: &str) -> bool {
+/// Parse a column type into a safe, canonical form, or `None` if it isn't a
+/// recognized type. This is the structural-injection guard for `modify_column`:
+/// only a whitelisted base type with an optional numeric `(len)` / `(m,d)` and
+/// optional `UNSIGNED` / `ZEROFILL` modifiers is accepted — no quotes, commas
+/// outside the length, semicolons, or extra keywords can survive, so the result
+/// can't smuggle additional `ALTER` clauses. The returned string is rebuilt
+/// from validated tokens (never the raw input).
+fn canonical_col_type(s: &str) -> Option<String> {
     let s = s.trim();
-    !s.is_empty()
-        && s.len() <= 64
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '(' | ')' | ',' | ' ' | '\'' | '_'))
+    if s.is_empty() || s.len() > 64 {
+        return None;
+    }
+    // Hard character gate: only letters/digits/parens/comma/space may appear.
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '(' | ')' | ',' | ' '))
+    {
+        return None;
+    }
+    let lower = s.to_ascii_lowercase();
+    let base;
+    let mut args: Option<String> = None;
+    let tail;
+    if let Some(i) = lower.find('(') {
+        let j = lower.find(')')?;
+        if j < i || lower[j + 1..].contains('(') || lower[..i].contains(')') {
+            return None;
+        }
+        let inner = lower[i + 1..j].trim();
+        // 1 or 2 numeric components (e.g. DECIMAL(m,d)); each ≤4 digits.
+        let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
+        if parts.is_empty() || parts.len() > 2 {
+            return None;
+        }
+        for p in &parts {
+            if p.is_empty() || p.len() > 4 || !p.chars().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+        }
+        args = Some(parts.join(","));
+        base = lower[..i].trim();
+        tail = lower[j + 1..].trim();
+    } else {
+        // No length: the first word is the base type, the rest are modifiers.
+        let mut it = lower.splitn(2, char::is_whitespace);
+        base = it.next().unwrap_or("").trim();
+        tail = it.next().unwrap_or("").trim();
+    }
+    const NOARG: &[&str] = &[
+        "tinytext",
+        "text",
+        "mediumtext",
+        "longtext",
+        "tinyblob",
+        "blob",
+        "mediumblob",
+        "longblob",
+        "json",
+        "date",
+        "bool",
+        "boolean",
+    ];
+    const OPTARG: &[&str] = &[
+        "tinyint",
+        "smallint",
+        "mediumint",
+        "int",
+        "integer",
+        "bigint",
+        "bit",
+        "char",
+        "varchar",
+        "binary",
+        "varbinary",
+        "decimal",
+        "numeric",
+        "float",
+        "double",
+        "real",
+        "datetime",
+        "timestamp",
+        "time",
+        "year",
+    ];
+    if !NOARG.contains(&base) && !OPTARG.contains(&base) {
+        return None;
+    }
+    // Trailing modifiers: only UNSIGNED / ZEROFILL (in any order), nothing else.
+    let mut unsigned = false;
+    let mut zerofill = false;
+    for w in tail.split_whitespace() {
+        match w {
+            "unsigned" if !unsigned => unsigned = true,
+            "zerofill" if !zerofill => zerofill = true,
+            _ => return None,
+        }
+    }
+    let mut out = base.to_ascii_uppercase();
+    if let Some(a) = args {
+        out.push('(');
+        out.push_str(&a);
+        out.push(')');
+    }
+    if unsigned {
+        out.push_str(" UNSIGNED");
+    }
+    if zerofill {
+        out.push_str(" ZEROFILL");
+    }
+    Some(out)
 }
 
 /// Modify a column's name / type / nullability / default via ALTER TABLE.
@@ -1493,9 +1596,9 @@ async fn modify_column(req: &Req) -> Result<Value> {
     if !valid_ident(col, false) || !valid_ident(new, false) {
         return Err(anyhow!("ERR_CODE:mysql.bad_column"));
     }
-    if !valid_col_type(ctype) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_col_type"));
-    }
+    // Canonicalize the type from a whitelist — never interpolate raw input
+    // (prevents smuggling extra DDL clauses through the type field).
+    let ctype = canonical_col_type(ctype).ok_or_else(|| anyhow!("ERR_CODE:mysql.bad_col_type"))?;
     let nullable = req.col_null.unwrap_or(true);
     let mut sql = format!(
         "ALTER TABLE {}.{} CHANGE COLUMN {} {} {}",
@@ -2196,5 +2299,31 @@ mod tests {
         assert!(valid_limit(1000));
         assert!(!valid_limit(-1));
         assert!(!valid_limit(100_000_000));
+    }
+
+    #[test]
+    fn col_type_canonical_and_injection_safe() {
+        assert_eq!(
+            canonical_col_type("varchar(255)").as_deref(),
+            Some("VARCHAR(255)")
+        );
+        assert_eq!(canonical_col_type("int").as_deref(), Some("INT"));
+        assert_eq!(
+            canonical_col_type("decimal(10,2)").as_deref(),
+            Some("DECIMAL(10,2)")
+        );
+        assert_eq!(
+            canonical_col_type("int unsigned").as_deref(),
+            Some("INT UNSIGNED")
+        );
+        assert_eq!(canonical_col_type("TEXT").as_deref(), Some("TEXT"));
+        // Injection / malformed inputs must be rejected.
+        assert!(canonical_col_type("INT, ADD COLUMN x INT").is_none());
+        assert!(canonical_col_type("varchar(255); DROP TABLE t").is_none());
+        assert!(canonical_col_type("enum('a','b')").is_none());
+        assert!(canonical_col_type("int default 0").is_none());
+        assert!(canonical_col_type("notatype").is_none());
+        assert!(canonical_col_type("varchar(255) collate x").is_none());
+        assert!(canonical_col_type("").is_none());
     }
 }
