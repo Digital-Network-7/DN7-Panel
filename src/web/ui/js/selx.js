@@ -19,7 +19,16 @@ function selxOpen(sel) {
   SELX.sel = sel;
   const pop = el('div', { class: 'selx-pop' });
   Array.from(sel.options).forEach((o, i) => {
-    const opt = el('div', { class: 'selx-opt' + (i === sel.selectedIndex ? ' sel' : '') + (o.disabled ? ' dis' : '') }, esc(o.textContent));
+    // Rich two-line option: main title + optional subtitle (line 2 left) and a
+    // right-aligned hint (line 2 right), driven by data-sub / data-right.
+    const sub = o.getAttribute('data-sub');
+    const right = o.getAttribute('data-right');
+    const rich = !!(sub || right);
+    const cls = 'selx-opt' + (i === sel.selectedIndex ? ' sel' : '') + (o.disabled ? ' dis' : '') + (rich ? ' selx-rich' : '');
+    const html = rich
+      ? `<div class="selx-main"><span class="selx-t">${esc(o.textContent)}</span>${right ? `<span class="selx-r">${esc(right)}</span>` : ''}</div>${sub ? `<span class="selx-sub">${esc(sub)}</span>` : ''}`
+      : esc(o.textContent);
+    const opt = el('div', { class: cls }, html);
     if (!o.disabled) {
       opt.addEventListener('mousedown', (e) => {
         e.preventDefault();

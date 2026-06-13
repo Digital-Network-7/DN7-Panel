@@ -141,13 +141,19 @@ function ngAddSite(reload, site) {
         if (editing && site.cert_name) selectedCert = site.cert_name;
         else { const m = domainCerts.find((c) => certCovers(c.domain, host)); selectedCert = m ? m.name : ''; }
       }
-      let h = `<label class="certopt${selectedCert === '' ? ' sel' : ''}" data-cert=""><span class="ck"></span><span class="ci"><b>${tr('ng.use_new_le')}</b><span class="mut">${tr('ng.use_new_le_d')}</span></span></label>`;
+      const names = domainCerts.map((c) => c.name);
+      let opts = `<option value=""${selectedCert === '' ? ' selected' : ''} data-sub="${esc(tr('ng.use_new_le_d'))}">${esc(tr('ng.use_new_le'))}</option>`;
       domainCerts.forEach((c) => {
-        const meta = `${esc(c.name)}${c.not_after ? ' · ' + tr('ng.col_expire') + ' ' + esc(c.not_after) : ''}`;
-        h += `<label class="certopt${selectedCert === c.name ? ' sel' : ''}" data-cert="${esc(c.name)}"><span class="ck"></span><span class="ci"><b>${esc(c.domain || c.name)}</b><span class="mut">${meta}</span></span></label>`;
+        const right = c.not_after ? esc(tr('ng.col_expire') + ' ' + c.not_after) : '';
+        opts += `<option value="${esc(c.name)}"${selectedCert === c.name ? ' selected' : ''} data-sub="${esc(c.name)}" data-right="${right}">${esc(c.domain || c.name)}</option>`;
       });
-      list.innerHTML = h;
-      list.querySelectorAll('.certopt').forEach((o) => o.onclick = () => { selectedCert = o.dataset.cert; renderCertList(); });
+      // Keep a previously-chosen cert selectable even if it's outside the current
+      // base-domain filter (e.g. when editing before the domain field changes).
+      if (selectedCert && !names.includes(selectedCert)) {
+        opts += `<option value="${esc(selectedCert)}" selected data-sub="${esc(selectedCert)}">${esc(selectedCert)}</option>`;
+      }
+      list.innerHTML = `<select id="nsCertSel" class="field">${opts}</select>`;
+      $('nsCertSel').onchange = () => { selectedCert = $('nsCertSel').value; };
     };
     const loadCertList = () => {
       const base = baseDomain($('nsName').value.trim());

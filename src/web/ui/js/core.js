@@ -104,12 +104,22 @@ function fmtBytes(n) {
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return n.toFixed(i ? (n < 10 ? 2 : 1) : 0) + ' ' + u[i];
 }
+// Toast notification. `kind`: 'ok' | 'err' | 'warn' | 'info' (default 'info').
+// Each kind gets its own accent colour + icon so success/info/warnings don't
+// all read as errors.
+const TOAST_ICONS = {
+  ok: '<path d="M20 6 9 17l-5-5"/>',
+  err: '<circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/>',
+  warn: '<path d="M10.3 3.6 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
+};
 function toast(msg, kind) {
-  const t = el('div', { style: 'position:fixed;left:50%;top:22px;transform:translateX(-50%);z-index:99;padding:10px 18px;border-radius:10px;font-size:13px;box-shadow:var(--shadow);background:var(--panel-solid);border:1px solid var(--line2);color:var(--fg)' });
-  if (kind === 'err') t.style.borderColor = 'var(--err)';
-  if (kind === 'ok') t.style.borderColor = 'var(--ok)';
-  t.textContent = msg; document.body.appendChild(t);
-  setTimeout(() => { t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2200);
+  const k = (kind === 'ok' || kind === 'err' || kind === 'warn') ? kind : 'info';
+  const t = el('div', { class: 'toast ' + k });
+  t.innerHTML = `<svg class="ti" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${TOAST_ICONS[k]}</svg><span class="tx"></span>`;
+  t.querySelector('.tx').textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => { t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2600);
 }
 function confirmDanger(msg) { return new Promise((res) => { modal(tr('common.confirm'), `<p style="margin:0 0 18px">${esc(msg)}</p><div class="row" style="justify-content:flex-end"><button class="btn sec" id="cdNo">${tr('common.cancel')}</button><button class="btn danger" id="cdYes">${tr('common.ok')}</button></div>`, (close) => { $('cdNo').onclick = () => { close(); res(false); }; $('cdYes').onclick = () => { close(); res(true); }; }); }); }
 

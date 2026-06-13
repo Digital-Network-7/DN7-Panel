@@ -81,7 +81,7 @@ function buildContainerActions(holder, reload) {
   if (running) {
     mk(tr('dk.stop'), 'sec', () => doCAction('stop_container', id, reload));
     mk(tr('dk.restart'), 'sec', () => doCAction('restart_container', id, reload));
-    if (hasShell) mk(tr('dk.terminal'), '', () => ticket().then((t) => openTerminalModal(tr('dk.ctn_term') + name, `/api/container/terminal?ticket=${encodeURIComponent(t)}&container=${encodeURIComponent(id)}`)).catch((e) => toast(e.message, 'err')));
+    if (hasShell) mk(tr('dk.terminal'), '', () => openTerminalModal(tr('dk.ctn_term') + name, () => ticket().then((t) => `/api/container/terminal?ticket=${encodeURIComponent(t)}&container=${encodeURIComponent(id)}`)));
     mk(tr('dk.files'), 'sec', () => openFileBrowser(tr('dk.ctn_files') + name, id));
   } else {
     mk(tr('dk.start'), '', () => doCAction('start_container', id, reload));
