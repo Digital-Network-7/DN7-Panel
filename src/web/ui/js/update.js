@@ -58,7 +58,11 @@ function openUpdate() {
     $('uAuto').onchange = saveUpdCfg;
     $('uSource').onchange = saveUpdCfg;
     runUpdCheck();
-    pollUpdStatus(); // re-attach progress if a download is already running
+    // Re-attach the progress poller only if an update is already running (so a
+    // transient error on open can't trigger the restart/reload path).
+    api('/api/update/status').then((b) => {
+      if (b.data && b.data.in_progress) { $('uProg').classList.remove('hidden'); pollUpdStatus(); }
+    }).catch(() => {});
   });
 }
 
@@ -125,38 +129,75 @@ function applyUpdate() {
   const btn = $('uApply'); if (btn) { btn.disabled = true; btn.textContent = tr('upd.starting'); }
   api('/api/update/apply', { method: 'POST' }).then((b) => {
     if (b.data && b.data.started === false) toast(tr('upd.in_progress'));
-    $('uProg').classList.remove('hidden');
+    // Show the progress immediately (indeterminate until the first byte count),
+    // so a fast download still gives visible feedback.
+    const prog = $('uProg');
+    if (prog) {
+      prog.classList.remove('hidden');
+      const bar = prog.querySelector('.prog'), pi = prog.querySelector('.prog > i');
+      if (bar) { bar.classList.add('indet'); bar.classList.remove('done', 'err'); }
+      if (pi) pi.style.width = '0%';
+      const txt = $('uProgTxt'); if (txt) txt.textContent = tr('upd.starting');
+    }
     pollUpdStatus();
   }).catch((e) => { toast(e.message, 'err'); if (btn) { btn.disabled = false; btn.textContent = tr('upd.retry'); } });
 }
 
 function pollUpdStatus() {
   if (UPD.polling) clearInterval(UPD.polling);
-  UPD.polling = setInterval(() => {
+  const tick = () => {
     api('/api/update/status').then((b) => {
       const d = b.data, prog = $('uProg');
       if (!prog) { clearInterval(UPD.polling); return; }
-      const pi = prog.querySelector('.prog > i'), txt = $('uProgTxt');
+      const bar = prog.querySelector('.prog'), pi = prog.querySelector('.prog > i'), txt = $('uProgTxt');
+      const mb = (n) => (n / 1048576).toFixed(1);
       if (d.phase === 'downloading') {
         prog.classList.remove('hidden');
-        pi.style.width = d.progress + '%';
-        const mb = (n) => (n / 1048576).toFixed(1);
+        if (d.total_bytes) { bar.classList.remove('indet'); pi.style.width = d.progress + '%'; }
+        else { bar.classList.add('indet'); }
         txt.textContent = tr('upd.downloading', { pct: d.progress }) + (d.total_bytes ? ` (${mb(d.done_bytes)}/${mb(d.total_bytes)} MB)` : '');
       } else if (d.phase === 'installing') {
         prog.classList.remove('hidden');
-        pi.style.width = '100%';
+        bar.classList.remove('indet'); bar.classList.add('done'); pi.style.width = '100%';
         txt.textContent = tr('upd.installing');
       } else if (d.phase === 'error') {
+        bar.classList.remove('indet', 'done'); bar.classList.add('err');
         txt.textContent = tr('upd.error');
         clearInterval(UPD.polling);
-      } else if (!d.in_progress) {
-        clearInterval(UPD.polling);
+        const btn = $('uApply'); if (btn) { btn.disabled = false; btn.textContent = tr('upd.retry'); }
       }
+      // else: idle / not-yet-started — keep polling; the run ends via the
+      // install→restart path (caught below) or an error above.
     }).catch(() => {
-      // The panel restarts after install → requests fail; that's success.
-      const txt = $('uProgTxt');
-      if (txt) txt.textContent = tr('upd.restarting');
+      // Server unreachable → the panel is restarting on the new version. Fill
+      // the bar, show the message, then wait for it to come back and reload.
+      const prog = $('uProg');
+      if (prog) {
+        const bar = prog.querySelector('.prog'), pi = prog.querySelector('.prog > i');
+        prog.classList.remove('hidden');
+        if (bar) { bar.classList.remove('indet', 'err'); bar.classList.add('done'); }
+        if (pi) pi.style.width = '100%';
+      }
+      const txt = $('uProgTxt'); if (txt) txt.textContent = tr('upd.restarting');
       clearInterval(UPD.polling);
+      waitForRestart();
     });
-  }, 1000);
+  };
+  tick();
+  UPD.polling = setInterval(tick, 700);
+}
+
+// After the panel exits to restart on the new build, poll a public endpoint
+// until it answers again, then reload so the UI runs the new version.
+function waitForRestart() {
+  if (UPD.reloading) return;
+  UPD.reloading = true;
+  let tries = 0;
+  const ping = () => {
+    tries++;
+    fetch('/api/login/challenge', { cache: 'no-store' })
+      .then((r) => { if (r.ok) location.reload(); else if (tries < 150) setTimeout(ping, 1000); })
+      .catch(() => { if (tries < 150) setTimeout(ping, 1000); });
+  };
+  setTimeout(ping, 1500);
 }
