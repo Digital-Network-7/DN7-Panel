@@ -17,22 +17,43 @@ const CHUNK: usize = 256 * 1024;
 /// `/etc`). This is a safety net, not an access-control boundary: the server
 /// owner already has full file access by design — we only block the handful of
 /// paths whose removal would brick the host.
+///
+/// The path is **lexically normalized first** (resolving `.`/`..`, collapsing
+/// repeated/trailing separators) so tricks like `/etc/../etc`, `/var/./`,
+/// `/usr//` or `/root/../root` can't slip a protected target past a raw string
+/// compare.
 fn is_protected_path(path: &str) -> bool {
-    // Normalize: trim, drop a single trailing slash (but keep root "/").
-    let p = path.trim();
-    let p = if p.len() > 1 {
-        p.trim_end_matches('/')
-    } else {
-        p
-    };
-    if p.is_empty() || p == "/" {
+    let norm = normalize_lexical(path);
+    if norm == "/" {
         return true;
     }
     const PROTECTED: &[&str] = &[
         "/bin", "/sbin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64", "/libx32", "/proc",
         "/root", "/run", "/sys", "/usr", "/var",
     ];
-    PROTECTED.contains(&p)
+    PROTECTED.contains(&norm.as_str())
+}
+
+/// Lexically normalize a path: resolve `.` and `..` segments, collapse repeated
+/// and trailing separators. Purely textual — no filesystem or symlink
+/// resolution — so it's safe to use for container paths too. `..` can never
+/// climb above the root. Always returns an absolute path; "/" for the root.
+fn normalize_lexical(path: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for seg in path.trim().split('/') {
+        match seg {
+            "" | "." => {} // leading/repeated '/', trailing '/', or '.'
+            ".." => {
+                out.pop();
+            }
+            s => out.push(s),
+        }
+    }
+    if out.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", out.join("/"))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -353,8 +374,17 @@ pub async fn web_host_mkdir(path: &str) -> Result<()> {
 
 /// Delete a host path (file or directory), refusing protected system dirs.
 pub async fn web_host_delete(path: &str) -> Result<()> {
+    // Lexical guard (handles `..`, `.`, `//`, trailing slashes).
     if is_protected_path(path) {
         return Err(anyhow!("该系统目录受保护，禁止删除"));
+    }
+    // Stronger host guard: resolve the real on-disk target (following symlinks
+    // and any remaining indirection) and re-check, so a path that *resolves* to
+    // a protected root — e.g. via a symlink — is still refused.
+    if let Ok(canon) = tokio::fs::canonicalize(path).await {
+        if is_protected_path(&canon.to_string_lossy()) {
+            return Err(anyhow!("该系统目录受保护，禁止删除"));
+        }
     }
     let p = Path::new(path);
     if p.is_dir() {
@@ -541,6 +571,40 @@ mod tests {
         assert!(!is_protected_path("/root/data")); // /root is protected, subdir isn't
         assert!(!is_protected_path("/home/user/file.txt"));
         assert!(!is_protected_path("/data"));
+    }
+
+    #[test]
+    fn protected_paths_resist_traversal_bypass() {
+        // Path tricks that resolve back onto a protected root must be blocked.
+        assert!(is_protected_path("/etc/../etc"));
+        assert!(is_protected_path("/var/./"));
+        assert!(is_protected_path("/usr//"));
+        assert!(is_protected_path("/root/../root"));
+        assert!(is_protected_path("/etc/..")); // -> /
+        assert!(is_protected_path("//")); // -> /
+        assert!(is_protected_path("/./")); // -> /
+        assert!(is_protected_path("/etc/nginx/..")); // -> /etc
+        assert!(is_protected_path("/var/lib/../../var")); // -> /var
+        assert!(is_protected_path("/usr/./bin/..")); // -> /usr
+        assert!(is_protected_path("/../../../etc")); // -> /etc (can't climb above root)
+                                                     // Legitimate subdirectory deletes must still be allowed after normalize.
+        assert!(!is_protected_path("/etc/../etc/nginx")); // -> /etc/nginx
+        assert!(!is_protected_path("/var/www//site/")); // -> /var/www/site
+        assert!(!is_protected_path("/root/./data")); // -> /root/data
+    }
+
+    #[test]
+    fn normalize_lexical_cases() {
+        use super::normalize_lexical;
+        assert_eq!(normalize_lexical("/etc/../etc"), "/etc");
+        assert_eq!(normalize_lexical("/var/./"), "/var");
+        assert_eq!(normalize_lexical("/usr//"), "/usr");
+        assert_eq!(normalize_lexical("/root/../root"), "/root");
+        assert_eq!(normalize_lexical("/"), "/");
+        assert_eq!(normalize_lexical("//"), "/");
+        assert_eq!(normalize_lexical("/etc/.."), "/");
+        assert_eq!(normalize_lexical("/../../etc"), "/etc");
+        assert_eq!(normalize_lexical("/etc/nginx/conf.d"), "/etc/nginx/conf.d");
     }
 
     #[test]
