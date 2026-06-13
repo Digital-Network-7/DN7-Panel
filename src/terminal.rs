@@ -65,12 +65,30 @@ fn parse_frame(text: &str) -> Frame {
 /// Bridge an **axum** WebSocket (from the local web console) to a host PTY
 /// shell. Mirrors `run_pty` but speaks axum's `Message` type and has no
 /// outbound backend connection — the browser is the client directly.
-pub async fn run_web_pty(socket: axum::extract::ws::WebSocket) -> Result<()> {
+pub async fn run_web_pty(
+    socket: axum::extract::ws::WebSocket,
+    login_user: Option<String>,
+) -> Result<()> {
     use axum::extract::ws::Message as AxumMsg;
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    let mut cmd = CommandBuilder::new(&shell);
-    cmd.arg("-i");
+    // Run as the mapped system user when set (non-admin panel users): `su -`
+    // gives a login shell as that user — root may do this without a password —
+    // so the OS enforces their privileges. The super-admin (None) gets the
+    // panel's own shell (root).
+    let mut cmd = match &login_user {
+        Some(user) => {
+            let mut c = CommandBuilder::new("su");
+            c.arg("-");
+            c.arg(user);
+            c
+        }
+        None => {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+            let mut c = CommandBuilder::new(&shell);
+            c.arg("-i");
+            c
+        }
+    };
     cmd.env("TERM", "xterm-256color");
 
     let (mut ws_tx, mut ws_rx) = socket.split();

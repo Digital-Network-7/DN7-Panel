@@ -72,6 +72,14 @@ async fn serve(state: Shared, port: u16) -> anyhow::Result<()> {
         // Authenticated API.
         .route("/api/logout", post(logout))
         .route("/api/ticket", post(mint_ticket))
+        .route("/api/me", get(me))
+        .route("/api/profile", post(put_profile))
+        .route("/api/password", post(put_password))
+        .route("/api/2fa/setup", post(twofa_setup))
+        .route("/api/2fa/enable", post(twofa_enable))
+        .route("/api/2fa/disable", post(twofa_disable))
+        .route("/api/users", get(users_list).post(users_create))
+        .route("/api/users/delete", post(users_delete))
         .route("/api/info", get(panel_info))
         .route("/api/metrics", get(metrics))
         .route("/api/procs", get(procs))
@@ -132,6 +140,72 @@ fn require_auth(state: &Shared, headers: &header::HeaderMap) -> Option<Response>
     }
 }
 
+/// A resolved, authenticated account: the super-admin (web.json) or a
+/// system-backed panel user (users.json).
+struct Account {
+    username: String,
+    is_admin: bool,
+    is_super: bool,
+    /// System user to drop privileges to for terminal/file ops. `None` for the
+    /// super-admin (operates as the panel's own uid, i.e. root).
+    system_user: Option<String>,
+}
+
+/// Resolve an account name to a super-admin or panel-user view.
+fn resolve_account(state: &Shared, username: &str) -> Option<Account> {
+    {
+        let su = state.settings.lock().unwrap();
+        if username == su.username {
+            return Some(Account {
+                username: su.username.clone(),
+                is_admin: true,
+                is_super: true,
+                system_user: None,
+            });
+        }
+    }
+    super::users::find(username).map(|u| Account {
+        is_admin: u.is_admin(),
+        is_super: false,
+        system_user: Some(u.username.clone()),
+        username: u.username,
+    })
+}
+
+/// Resolve the caller (from the bearer token) to an `Account`, or an error
+/// response when unauthenticated / the account no longer exists.
+#[allow(clippy::result_large_err)]
+fn current_account(state: &Shared, headers: &header::HeaderMap) -> Result<Account, Response> {
+    let token = bearer(headers).unwrap_or_default();
+    match state.auth.identity(&token) {
+        Some(user) => resolve_account(state, &user)
+            .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized")),
+        None => Err(api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized")),
+    }
+}
+
+/// Require an authenticated **admin** (sudo) account for privileged endpoints.
+#[allow(clippy::result_large_err)]
+fn require_admin(state: &Shared, headers: &header::HeaderMap) -> Result<Account, Response> {
+    let a = current_account(state, headers)?;
+    if a.is_admin {
+        Ok(a)
+    } else {
+        Err(api_err(StatusCode::FORBIDDEN, "auth.forbidden"))
+    }
+}
+
+/// Require the **super-admin** (the bootstrap owner) for global settings.
+#[allow(clippy::result_large_err)]
+fn require_super(state: &Shared, headers: &header::HeaderMap) -> Result<Account, Response> {
+    let a = current_account(state, headers)?;
+    if a.is_super {
+        Ok(a)
+    } else {
+        Err(api_err(StatusCode::FORBIDDEN, "auth.forbidden"))
+    }
+}
+
 /// Build a stable, localizable error response: `{ ok:false, code, error }`.
 /// `code` is a machine-stable identifier the client maps to a translated
 /// message (`err.<code>`); `error` carries the same code as a neutral fallback
@@ -182,14 +256,38 @@ struct LoginReq {
     nonce: String,
     #[serde(default)]
     proof: String,
+    /// Optional TOTP code (required when the account has 2FA enabled).
+    #[serde(default)]
+    code: String,
 }
 
 /// GET /api/login/challenge — PUBLIC. Mint a one-time login nonce and return
 /// the per-install password salt so the client can compute the verifier.
-async fn login_challenge(State(state): State<Shared>) -> Response {
+async fn login_challenge(
+    State(state): State<Shared>,
+    Query(q): Query<LoginChallengeQuery>,
+) -> Response {
     let nonce = state.auth.issue_challenge();
-    let salt = state.settings.lock().unwrap().pw_salt.clone();
+    // Return the salt for the requested account so the client can compute the
+    // verifier. Falls back to the super-admin salt (so probing a name doesn't
+    // reveal whether it exists — a random-looking salt is always returned).
+    let salt = {
+        let su = state.settings.lock().unwrap();
+        if q.username.is_empty() || q.username == su.username {
+            su.pw_salt.clone()
+        } else if let Some(u) = super::users::find(&q.username) {
+            u.pw_salt
+        } else {
+            su.pw_salt.clone()
+        }
+    };
     Json(json!({ "nonce": nonce, "salt": salt })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct LoginChallengeQuery {
+    #[serde(default)]
+    username: String,
 }
 
 async fn login(
@@ -201,28 +299,48 @@ async fn login(
     if !state.auth.login_allowed(&source) {
         return api_err(StatusCode::TOO_MANY_REQUESTS, "auth.rate_limited");
     }
-    let (exp_user, exp_hash, pw_default) = {
-        let s = state.settings.lock().unwrap();
-        (s.username.clone(), s.verifier().to_string(), s.pw_default)
+    // Resolve the account: the super-admin (web.json) or a panel user.
+    let (exp_hash, totp_secret, totp_enabled, must_setup) = {
+        let su = state.settings.lock().unwrap();
+        if req.username == su.username {
+            (
+                su.verifier().to_string(),
+                su.totp_secret.clone(),
+                su.totp_enabled,
+                su.pw_default || su.username.eq_ignore_ascii_case("admin"),
+            )
+        } else if let Some(u) = super::users::find(&req.username) {
+            (
+                u.pw_hash.clone(),
+                u.totp_secret.clone(),
+                u.totp_enabled,
+                false,
+            )
+        } else {
+            (String::new(), String::new(), false, false)
+        }
     };
-    // Account name must match (case-sensitive), then verify the challenge-
-    // response proof against the stored verifier. The nonce must be valid +
-    // single-use. There is no plaintext fallback: the server has no plaintext.
-    let user_ok = req.username == exp_user;
     let pw_ok = !exp_hash.is_empty()
         && state.auth.consume_challenge(&req.nonce)
         && proof_matches(&req.nonce, &exp_hash, &req.proof);
-    if user_ok && pw_ok {
-        state.auth.clear_failures(&source);
-        let token = state.auth.issue();
-        // Force first-run credential setup while still on the default account
-        // (username "admin") or the auto-generated default password.
-        let must_setup = pw_default || exp_user.eq_ignore_ascii_case("admin");
-        Json(json!({ "ok": true, "token": token, "must_setup": must_setup })).into_response()
-    } else {
+    if !pw_ok {
         state.auth.record_failure(&source);
-        api_err(StatusCode::UNAUTHORIZED, "auth.bad_credentials")
+        return api_err(StatusCode::UNAUTHORIZED, "auth.bad_credentials");
     }
+    // Second factor (TOTP) when enabled for this account.
+    if totp_enabled {
+        if req.code.trim().is_empty() {
+            // Password verified, but a code is required — tell the client to ask.
+            return Json(json!({ "ok": false, "need_totp": true })).into_response();
+        }
+        if !super::totp::verify(&totp_secret, &req.code) {
+            state.auth.record_failure(&source);
+            return api_err(StatusCode::UNAUTHORIZED, "auth.bad_totp");
+        }
+    }
+    state.auth.clear_failures(&source);
+    let token = state.auth.issue(&req.username);
+    Json(json!({ "ok": true, "token": token, "must_setup": must_setup })).into_response()
 }
 
 async fn logout(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
@@ -237,10 +355,12 @@ async fn logout(State(state): State<Shared>, headers: header::HeaderMap) -> Resp
 /// the long-lived token) is what goes in the URL, so a leaked URL exposes only
 /// a short-lived, single-use credential.
 async fn mint_ticket(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
-        return r;
-    }
-    Json(json!({ "ok": true, "data": { "ticket": state.auth.issue_ticket() } })).into_response()
+    let acct = match current_account(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    Json(json!({ "ok": true, "data": { "ticket": state.auth.issue_ticket(&acct.username) } }))
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +409,8 @@ async fn dispatch(
     body: Value,
     f: impl std::future::Future<Output = anyhow::Result<Value>>,
 ) -> Response {
-    if let Some(r) = require_auth(state, headers) {
+    // Docker / Nginx / MySQL management are root-level capabilities — admin only.
+    if let Err(r) = require_admin(state, headers) {
         return r;
     }
     let _ = body; // body already parsed by caller
@@ -331,7 +452,7 @@ async fn mysql_op(
 // ---------------------------------------------------------------------------
 
 async fn get_settings(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
+    if let Err(r) = require_super(&state, &headers) {
         return r;
     }
     let s = state.settings.lock().unwrap().clone();
@@ -372,7 +493,7 @@ async fn put_settings(
     headers: header::HeaderMap,
     Json(req): Json<SettingsReq>,
 ) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
+    if let Err(r) = require_super(&state, &headers) {
         return r;
     }
     let mut needs_restart = false;
@@ -442,6 +563,346 @@ async fn put_settings(
 }
 
 // ---------------------------------------------------------------------------
+// Account self-service: profile / password / 2FA (any authenticated user)
+// ---------------------------------------------------------------------------
+
+/// GET /api/me — the caller's account: identity, role, profile, 2FA + whether a
+/// first-run credential setup is still pending (super-admin only).
+async fn me(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+    let a = match current_account(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let (full_name, nickname, avatar, totp_enabled, must_setup) = if a.is_super {
+        let s = state.settings.lock().unwrap();
+        (
+            s.full_name.clone(),
+            s.nickname.clone(),
+            s.avatar.clone(),
+            s.totp_enabled,
+            s.pw_default || s.username.eq_ignore_ascii_case("admin"),
+        )
+    } else {
+        match super::users::find(&a.username) {
+            Some(u) => (u.full_name, u.nickname, u.avatar, u.totp_enabled, false),
+            None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
+        }
+    };
+    Json(json!({ "ok": true, "data": {
+        "username": a.username,
+        "is_admin": a.is_admin,
+        "is_super": a.is_super,
+        "role": if a.is_admin { "admin" } else { "user" },
+        "full_name": full_name,
+        "nickname": nickname,
+        "avatar": avatar,
+        "totp_enabled": totp_enabled,
+        "must_setup": must_setup,
+    }}))
+    .into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct ProfileReq {
+    #[serde(default)]
+    full_name: Option<String>,
+    #[serde(default)]
+    nickname: Option<String>,
+    /// base64 data URL (size-limited).
+    #[serde(default)]
+    avatar: Option<String>,
+}
+
+fn clip(s: &str, max: usize) -> String {
+    s.trim().chars().take(max).collect()
+}
+
+/// POST /api/profile — update the caller's own full name / nickname / avatar.
+async fn put_profile(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<ProfileReq>,
+) -> Response {
+    let a = match current_account(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if let Some(av) = &req.avatar {
+        if av.len() > 700_000 {
+            return api_err(StatusCode::BAD_REQUEST, "branding.logo_invalid");
+        }
+    }
+    if a.is_super {
+        let saved = {
+            let mut s = state.settings.lock().unwrap();
+            if let Some(f) = &req.full_name {
+                s.full_name = clip(f, 64);
+            }
+            if let Some(n) = &req.nickname {
+                s.nickname = clip(n, 40);
+            }
+            if let Some(av) = &req.avatar {
+                s.avatar = av.clone();
+            }
+            s.clone()
+        };
+        if let Err(e) = settings::save(&saved) {
+            return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
+        }
+    } else {
+        let res = super::users::update(&a.username, |u| {
+            if let Some(f) = &req.full_name {
+                u.full_name = clip(f, 64);
+            }
+            if let Some(n) = &req.nickname {
+                u.nickname = clip(n, 40);
+            }
+            if let Some(av) = &req.avatar {
+                u.avatar = av.clone();
+            }
+        });
+        if let Err(e) = res {
+            return Json(op_err_body(e)).into_response();
+        }
+        if let Some(f) = &req.full_name {
+            let _ = super::users::set_full_name(&a.username, &clip(f, 64)).await;
+        }
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct PasswordReq {
+    #[serde(default)]
+    pw_salt: String,
+    #[serde(default)]
+    pw_hash: String,
+    #[serde(default)]
+    pw_check: String,
+}
+
+/// POST /api/password — change the caller's own panel password.
+async fn put_password(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<PasswordReq>,
+) -> Response {
+    let a = match current_account(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let salt_ok = req.pw_salt.len() == 32 && req.pw_salt.bytes().all(|b| b.is_ascii_hexdigit());
+    let hash_ok = req.pw_hash.len() == 64 && req.pw_hash.bytes().all(|b| b.is_ascii_hexdigit());
+    if !salt_ok || !hash_ok {
+        return api_err(StatusCode::BAD_REQUEST, "settings.pw_format");
+    }
+    let hash = req.pw_hash.to_lowercase();
+    if a.is_super {
+        let saved = {
+            let mut s = state.settings.lock().unwrap();
+            if s.pw_default && (req.pw_check.is_empty() || req.pw_check.to_lowercase() == s.pw_hash)
+            {
+                return api_err(StatusCode::BAD_REQUEST, "settings.pw_is_default");
+            }
+            s.set_password_hashed(&req.pw_salt, &hash);
+            s.clone()
+        };
+        if let Err(e) = settings::save(&saved) {
+            return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
+        }
+    } else {
+        let res = super::users::update(&a.username, |u| {
+            u.pw_salt = req.pw_salt.clone();
+            u.pw_hash = hash.clone();
+        });
+        if let Err(e) = res {
+            return Json(op_err_body(e)).into_response();
+        }
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// Read the caller's pending/active TOTP secret.
+fn read_totp(state: &Shared, a: &Account) -> String {
+    if a.is_super {
+        state.settings.lock().unwrap().totp_secret.clone()
+    } else {
+        super::users::find(&a.username)
+            .map(|u| u.totp_secret)
+            .unwrap_or_default()
+    }
+}
+
+/// Persist the caller's TOTP secret + enabled flag.
+fn write_totp(state: &Shared, a: &Account, secret: &str, enabled: bool) -> anyhow::Result<()> {
+    if a.is_super {
+        let mut s = state.settings.lock().unwrap();
+        s.totp_secret = secret.to_string();
+        s.totp_enabled = enabled;
+        let saved = s.clone();
+        drop(s);
+        settings::save(&saved)
+    } else {
+        super::users::update(&a.username, |u| {
+            u.totp_secret = secret.to_string();
+            u.totp_enabled = enabled;
+        })
+    }
+}
+
+/// POST /api/2fa/setup — generate a fresh (pending) TOTP secret + QR. 2FA is not
+/// enabled until the user verifies a live code via /api/2fa/enable.
+async fn twofa_setup(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+    let a = match current_account(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let secret = super::totp::gen_secret();
+    let issuer = branding::load().panel_name;
+    let uri = super::totp::provisioning_uri(&issuer, &a.username, &secret);
+    let qr = super::totp::qr_svg(&uri);
+    if let Err(e) = write_totp(&state, &a, &secret, false) {
+        return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
+    }
+    Json(json!({ "ok": true, "data": { "secret": secret, "uri": uri, "qr_svg": qr } }))
+        .into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct CodeReq {
+    #[serde(default)]
+    code: String,
+}
+
+/// POST /api/2fa/enable — bind 2FA after verifying a live code.
+async fn twofa_enable(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<CodeReq>,
+) -> Response {
+    let a = match current_account(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let secret = read_totp(&state, &a);
+    if secret.is_empty() {
+        return api_err(StatusCode::BAD_REQUEST, "auth.bad_totp");
+    }
+    if !super::totp::verify(&secret, &req.code) {
+        return api_err(StatusCode::BAD_REQUEST, "auth.bad_totp");
+    }
+    if let Err(e) = write_totp(&state, &a, &secret, true) {
+        return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// POST /api/2fa/disable — verify a current code, then turn 2FA off.
+async fn twofa_disable(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<CodeReq>,
+) -> Response {
+    let a = match current_account(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let secret = read_totp(&state, &a);
+    if !secret.is_empty() && !super::totp::verify(&secret, &req.code) {
+        return api_err(StatusCode::BAD_REQUEST, "auth.bad_totp");
+    }
+    if let Err(e) = write_totp(&state, &a, "", false) {
+        return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// User management (admin only): panel users backed by system accounts
+// ---------------------------------------------------------------------------
+
+async fn users_list(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+    if let Err(r) = require_admin(&state, &headers) {
+        return r;
+    }
+    let mut list = Vec::new();
+    {
+        let s = state.settings.lock().unwrap();
+        list.push(json!({
+            "username": s.username, "role": "admin", "is_super": true,
+            "full_name": s.full_name, "uid": s.owner_uid, "totp_enabled": s.totp_enabled,
+        }));
+    }
+    for u in super::users::load() {
+        list.push(json!({
+            "username": u.username, "role": u.role, "is_super": false,
+            "full_name": u.full_name, "uid": u.uid, "totp_enabled": u.totp_enabled,
+        }));
+    }
+    Json(json!({ "ok": true, "data": { "users": list } })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct CreateUserReq {
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    role: String,
+    #[serde(default)]
+    full_name: String,
+    #[serde(default)]
+    pw_salt: String,
+    #[serde(default)]
+    pw_hash: String,
+}
+
+async fn users_create(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<CreateUserReq>,
+) -> Response {
+    if let Err(r) = require_admin(&state, &headers) {
+        return r;
+    }
+    // Can't collide with the super-admin's login name.
+    if req.username == state.settings.lock().unwrap().username {
+        return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.exists"))).into_response();
+    }
+    match super::users::create(
+        &req.username,
+        &req.role,
+        req.full_name.trim(),
+        &req.pw_salt,
+        &req.pw_hash,
+    )
+    .await
+    {
+        Ok(u) => Json(json!({ "ok": true, "data": { "username": u.username } })).into_response(),
+        Err(e) => Json(op_err_body(e)).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct DelUserReq {
+    #[serde(default)]
+    username: String,
+}
+
+async fn users_delete(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<DelUserReq>,
+) -> Response {
+    if let Err(r) = require_admin(&state, &headers) {
+        return r;
+    }
+    match super::users::delete(&req.username).await {
+        Ok(_) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => Json(op_err_body(e)).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Terminal (PTY over WebSocket)
 // ---------------------------------------------------------------------------
 
@@ -458,14 +919,17 @@ async fn terminal_ws(
 ) -> Response {
     // WebSocket upgrades can't carry an Authorization header from the browser,
     // so a one-time ticket (minted via POST /api/ticket) authorizes the upgrade.
-    if !state.auth.consume_ticket(&q.ticket) {
-        return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized");
-    }
-    ws.on_upgrade(handle_terminal)
+    let user = match state.auth.consume_ticket(&q.ticket) {
+        Some(u) => u,
+        None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
+    };
+    // Run the shell as the account's system user (non-super), else as root.
+    let login_user = resolve_account(&state, &user).and_then(|a| a.system_user);
+    ws.on_upgrade(move |socket| handle_terminal(socket, login_user))
 }
 
-async fn handle_terminal(socket: WebSocket) {
-    if let Err(e) = crate::terminal::run_web_pty(socket).await {
+async fn handle_terminal(socket: WebSocket, login_user: Option<String>) {
+    if let Err(e) = crate::terminal::run_web_pty(socket, login_user).await {
         tracing::debug!("web terminal ended: {e}");
     }
 }
@@ -484,8 +948,15 @@ async fn container_terminal_ws(
     Query(q): Query<ContainerWsAuth>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if !state.auth.consume_ticket(&q.ticket) {
-        return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized");
+    // Container exec is a Docker capability — admin only. The ticket owner must
+    // resolve to an admin account.
+    let user = match state.auth.consume_ticket(&q.ticket) {
+        Some(u) => u,
+        None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
+    };
+    match resolve_account(&state, &user) {
+        Some(a) if a.is_admin => {}
+        _ => return api_err(StatusCode::FORBIDDEN, "auth.forbidden"),
     }
     let container = q.container.clone();
     if container.is_empty() {
@@ -524,12 +995,18 @@ async fn files_list(
     headers: header::HeaderMap,
     Json(req): Json<FileOpReq>,
 ) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
-        return r;
-    }
+    let acct = match current_account(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
     let res = match ctn_ref(&req) {
-        Some(c) => crate::file::web_ctn_list(c, &req.path).await,
-        None => crate::file::web_host_list(&req.path).await,
+        Some(c) => {
+            if !acct.is_admin {
+                return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+            }
+            crate::file::web_ctn_list(c, &req.path).await
+        }
+        None => crate::file::web_host_list(&req.path, acct.system_user.as_deref()).await,
     };
     match res {
         Ok(data) => Json(json!({ "ok": true, "data": data })).into_response(),
@@ -542,12 +1019,18 @@ async fn files_mkdir(
     headers: header::HeaderMap,
     Json(req): Json<FileOpReq>,
 ) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
-        return r;
-    }
+    let acct = match current_account(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
     let res = match ctn_ref(&req) {
-        Some(c) => crate::file::web_ctn_mkdir(c, &req.path).await,
-        None => crate::file::web_host_mkdir(&req.path).await,
+        Some(c) => {
+            if !acct.is_admin {
+                return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+            }
+            crate::file::web_ctn_mkdir(c, &req.path).await
+        }
+        None => crate::file::web_host_mkdir(&req.path, acct.system_user.as_deref()).await,
     };
     match res {
         Ok(_) => Json(json!({ "ok": true })).into_response(),
@@ -560,12 +1043,18 @@ async fn files_delete(
     headers: header::HeaderMap,
     Json(req): Json<FileOpReq>,
 ) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
-        return r;
-    }
+    let acct = match current_account(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
     let res = match ctn_ref(&req) {
-        Some(c) => crate::file::web_ctn_delete(c, &req.path).await,
-        None => crate::file::web_host_delete(&req.path).await,
+        Some(c) => {
+            if !acct.is_admin {
+                return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+            }
+            crate::file::web_ctn_delete(c, &req.path).await
+        }
+        None => crate::file::web_host_delete(&req.path, acct.system_user.as_deref()).await,
     };
     match res {
         Ok(_) => Json(json!({ "ok": true })).into_response(),
@@ -586,17 +1075,27 @@ struct DownloadQuery {
 }
 
 async fn files_download(State(state): State<Shared>, Query(q): Query<DownloadQuery>) -> Response {
-    if !state.auth.consume_ticket(&q.ticket) {
-        return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized");
-    }
+    let user = match state.auth.consume_ticket(&q.ticket) {
+        Some(u) => u,
+        None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
+    };
+    let acct = match resolve_account(&state, &user) {
+        Some(a) => a,
+        None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
+    };
     let ctn = q
         .container
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
     let res = match ctn {
-        Some(c) => crate::file::web_ctn_read(c, &q.path).await,
-        None => crate::file::web_host_read(&q.path).await,
+        Some(c) => {
+            if !acct.is_admin {
+                return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+            }
+            crate::file::web_ctn_read(c, &q.path).await
+        }
+        None => crate::file::web_host_read(&q.path, acct.system_user.as_deref()).await,
     };
     match res {
         Ok((name, bytes)) => {
@@ -645,9 +1144,10 @@ async fn files_upload(
     Query(q): Query<UploadQuery>,
     body: axum::body::Bytes,
 ) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
-        return r;
-    }
+    let acct = match current_account(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
     if body.len() as u64 > 512 * 1024 * 1024 {
         return api_err(StatusCode::PAYLOAD_TOO_LARGE, "files.too_large");
     }
@@ -657,8 +1157,13 @@ async fn files_upload(
         .map(str::trim)
         .filter(|s| !s.is_empty());
     let res = match ctn {
-        Some(c) => crate::file::web_ctn_write(c, &q.path, &body).await,
-        None => crate::file::web_host_write(&q.path, &body).await,
+        Some(c) => {
+            if !acct.is_admin {
+                return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+            }
+            crate::file::web_ctn_write(c, &q.path, &body).await
+        }
+        None => crate::file::web_host_write(&q.path, &body, acct.system_user.as_deref()).await,
     };
     match res {
         Ok(_) => Json(json!({ "ok": true })).into_response(),
@@ -690,7 +1195,7 @@ async fn nginx_static_upload(
     Query(q): Query<StaticUploadQuery>,
     body: axum::body::Bytes,
 ) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
+    if let Err(r) = require_admin(&state, &headers) {
         return r;
     }
     if body.len() as u64 > 512 * 1024 * 1024 {
@@ -768,7 +1273,7 @@ async fn put_branding(
     headers: header::HeaderMap,
     Json(req): Json<BrandingReq>,
 ) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
+    if let Err(r) = require_admin(&state, &headers) {
         return r;
     }
     let b = match branding::validate(req.panel_name, req.logo, req.accent, req.theme_default) {
@@ -788,7 +1293,7 @@ async fn put_branding(
 /// GET /api/update/status — live phase/progress + current version (polled by
 /// the UI during a download). Auth required.
 async fn update_status(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
+    if let Err(r) = require_admin(&state, &headers) {
         return r;
     }
     Json(json!({
@@ -806,7 +1311,7 @@ async fn update_status(State(state): State<Shared>, headers: header::HeaderMap) 
 }
 
 async fn update_config_get(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
+    if let Err(r) = require_admin(&state, &headers) {
         return r;
     }
     let st = crate::update::UpdateState::load();
@@ -827,7 +1332,7 @@ async fn update_config_put(
     headers: header::HeaderMap,
     Json(req): Json<UpdateConfigReq>,
 ) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
+    if let Err(r) = require_admin(&state, &headers) {
         return r;
     }
     let mut st = crate::update::UpdateState::load();
@@ -854,7 +1359,7 @@ async fn update_config_put(
 /// POST /api/update/check — probe both sources + report whether a newer build
 /// is available. Auth required.
 async fn update_check(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
+    if let Err(r) = require_admin(&state, &headers) {
         return r;
     }
     let res = crate::update::check(&state.cfg).await;
@@ -864,7 +1369,7 @@ async fn update_check(State(state): State<Shared>, headers: header::HeaderMap) -
 /// GET /api/update/changelog — release notes for every version newer than the
 /// running one (newest first), from whichever source is reachable. Auth req.
 async fn update_changelog(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
+    if let Err(r) = require_admin(&state, &headers) {
         return r;
     }
     let res = crate::update::changelog(&state.cfg).await;
@@ -875,7 +1380,7 @@ async fn update_changelog(State(state): State<Shared>, headers: header::HeaderMa
 /// verify → atomic swap → exit for restart). Returns immediately; the UI polls
 /// /api/update/status. Auth required.
 async fn update_apply(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
+    if let Err(r) = require_admin(&state, &headers) {
         return r;
     }
     if crate::update::in_progress() {

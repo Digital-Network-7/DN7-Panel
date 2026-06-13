@@ -4,21 +4,30 @@
 function doLogin() {
   const username = $('user').value.trim();
   const password = $('pw').value;
+  const code = $('loginCode') ? $('loginCode').value.trim() : '';
   $('loginErr').textContent = '';
-  // Challenge-response: fetch a one-time nonce + the per-install salt, then send
+  // Challenge-response: fetch a one-time nonce + the account's salt, then send
   // sha256(nonce ":" sha256(salt ":" password)). The cleartext password never
-  // travels over the (plaintext-HTTP) wire, and the server stores only the
-  // irreversible verifier sha256(salt ":" password).
-  fetch('/api/login/challenge')
+  // travels over the wire. A TOTP code is added when the account requires 2FA.
+  fetch('/api/login/challenge?username=' + encodeURIComponent(username))
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error('challenge'))))
     .then((c) => {
       if (!c || !c.nonce) throw new Error('challenge');
       const verifier = sha256Hex((c.salt || '') + ':' + password);
-      const body = { username, nonce: c.nonce, proof: sha256Hex(c.nonce + ':' + verifier) };
+      const body = { username, nonce: c.nonce, proof: sha256Hex(c.nonce + ':' + verifier), code };
       return fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     })
-    .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(srvMsg(b) || tr('login.err_fail')); return b; })
-    .then((b) => { S.token = b.token; localStorage.setItem('dn7_web_token', S.token); showApp(); })
+    .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok && !b.need_totp) throw new Error(srvMsg(b) || tr('login.err_fail')); return b; })
+    .then((b) => {
+      if (b.need_totp) {
+        // Password verified; reveal the 2FA field and prompt for the code.
+        $('loginTotpWrap').classList.remove('hidden');
+        $('loginCode').focus();
+        $('loginErr').textContent = tr('tfa.login_prompt');
+        return;
+      }
+      S.token = b.token; localStorage.setItem('dn7_web_token', S.token); showApp();
+    })
     .catch((e) => { $('loginErr').textContent = e.message === 'challenge' ? tr('login.err_conn') : e.message; });
 }
 

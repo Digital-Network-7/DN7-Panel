@@ -89,6 +89,87 @@ fn check_abs(path: &str) -> Result<()> {
     }
 }
 
+/// Shell script (POSIX sh) that lists a directory as tab-separated
+/// `type\tsize\tname` lines. Shared by the container exec path and the
+/// run-as-user host path. The directory is `$1` (a separate argv entry).
+const LIST_SCRIPT: &str = r#"cd "$1" 2>/dev/null || exit 7
+for name in * .[!.]* ..?*; do
+  [ -e "$name" ] || [ -L "$name" ] || continue
+  if [ -d "$name" ]; then
+    printf 'd\t0\t%s\n' "$name"
+  else
+    sz=$(stat -c %s "$name" 2>/dev/null || stat -f %z "$name" 2>/dev/null || echo 0)
+    printf 'f\t%s\t%s\n' "$sz" "$name"
+  fi
+done"#;
+
+/// Parse the `LIST_SCRIPT` output into sorted directory entries (dirs first).
+fn parse_list_output(stdout: &str, dir: &str) -> serde_json::Value {
+    let mut entries = Vec::new();
+    for line in stdout.lines() {
+        let mut it = line.splitn(3, '\t');
+        let t = it.next().unwrap_or("");
+        let sz = it.next().unwrap_or("0");
+        let name = match it.next() {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        let is_dir = t == "d";
+        let size: u64 = sz.trim().parse().unwrap_or(0);
+        entries.push(serde_json::json!({ "name": name, "is_dir": is_dir, "size": size }));
+    }
+    entries.sort_by(|a, b| {
+        let ad = a["is_dir"].as_bool().unwrap_or(false);
+        let bd = b["is_dir"].as_bool().unwrap_or(false);
+        bd.cmp(&ad).then_with(|| {
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["name"].as_str().unwrap_or(""))
+        })
+    });
+    serde_json::json!({ "path": dir, "entries": entries })
+}
+
+/// Run a POSIX-sh script **as another system user** via `su` (root → user needs
+/// no password). `arg` is passed as `$1` (a separate argv entry — no shell
+/// injection). Optional `stdin` is streamed in. Returns (exit_code, stdout).
+/// Used so a non-admin panel user's file operations run with *their* uid and the
+/// OS enforces access (no privilege escalation).
+async fn run_as_user(
+    user: &str,
+    script: &str,
+    arg: &str,
+    stdin: Option<&[u8]>,
+) -> Result<(i32, Vec<u8>)> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    let mut cmd = tokio::process::Command::new("su");
+    // options first, then user, then positional args ($0, $1...) for `-c`.
+    cmd.args(["-s", "/bin/sh", "-c", script, user, "sh", arg]);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| anyhow!("无法以用户身份执行：{e}"))?;
+    if let Some(data) = stdin {
+        if let Some(mut si) = child.stdin.take() {
+            let _ = si.write_all(data).await;
+            let _ = si.shutdown().await;
+        }
+    }
+    let out = child
+        .wait_with_output()
+        .await
+        .map_err(|e| anyhow!("以用户身份执行失败：{e}"))?;
+    Ok((out.status.code().unwrap_or(-1), out.stdout))
+}
+
 /// A short, collision-resistant suffix for a host temp file name (pid + a
 /// monotonic counter). Avoids pulling in a uuid dependency just for this.
 fn unique_suffix() -> String {
@@ -338,9 +419,18 @@ fn friendly_archive_err(e: &bollard::errors::Error) -> String {
 // daemon exec / archive helpers above. Used by `web::server`.
 // ---------------------------------------------------------------------------
 
-/// List a host directory → `{ path, entries:[{name,is_dir,size}] }`.
-pub async fn web_host_list(path: &str) -> Result<serde_json::Value> {
+/// List a host directory → `{ path, entries:[{name,is_dir,size}] }`. When
+/// `as_user` is set, the listing runs as that system user (OS perms enforced).
+pub async fn web_host_list(path: &str, as_user: Option<&str>) -> Result<serde_json::Value> {
     let dir = if path.trim().is_empty() { "/" } else { path };
+    if let Some(u) = as_user {
+        check_abs(dir)?;
+        let (code, out) = run_as_user(u, LIST_SCRIPT, dir, None).await?;
+        if code != 0 {
+            return Err(anyhow!("目录不存在或无权限"));
+        }
+        return Ok(parse_list_output(&String::from_utf8_lossy(&out), dir));
+    }
     let mut entries = Vec::new();
     let mut rd = tokio::fs::read_dir(dir).await?;
     while let Some(ent) = rd.next_entry().await? {
@@ -363,24 +453,43 @@ pub async fn web_host_list(path: &str) -> Result<serde_json::Value> {
     Ok(serde_json::json!({ "path": dir, "entries": entries }))
 }
 
-/// Create a host directory (recursive).
-pub async fn web_host_mkdir(path: &str) -> Result<()> {
+/// Create a host directory (recursive). Runs as `as_user` when set.
+pub async fn web_host_mkdir(path: &str, as_user: Option<&str>) -> Result<()> {
     if path.trim().is_empty() {
         return Err(anyhow!("路径不能为空"));
+    }
+    if let Some(u) = as_user {
+        check_abs(path)?;
+        let (code, _) = run_as_user(u, "mkdir -p -- \"$1\"", path, None).await?;
+        return if code == 0 {
+            Ok(())
+        } else {
+            Err(anyhow!("创建目录失败（无权限？）"))
+        };
     }
     tokio::fs::create_dir_all(path).await?;
     Ok(())
 }
 
 /// Delete a host path (file or directory), refusing protected system dirs.
-pub async fn web_host_delete(path: &str) -> Result<()> {
+/// Runs as `as_user` when set (OS perms enforced).
+pub async fn web_host_delete(path: &str, as_user: Option<&str>) -> Result<()> {
     // Lexical guard (handles `..`, `.`, `//`, trailing slashes).
     if is_protected_path(path) {
         return Err(anyhow!("该系统目录受保护，禁止删除"));
     }
-    // Stronger host guard: resolve the real on-disk target (following symlinks
-    // and any remaining indirection) and re-check, so a path that *resolves* to
-    // a protected root — e.g. via a symlink — is still refused.
+    if let Some(u) = as_user {
+        check_abs(path)?;
+        let (code, _) = run_as_user(u, "rm -rf -- \"$1\"", path, None).await?;
+        return if code == 0 {
+            Ok(())
+        } else {
+            Err(anyhow!("删除失败（无权限？）"))
+        };
+    }
+    // Stronger host guard (root path): resolve the real on-disk target
+    // (following symlinks) and re-check, so a path that *resolves* to a
+    // protected root — e.g. via a symlink — is still refused.
     if let Ok(canon) = tokio::fs::canonicalize(path).await {
         if is_protected_path(&canon.to_string_lossy()) {
             return Err(anyhow!("该系统目录受保护，禁止删除"));
@@ -395,24 +504,42 @@ pub async fn web_host_delete(path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Read a whole host file → (file name, bytes). Refuses directories.
-pub async fn web_host_read(path: &str) -> Result<(String, Vec<u8>)> {
-    let md = tokio::fs::metadata(path).await?;
-    if md.is_dir() {
-        return Err(anyhow!("不能下载目录"));
-    }
+/// Read a whole host file → (file name, bytes). Refuses directories. Runs as
+/// `as_user` when set.
+pub async fn web_host_read(path: &str, as_user: Option<&str>) -> Result<(String, Vec<u8>)> {
     let name = Path::new(path)
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "download".to_string());
+    if let Some(u) = as_user {
+        check_abs(path)?;
+        let (code, out) = run_as_user(u, "[ -f \"$1\" ] && cat -- \"$1\"", path, None).await?;
+        if code != 0 {
+            return Err(anyhow!("文件不存在或无权限"));
+        }
+        return Ok((name, out));
+    }
+    let md = tokio::fs::metadata(path).await?;
+    if md.is_dir() {
+        return Err(anyhow!("不能下载目录"));
+    }
     let bytes = tokio::fs::read(path).await?;
     Ok((name, bytes))
 }
 
-/// Write bytes to a host file (overwrite/create).
-pub async fn web_host_write(path: &str, bytes: &[u8]) -> Result<()> {
+/// Write bytes to a host file (overwrite/create). Runs as `as_user` when set.
+pub async fn web_host_write(path: &str, bytes: &[u8], as_user: Option<&str>) -> Result<()> {
     if path.trim().is_empty() {
         return Err(anyhow!("路径不能为空"));
+    }
+    if let Some(u) = as_user {
+        check_abs(path)?;
+        let (code, _) = run_as_user(u, "cat > \"$1\"", path, Some(bytes)).await?;
+        return if code == 0 {
+            Ok(())
+        } else {
+            Err(anyhow!("写入失败（无权限？）"))
+        };
     }
     tokio::fs::write(path, bytes).await?;
     Ok(())

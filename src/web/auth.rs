@@ -27,13 +27,21 @@ const TICKET_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub struct AuthState {
-    sessions: Mutex<HashMap<String, u64>>, // token -> last access (unix secs, sliding)
-    fails: Mutex<HashMap<String, Vec<Instant>>>, // source -> failure times
-    challenges: Mutex<HashMap<String, Instant>>, // login nonce -> issued (single use)
-    tickets: Mutex<HashMap<String, Instant>>, // one-time WS/download ticket -> issued
+    sessions: Mutex<HashMap<String, SessionRec>>, // token -> {user, last access}
+    fails: Mutex<HashMap<String, Vec<Instant>>>,  // source -> failure times
+    challenges: Mutex<HashMap<String, Instant>>,  // login nonce -> issued (single use)
+    tickets: Mutex<HashMap<String, TicketRec>>,   // one-time WS/download ticket -> owner
     /// When true, the session map is persisted to disk (so a panel restart —
     /// e.g. after a self-update — doesn't log everyone out).
     persist: bool,
+}
+
+/// A persisted session: the owning account + last-access (unix secs, sliding).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct SessionRec {
+    #[serde(default)]
+    user: String,
+    last: u64,
 }
 
 impl AuthState {
@@ -51,9 +59,9 @@ impl AuthState {
         };
         if let Some(map) = load_sessions() {
             let now = now_secs();
-            let live: HashMap<String, u64> = map
+            let live: HashMap<String, SessionRec> = map
                 .into_iter()
-                .filter(|(_, t)| now.saturating_sub(*t) <= SESSION_TTL.as_secs())
+                .filter(|(_, r)| now.saturating_sub(r.last) <= SESSION_TTL.as_secs())
                 .collect();
             *s.sessions.lock().unwrap() = live;
         }
@@ -89,48 +97,64 @@ impl AuthState {
         self.fails.lock().unwrap().remove(source);
     }
 
-    /// Mint a new session token.
-    pub fn issue(&self) -> String {
+    /// Mint a new session token bound to `user`.
+    pub fn issue(&self, user: &str) -> String {
         let token = random_token();
         let now = now_secs();
         {
             let mut m = self.sessions.lock().unwrap();
             // Opportunistically prune expired sessions.
-            m.retain(|_, last| now.saturating_sub(*last) <= SESSION_TTL.as_secs());
-            m.insert(token.clone(), now);
+            m.retain(|_, r| now.saturating_sub(r.last) <= SESSION_TTL.as_secs());
+            m.insert(
+                token.clone(),
+                SessionRec {
+                    user: user.to_string(),
+                    last: now,
+                },
+            );
         }
         self.save_sessions();
         token
     }
 
-    /// Validate a bearer token. Uses a **sliding** expiry: a valid access
-    /// refreshes the session's timestamp, so an active user is never logged out
-    /// mid-session — only genuine inactivity past `SESSION_TTL` expires it.
+    /// Validate a bearer token (sliding expiry).
     pub fn valid(&self, token: &str) -> bool {
+        self.identity(token).is_some()
+    }
+
+    /// Resolve a bearer token to its account name, sliding the expiry window.
+    /// `None` when the token is missing/expired. An active access refreshes the
+    /// timestamp so an active user is never logged out mid-session.
+    pub fn identity(&self, token: &str) -> Option<String> {
         if token.is_empty() {
-            return false;
+            return None;
         }
         let now = now_secs();
         let mut persist = false;
-        let ok = {
+        let user = {
             let mut m = self.sessions.lock().unwrap();
-            match m.get(token).copied() {
-                Some(last) if now.saturating_sub(last) <= SESSION_TTL.as_secs() => {
-                    m.insert(token.to_string(), now); // slide the window
-                                                      // Debounce disk writes: only persist the slide if it moved
-                                                      // by a few minutes (active sessions don't thrash the file).
-                    if now.saturating_sub(last) >= 300 {
+            match m.get(token).cloned() {
+                Some(rec) if now.saturating_sub(rec.last) <= SESSION_TTL.as_secs() => {
+                    // Debounce disk writes: persist only every few minutes.
+                    if now.saturating_sub(rec.last) >= 300 {
                         persist = true;
                     }
-                    true
+                    m.insert(
+                        token.to_string(),
+                        SessionRec {
+                            user: rec.user.clone(),
+                            last: now,
+                        },
+                    );
+                    Some(rec.user)
                 }
-                _ => false,
+                _ => None,
             }
         };
         if persist {
             self.save_sessions();
         }
-        ok
+        user
     }
 
     /// Invalidate a session (logout).
@@ -164,32 +188,44 @@ impl AuthState {
         }
     }
 
-    /// Mint a one-time ticket (hex) authorizing a single WebSocket upgrade or
-    /// download. The caller must already hold a valid session (the HTTP handler
-    /// checks the bearer token first). The ticket — not the long-lived session
-    /// token — is what travels in the URL, so a leaked URL exposes only a
-    /// 30-second, single-use credential.
-    pub fn issue_ticket(&self) -> String {
+    /// Mint a one-time ticket (hex) bound to `user`, authorizing a single
+    /// WebSocket upgrade or download. The caller must already hold a valid
+    /// session (the HTTP handler checks the bearer token first). The ticket —
+    /// not the long-lived session token — travels in the URL, so a leaked URL
+    /// exposes only a 30-second, single-use credential.
+    pub fn issue_ticket(&self, user: &str) -> String {
         let ticket = random_token();
         let mut m = self.tickets.lock().unwrap();
         let now = Instant::now();
-        m.retain(|_, t| now.duration_since(*t) <= TICKET_TTL);
-        m.insert(ticket.clone(), now);
+        m.retain(|_, r| now.duration_since(r.issued) <= TICKET_TTL);
+        m.insert(
+            ticket.clone(),
+            TicketRec {
+                issued: now,
+                user: user.to_string(),
+            },
+        );
         ticket
     }
 
-    /// Consume a one-time ticket: valid only if present + unexpired, then
-    /// removed so it can't be replayed.
-    pub fn consume_ticket(&self, ticket: &str) -> bool {
+    /// Consume a one-time ticket: returns the owning account name if the ticket
+    /// is present + unexpired, then removes it so it can't be replayed.
+    pub fn consume_ticket(&self, ticket: &str) -> Option<String> {
         if ticket.is_empty() {
-            return false;
+            return None;
         }
         let mut m = self.tickets.lock().unwrap();
         match m.remove(ticket) {
-            Some(t) => Instant::now().duration_since(t) <= TICKET_TTL,
-            None => false,
+            Some(r) if Instant::now().duration_since(r.issued) <= TICKET_TTL => Some(r.user),
+            _ => None,
         }
     }
+}
+
+/// A one-time ticket: issue time + the account it authorizes.
+struct TicketRec {
+    issued: Instant,
+    user: String,
 }
 
 fn random_token() -> String {
@@ -211,14 +247,14 @@ fn sessions_path() -> std::path::PathBuf {
     crate::paths::data_dir().join("sessions.json")
 }
 
-/// Load persisted sessions (token -> last-access unix secs). None on any error.
-fn load_sessions() -> Option<HashMap<String, u64>> {
+/// Load persisted sessions (token -> session record). None on any error.
+fn load_sessions() -> Option<HashMap<String, SessionRec>> {
     let s = std::fs::read_to_string(sessions_path()).ok()?;
     serde_json::from_str(&s).ok()
 }
 
 /// Persist the session map. Tokens are sensitive, so the file is written 0600.
-fn write_sessions(map: &HashMap<String, u64>) -> std::io::Result<()> {
+fn write_sessions(map: &HashMap<String, SessionRec>) -> std::io::Result<()> {
     let path = sessions_path();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -317,18 +353,19 @@ mod tests {
     #[test]
     fn ticket_single_use() {
         let a = AuthState::new();
-        let t = a.issue_ticket();
-        assert!(a.consume_ticket(&t));
-        assert!(!a.consume_ticket(&t)); // replay rejected
-        assert!(!a.consume_ticket("never-issued"));
-        assert!(!a.consume_ticket(""));
+        let t = a.issue_ticket("alice");
+        assert_eq!(a.consume_ticket(&t).as_deref(), Some("alice"));
+        assert!(a.consume_ticket(&t).is_none()); // replay rejected
+        assert!(a.consume_ticket("never-issued").is_none());
+        assert!(a.consume_ticket("").is_none());
     }
 
     #[test]
     fn issue_and_validate_session() {
         let a = AuthState::new();
-        let t = a.issue();
+        let t = a.issue("alice");
         assert!(a.valid(&t));
+        assert_eq!(a.identity(&t).as_deref(), Some("alice"));
         assert!(!a.valid("bogus"));
         assert!(!a.valid(""));
         a.revoke(&t);

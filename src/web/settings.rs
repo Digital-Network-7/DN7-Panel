@@ -39,6 +39,20 @@ pub struct WebSettings {
     /// is restricted to this user (or root).
     #[serde(default)]
     pub owner_uid: u32,
+    /// Super-admin profile (shown in the account menu). `full_name`/`nickname`
+    /// are panel-side display fields; `avatar` is a base64 data URL.
+    #[serde(default)]
+    pub full_name: String,
+    #[serde(default)]
+    pub nickname: String,
+    #[serde(default)]
+    pub avatar: String,
+    /// TOTP 2FA: base32 secret (empty = none). `totp_enabled` is set only after
+    /// the operator verifies a live code during enrollment.
+    #[serde(default)]
+    pub totp_secret: String,
+    #[serde(default)]
+    pub totp_enabled: bool,
 }
 
 fn default_username() -> String {
@@ -134,6 +148,11 @@ pub fn load_or_init(default_enabled: bool, default_port: u16) -> (WebSettings, O
         pw_salt: salt,
         pw_default: true,
         owner_uid: current_uid(),
+        full_name: String::new(),
+        nickname: String::new(),
+        avatar: String::new(),
+        totp_secret: String::new(),
+        totp_enabled: false,
     };
     if let Err(e) = save(&s) {
         tracing::warn!("could not persist web settings: {e}");
@@ -181,6 +200,11 @@ mod tests {
             pw_hash: String::new(),
             pw_default: true,
             owner_uid: 0,
+            full_name: String::new(),
+            nickname: String::new(),
+            avatar: String::new(),
+            totp_secret: String::new(),
+            totp_enabled: false,
         };
         let salt = "0123456789abcdef0123456789abcdef";
         s.set_password_hashed(salt, &hash_password(salt, "mySecret!42"));
@@ -204,6 +228,11 @@ mod tests {
             pw_hash: "bb".into(),
             pw_default: false,
             owner_uid: 1000,
+            full_name: String::new(),
+            nickname: String::new(),
+            avatar: String::new(),
+            totp_secret: String::new(),
+            totp_enabled: false,
         };
         let pw = s.reset();
         assert_eq!(s.username, "admin"); // account reset

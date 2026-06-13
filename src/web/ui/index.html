@@ -62,6 +62,10 @@
         <input id="user" class="field" style="margin-bottom:12px" data-i18n-ph="login.ph_account" placeholder="Please enter your account" autocomplete="username" />
         <label class="lbl" data-i18n="login.password">Password</label>
         <input id="pw" class="field" type="password" data-i18n-ph="login.ph_password" placeholder="Please enter your password" autocomplete="current-password" style="margin-bottom:16px" />
+        <div id="loginTotpWrap" class="hidden" style="margin-bottom:16px">
+          <label class="lbl" data-i18n="tfa.code">2FA code</label>
+          <input id="loginCode" class="field" inputmode="numeric" autocomplete="one-time-code" placeholder="000000" />
+        </div>
         <button class="btn" style="width:100%" data-i18n="login.submit" onclick="doLogin()">登 录</button>
         <div class="err" id="loginErr" style="margin-top:10px"></div>
       </div>
@@ -84,10 +88,10 @@
       <span class="sp"></span>
       <button class="iconbtn" id="langBtn" title="Language"></button>
       <button class="iconbtn" id="themeBtn" title="主题：跟随系统" onclick="cycleTheme()">◑</button>
-      <div class="userbox">
+      <div class="userbox" id="userBox" onclick="toggleAccountMenu(event)">
         <span class="av" id="userAv">A</span>
         <b id="whoName">admin</b>
-        <button class="iconbtn" style="width:28px;height:28px;font-size:13px" data-i18n-title="shell.logout" title="退出登录" onclick="logout()">⏻</button>
+        <span class="caret" aria-hidden="true">▾</span>
       </div>
     </div>
     <main id="view"></main>
@@ -110,6 +114,7 @@
 <script src="/ui/js/nginx.js"></script>
 <script src="/ui/js/mysql.js"></script>
 <script src="/ui/js/settings.js"></script>
+<script src="/ui/js/account.js"></script>
 <script src="/ui/js/selx.js"></script>
 <script src="/ui/js/update.js"></script>
 <script src="/ui/js/boot.js"></script>

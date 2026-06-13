@@ -45,6 +45,11 @@ ed25519-dalek = "2"
 # Read the process uid (owner check for `dn7-panel reset`). Pure FFI to libc
 # (musl provides it); no C build.
 libc = "0.2"
+# TOTP 2FA (RFC 6238): HMAC-SHA1 over a base32 secret. All pure Rust, musl-safe.
+hmac = "0.12"
+sha1 = "0.10"
+# QR code rendering for the 2FA enrollment (otpauth:// URI → SVG). Pure Rust.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [profile.release]
 opt-level = 3

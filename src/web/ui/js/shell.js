@@ -14,16 +14,27 @@ const IC = {
   mysql: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><ellipse cx="12" cy="5.5" rx="7" ry="2.8"/><path d="M5 5.5v13c0 1.55 3.13 2.8 7 2.8s7-1.25 7-2.8v-13"/><path d="M5 12c0 1.55 3.13 2.8 7 2.8s7-1.25 7-2.8"/></svg>',
   files: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" style="vertical-align:-3px"><path d="M3 6.5C3 5.7 3.7 5 4.5 5H9l2 2h8.5c.8 0 1.5.7 1.5 1.5v9c0 .8-.7 1.5-1.5 1.5h-15C3.7 19 3 18.3 3 17.5v-11Z"/></svg>',
   settings: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>',
+  users: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
 };
+// `admin: true` → visible only to admin (sudo) accounts; `sup: true` → only the
+// super-admin. Unflagged tabs are available to every authenticated user.
 const TABS = [
   { key: 'dash', tkey: 'tab.dash', ic: IC.dash },
   { key: 'term', tkey: 'tab.term', ic: IC.term },
-  { key: 'docker', label: 'Docker', ic: IC.docker },
-  { key: 'nginx', tkey: 'tab.website', ic: IC.nginx },
-  { key: 'mysql', tkey: 'tab.databases', ic: IC.mysql },
+  { key: 'docker', label: 'Docker', ic: IC.docker, admin: true },
+  { key: 'nginx', tkey: 'tab.website', ic: IC.nginx, admin: true },
+  { key: 'mysql', tkey: 'tab.databases', ic: IC.mysql, admin: true },
   { key: 'files', tkey: 'tab.files', ic: IC.files },
-  { key: 'settings', tkey: 'tab.settings', ic: IC.settings },
+  { key: 'users', tkey: 'tab.users', ic: IC.users, admin: true },
+  { key: 'settings', tkey: 'tab.settings', ic: IC.settings, sup: true },
 ];
+// Whether the current account may see/use a tab.
+function tabAllowed(t) {
+  const me = S.me || {};
+  if (t.sup) return !!me.is_super;
+  if (t.admin) return !!me.is_admin;
+  return true;
+}
 // A tab's display label: translated when it has a key, else the literal brand.
 function tabLabel(t) { return t.tkey ? tr(t.tkey) : (t.label || ''); }
 
@@ -31,26 +42,39 @@ function showApp() {
   document.documentElement.setAttribute('data-auth', 'in');
   $('login').classList.add('hidden');
   $('app').classList.remove('hidden');
+  api('/api/me').then((b) => {
+    S.me = b.data || {};
+    renderNav();
+    setUser(S.me.nickname || S.me.username || 'admin', S.me.avatar);
+    if (S.me.must_setup) forceAccountSetup(S.me.username, () => { logout(); });
+    // If the saved tab isn't allowed for this account, fall back to dashboard.
+    const t = TABS.find((x) => x.key === S.tab);
+    if (!t || !tabAllowed(t)) S.tab = 'dash';
+    switchTab(S.tab);
+  }).catch(() => {});
+  api('/api/info').then((b) => {
+    $('panelVer').textContent = 'v' + (b.data.version || '?');
+    if (b.data.hostname) $('panelVer').title = b.data.hostname;
+  }).catch(() => {});
+  if (window.updateBadge && (S.me ? S.me.is_admin : true)) updateBadge();
+}
+// Build the sidebar nav from the tabs the current account may access.
+function renderNav() {
   const nav = $('nav'); nav.innerHTML = '';
-  TABS.forEach((t) => {
+  TABS.filter(tabAllowed).forEach((t) => {
     const b = el('button', { 'data-k': t.key });
     b.className = S.tab === t.key ? 'active' : '';
     b.innerHTML = `<span class="ic">${t.ic}</span><span class="t">${tabLabel(t)}</span>`;
     b.onclick = () => switchTab(t.key);
     nav.appendChild(b);
   });
-  api('/api/info').then((b) => {
-    $('panelVer').textContent = 'v' + (b.data.version || '?');
-    if (b.data.hostname) $('panelVer').title = b.data.hostname;
-  }).catch(() => {});
-  api('/api/settings').then((b) => {
-    setUser(b.data.username || 'admin');
-    if (b.data.must_setup) forceAccountSetup(b.data.username, (un) => setUser(un));
-  }).catch(() => {});
-  if (window.updateBadge) updateBadge();
-  switchTab(S.tab);
 }
-function setUser(name) { $('whoName').textContent = name; $('userAv').textContent = (name[0] || 'A').toUpperCase(); }
+function setUser(name, avatar) {
+  $('whoName').textContent = name;
+  const av = $('userAv');
+  if (avatar) { av.innerHTML = `<img src="${esc(avatar)}" alt="" />`; av.classList.add('hasimg'); }
+  else { av.textContent = (name[0] || 'A').toUpperCase(); av.classList.remove('hasimg'); }
+}
 
 function stopTab() {
   if (S.timer) { clearInterval(S.timer); S.timer = null; }
@@ -62,6 +86,8 @@ function stopTab() {
 }
 
 function switchTab(k) {
+  const t = TABS.find((x) => x.key === k);
+  if (t && !tabAllowed(t)) k = 'dash'; // guard: deny tabs above the account's role
   S.tab = k;
   try { localStorage.setItem('dn7_tab', k); } catch (e) {}
   stopTab();
@@ -79,5 +105,6 @@ function switchTab(k) {
   else if (k === 'nginx') renderNginx(v);
   else if (k === 'mysql') renderMysql(v);
   else if (k === 'files') renderFiles(v);
+  else if (k === 'users') renderUsers(v);
   else if (k === 'settings') renderSettings(v);
 }
