@@ -109,6 +109,7 @@ async fn serve(state: Shared, port: u16, https: bool) -> anyhow::Result<()> {
         .route("/api/files/delete", post(files_delete))
         .route("/api/files/download", get(files_download))
         .route("/api/files/upload", post(files_upload))
+        .route("/api/docker/download", get(docker_download))
         .route("/api/nginx/static-upload", post(nginx_static_upload))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -601,6 +602,9 @@ fn is_read_op(op: &str) -> bool {
             | "check"
             | "changelog"
             | "dismiss_op"
+            | "container_stats"
+            | "get_container_config"
+            | "list_backups"
     )
 }
 
@@ -1632,6 +1636,66 @@ async fn files_download(State(state): State<Shared>, Query(q): Query<DownloadQue
     match res {
         Ok((name, stream)) => {
             // Keep the permit alive for the lifetime of the response stream.
+            let guarded = stream.map(move |item| {
+                let _hold = &permit;
+                item
+            });
+            let disp = format!("attachment; filename=\"{}\"", sanitize_filename(&name));
+            (
+                [
+                    (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+                    (header::CONTENT_DISPOSITION, disp),
+                ],
+                axum::body::Body::from_stream(guarded),
+            )
+                .into_response()
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+/// Docker download query: a one-time ticket plus what to fetch — a container
+/// backup (kind=backup, name + backup file) or an image export (kind=image,
+/// ref). Admin-only; mirrors files_download's ticket model.
+#[derive(serde::Deserialize)]
+struct DockerDownloadQuery {
+    #[serde(default)]
+    ticket: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    backup: String,
+    #[serde(default, rename = "ref")]
+    reference: String,
+}
+
+async fn docker_download(
+    State(state): State<Shared>,
+    Query(q): Query<DockerDownloadQuery>,
+) -> Response {
+    use futures::StreamExt;
+    let user = match state.auth.consume_ticket(&q.ticket) {
+        Some(u) => u,
+        None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
+    };
+    let acct = match resolve_account(&state, &user) {
+        Some(a) => a,
+        None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
+    };
+    // Docker management is admin-only.
+    if !acct.is_admin {
+        return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+    }
+    let permit = transfer_sem().acquire_owned().await.ok();
+    let res = match q.kind.as_str() {
+        "backup" => crate::docker::backup_read_stream(&q.name, &q.backup).await,
+        "image" => crate::docker::image_export_stream(&q.reference).await,
+        _ => Err(anyhow::anyhow!("invalid download kind")),
+    };
+    match res {
+        Ok((name, stream)) => {
             let guarded = stream.map(move |item| {
                 let _hold = &permit;
                 item

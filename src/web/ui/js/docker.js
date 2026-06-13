@@ -73,25 +73,114 @@ function dkContainers() {
   }).catch((e) => { $('dkCList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
 
+function dkContainers() {
+  document.querySelectorAll('.dk-pop').forEach((p) => p.remove());
+  const body = $('dkBody');
+  body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_containers')}</h3><span class="sp"></span><button class="btn sm" id="dkNew">${tr('dk.create_container')}</button><button class="btn sec sm" id="dkRefC">${tr('dk.refresh')}</button></div><div id="dkCList">` + loading() + '</div>';
+  $('dkRefC').onclick = dkContainers;
+  $('dkNew').onclick = () => dkCreateForm();
+  op('docker', { op: 'list_containers' }).then((d) => {
+    const list = d.containers || [];
+    if (!list.length) { $('dkCList').innerHTML = `<div class="empty">${tr('dk.no_containers')}</div>`; return; }
+    let h = `<table class="optable"><tr><th>${tr('dk.col_name')}</th><th>${tr('dk.col_image')}</th><th>${tr('dk.col_status')}</th><th>${tr('dk.col_ports')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
+    list.forEach((c) => {
+      const running = c.state === 'running';
+      const paused = c.state === 'paused';
+      const cls = running ? 'on' : (paused ? 'warn' : 'off');
+      h += `<tr>
+        <td><b>${esc(c.name)}</b><div class="mut mono" style="font-size:11px">${esc(c.id)}</div></td>
+        <td class="mono" style="font-size:12px">${esc(c.image)}</td>
+        <td><span class="statuswrap" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}"><span class="chip ${cls}"><span class="dot-s ${running ? 'on' : ''}"></span>${esc(c.status || c.state)}</span></span></td>
+        <td class="mono" style="font-size:11.5px">${esc(c.ports || '-')}</td>
+        <td class="act"><div class="actions" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-shell="${c.has_shell ? 1 : 0}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}"></div></td>
+      </tr>`;
+    });
+    $('dkCList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
+    document.querySelectorAll('#dkCList .actions').forEach((a) => buildContainerActions(a, dkContainers));
+    document.querySelectorAll('#dkCList .statuswrap').forEach((s) => buildStatusControls(s, dkContainers));
+  }).catch((e) => { $('dkCList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+}
+
+// Build the lifecycle controls (start/stop/restart/force/pause/resume) shown on
+// a hover panel under the status chip. Buttons depend on the container state.
+function buildStatusControls(holder, reload) {
+  if (holder.dataset.managed === '1') return;
+  const id = holder.dataset.id, state = holder.dataset.state;
+  const items = [];
+  if (state === 'running') {
+    items.push({ label: tr('dk.stop'), fn: () => doCAction('stop_container', id, reload) });
+    items.push({ label: tr('dk.restart'), fn: () => doCAction('restart_container', id, reload) });
+    items.push({ label: tr('dk.pause'), fn: () => doCAction('pause_container', id, reload) });
+    items.push({ label: tr('dk.force_stop'), cls: 'danger', fn: async () => { if (await confirmDanger(tr('dk.confirm_force', { name: holder.dataset.name }))) doCAction('kill_container', id, reload); } });
+  } else if (state === 'paused') {
+    items.push({ label: tr('dk.resume'), cls: '', fn: () => doCAction('unpause_container', id, reload) });
+    items.push({ label: tr('dk.stop'), fn: () => doCAction('stop_container', id, reload) });
+    items.push({ label: tr('dk.restart'), fn: () => doCAction('restart_container', id, reload) });
+  } else {
+    items.push({ label: tr('dk.start'), cls: '', fn: () => doCAction('start_container', id, reload) });
+    items.push({ label: tr('dk.restart'), fn: () => doCAction('restart_container', id, reload) });
+  }
+  if (!items.length) return;
+  holder.style.cursor = 'pointer';
+  mkHoverPanel(holder, items);
+}
+
 function buildContainerActions(holder, reload) {
-  const id = holder.dataset.id, name = holder.dataset.name, hasShell = holder.dataset.shell === '1', running = holder.dataset.running === '1';
+  const id = holder.dataset.id, name = holder.dataset.name, hasShell = holder.dataset.shell === '1';
+  const state = holder.dataset.state, running = state === 'running';
   const managed = holder.dataset.managed === '1';
   // DN7 Panel-managed service containers (nginx / mysql) are operated only from
   // their own pages — show a plain "内置" tag, no action buttons.
   if (managed) { holder.innerHTML = `<span class="chip">${tr('dk.builtin')}</span>`; return; }
   const mk = (label, cls, fn) => { const b = el('button', { class: 'btn sm ' + (cls || 'sec') }, label); b.onclick = fn; holder.appendChild(b); };
-  if (running) {
-    mk(tr('dk.stop'), 'sec', () => doCAction('stop_container', id, reload));
-    mk(tr('dk.restart'), 'sec', () => doCAction('restart_container', id, reload));
-    if (hasShell) mk(tr('dk.terminal'), '', () => openTerminalModal(tr('dk.ctn_term') + name, () => ticket().then((t) => `/api/container/terminal?ticket=${encodeURIComponent(t)}&container=${encodeURIComponent(id)}`)));
-    mk(tr('dk.files'), 'sec', () => openFileBrowser(tr('dk.ctn_files') + name, id));
-  } else {
-    mk(tr('dk.start'), '', () => doCAction('start_container', id, reload));
-  }
+  // Outermost: at most 5 — terminal, files, logs, networks, advanced.
+  if (running && hasShell) mk(tr('dk.terminal'), '', () => openTerminalModal(tr('dk.ctn_term') + name, () => ticket().then((t) => `/api/container/terminal?ticket=${encodeURIComponent(t)}&container=${encodeURIComponent(id)}`)));
+  if (running) mk(tr('dk.files'), 'sec', () => openFileBrowser(tr('dk.ctn_files') + name, id));
   mk(tr('dk.logs'), 'sec', () => dkLogs(id, name));
   mk(tr('dk.networks'), 'sec', () => dkContainerNetworks(id, name));
-  mk(tr('dk.delete'), 'danger', async () => { if (await confirmDanger(tr('dk.confirm_rm_ctn', { name }))) doCAction('remove_container', id, reload); });
+  // Advanced menu (the button itself does nothing; items show on hover).
+  const adv = el('button', { class: 'btn sm sec' }, tr('dk.advanced') + ' ▾');
+  holder.appendChild(adv);
+  const items = [
+    { label: tr('dk.edit'), fn: () => dkEditForm(id, name) },
+    { label: tr('dk.upgrade'), fn: () => dkUpgradeForm(id, name) },
+    { label: tr('dk.backup'), fn: () => dkBackups(id, name) },
+  ];
+  if (running) items.push({ label: tr('dk.monitor'), fn: () => dkMonitor(id, name) });
+  items.push({ label: tr('dk.rename'), fn: () => dkRenameForm(id, name, reload) });
+  items.push({ label: tr('dk.commit'), fn: () => dkCommitForm(id, name) });
+  items.push({ label: tr('dk.delete'), cls: 'danger', fn: async () => { if (await confirmDanger(tr('dk.confirm_rm_ctn', { name }))) doCAction('remove_container', id, reload); } });
+  mkHoverPanel(adv, items);
 }
+
+// Create a body-anchored hover panel of action buttons for `trigger`. Avoids
+// clipping by the scrollable table wrapper (position:fixed, measured on show).
+function mkHoverPanel(trigger, items) {
+  const panel = el('div', { class: 'dk-pop' });
+  items.forEach((it) => {
+    const b = el('button', { class: 'btn sm ' + (it.cls != null ? it.cls : 'sec') }, it.label);
+    b.onclick = () => { hide(); it.fn(); };
+    panel.appendChild(b);
+  });
+  let timer;
+  const place = () => {
+    document.body.appendChild(panel);
+    panel.style.visibility = 'hidden'; panel.style.display = 'flex';
+    const r = trigger.getBoundingClientRect();
+    const pw = panel.offsetWidth;
+    let left = Math.min(r.left, window.innerWidth - pw - 8); if (left < 8) left = 8;
+    panel.style.top = (r.bottom + 4) + 'px';
+    panel.style.left = left + 'px';
+    panel.style.visibility = 'visible';
+  };
+  const show = () => { clearTimeout(timer); place(); };
+  const hide = () => { timer = setTimeout(() => { panel.style.display = 'none'; }, 130); };
+  trigger.addEventListener('mouseenter', show);
+  trigger.addEventListener('mouseleave', hide);
+  panel.addEventListener('mouseenter', () => clearTimeout(timer));
+  panel.addEventListener('mouseleave', hide);
+}
+
 function doCAction(o, id, reload) { op('docker', { op: o, ref: id }).then(() => { toast(tr('dk.op_ok'), 'ok'); reload && reload(); }).catch((e) => toast(e.message, 'err')); }
 
 function dkLogs(id, name) {
@@ -125,15 +214,29 @@ function dkImages(info) {
     if (!list.length) { $('dkIList').innerHTML = `<div class="empty">${tr('dk.no_images')}</div>`; return; }
     let h = `<table class="optable"><tr><th>${tr('dk.col_image')}</th><th>${tr('dk.col_size')}</th><th>${tr('dk.col_created')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
     list.forEach((im) => {
-      const acts = im.managed
-        ? `<span class="chip">${tr('dk.builtin')}</span>`
-        : `<div class="actions"><button class="btn sm danger" data-rm="${esc(im.name)}">${tr('dk.delete')}</button></div>`;
-      h += `<tr><td class="mono" style="font-size:12px">${esc(im.name)}</td><td>${esc(im.size)}</td><td class="mut">${esc(im.created)}</td>
+      const status = im.in_use
+        ? `<span class="chip on" style="margin-left:8px">${tr('dk.img_inuse')}</span>`
+        : `<span class="chip" style="margin-left:8px">${tr('dk.img_idle')}</span>`;
+      const delBtn = im.managed
+        ? `<button class="btn sm danger" data-rmbuiltin="1">${tr('dk.delete')}</button>`
+        : `<button class="btn sm danger" data-rm="${esc(im.name)}">${tr('dk.delete')}</button>`;
+      const acts = `<div class="actions"><button class="btn sm sec" data-dl="${esc(im.name)}">${tr('dk.img_download')}</button>${delBtn}</div>`;
+      h += `<tr><td class="mono" style="font-size:12px">${esc(im.name)}${status}</td><td>${esc(im.size)}</td><td class="mut">${esc(im.created)}</td>
         <td class="act">${acts}</td></tr>`;
     });
     $('dkIList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
+    document.querySelectorAll('#dkIList [data-dl]').forEach((b) => b.onclick = () => dkImageDownload(b.dataset.dl));
+    document.querySelectorAll('#dkIList [data-rmbuiltin]').forEach((b) => b.onclick = () => toast(tr('dk.img_builtin_block'), 'err'));
     document.querySelectorAll('#dkIList [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('dk.confirm_rm_img', { name: b.dataset.rm }))) op('docker', { op: 'remove_image', ref: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); dkImages(info); }).catch((e) => toast(e.message, 'err')); });
   }).catch((e) => { $('dkIList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+}
+
+// Trigger an image export (`docker save`) download via a one-time ticket.
+function dkImageDownload(name) {
+  ticket().then((t) => {
+    const qs = `ticket=${encodeURIComponent(t)}&kind=image&ref=${encodeURIComponent(name)}`;
+    const a = el('a', { href: '/api/docker/download?' + qs }); document.body.appendChild(a); a.click(); a.remove();
+  }).catch((e) => toast(e.message, 'err'));
 }
 
 function dkPullForm() {
@@ -189,7 +292,9 @@ function dkCreateForm() {
   ]).then(([info, nd]) => dkCreateModal(info || {}, (nd && nd.networks) || []));
 }
 
-function dkCreateModal(info, networks) {
+function dkCreateModal(info, networks, opts) {
+  opts = opts || {};
+  const prefill = opts.prefill || null;
   const hostCpus = Number(info.host_cpus) || 0;
   const hostMem = Number(info.host_mem_bytes) || 0;
   const cpuMax = hostCpus > 0 ? hostCpus : 2;
@@ -198,7 +303,7 @@ function dkCreateModal(info, networks) {
   const netOpts = `<option value="">${tr('dk.net_default')}</option>` +
     networks.filter((n) => n.name !== 'host' && n.name !== 'none')
       .map((n) => `<option value="${esc(n.name)}" data-subnet="${esc(n.subnet || '')}">${esc(n.name)}</option>`).join('');
-  modal(tr('dk.create_container'), `
+  modal(opts.title || tr('dk.create_container'), `
     <div class="subtabs" id="ccTabs">
       <button data-s="basic" class="on">${tr('dk.tab_basic')}</button>
       <button data-s="net">${tr('dk.tab_networks')}</button>
@@ -247,9 +352,9 @@ function dkCreateModal(info, networks) {
     <div id="ccEnvT" class="hidden">
       <label class="lbl">${tr('dk.env')}</label><div class="kvlist" id="ccEnv"></div><button type="button" class="kvadd" id="ccEnvAdd">${tr('dk.add_env')}</button>
     </div>
-    <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="ccGo">${tr('dk.create')}</button></div>
+    <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="ccGo">${opts.submitLabel || tr('dk.create')}</button></div>
     <div class="hidden" id="ccJob" style="margin-top:14px"></div>`, (close, root) => {
-    loadImageOptions();    // Tab switching.
+    loadImageOptions(prefill ? prefill.image : undefined);    // Tab switching.
     const panes = { basic: 'ccBasic', net: 'ccNet', ports: 'ccPortsT', vol: 'ccVolT', res: 'ccRes', env: 'ccEnvT' };
     const tabs = root.querySelector('#ccTabs');
     tabs.querySelectorAll('button').forEach((btn) => btn.onclick = () => {
@@ -275,7 +380,37 @@ function dkCreateModal(info, networks) {
     const curSubnet = () => { const o = $('ccNetSel').options[$('ccNetSel').selectedIndex]; return o ? (o.dataset.subnet || '') : ''; };
     $('ccIpv4Gen').onclick = () => { const ip = randIpFromSubnet(curSubnet()); if (ip) $('ccIpv4').value = ip; else toast(tr('dk.ipv4_need_subnet'), 'err'); };
     $('ccNetSel').onchange = () => { const ip = randIpFromSubnet(curSubnet()); $('ccIpv4').value = ip || ''; };
-    $('ccGo').onclick = () => {
+    // Pre-fill from an existing container (edit / upgrade).
+    if (prefill) {
+      const cfg = prefill;
+      const applyImg = () => {
+        const sel = $('ccImg');
+        if (cfg.image && !Array.from(sel.options).some((o) => o.value === cfg.image)) {
+          const o = document.createElement('option'); o.value = cfg.image; o.textContent = cfg.image; sel.appendChild(o);
+        }
+        if (cfg.image) sel.value = cfg.image;
+      };
+      applyImg(); setTimeout(applyImg, 80);
+      $('ccName').value = cfg.name || '';
+      $('ccRestart').value = cfg.restart || 'unless-stopped';
+      $('ccCmd').value = cfg.command || '';
+      $('ccTty').checked = !!cfg.tty;
+      $('ccStart').checked = true;
+      (cfg.ports || []).forEach((p) => portRow({ h: p.host, c: p.container, proto: p.proto }));
+      (cfg.env || []).forEach((e) => { const i = e.indexOf('='); envRow({ k: i >= 0 ? e.slice(0, i) : e, v: i >= 0 ? e.slice(i + 1) : '' }); });
+      (cfg.volumes || []).forEach((v) => volRow({ h: v.host, c: v.container }));
+      if (cfg.network) { $('ccNetSel').value = cfg.network; }
+      if (cfg.mac) $('ccMac').value = cfg.mac;
+      $('ccIpv4').value = cfg.ipv4 || '';
+      $('ccHost').value = cfg.hostname || '';
+      $('ccDomain').value = cfg.domainname || '';
+      $('ccDns').value = (cfg.dns || []).join(' ');
+      $('ccCpuShares').value = cfg.cpu_shares ? cfg.cpu_shares : 1024;
+      $('ccCpus').value = cfg.cpus ? Number(cfg.cpus) : 0;
+      $('ccMem').value = cfg.memory ? Math.round(Number(cfg.memory) / 1048576) : 0;
+      $('ccPriv').checked = !!cfg.privileged;
+    }
+    const doSubmit = () => {
       const image = $('ccImg').value.trim(); if (!image) return toast(tr('dk.need_image'), 'err');
       const ports = readKv('ccPorts').map((r) => ({ host: Number(r[0]), container: Number(r[1]), proto: r.proto || 'tcp' })).filter((p) => p.host && p.container);
       const env = readKv('ccEnv').map((r) => (r[0] ? r[0] + '=' + (r[1] || '') : '')).filter(Boolean);
@@ -296,8 +431,12 @@ function dkCreateModal(info, networks) {
         cpus: cpusV > 0 ? String(cpusV) : undefined, memory: memV > 0 ? memV + 'm' : undefined,
         privileged: $('ccPriv').checked || undefined,
       };
+      if (opts.replaceName) body.replace = opts.replaceName;
       $('ccGo').disabled = true; $('ccJob').classList.remove('hidden');
-      op('docker', body).then((r) => renderJob($('ccJob'), 'docker', r.op_id, '', { onDone: () => { toast(tr('dk.ctn_created'), 'ok'); close(); switchTab('docker'); }, onError: () => { $('ccGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ccGo').disabled = false; });
+      op('docker', body).then((r) => renderJob($('ccJob'), 'docker', r.op_id, '', { onDone: () => { toast(opts.doneMsg || tr('dk.ctn_created'), 'ok'); close(); switchTab('docker'); }, onError: () => { $('ccGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ccGo').disabled = false; });
+    };
+    $('ccGo').onclick = () => {
+      if (opts.confirmMsg) { confirmDanger(opts.confirmMsg).then((ok) => { if (ok) doSubmit(); }); } else doSubmit();
     };
   }, true);
 }
@@ -316,6 +455,134 @@ function randIpFromSubnet(subnet) {
   if (base.length !== 4) return '';
   base[3] = String(2 + Math.floor(Math.random() * 250));
   return base.join('.');
+}
+
+// Human-readable byte size + epoch-second timestamp helpers (monitor/backups).
+function dkHuman(n) {
+  n = Number(n) || 0;
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(2)) + u[i];
+}
+function dkFmtTime(secs) { return secs ? new Date(secs * 1000).toLocaleString() : '-'; }
+
+// ---- Edit (recreate with new config) ----
+function dkEditForm(id, name) {
+  Promise.all([
+    op('docker', { op: 'info' }).catch(() => ({})),
+    op('docker', { op: 'list_networks' }).catch(() => ({ networks: [] })),
+    op('docker', { op: 'get_container_config', ref: id }),
+  ]).then(([info, nd, cd]) => {
+    dkCreateModal(info || {}, (nd && nd.networks) || [], {
+      prefill: cd.config || {}, replaceName: name,
+      title: tr('dk.edit') + ' · ' + name, submitLabel: tr('dk.save'),
+      confirmMsg: tr('dk.edit_confirm'), doneMsg: tr('dk.edited'),
+    });
+  }).catch((e) => toast(e.message, 'err'));
+}
+
+// ---- Upgrade (recreate keeping config, only the image changes) ----
+function dkUpgradeForm(id, name) {
+  op('docker', { op: 'get_container_config', ref: id }).then((d) => {
+    const cfg = d.config || {};
+    modal(tr('dk.upgrade') + ' · ' + name, `
+      <p class="mut" style="margin:0 0 12px">${tr('dk.upgrade_cur')}: <span class="mono">${esc(cfg.image || '')}</span></p>
+      <label class="lbl">${tr('dk.upgrade_target')}</label>
+      <select id="ugImg" class="field" style="margin-bottom:8px"></select>
+      <input id="ugImgText" class="field mono" placeholder="nginx:latest" style="margin-bottom:6px" />
+      <p class="formnote">${tr('dk.upgrade_hint')}</p>
+      <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="ugGo">${tr('dk.upgrade')}</button></div>
+      <div class="hidden" id="ugJob" style="margin-top:12px"></div>`, (close) => {
+      op('docker', { op: 'list_images' }).then((im) => {
+        const names = (im.images || []).map((x) => x.name).filter((n) => n && n !== '<none>:<none>');
+        $('ugImg').innerHTML = `<option value="">${tr('dk.upgrade_pick')}</option>` + names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+      }).catch(() => {});
+      $('ugImg').onchange = () => { if ($('ugImg').value) $('ugImgText').value = $('ugImg').value; };
+      $('ugGo').onclick = () => {
+        const target = $('ugImgText').value.trim() || $('ugImg').value.trim();
+        if (!target) return toast(tr('dk.need_image'), 'err');
+        confirmDanger(tr('dk.upgrade_confirm')).then((ok) => {
+          if (!ok) return;
+          const body = Object.assign({}, cfg, { op: 'create_container', image: target, name, replace: name, start: true });
+          $('ugGo').disabled = true; $('ugJob').classList.remove('hidden');
+          op('docker', body).then((r) => renderJob($('ugJob'), 'docker', r.op_id, '', { onDone: () => { toast(tr('dk.upgraded'), 'ok'); close(); switchTab('docker'); }, onError: () => { $('ugGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ugGo').disabled = false; });
+        });
+      };
+    });
+  }).catch((e) => toast(e.message, 'err'));
+}
+
+// ---- Rename ----
+function dkRenameForm(id, name, reload) {
+  modal(tr('dk.rename') + ' · ' + name, `<label class="lbl">${tr('dk.new_name')}</label><input id="rnName" class="field" value="${esc(name)}" style="margin-bottom:16px" /><div class="row" style="justify-content:flex-end"><button class="btn" id="rnGo">${tr('dk.rename')}</button></div>`, (close) => {
+    $('rnGo').onclick = () => { const nn = $('rnName').value.trim(); if (!nn) return; op('docker', { op: 'rename_container', ref: id, new_name: nn }).then(() => { close(); toast(tr('dk.renamed'), 'ok'); reload && reload(); }).catch((e) => toast(e.message, 'err')); };
+  });
+}
+
+// ---- Commit container to image ----
+function dkCommitForm(id, name) {
+  modal(tr('dk.commit') + ' · ' + name, `
+    <div class="formgrid">
+      <div><label class="lbl">${tr('dk.commit_repo')}</label><input id="cmRepo" class="field" placeholder="my-image" value="${esc(name)}" /></div>
+      <div><label class="lbl">${tr('dk.commit_tag')}</label><input id="cmTag" class="field" placeholder="latest" value="latest" /></div>
+    </div>
+    <p class="formnote" style="margin-top:8px">${tr('dk.commit_hint')}</p>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="cmGo">${tr('dk.commit')}</button></div>`, (close) => {
+    $('cmGo').onclick = () => {
+      const repo = $('cmRepo').value.trim(); if (!repo) return toast(tr('dk.need_image_name'), 'err');
+      op('docker', { op: 'commit_container', ref: id, repo, tag: $('cmTag').value.trim() || 'latest' }).then((r) => { close(); toast(tr('dk.committed', { image: r.image || '' }), 'ok'); }).catch((e) => toast(e.message, 'err'));
+    };
+  });
+}
+
+// ---- Monitor (live CPU / memory / network / block IO) ----
+function dkMonitor(id, name) {
+  modal(tr('dk.monitor') + ' · ' + name, `<div id="monBody">${loading()}</div>`, (close, root) => {
+    let stop = false;
+    const bar = (pct) => `<div style="height:8px;border-radius:6px;background:var(--panel2);overflow:hidden;margin:4px 0 14px"><div style="height:100%;width:${Math.min(100, pct).toFixed(1)}%;background:var(--ok);transition:width .4s"></div></div>`;
+    const renderMon = (s) => {
+      const memPct = s.mem_limit > 0 ? (s.mem_used / s.mem_limit * 100) : 0;
+      $('monBody').innerHTML = `
+        <div class="row" style="justify-content:space-between"><span class="mut">${tr('dk.mon_cpu')}</span><b>${(s.cpu_pct || 0).toFixed(2)}%</b></div>${bar(s.cpu_pct || 0)}
+        <div class="row" style="justify-content:space-between"><span class="mut">${tr('dk.mon_mem')}</span><b>${dkHuman(s.mem_used)} / ${dkHuman(s.mem_limit)} (${memPct.toFixed(1)}%)</b></div>${bar(memPct)}
+        <div class="row" style="justify-content:space-between"><span class="mut">${tr('dk.mon_net')}</span><b>↓ ${dkHuman(s.net_rx)} · ↑ ${dkHuman(s.net_tx)}</b></div>
+        <div class="row" style="justify-content:space-between;margin-top:8px"><span class="mut">${tr('dk.mon_blk')}</span><b>${tr('dk.mon_read')} ${dkHuman(s.blk_read)} · ${tr('dk.mon_write')} ${dkHuman(s.blk_write)}</b></div>
+        <p class="formnote" style="margin-top:12px">${tr('dk.mon_hint')}</p>`;
+    };
+    const tick = () => {
+      if (stop || !document.body.contains(root)) { stop = true; return; }
+      op('docker', { op: 'container_stats', ref: id }).then(renderMon).catch((e) => { if ($('monBody')) $('monBody').innerHTML = `<p class="err">${esc(e.message)}</p>`; })
+        .finally(() => { if (!stop && document.body.contains(root)) setTimeout(tick, 2000); });
+    };
+    tick();
+  });
+}
+
+// ---- Backups (commit + save to tar.gz; history, download, restore) ----
+function dkBackups(id, name) {
+  modal(tr('dk.backup') + ' · ' + name, `
+    <div class="sechead" style="margin-top:0"><h3>${tr('dk.bk_history')}</h3><span class="sp"></span><button class="btn sm" id="bkNew">${tr('dk.bk_create')}</button></div>
+    <div class="hidden" id="bkJob" style="margin:0 0 12px"></div>
+    <div id="bkList">${loading()}</div>`, (close, root) => {
+    const load = () => op('docker', { op: 'list_backups', name }).then((d) => {
+      const list = d.backups || [];
+      if (!list.length) { $('bkList').innerHTML = `<div class="empty">${tr('dk.bk_none')}</div>`; return; }
+      let h = `<table class="optable"><tr><th>${tr('dk.bk_file')}</th><th>${tr('dk.col_size')}</th><th>${tr('dk.bk_time')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
+      list.forEach((b) => { h += `<tr><td class="mono" style="font-size:12px">${esc(b.file)}</td><td>${dkHuman(b.size)}</td><td class="mut">${dkFmtTime(b.created)}</td><td class="act"><div class="actions"><button class="btn sm sec" data-dl="${esc(b.file)}">${tr('dk.bk_download')}</button><button class="btn sm" data-rs="${esc(b.file)}">${tr('dk.bk_restore')}</button><button class="btn sm danger" data-del="${esc(b.file)}">${tr('dk.delete')}</button></div></td></tr>`; });
+      $('bkList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
+      document.querySelectorAll('#bkList [data-dl]').forEach((b) => b.onclick = () => dkBackupDownload(name, b.dataset.dl));
+      document.querySelectorAll('#bkList [data-del]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('dk.bk_confirm_del', { file: b.dataset.del }))) op('docker', { op: 'delete_backup', name, backup: b.dataset.del }).then(() => { toast(tr('common.deleted'), 'ok'); load(); }).catch((e) => toast(e.message, 'err')); });
+      document.querySelectorAll('#bkList [data-rs]').forEach((b) => b.onclick = async () => { if (!await confirmDanger(tr('dk.bk_confirm_restore'))) return; $('bkJob').classList.remove('hidden'); op('docker', { op: 'restore_backup', name, backup: b.dataset.rs }).then((r) => renderJob($('bkJob'), 'docker', r.op_id, '', { onDone: () => { toast(tr('dk.bk_restored'), 'ok'); switchTab('docker'); } })).catch((e) => toast(e.message, 'err')); });
+    }).catch((e) => { $('bkList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+    $('bkNew').onclick = () => { $('bkJob').classList.remove('hidden'); op('docker', { op: 'backup_container', ref: id, name }).then((r) => renderJob($('bkJob'), 'docker', r.op_id, '', { onDone: () => { toast(tr('dk.bk_done'), 'ok'); load(); } })).catch((e) => toast(e.message, 'err')); };
+    load();
+  }, true);
+}
+function dkBackupDownload(name, file) {
+  ticket().then((t) => {
+    const qs = `ticket=${encodeURIComponent(t)}&kind=backup&name=${encodeURIComponent(name)}&backup=${encodeURIComponent(file)}`;
+    const a = el('a', { href: '/api/docker/download?' + qs }); document.body.appendChild(a); a.click(); a.remove();
+  }).catch((e) => toast(e.message, 'err'));
 }
 
 // Populate the create-form image dropdown with all local images (built-in ones

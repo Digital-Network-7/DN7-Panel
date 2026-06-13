@@ -27,6 +27,9 @@ tar = "0.4"
 # Pure-Rust ZIP extraction for static-site uploads (miniz_oxide deflate backend
 # — no zlib C dependency, keeps the musl-static build intact).
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Pure-Rust gzip (miniz_oxide backend, no zlib C dependency) for container
+# backup tar.gz archives. musl-static safe.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # Pure-Rust certificate generation (self-signed) — replaces the openssl CLI.
 rcgen = "0.13"
 # Pure-Rust ACME (Let's Encrypt) client — replaces acme.sh + curl/wget.
