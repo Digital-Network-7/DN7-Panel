@@ -1391,8 +1391,11 @@ pub async fn renew_due_certs() {
                 )
                 .await;
             }
-            _ => {}
+            _ => continue,
         }
+        // Sites reference the named cert files directly, so reload nginx to pick
+        // up the freshly renewed certificate.
+        let _ = validate_and_reload(&lo).await;
     }
 }
 
@@ -2256,20 +2259,50 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
         .await?
     };
 
-    // Persist the issued chain + key into the per-site cert store.
-    let crt_path = lo.cert_store.join(format!("{}.crt", site.id));
-    let key_path = lo.cert_store.join(format!("{}.key", site.id));
-    std::fs::write(&crt_path, cert_chain_pem)?;
-    std::fs::write(&key_path, key_pem)?;
-    set_key_perms(&key_path);
+    // Persist the issued chain + key into the certificate library (a named
+    // cert), so the cert shows up under SSL certificate management and is
+    // covered by the named-cert auto-renewal loop. Reuse an existing same-domain
+    // entry's name when present; otherwise derive a unique name from the host.
+    let mut certs = load_named_certs();
+    let cert_name = match certs.iter().find(|c| c.domain.eq_ignore_ascii_case(&host)) {
+        Some(c) => c.name.clone(),
+        None => {
+            let base = if valid_cert_name(&host) {
+                host.clone()
+            } else {
+                format!("le-{}", site.id)
+            };
+            let mut name = base.clone();
+            let mut i = 1;
+            while certs.iter().any(|c| c.name == name) {
+                name = format!("{base}-{i}");
+                i += 1;
+            }
+            name
+        }
+    };
+    std::fs::create_dir_all(&lo.cert_store)?;
+    std::fs::write(named_crt_file(lo, &cert_name), cert_chain_pem)?;
+    std::fs::write(named_key_file(lo, &cert_name), &key_pem)?;
+    set_key_perms(&named_key_file(lo, &cert_name));
+    certs.retain(|c| c.name != cert_name);
+    certs.push(NamedCert {
+        name: cert_name.clone(),
+        domain: host.clone(),
+        cert_mode: "le".to_string(),
+    });
+    save_named_certs(&certs)?;
 
-    // Step 6: rewrite with SSL + persist + reload.
+    // Point the site at the library cert and rewrite with SSL + reload.
+    let mut site = site.clone();
+    site.cert_mode = "named".to_string();
+    site.cert_name = cert_name;
     op_push(op_id, &pmsg("ng.enable_https", &[]));
-    write_site_conf(lo, site, &[]).await?;
+    write_site_conf(lo, &site, &[]).await?;
     validate_and_reload(lo).await?;
     let mut sites = load_sites();
     sites.retain(|s| s.id != site.id);
-    sites.push(site.clone());
+    sites.push(site);
     save_sites(&sites)?;
     Ok(())
 }

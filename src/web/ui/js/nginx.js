@@ -94,9 +94,8 @@ function ngAddSite(reload, site) {
           <button type="button" data-m="self">${tr('ng.cm_self')}</button>
         </div>
         <div id="nsAutoWrap" style="margin-top:14px">
-          <div class="row" style="align-items:center;margin-bottom:8px"><span class="lbl" style="flex:1;margin:0">${tr('ng.same_domain_certs')}</span><button type="button" class="btn sm sec" id="nsReqCert">${tr('ng.request_cert')}</button></div>
+          <label class="lbl">${tr('ng.same_domain_certs')}</label>
           <div id="nsCertList" class="certlist"></div>
-          <div class="hidden" id="nsReqJob" style="margin-top:10px"></div>
         </div>
         <div class="ssltoggles" style="margin-top:16px">
           <label class="switch"><input type="checkbox" id="nsForceSsl" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.force_ssl')}</b><span>${tr('ng.force_ssl_d')}</span></span></label>
@@ -244,16 +243,6 @@ function ngAddSite(reload, site) {
       $('nsAutoWrap').classList.toggle('hidden', certMethod !== 'auto');
       if (certMethod === 'auto') loadCertList();
     });
-    $('nsReqCert').onclick = () => {
-      const host = $('nsName').value.trim();
-      if (!host) return toast(tr('ng.need_domain'), 'err');
-      $('nsReqCert').disabled = true; $('nsReqJob').classList.remove('hidden'); $('nsReqJob').innerHTML = `<div class="mut">${tr('ng.submitting')}</div>`;
-      const done = () => { toast(tr('ng.cert_created'), 'ok'); $('nsReqCert').disabled = false; $('nsReqJob').classList.add('hidden'); selectedCert = host; loadCertList(); };
-      op('nginx', { op: 'create_cert', cert_name: host, cert_mode: 'le', server_name: host }).then((r) => {
-        if (r.op_id) renderJob($('nsReqJob'), 'nginx', r.op_id, '', { onDone: done, onError: () => { $('nsReqCert').disabled = false; } });
-        else done();
-      }).catch((e) => { toast(e.message, 'err'); $('nsReqCert').disabled = false; $('nsReqJob').classList.add('hidden'); });
-    };
     if (editing && site.ssl) {
       $('nsSsl').checked = true;
       $('nsSslBody').classList.remove('hidden');
