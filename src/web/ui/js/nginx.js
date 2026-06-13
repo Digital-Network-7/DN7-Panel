@@ -604,20 +604,41 @@ function ngSettingsTab(v) {
   body.innerHTML = loading();
   op('nginx', { op: 'get_settings' }).then((d) => {
     const ds = (d.default_site) || { mode: '404', redirect_url: '' };
+    const t = d.tuning || {};
+    const bktOpts = [32, 64, 128, 256, 512].map((n) => `<option value="${n}"${Number(t.server_names_hash_bucket_size) === n ? ' selected' : ''}>${n}</option>`).join('');
+    const lvlOpts = Array.from({ length: 9 }, (_, i) => i + 1).map((n) => `<option value="${n}"${Number(t.gzip_comp_level) === n ? ' selected' : ''}>${n}</option>`).join('');
     body.innerHTML = `
-      <div class="sechead" style="margin-top:0"><h3>${tr('ng.default_site')}</h3></div>
-      <p class="mut" style="font-size:12.5px;margin:0 0 16px;max-width:620px">${tr('ng.default_site_desc')}</p>
-      <div style="max-width:420px">
+      <div style="max-width:560px">
+        <div class="sechead" style="margin-top:0"><h3>${tr('ng.default_site')}</h3></div>
+        <p class="mut" style="font-size:12.5px;margin:0 0 14px">${tr('ng.default_site_desc')}</p>
         <label class="lbl">${tr('ng.default_behavior')}</label>
-        <select id="ngDsMode" class="field" style="margin-bottom:14px">
+        <select id="ngDsMode" class="field" style="max-width:300px;margin-bottom:12px">
           <option value="404">${tr('ng.ds_404')}</option>
           <option value="welcome">${tr('ng.ds_welcome')}</option>
           <option value="444">${tr('ng.ds_444')}</option>
           <option value="redirect">${tr('ng.ds_redirect')}</option>
         </select>
-        <div id="ngDsRedirectWrap" class="hidden"><label class="lbl">${tr('ng.ds_redirect_url')}</label><input id="ngDsUrl" class="field" placeholder="https://example.com" value="${esc(ds.redirect_url || '')}" style="margin-bottom:14px" /></div>
-      </div>
-      <div class="row" style="align-items:center;gap:12px"><button class="btn" id="ngDsSave">${tr('ng.save')}</button><span class="err ok" id="ngDsMsg"></span></div>`;
+        <div id="ngDsRedirectWrap" class="hidden"><label class="lbl">${tr('ng.ds_redirect_url')}</label><input id="ngDsUrl" class="field" placeholder="https://example.com" value="${esc(ds.redirect_url || '')}" style="margin-bottom:12px" /></div>
+        <div class="row" style="align-items:center;gap:12px"><button class="btn sm" id="ngDsSave">${tr('ng.save')}</button><span class="err ok" id="ngDsMsg"></span></div>
+
+        <div class="sechead" style="margin-top:26px"><h3>${tr('ng.perf_sec')}</h3></div>
+        <p class="mut" style="font-size:12.5px;margin:0 0 14px">${tr('ng.perf_desc')}</p>
+        <div class="formgrid">
+          <div><label class="lbl">${tr('ng.t_cmbs')}</label><input id="ngCmbs" class="field" value="${esc(t.client_max_body_size || '1m')}" placeholder="1m" /></div>
+          <div><label class="lbl">${tr('ng.t_chdr')}</label><input id="ngChdr" class="field" value="${esc(t.client_header_buffer_size || '1k')}" placeholder="1k" /></div>
+          <div><label class="lbl">${tr('ng.t_kat')}</label><input id="ngKat" class="field" type="number" min="0" value="${esc(String(t.keepalive_timeout != null ? t.keepalive_timeout : 75))}" /></div>
+          <div><label class="lbl">${tr('ng.t_snhbs')}</label><select id="ngSnhbs" class="field">${bktOpts}</select></div>
+        </div>
+        <label class="switch" style="padding:0;margin-top:14px"><input type="checkbox" id="ngGzip" ${t.gzip ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.t_gzip')}</b><span>${tr('ng.t_gzip_d')}</span></span></label>
+        <div id="ngGzipWrap" class="formgrid" style="margin-top:12px">
+          <div><label class="lbl">${tr('ng.t_gmin')}</label><input id="ngGmin" class="field" type="number" min="0" value="${esc(String(t.gzip_min_length != null ? t.gzip_min_length : 20))}" /></div>
+          <div><label class="lbl">${tr('ng.t_gcl')}</label><select id="ngGcl" class="field">${lvlOpts}</select></div>
+        </div>
+        <div class="row" style="align-items:center;gap:12px;margin-top:16px"><button class="btn sm" id="ngTuneSave">${tr('ng.save')}</button><span class="err ok" id="ngTuneMsg"></span></div>
+        <p class="formnote" style="margin-top:10px">${tr('ng.perf_note')}</p>
+      </div>`;
+
+    // Default site.
     $('ngDsMode').value = ds.mode || '404';
     const sync = () => $('ngDsRedirectWrap').classList.toggle('hidden', $('ngDsMode').value !== 'redirect');
     $('ngDsMode').onchange = sync; sync();
@@ -626,6 +647,25 @@ function ngSettingsTab(v) {
       const bodyReq = { op: 'set_default_site', default_mode: $('ngDsMode').value, redirect_url: $('ngDsUrl') ? $('ngDsUrl').value.trim() : '' };
       $('ngDsSave').disabled = true;
       op('nginx', bodyReq).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); $('ngDsSave').disabled = false; }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('ngDsSave').disabled = false; });
+    };
+
+    // Performance / tuning.
+    const syncGz = () => $('ngGzipWrap').classList.toggle('hidden', !$('ngGzip').checked);
+    $('ngGzip').onchange = syncGz; syncGz();
+    $('ngTuneSave').onclick = () => {
+      const m = $('ngTuneMsg');
+      const bodyReq = {
+        op: 'set_tuning',
+        client_max_body_size: $('ngCmbs').value.trim(),
+        client_header_buffer_size: $('ngChdr').value.trim(),
+        keepalive_timeout: Number($('ngKat').value) || 0,
+        server_names_hash_bucket_size: Number($('ngSnhbs').value),
+        gzip: $('ngGzip').checked,
+        gzip_min_length: Number($('ngGmin').value) || 0,
+        gzip_comp_level: Number($('ngGcl').value),
+      };
+      $('ngTuneSave').disabled = true;
+      op('nginx', bodyReq).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); $('ngTuneSave').disabled = false; }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('ngTuneSave').disabled = false; });
     };
   }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }

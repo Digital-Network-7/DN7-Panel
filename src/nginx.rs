@@ -59,6 +59,21 @@ struct Req {
     local_root: Option<String>, // static (existing absolute host dir)
     #[serde(default)]
     path: Option<String>, // list_dirs: directory to enumerate
+    // http/server tuning (set_tuning).
+    #[serde(default)]
+    server_names_hash_bucket_size: Option<u32>,
+    #[serde(default)]
+    gzip: Option<bool>,
+    #[serde(default)]
+    client_header_buffer_size: Option<String>,
+    #[serde(default)]
+    gzip_min_length: Option<u32>,
+    #[serde(default)]
+    client_max_body_size: Option<String>,
+    #[serde(default)]
+    gzip_comp_level: Option<u8>,
+    #[serde(default)]
+    keepalive_timeout: Option<u32>,
     #[serde(default)]
     ssl: Option<bool>,
     #[serde(default)]
@@ -257,6 +272,60 @@ struct WebGlobal {
     default_site: DefaultSite,
 }
 
+/// nginx http/server tuning knobs (persisted in `webtuning.json`). Values
+/// mirror nginx's own defaults. The server-context ones are injected into each
+/// managed site's server block (so they override per-site without clashing with
+/// the distro nginx.conf's http-level directives); `server_names_hash_bucket_size`
+/// is http-only and written to a guarded http include.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HttpTuning {
+    #[serde(default = "d_snhbs")]
+    server_names_hash_bucket_size: u32,
+    #[serde(default)]
+    gzip: bool,
+    #[serde(default = "d_ghdr")]
+    client_header_buffer_size: String,
+    #[serde(default = "d_gmin")]
+    gzip_min_length: u32,
+    #[serde(default = "d_cmbs")]
+    client_max_body_size: String,
+    #[serde(default = "d_gcl")]
+    gzip_comp_level: u8,
+    #[serde(default = "d_kat")]
+    keepalive_timeout: u32,
+}
+fn d_snhbs() -> u32 {
+    64
+}
+fn d_ghdr() -> String {
+    "1k".to_string()
+}
+fn d_gmin() -> u32 {
+    20
+}
+fn d_cmbs() -> String {
+    "1m".to_string()
+}
+fn d_gcl() -> u8 {
+    1
+}
+fn d_kat() -> u32 {
+    75
+}
+impl Default for HttpTuning {
+    fn default() -> Self {
+        HttpTuning {
+            server_names_hash_bucket_size: d_snhbs(),
+            gzip: false,
+            client_header_buffer_size: d_ghdr(),
+            gzip_min_length: d_gmin(),
+            client_max_body_size: d_cmbs(),
+            gzip_comp_level: d_gcl(),
+            keepalive_timeout: d_kat(),
+        }
+    }
+}
+
 /// A custom path rule (NPM-style "custom location"): forward a path prefix to a
 /// host[:port] over http/https. Form-driven (no raw nginx config).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -433,6 +502,103 @@ fn save_webglobal(g: &WebGlobal) -> Result<()> {
     std::fs::create_dir_all(base_dir())?;
     std::fs::write(websettings_file(), serde_json::to_string_pretty(g)?)?;
     Ok(())
+}
+
+fn webtuning_file() -> std::path::PathBuf {
+    base_dir().join("webtuning.json")
+}
+/// Load tuning, or `None` when never configured (so we don't override the
+/// distro's http defaults on managed sites until the operator opts in).
+fn load_tuning_opt() -> Option<HttpTuning> {
+    let raw = std::fs::read_to_string(webtuning_file()).ok()?;
+    serde_json::from_str::<HttpTuning>(&raw).ok()
+}
+fn save_tuning(t: &HttpTuning) -> Result<()> {
+    std::fs::create_dir_all(base_dir())?;
+    std::fs::write(webtuning_file(), serde_json::to_string_pretty(t)?)?;
+    Ok(())
+}
+
+/// Validate a size value like "1m", "512k", "0" (bytes default). Bounded.
+fn valid_size_value(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty() && s.len() <= 12 && {
+        let (num, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
+        !num.is_empty()
+            && num.chars().all(|c| c.is_ascii_digit())
+            && matches!(unit, "" | "k" | "K" | "m" | "M" | "g" | "G")
+    }
+}
+
+/// The server-context tuning directives, emitted into each managed server
+/// block. Returns "" until the operator configures tuning.
+fn render_tuning_block() -> String {
+    let t = match load_tuning_opt() {
+        Some(t) => t,
+        None => return String::new(),
+    };
+    let mut s = String::new();
+    s.push_str(&format!(
+        "    client_max_body_size {};\n",
+        t.client_max_body_size
+    ));
+    s.push_str(&format!(
+        "    client_header_buffer_size {};\n",
+        t.client_header_buffer_size
+    ));
+    s.push_str(&format!("    keepalive_timeout {};\n", t.keepalive_timeout));
+    if t.gzip {
+        s.push_str("    gzip on;\n");
+        s.push_str(&format!("    gzip_min_length {};\n", t.gzip_min_length));
+        s.push_str(&format!("    gzip_comp_level {};\n", t.gzip_comp_level));
+        s.push_str("    gzip_vary on;\n");
+        s.push_str("    gzip_proxied any;\n");
+        s.push_str("    gzip_types text/plain text/css application/json application/javascript application/x-javascript text/xml application/xml application/xml+rss text/javascript image/svg+xml;\n");
+    } else {
+        s.push_str("    gzip off;\n");
+    }
+    s
+}
+
+/// Whether nginx.conf already sets a directive at http level (uncommented), so
+/// we don't emit a duplicate (which fails `nginx -t`).
+fn nginx_conf_has_active(directive: &str) -> bool {
+    std::fs::read_to_string("/etc/nginx/nginx.conf")
+        .map(|c| {
+            c.lines().any(|l| {
+                let t = l.trim();
+                !t.starts_with('#') && t.split_whitespace().next() == Some(directive)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn tuning_conf_path() -> std::path::PathBuf {
+    std::path::Path::new(HOST_CONFD).join("00-dn7-tuning.conf")
+}
+
+/// Write (or remove) the http-context tuning include — currently just
+/// `server_names_hash_bucket_size` (http-only). Skipped when nginx.conf already
+/// sets it (avoids a duplicate-directive failure) or tuning isn't configured.
+fn write_tuning_conf() {
+    let path = tuning_conf_path();
+    let t = match load_tuning_opt() {
+        Some(t) => t,
+        None => {
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+    };
+    if nginx_conf_has_active("server_names_hash_bucket_size") {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    let body = format!(
+        "server_names_hash_bucket_size {};\n",
+        t.server_names_hash_bucket_size
+    );
+    let _ = std::fs::create_dir_all(HOST_CONFD);
+    let _ = std::fs::write(&path, body);
 }
 
 /// An access-list id (random, filesystem-safe).
@@ -677,6 +843,7 @@ async fn handle(req: &Req) -> Result<Value> {
         "delete_access" => delete_access_op(req).await,
         "get_settings" => get_web_settings().await,
         "set_default_site" => set_default_site(req).await,
+        "set_tuning" => set_tuning(req).await,
         "reload" => {
             reload().await?;
             Ok(json!({ "reloaded": true }))
@@ -1510,6 +1677,8 @@ pub async fn resync_confs() {
             wrote = true;
         }
     }
+    // Re-apply the http-context tuning include (server_names_hash_bucket_size).
+    write_tuning_conf();
     if wrote {
         if let Err(e) = validate_and_reload(&lo).await {
             tracing::warn!("nginx conf resync reload failed: {e}");
@@ -2144,13 +2313,94 @@ async fn rewrite_sites_using_access(access_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Current website settings (default-site behaviour).
+/// Current website settings (default-site behaviour + http/server tuning).
 async fn get_web_settings() -> Result<Value> {
     let g = load_webglobal();
+    let t = load_tuning_opt().unwrap_or_default();
     Ok(json!({
         "default_site": { "mode": g.default_site.mode, "redirect_url": g.default_site.redirect_url },
         "configured": websettings_file().exists(),
+        "tuning": {
+            "server_names_hash_bucket_size": t.server_names_hash_bucket_size,
+            "gzip": t.gzip,
+            "client_header_buffer_size": t.client_header_buffer_size,
+            "gzip_min_length": t.gzip_min_length,
+            "client_max_body_size": t.client_max_body_size,
+            "gzip_comp_level": t.gzip_comp_level,
+            "keepalive_timeout": t.keepalive_timeout,
+        },
+        "tuning_configured": webtuning_file().exists(),
     }))
+}
+
+/// Save http/server tuning and re-apply it (rewrite all managed site confs +
+/// the http include), then reload.
+async fn set_tuning(req: &Req) -> Result<Value> {
+    let lo = layout()?;
+    let cur = load_tuning_opt().unwrap_or_default();
+    let snhbs = req
+        .server_names_hash_bucket_size
+        .unwrap_or(cur.server_names_hash_bucket_size);
+    if ![32u32, 64, 128, 256, 512].contains(&snhbs) {
+        return Err(anyhow!("ERR_CODE:nginx.bad_hash_bucket"));
+    }
+    let gcl = req.gzip_comp_level.unwrap_or(cur.gzip_comp_level);
+    if !(1..=9).contains(&gcl) {
+        return Err(anyhow!("ERR_CODE:nginx.bad_comp_level"));
+    }
+    let gmin = req.gzip_min_length.unwrap_or(cur.gzip_min_length);
+    if gmin > 10_000_000 {
+        return Err(anyhow!("ERR_CODE:nginx.bad_min_length"));
+    }
+    let kat = req.keepalive_timeout.unwrap_or(cur.keepalive_timeout);
+    if kat > 86_400 {
+        return Err(anyhow!("ERR_CODE:nginx.bad_keepalive"));
+    }
+    let chdr = req
+        .client_header_buffer_size
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&cur.client_header_buffer_size)
+        .to_string();
+    let cmbs = req
+        .client_max_body_size
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&cur.client_max_body_size)
+        .to_string();
+    if !valid_size_value(&chdr) || !valid_size_value(&cmbs) {
+        return Err(anyhow!("ERR_CODE:nginx.bad_size_value"));
+    }
+    let t = HttpTuning {
+        server_names_hash_bucket_size: snhbs,
+        gzip: req.gzip.unwrap_or(cur.gzip),
+        client_header_buffer_size: chdr,
+        gzip_min_length: gmin,
+        client_max_body_size: cmbs,
+        gzip_comp_level: gcl,
+        keepalive_timeout: kat,
+    };
+    save_tuning(&t)?;
+    write_tuning_conf();
+    // Tuning is injected per-server, so rewrite every managed site conf.
+    for site in load_sites() {
+        let mut s = site.clone();
+        if s.ssl {
+            let have = if s.cert_name.is_empty() {
+                lo.cert_store.join(format!("{}.crt", s.id)).exists()
+            } else {
+                named_crt_file(&lo, &s.cert_name).exists()
+            };
+            if !have {
+                s.ssl = false;
+            }
+        }
+        let _ = write_site_conf(&lo, &s, &[]).await;
+    }
+    validate_and_reload(&lo).await?;
+    Ok(json!({ "ok": true }))
 }
 
 /// Save the default-site behaviour and (re)write the catch-all conf.
@@ -2392,6 +2642,7 @@ async fn write_site_conf(lo: &Layout, site: &Site, acme: &[(String, String)]) ->
 
     let mut conf = String::new();
     let extra = render_extra_conf(&site.extra_conf);
+    let tuning = render_tuning_block();
     if site.ssl {
         let (crt, key) = if site.cert_name.is_empty() {
             (
@@ -2414,7 +2665,7 @@ async fn write_site_conf(lo: &Layout, site: &Site, acme: &[(String, String)]) ->
             ));
         } else {
             conf.push_str(&format!(
-                "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\n{auth}{extra}{body}}}\n\n"
+                "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\n{tuning}{auth}{extra}{body}}}\n\n"
             ));
         }
         // HTTPS block.
@@ -2444,11 +2695,11 @@ async fn write_site_conf(lo: &Layout, site: &Site, acme: &[(String, String)]) ->
         conf.push_str(&format!(
             "server {{\n    {listen443}\n    server_name {server_name};\n\
              \n    ssl_certificate {crt};\n    ssl_certificate_key {key};\n{sec}\
-             \n{auth}{extra}{body}}}\n"
+             \n{tuning}{auth}{extra}{body}}}\n"
         ));
     } else {
         conf.push_str(&format!(
-            "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\n{auth}{extra}{body}}}\n"
+            "server {{\n    listen 80;\n    server_name {server_name};\n{acme_loc}\n{tuning}{auth}{extra}{body}}}\n"
         ));
     }
 
