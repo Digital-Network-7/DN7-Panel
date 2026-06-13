@@ -977,6 +977,7 @@ fn layout() -> Result<Layout> {
     }
     std::fs::create_dir_all(certs_dir())?;
     std::fs::create_dir_all(www_dir())?;
+    ensure_shared_conf();
     Ok(Layout {
         confd: std::path::PathBuf::from(HOST_CONFD),
         cert_ref: certs_dir().display().to_string(),
@@ -984,6 +985,21 @@ fn layout() -> Result<Layout> {
         cert_store: certs_dir(),
         www_store: www_dir(),
     })
+}
+
+/// Write the shared http-context `map` once, so proxied sites can set the
+/// WebSocket `Connection` header correctly: a normal request → `close`, a real
+/// upgrade → `upgrade`. (Hardcoding `Connection: upgrade` on every request, as
+/// older builds did, makes some backends abort plain HTTP requests, which the
+/// browser surfaces as ERR_EMPTY_RESPONSE.) Named `00-` so it loads first and
+/// isn't matched by the `dn7-<id>.conf` orphan cleanup.
+fn ensure_shared_conf() {
+    let path = std::path::Path::new(HOST_CONFD).join("00-dn7-maps.conf");
+    let body = "map $http_upgrade $dn7_conn_upgrade {\n    default upgrade;\n    '' close;\n}\n";
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(body) {
+        let _ = std::fs::create_dir_all(HOST_CONFD);
+        let _ = std::fs::write(&path, body);
+    }
 }
 
 fn conf_path(lo: &Layout, site_id: &str) -> std::path::PathBuf {
@@ -2023,7 +2039,7 @@ fn proxy_location(
     if websockets {
         b.push_str("        proxy_http_version 1.1;\n");
         b.push_str("        proxy_set_header Upgrade $http_upgrade;\n");
-        b.push_str("        proxy_set_header Connection \"upgrade\";\n");
+        b.push_str("        proxy_set_header Connection $dn7_conn_upgrade;\n");
     }
     if cache {
         b.push_str("        expires 7d;\n");
