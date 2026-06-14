@@ -1,11 +1,10 @@
 //! Container creation: spec build + create/recreate (split from docker.rs).
 use super::*;
+use bollard::models::{HostConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum};
 
 /// Build a bollard create config from a validated request. Every user value is
 /// validated before it lands in the config (no shell, no CLI args).
 pub(crate) fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
-    use bollard::models::{HostConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum};
-
     let image = req
         .image
         .as_deref()
@@ -25,193 +24,24 @@ pub(crate) fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
     }
 
     // Restart policy (whitelisted; default unless-stopped).
-    let restart = req
-        .restart
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("unless-stopped");
-    if !restart_allowed(restart) {
-        return Err(anyhow!("ERR_CODE:docker.bad_restart_policy"));
-    }
-    let restart_policy = RestartPolicy {
-        name: Some(match restart {
-            "always" => RestartPolicyNameEnum::ALWAYS,
-            "no" => RestartPolicyNameEnum::NO,
-            _ => RestartPolicyNameEnum::UNLESS_STOPPED,
-        }),
-        maximum_retry_count: None,
-    };
+    let restart_policy = spec_restart(req)?;
 
-    // Network attachments (a container can join several). Prefer the explicit
-    // list; fall back to the legacy single network/mac/ipv4 fields. Each is
-    // validated; the first is applied on the create call (host_config +
-    // networking_config), the rest are connected right after creation.
-    let mut attachments: Vec<NetAttach> = Vec::new();
-    if let Some(list) = &req.networks {
-        for a in list {
-            let name = a.network.trim();
-            if name.is_empty() {
-                continue;
-            }
-            validate_token(name)?;
-            let mac = match opt_trim(&a.mac) {
-                Some(m) => {
-                    valid_mac(&m)?;
-                    Some(m)
-                }
-                None => None,
-            };
-            let ipv4 = match opt_trim(&a.ipv4) {
-                Some(ip) => {
-                    valid_ipv4(&ip)?;
-                    Some(ip)
-                }
-                None => None,
-            };
-            if attachments.iter().any(|x| x.network == name) {
-                continue; // dedupe
-            }
-            attachments.push(NetAttach {
-                network: name.to_string(),
-                mac,
-                ipv4,
-            });
-        }
-    } else if let Some(net) = req
-        .network
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        validate_token(net)?;
-        let mac = match opt_trim(&req.mac) {
-            Some(m) => {
-                valid_mac(&m)?;
-                Some(m)
-            }
-            None => None,
-        };
-        let ipv4 = match opt_trim(&req.ipv4) {
-            Some(ip) => {
-                valid_ipv4(&ip)?;
-                Some(ip)
-            }
-            None => None,
-        };
-        attachments.push(NetAttach {
-            network: net.to_string(),
-            mac,
-            ipv4,
-        });
-    }
-    if attachments.len() > 16 {
-        return Err(anyhow!("ERR_CODE:docker.too_many_networks"));
-    }
+    // Network attachments (a container can join several). The first is applied
+    // on the create call; the rest are connected right after creation.
+    let attachments = spec_attachments(req)?;
     let network: Option<String> = attachments.first().map(|a| a.network.clone());
 
     // Port mappings -> exposed_ports + host port bindings.
-    let mut exposed: HashMap<String, HashMap<(), ()>> = HashMap::new();
-    let mut bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
-    if let Some(ports) = &req.ports {
-        if ports.len() > 50 {
-            return Err(anyhow!("ERR_CODE:docker.too_many_ports"));
-        }
-        for p in ports {
-            if p.host < 1 || p.host > 65535 || p.container < 1 || p.container > 65535 {
-                return Err(anyhow!("ERR_CODE:docker.port_range"));
-            }
-            let proto = p.proto.as_deref().unwrap_or("tcp");
-            if proto != "tcp" && proto != "udp" {
-                return Err(anyhow!("ERR_CODE:docker.bad_proto"));
-            }
-            let key = format!("{}/{}", p.container, proto);
-            exposed.insert(key.clone(), HashMap::new());
-            // Default IPv4 wildcard (0.0.0.0) binding; when ipv6 is on, also add
-            // an IPv6 wildcard (::) binding for the same host port.
-            let mut binds = vec![PortBinding {
-                host_ip: None,
-                host_port: Some(p.host.to_string()),
-            }];
-            if p.ipv6.unwrap_or(false) {
-                binds.push(PortBinding {
-                    host_ip: Some("::".to_string()),
-                    host_port: Some(p.host.to_string()),
-                });
-            }
-            bindings.insert(key, Some(binds));
-        }
-    }
+    let (exposed, bindings) = spec_ports(req)?;
 
     // Environment variables.
-    let mut env: Vec<String> = Vec::new();
-    if let Some(envs) = &req.env {
-        if envs.len() > 100 {
-            return Err(anyhow!("ERR_CODE:docker.too_many_envs"));
-        }
-        for e in envs {
-            let e = e.trim();
-            if e.is_empty() {
-                continue;
-            }
-            validate_env(e)?;
-            env.push(e.to_string());
-        }
-    }
+    let env = spec_env(req)?;
 
     // Volume mounts -> binds.
-    let mut binds: Vec<String> = Vec::new();
-    if let Some(vols) = &req.volumes {
-        if vols.len() > 50 {
-            return Err(anyhow!("ERR_CODE:docker.too_many_mounts"));
-        }
-        for v in vols {
-            let host = v.host.trim();
-            let container = v.container.trim();
-            // Source is either an absolute host path (bind mount) or a named
-            // docker volume (no leading slash). The container target must always
-            // be an absolute path.
-            if host.starts_with('/') {
-                validate_path(host)?;
-            } else {
-                validate_name(host)?;
-            }
-            validate_path(container)?;
-            binds.push(if v.readonly {
-                format!("{host}:{container}:ro")
-            } else {
-                format!("{host}:{container}")
-            });
-        }
-    }
+    let binds = spec_binds(req)?;
 
     // Resource limits (cgroup v2). Validated formats only, capped to the host.
-    let mut nano_cpus: Option<i64> = None;
-    let mut memory: Option<i64> = None;
-    if let Some(cpus) = req.cpus.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        validate_cpus(cpus)?;
-        let host = host_cpus();
-        let v: f64 = cpus.parse().unwrap_or(0.0);
-        if host > 0 && v > host as f64 {
-            return Err(anyhow!("CPU 限制不能超过宿主机核数（{host}）"));
-        }
-        // docker NanoCPUs = cpus * 1e9.
-        nano_cpus = Some((v * 1_000_000_000.0) as i64);
-    }
-    if let Some(mem) = req
-        .memory
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        validate_memory(mem)?;
-        let host = host_mem_bytes();
-        let bytes = mem_to_bytes(mem);
-        if host > 0 && bytes > host {
-            return Err(anyhow!("ERR_CODE:docker.mem_over_host"));
-        }
-        memory = Some(bytes as i64);
-    }
+    let (nano_cpus, memory) = spec_cpu_mem(req)?;
 
     let tty = req.tty.unwrap_or(false);
     // -i: keep STDIN open. Defaults to the same value as -t so a single legacy
@@ -233,20 +63,7 @@ pub(crate) fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
     let privileged = req.privileged.unwrap_or(false);
 
     // DNS servers (validated IPv4 each).
-    let mut dns: Vec<String> = Vec::new();
-    if let Some(list) = &req.dns {
-        if list.len() > 8 {
-            return Err(anyhow!("ERR_CODE:docker.too_many_dns"));
-        }
-        for d in list {
-            let d = d.trim();
-            if d.is_empty() {
-                continue;
-            }
-            valid_ipv4(d)?;
-            dns.push(d.to_string());
-        }
-    }
+    let dns = spec_dns(req)?;
 
     // Hostname / domainname (optional).
     let hostname = match opt_trim(&req.hostname) {
@@ -266,30 +83,7 @@ pub(crate) fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
 
     // Per-endpoint network options for the FIRST attachment (static IPv4 / MAC),
     // applied on the create call. Remaining attachments are connected after.
-    let first = attachments.first().cloned();
-    let networking_config = match &first {
-        Some(a) if a.mac.is_some() || a.ipv4.is_some() => {
-            let mut endpoints = HashMap::new();
-            endpoints.insert(
-                a.network.clone(),
-                bollard::models::EndpointSettings {
-                    ipam_config: a
-                        .ipv4
-                        .clone()
-                        .map(|ip| bollard::models::EndpointIpamConfig {
-                            ipv4_address: Some(ip),
-                            ..Default::default()
-                        }),
-                    mac_address: a.mac.clone(),
-                    ..Default::default()
-                },
-            );
-            Some(bollard::container::NetworkingConfig {
-                endpoints_config: endpoints,
-            })
-        }
-        _ => None,
-    };
+    let networking_config = spec_networking_config(attachments.first());
     let extra_networks: Vec<NetAttach> = attachments.into_iter().skip(1).collect();
 
     // Optional command override.
@@ -349,6 +143,250 @@ pub(crate) fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
         },
         display_name,
     ))
+}
+
+/// Restart policy from the request (whitelisted; default unless-stopped).
+fn spec_restart(req: &Req) -> Result<RestartPolicy> {
+    let restart = req
+        .restart
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("unless-stopped");
+    if !restart_allowed(restart) {
+        return Err(anyhow!("ERR_CODE:docker.bad_restart_policy"));
+    }
+    Ok(RestartPolicy {
+        name: Some(match restart {
+            "always" => RestartPolicyNameEnum::ALWAYS,
+            "no" => RestartPolicyNameEnum::NO,
+            _ => RestartPolicyNameEnum::UNLESS_STOPPED,
+        }),
+        maximum_retry_count: None,
+    })
+}
+
+/// Validate one `{network, mac?, ipv4?}` attachment into a `NetAttach`.
+fn spec_one_attach(
+    network: &str,
+    mac: &Option<String>,
+    ipv4: &Option<String>,
+) -> Result<NetAttach> {
+    validate_token(network)?;
+    let mac = match opt_trim(mac) {
+        Some(m) => {
+            valid_mac(&m)?;
+            Some(m)
+        }
+        None => None,
+    };
+    let ipv4 = match opt_trim(ipv4) {
+        Some(ip) => {
+            valid_ipv4(&ip)?;
+            Some(ip)
+        }
+        None => None,
+    };
+    Ok(NetAttach {
+        network: network.to_string(),
+        mac,
+        ipv4,
+    })
+}
+
+/// Network attachments (a container can join several). Prefer the explicit
+/// list; fall back to the legacy single network/mac/ipv4 fields. Deduped.
+fn spec_attachments(req: &Req) -> Result<Vec<NetAttach>> {
+    let mut attachments: Vec<NetAttach> = Vec::new();
+    if let Some(list) = &req.networks {
+        for a in list {
+            let name = a.network.trim();
+            if name.is_empty() {
+                continue;
+            }
+            if attachments.iter().any(|x| x.network == name) {
+                continue; // dedupe
+            }
+            attachments.push(spec_one_attach(name, &a.mac, &a.ipv4)?);
+        }
+    } else if let Some(net) = req
+        .network
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        attachments.push(spec_one_attach(net, &req.mac, &req.ipv4)?);
+    }
+    if attachments.len() > 16 {
+        return Err(anyhow!("ERR_CODE:docker.too_many_networks"));
+    }
+    Ok(attachments)
+}
+
+type PortSpec = (
+    HashMap<String, HashMap<(), ()>>,
+    HashMap<String, Option<Vec<PortBinding>>>,
+);
+
+/// Port mappings -> (exposed_ports, host port bindings).
+fn spec_ports(req: &Req) -> Result<PortSpec> {
+    let mut exposed: HashMap<String, HashMap<(), ()>> = HashMap::new();
+    let mut bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
+    let Some(ports) = &req.ports else {
+        return Ok((exposed, bindings));
+    };
+    if ports.len() > 50 {
+        return Err(anyhow!("ERR_CODE:docker.too_many_ports"));
+    }
+    for p in ports {
+        if p.host < 1 || p.host > 65535 || p.container < 1 || p.container > 65535 {
+            return Err(anyhow!("ERR_CODE:docker.port_range"));
+        }
+        let proto = p.proto.as_deref().unwrap_or("tcp");
+        if proto != "tcp" && proto != "udp" {
+            return Err(anyhow!("ERR_CODE:docker.bad_proto"));
+        }
+        let key = format!("{}/{}", p.container, proto);
+        exposed.insert(key.clone(), HashMap::new());
+        // Default IPv4 wildcard (0.0.0.0) binding; when ipv6 is on, also add an
+        // IPv6 wildcard (::) binding for the same host port.
+        let mut binds = vec![PortBinding {
+            host_ip: None,
+            host_port: Some(p.host.to_string()),
+        }];
+        if p.ipv6.unwrap_or(false) {
+            binds.push(PortBinding {
+                host_ip: Some("::".to_string()),
+                host_port: Some(p.host.to_string()),
+            });
+        }
+        bindings.insert(key, Some(binds));
+    }
+    Ok((exposed, bindings))
+}
+
+/// Validated environment variables.
+fn spec_env(req: &Req) -> Result<Vec<String>> {
+    let mut env: Vec<String> = Vec::new();
+    let Some(envs) = &req.env else { return Ok(env) };
+    if envs.len() > 100 {
+        return Err(anyhow!("ERR_CODE:docker.too_many_envs"));
+    }
+    for e in envs {
+        let e = e.trim();
+        if e.is_empty() {
+            continue;
+        }
+        validate_env(e)?;
+        env.push(e.to_string());
+    }
+    Ok(env)
+}
+
+/// Volume mounts -> bind specs ("src:dst[:ro]").
+fn spec_binds(req: &Req) -> Result<Vec<String>> {
+    let mut binds: Vec<String> = Vec::new();
+    let Some(vols) = &req.volumes else {
+        return Ok(binds);
+    };
+    if vols.len() > 50 {
+        return Err(anyhow!("ERR_CODE:docker.too_many_mounts"));
+    }
+    for v in vols {
+        let host = v.host.trim();
+        let container = v.container.trim();
+        // Source is either an absolute host path (bind mount) or a named docker
+        // volume (no leading slash). The container target is always absolute.
+        if host.starts_with('/') {
+            validate_path(host)?;
+        } else {
+            validate_name(host)?;
+        }
+        validate_path(container)?;
+        binds.push(if v.readonly {
+            format!("{host}:{container}:ro")
+        } else {
+            format!("{host}:{container}")
+        });
+    }
+    Ok(binds)
+}
+
+/// CPU (NanoCPUs) and memory (bytes) limits, validated and capped to the host.
+fn spec_cpu_mem(req: &Req) -> Result<(Option<i64>, Option<i64>)> {
+    let mut nano_cpus: Option<i64> = None;
+    let mut memory: Option<i64> = None;
+    if let Some(cpus) = req.cpus.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        validate_cpus(cpus)?;
+        let host = host_cpus();
+        let v: f64 = cpus.parse().unwrap_or(0.0);
+        if host > 0 && v > host as f64 {
+            return Err(anyhow!("CPU 限制不能超过宿主机核数（{host}）"));
+        }
+        nano_cpus = Some((v * 1_000_000_000.0) as i64);
+    }
+    if let Some(mem) = req
+        .memory
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        validate_memory(mem)?;
+        let host = host_mem_bytes();
+        let bytes = mem_to_bytes(mem);
+        if host > 0 && bytes > host {
+            return Err(anyhow!("ERR_CODE:docker.mem_over_host"));
+        }
+        memory = Some(bytes as i64);
+    }
+    Ok((nano_cpus, memory))
+}
+
+/// Validated DNS server list (IPv4 each, capped).
+fn spec_dns(req: &Req) -> Result<Vec<String>> {
+    let mut dns: Vec<String> = Vec::new();
+    let Some(list) = &req.dns else { return Ok(dns) };
+    if list.len() > 8 {
+        return Err(anyhow!("ERR_CODE:docker.too_many_dns"));
+    }
+    for d in list {
+        let d = d.trim();
+        if d.is_empty() {
+            continue;
+        }
+        valid_ipv4(d)?;
+        dns.push(d.to_string());
+    }
+    Ok(dns)
+}
+
+/// Per-endpoint networking config for the first attachment, when it carries a
+/// static IPv4 or MAC (applied on the create call).
+fn spec_networking_config(
+    first: Option<&NetAttach>,
+) -> Option<bollard::container::NetworkingConfig<String>> {
+    let a = first?;
+    if a.mac.is_none() && a.ipv4.is_none() {
+        return None;
+    }
+    let mut endpoints = HashMap::new();
+    endpoints.insert(
+        a.network.clone(),
+        bollard::models::EndpointSettings {
+            ipam_config: a
+                .ipv4
+                .clone()
+                .map(|ip| bollard::models::EndpointIpamConfig {
+                    ipv4_address: Some(ip),
+                    ..Default::default()
+                }),
+            mac_address: a.mac.clone(),
+            ..Default::default()
+        },
+    );
+    Some(bollard::container::NetworkingConfig {
+        endpoints_config: endpoints,
+    })
 }
 
 /// Validate a `--cpus` value: a positive decimal like "0.5", "1", "2.5".
