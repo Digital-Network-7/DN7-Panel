@@ -1,0 +1,177 @@
+//! Standalone named certificates: create / list / delete (split from nginx.rs).
+use super::*;
+
+// Standalone named certificates: create / list / delete, independent of sites.
+// ---------------------------------------------------------------------------
+
+/// List standalone certs from the manifest, with on-disk presence + expiry.
+pub(crate) async fn list_named_certs() -> Result<Value> {
+    let lo = layout()?;
+    let certs = load_named_certs();
+    let in_use = sites_using_certs();
+    let mut out = Vec::new();
+    for c in &certs {
+        let crt = named_crt_file(&lo, &c.name);
+        let has_cert = crt.exists();
+        let not_after = if has_cert {
+            std::fs::read_to_string(&crt)
+                .ok()
+                .and_then(|pem| cert_not_after(&pem))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        out.push(json!({
+            "name": c.name,
+            "domain": c.domain,
+            "cert_mode": c.cert_mode,
+            "has_cert": has_cert,
+            "not_after": not_after,
+            "used_by": in_use.get(&c.name).cloned().unwrap_or_default(),
+        }));
+    }
+    Ok(json!({ "certs": out }))
+}
+
+/// server_names of sites currently referencing each named cert.
+pub(crate) fn sites_using_certs() -> HashMap<String, Vec<String>> {
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for s in load_sites() {
+        if !s.cert_name.is_empty() {
+            map.entry(s.cert_name).or_default().push(s.server_name);
+        }
+    }
+    map
+}
+
+/// Create a standalone named certificate. Modes:
+///   - "self":   self-signed for `domain` (synchronous)
+///   - "manual": cert_pem + key_pem (synchronous)
+///   - "le":     Let's Encrypt for `domain` (detached → returns {op_id})
+pub(crate) async fn create_cert(req: &Req) -> Result<Value> {
+    let lo = layout()?;
+    let mode = req.cert_mode.as_deref().unwrap_or("self");
+    if !matches!(mode, "self" | "le" | "manual") {
+        return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
+    }
+    // Certs are identified by their (unique) domain — no separate name.
+    let domain = req
+        .server_name
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+    if domain.is_empty() {
+        return Err(anyhow!("ERR_CODE:nginx.need_cert_domain"));
+    }
+    if !valid_server_name(&domain) {
+        return Err(anyhow!("ERR_CODE:nginx.bad_domain"));
+    }
+    let name = cert_name_from_domain(&domain);
+    if !valid_cert_name(&name) {
+        return Err(anyhow!("ERR_CODE:nginx.bad_cert_name_chars"));
+    }
+    let mut certs = load_named_certs();
+    // One certificate per domain.
+    if certs
+        .iter()
+        .any(|c| c.name == name || (!c.domain.is_empty() && c.domain.eq_ignore_ascii_case(&domain)))
+    {
+        return Err(anyhow!("ERR_CODE:nginx.cert_domain_exists"));
+    }
+
+    match mode {
+        "self" => {
+            let host = primary_host(&domain);
+            gen_self_signed_to(
+                &named_crt_file(&lo, &name),
+                &named_key_file(&lo, &name),
+                &host,
+            )
+            .await?;
+        }
+        "manual" => {
+            let cert = req.cert_pem.as_deref().unwrap_or("");
+            let key = req.key_pem.as_deref().unwrap_or("");
+            if cert.trim().is_empty() || key.trim().is_empty() {
+                return Err(anyhow!("ERR_CODE:nginx.need_cert_key"));
+            }
+            std::fs::create_dir_all(&lo.cert_store)?;
+            std::fs::write(named_crt_file(&lo, &name), cert)?;
+            write_key_file(&named_key_file(&lo, &name), key)?;
+        }
+        "le" => {
+            return start_named_cert_issue(lo, name, domain);
+        }
+        _ => {}
+    }
+
+    certs.push(NamedCert {
+        name: name.clone(),
+        domain,
+        cert_mode: mode.to_string(),
+    });
+    save_named_certs(&certs)?;
+    Ok(json!({ "name": name }))
+}
+
+/// Renew a named cert in place: re-issue (LE) or regenerate (self-signed).
+/// Manual certs have no automated renewal.
+pub(crate) async fn renew_cert(req: &Req) -> Result<Value> {
+    let lo = layout()?;
+    let name = req
+        .cert_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("ERR_CODE:nginx.missing_cert_name"))?;
+    let cert = load_named_certs()
+        .into_iter()
+        .find(|c| c.name == name)
+        .ok_or_else(|| anyhow!("ERR_CODE:nginx.cert_not_found"))?;
+    match cert.cert_mode.as_str() {
+        "le" => start_named_cert_issue(lo, cert.name.clone(), cert.domain.clone()),
+        "self" => {
+            if cert.domain.is_empty() {
+                return Err(anyhow!("ERR_CODE:nginx.need_cert_domain"));
+            }
+            let host = primary_host(&cert.domain);
+            gen_self_signed_to(
+                &named_crt_file(&lo, &cert.name),
+                &named_key_file(&lo, &cert.name),
+                &host,
+            )
+            .await?;
+            let _ = validate_and_reload(&lo).await;
+            Ok(json!({ "renewed": cert.name }))
+        }
+        _ => Err(anyhow!("ERR_CODE:nginx.manual_no_renew")),
+    }
+}
+
+/// Delete a standalone named certificate. Refuses while a site still uses it.
+pub(crate) async fn delete_cert(req: &Req) -> Result<Value> {
+    let lo = layout()?;
+    let name = req
+        .cert_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("ERR_CODE:nginx.missing_cert_name"))?;
+    let in_use = sites_using_certs();
+    if let Some(sites) = in_use.get(name) {
+        if !sites.is_empty() {
+            return Err(anyhow!("证书仍被站点使用：{}", sites.join("、")));
+        }
+    }
+    let mut certs = load_named_certs();
+    let before = certs.len();
+    certs.retain(|c| c.name != name);
+    if certs.len() == before {
+        return Err(anyhow!("ERR_CODE:nginx.cert_not_found"));
+    }
+    let _ = std::fs::remove_file(named_crt_file(&lo, name));
+    let _ = std::fs::remove_file(named_key_file(&lo, name));
+    save_named_certs(&certs)?;
+    Ok(json!({ "deleted": name }))
+}
