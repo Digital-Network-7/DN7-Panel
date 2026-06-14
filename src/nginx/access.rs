@@ -57,21 +57,7 @@ pub(crate) async fn save_access_op(req: &Req) -> Result<Value> {
     let pass_auth = req.pass_auth.unwrap_or(false);
 
     // Validate clients.
-    let mut clients = Vec::new();
-    for c in req.clients.clone().unwrap_or_default() {
-        let dir = if c.directive == "deny" {
-            "deny"
-        } else {
-            "allow"
-        };
-        if !valid_client_address(&c.address) {
-            return Err(anyhow!("ERR_CODE:nginx.bad_client_addr"));
-        }
-        clients.push(AccessClient {
-            directive: dir.to_string(),
-            address: c.address.trim().to_string(),
-        });
-    }
+    let clients = build_access_clients(req)?;
 
     let mut lists = load_access();
     let existing_id = req
@@ -86,33 +72,7 @@ pub(crate) async fn save_access_op(req: &Req) -> Result<Value> {
 
     // Build the user list: a provided password (re)hashes; an empty password on
     // an existing username reuses the stored hash.
-    let mut users = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for u in req.users.clone().unwrap_or_default() {
-        let username = u.username.trim().to_string();
-        if username.is_empty() {
-            continue;
-        }
-        if !valid_auth_username(&username) {
-            return Err(anyhow!("ERR_CODE:nginx.bad_auth_user"));
-        }
-        if !seen.insert(username.clone()) {
-            return Err(anyhow!("ERR_CODE:nginx.dup_auth_user"));
-        }
-        let hash = if !u.password.is_empty() {
-            if u.password.len() > 128 {
-                return Err(anyhow!("ERR_CODE:nginx.bad_auth_pw"));
-            }
-            htpasswd_hash(&u.password)
-        } else {
-            // Reuse an existing hash for this username (edit without new pw).
-            old.as_ref()
-                .and_then(|o| o.users.iter().find(|x| x.username == username))
-                .map(|x| x.hash.clone())
-                .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_auth_pw"))?
-        };
-        users.push(AccessUser { username, hash });
-    }
+    let users = build_access_users(req, old.as_ref())?;
 
     let id = existing_id.clone().unwrap_or_else(new_access_id);
     let list = AccessList {
@@ -132,6 +92,57 @@ pub(crate) async fn save_access_op(req: &Req) -> Result<Value> {
     // Rewrite the confs of any sites using this list, then reload.
     rewrite_sites_using_access(&id).await?;
     Ok(json!({ "id": id }))
+}
+
+/// Validate the access list's IP allow/deny client rules from the request.
+fn build_access_clients(req: &Req) -> Result<Vec<AccessClient>> {
+    let mut clients = Vec::new();
+    for c in req.clients.clone().unwrap_or_default() {
+        let dir = if c.directive == "deny" {
+            "deny"
+        } else {
+            "allow"
+        };
+        if !valid_client_address(&c.address) {
+            return Err(anyhow!("ERR_CODE:nginx.bad_client_addr"));
+        }
+        clients.push(AccessClient {
+            directive: dir.to_string(),
+            address: c.address.trim().to_string(),
+        });
+    }
+    Ok(clients)
+}
+
+/// Build the access list's basic-auth users: a provided password (re)hashes;
+/// an empty password on an existing username reuses its stored hash (`old`).
+fn build_access_users(req: &Req, old: Option<&AccessList>) -> Result<Vec<AccessUser>> {
+    let mut users = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for u in req.users.clone().unwrap_or_default() {
+        let username = u.username.trim().to_string();
+        if username.is_empty() {
+            continue;
+        }
+        if !valid_auth_username(&username) {
+            return Err(anyhow!("ERR_CODE:nginx.bad_auth_user"));
+        }
+        if !seen.insert(username.clone()) {
+            return Err(anyhow!("ERR_CODE:nginx.dup_auth_user"));
+        }
+        let hash = if !u.password.is_empty() {
+            if u.password.len() > 128 {
+                return Err(anyhow!("ERR_CODE:nginx.bad_auth_pw"));
+            }
+            htpasswd_hash(&u.password)
+        } else {
+            old.and_then(|o| o.users.iter().find(|x| x.username == username))
+                .map(|x| x.hash.clone())
+                .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_auth_pw"))?
+        };
+        users.push(AccessUser { username, hash });
+    }
+    Ok(users)
 }
 
 /// Delete an access list (refused while a site still uses it).
