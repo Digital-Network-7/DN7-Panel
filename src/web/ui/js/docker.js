@@ -1,6 +1,64 @@
 // =========================================================================
 // Docker management
 // =========================================================================
+
+// Attach a host-path autocomplete dropdown to an input. As the user types an
+// absolute path, we query the (read-only) docker `list_dirs` op for matching
+// subdirectories and show them in a floating panel. Clicking a suggestion fills
+// the value and drills deeper. Used by the volumes-tab host-path inputs.
+function attachPathSuggest(input) {
+  if (!input || input._pathSug) return;
+  input._pathSug = true;
+  let box = null, timer = null, seq = 0;
+  const hide = () => { if (box) { box.remove(); box = null; } };
+  const place = () => {
+    if (!box) return;
+    const r = input.getBoundingClientRect();
+    box.style.left = r.left + 'px';
+    box.style.width = Math.max(r.width, 180) + 'px';
+    // Flip up if not enough room below.
+    const want = Math.min(box.scrollHeight || 240, 240);
+    if (r.bottom + want > window.innerHeight - 8 && r.top > want) {
+      box.style.top = (r.top - want - 2) + 'px';
+    } else {
+      box.style.top = (r.bottom + 2) + 'px';
+    }
+  };
+  const render = (dirs) => {
+    hide();
+    if (!dirs || !dirs.length) return;
+    box = el('div', { class: 'pathsug' });
+    dirs.forEach((d) => {
+      const it = el('div', { class: 'pathsug-it' });
+      it.textContent = d;
+      it.onmousedown = (e) => {
+        e.preventDefault();
+        input.value = d;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.focus();
+        query();
+      };
+      box.appendChild(it);
+    });
+    document.body.appendChild(box);
+    place();
+  };
+  const query = () => {
+    const v = input.value.trim();
+    if (!v.startsWith('/')) { hide(); return; }
+    const my = ++seq;
+    op('docker', { op: 'list_dirs', path: v }).then((d) => {
+      if (my !== seq || document.activeElement !== input) return;
+      render(d && d.dirs);
+    }).catch(() => {});
+  };
+  const debounced = () => { clearTimeout(timer); timer = setTimeout(query, 180); };
+  input.addEventListener('input', debounced);
+  input.addEventListener('focus', debounced);
+  input.addEventListener('blur', () => setTimeout(hide, 150));
+  window.addEventListener('scroll', () => { if (box) place(); }, true);
+}
+
 function renderDocker(v) {
   v.innerHTML = `<div style="padding:8px">${loading(tr('dk.detecting'))}</div>`;
   // If an install job is still running (user left + came back), re-attach.
@@ -460,6 +518,7 @@ function dkCreateModal(info, networks, opts) {
         if (v.readonly) row.querySelector('.vr-ro').checked = true;
       }
       syncType();
+      attachPathSuggest(host);
       row.querySelector('.rm').onclick = () => row.remove();
       $('ccVol').appendChild(row);
     };

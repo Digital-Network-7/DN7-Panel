@@ -767,6 +767,7 @@ fn is_read_op(op: &str) -> bool {
             | "check"
             | "changelog"
             | "dismiss_op"
+            | "list_dirs"
             | "container_stats"
             | "get_container_config"
             | "list_backups"

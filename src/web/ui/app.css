@@ -301,6 +301,10 @@
   /* Volume row: source-type select + host path / volume select + container path. */
   .volrow .vr-type { flex:0 0 116px; }
   .volrow .vr-host, .volrow .vr-vol, .volrow .vr-ctn { flex:1 1 auto; min-width:0; }
+  /* Host-path autocomplete dropdown (volumes-tab vr-host inputs). */
+  .pathsug { position:fixed; z-index:320; max-height:240px; overflow-y:auto; background:var(--panel-solid,var(--panel2)); border:1px solid var(--line2); border-radius:9px; box-shadow:0 8px 28px rgba(0,0,0,.35); padding:4px; }
+  .pathsug-it { padding:6px 10px; font-size:12.5px; color:var(--fg); border-radius:6px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pathsug-it:hover { background:var(--hov); color:var(--cy); }
   .netrow .ifield { flex:1; }
   /* Network attachment row (create/edit container — a container can join many). */
   .netrow { display:flex; gap:8px; align-items:center; margin-bottom:8px; }

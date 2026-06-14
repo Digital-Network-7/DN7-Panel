@@ -136,6 +136,9 @@ struct Req {
     // backup file name (list/delete/restore/download)
     #[serde(default)]
     backup: Option<String>,
+    // list_dirs: a (partial) absolute host path to suggest directories for.
+    #[serde(default)]
+    path: Option<String>,
     // optional command override (argv, whitespace-split client-side or here)
     #[serde(default)]
     command: Option<String>,
@@ -441,6 +444,7 @@ async fn handle(req: &Req) -> Result<Value> {
             Ok(json!({ "removed": r }))
         }
         "list_containers" => list_containers().await,
+        "list_dirs" => list_dir_suggest(req),
         "inspect_container" => inspect_container(req).await,
         "start_container" => {
             let r = need_ref(req)?;
@@ -998,6 +1002,53 @@ fn human_since(created_secs: i64) -> String {
     } else {
         format!("{}天前", diff / 86400)
     }
+}
+
+/// Suggest immediate subdirectories of a (partial) absolute host path, for the
+/// volumes-tab host-path autocomplete. Splits the input into a parent directory
+/// and a leaf prefix, enumerates the parent's subdirectories that match the
+/// prefix (hidden dirs excluded), and returns up to 50 full paths. Never errors:
+/// on any bad/inaccessible path it simply returns an empty list.
+fn list_dir_suggest(req: &Req) -> Result<Value> {
+    let input = req.path.as_deref().unwrap_or("/").trim().to_string();
+    // Determine the directory to scan and the leaf prefix to match.
+    let (dir, prefix): (String, String) = if input.is_empty() {
+        ("/".into(), String::new())
+    } else if input.ends_with('/') {
+        (input.clone(), String::new())
+    } else {
+        match input.rfind('/') {
+            Some(0) => ("/".into(), input[1..].to_string()),
+            Some(i) => (input[..i].to_string(), input[i + 1..].to_string()),
+            None => ("/".into(), String::new()),
+        }
+    };
+    let mut out: Vec<String> = Vec::new();
+    if dir.starts_with('/') {
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for ent in rd.flatten() {
+                if ent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    if let Some(name) = ent.file_name().to_str() {
+                        if name.starts_with('.') {
+                            continue;
+                        }
+                        if !prefix.is_empty() && !name.starts_with(&prefix) {
+                            continue;
+                        }
+                        let full = if dir.ends_with('/') {
+                            format!("{dir}{name}")
+                        } else {
+                            format!("{dir}/{name}")
+                        };
+                        out.push(full);
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out.truncate(50);
+    Ok(json!({ "dirs": out }))
 }
 
 /// List containers (all states): id, name, image, state, status, ports, and
@@ -3788,6 +3839,7 @@ mod tests {
             repo: None,
             tag: None,
             backup: None,
+            path: None,
             command: None,
             tty: None,
             cpus: None,
