@@ -153,15 +153,7 @@ impl Collector {
         self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
 
-        let cpu_usage = {
-            let cpus = self.sys.cpus();
-            if cpus.is_empty() {
-                0.0
-            } else {
-                let total: f32 = cpus.iter().map(|c| c.cpu_usage()).sum();
-                (total / cpus.len() as f32) as f64
-            }
-        };
+        let cpu_usage = self.cpu_usage_pct();
         let cpu_cores = self.sys.cpus().len() as i64;
 
         let total_mem = self.sys.total_memory();
@@ -182,42 +174,10 @@ impl Collector {
             (disk_used as f64 / disk_total as f64) * 100.0
         };
 
-        // Network throughput: sum per-interface received/transmitted bytes since
-        // the last refresh, divided by the elapsed wall-clock seconds.
-        self.networks.refresh();
-        let mut rx_bytes: u64 = 0;
-        let mut tx_bytes: u64 = 0;
-        for (_iface, data) in self.networks.iter() {
-            rx_bytes += data.received();
-            tx_bytes += data.transmitted();
-        }
         let now = Instant::now();
-        let elapsed = self
-            .last_sample
-            .map(|t| now.duration_since(t).as_secs_f64())
-            .filter(|s| *s > 0.0)
-            .unwrap_or(0.0);
-        self.last_sample = Some(now);
-        let (net_rx, net_tx) = if elapsed > 0.0 {
-            (rx_bytes as f64 / elapsed, tx_bytes as f64 / elapsed)
-        } else {
-            // First sample has no baseline; report 0 to avoid a huge spike.
-            (0.0, 0.0)
-        };
-
+        let (net_rx, net_tx) = self.net_throughput(now);
         let uptime = System::uptime() as i64;
-
-        // Re-resolve the local IP at most once a minute (it almost never moves).
-        let refresh_ip = self
-            .ip_checked_at
-            .map(|t| now.duration_since(t).as_secs() >= 60)
-            .unwrap_or(true);
-        if refresh_ip {
-            if let Some(ip) = local_ip() {
-                self.ip = ip;
-            }
-            self.ip_checked_at = Some(now);
-        }
+        self.refresh_ip_if_stale(now);
 
         Metrics {
             cpu_usage: clamp_pct(cpu_usage),
@@ -244,6 +204,55 @@ impl Collector {
             update_progress: crate::update::progress(),
             update_done_bytes: crate::update::done_bytes(),
             update_total_bytes: crate::update::total_bytes(),
+        }
+    }
+
+    /// Average CPU usage percent across all logical CPUs (since last refresh).
+    fn cpu_usage_pct(&self) -> f64 {
+        let cpus = self.sys.cpus();
+        if cpus.is_empty() {
+            return 0.0;
+        }
+        let total: f32 = cpus.iter().map(|c| c.cpu_usage()).sum();
+        (total / cpus.len() as f32) as f64
+    }
+
+    /// Network throughput (rx, tx) in bytes/sec: sum per-interface bytes since
+    /// the last refresh, divided by the elapsed wall-clock seconds. Updates the
+    /// sampling baseline. The first sample has no baseline, so it reports 0 to
+    /// avoid a huge spike.
+    fn net_throughput(&mut self, now: Instant) -> (f64, f64) {
+        self.networks.refresh();
+        let mut rx_bytes: u64 = 0;
+        let mut tx_bytes: u64 = 0;
+        for (_iface, data) in self.networks.iter() {
+            rx_bytes += data.received();
+            tx_bytes += data.transmitted();
+        }
+        let elapsed = self
+            .last_sample
+            .map(|t| now.duration_since(t).as_secs_f64())
+            .filter(|s| *s > 0.0)
+            .unwrap_or(0.0);
+        self.last_sample = Some(now);
+        if elapsed > 0.0 {
+            (rx_bytes as f64 / elapsed, tx_bytes as f64 / elapsed)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+
+    /// Re-resolve the local IP at most once a minute (it almost never moves).
+    fn refresh_ip_if_stale(&mut self, now: Instant) {
+        let stale = self
+            .ip_checked_at
+            .map(|t| now.duration_since(t).as_secs() >= 60)
+            .unwrap_or(true);
+        if stale {
+            if let Some(ip) = local_ip() {
+                self.ip = ip;
+            }
+            self.ip_checked_at = Some(now);
         }
     }
 }
