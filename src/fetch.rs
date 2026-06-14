@@ -67,12 +67,11 @@ pub fn arch() -> &'static str {
 }
 
 /// Small-request HTTP client (version lookups, manifests). Short timeouts.
-fn http() -> reqwest::Client {
+fn http() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent("dn7-panel/updater")
         .timeout(std::time::Duration::from_secs(20))
         .build()
-        .expect("http client")
 }
 
 /// HTTP client for the (potentially very slow) binary download.
@@ -81,13 +80,12 @@ fn http() -> reqwest::Client {
 /// minutes. We bound only connect + idle-read time, so a dead/stalled
 /// connection is still caught, but a slow-but-progressing download runs to
 /// completion (the read timeout resets after every successful read).
-fn download_http() -> reqwest::Client {
+fn download_http() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent("dn7-panel/updater")
         .connect_timeout(std::time::Duration::from_secs(30))
         .read_timeout(std::time::Duration::from_secs(300))
         .build()
-        .expect("download http client")
 }
 
 // ---------------------------------------------------------------------------
@@ -132,7 +130,7 @@ pub async fn github_release(cfg: &PanelConfig) -> Result<Release> {
 /// Resolve the latest dn7.cn release from the JSON manifest.
 pub async fn dn7_release(cfg: &PanelConfig) -> Result<Release> {
     let url = format!("{}/api/panel/version?arch={}", cfg.dn7_base, arch());
-    let manifest: serde_json::Value = http()
+    let manifest: serde_json::Value = http()?
         .get(&url)
         .send()
         .await?
@@ -195,7 +193,7 @@ pub async fn releases_index_from(
         ),
         SourceKind::Dn7 => format!("{}/api/panel/releases", cfg.dn7_base),
     };
-    let v: serde_json::Value = http()
+    let v: serde_json::Value = http()?
         .get(&url)
         .send()
         .await?
@@ -229,7 +227,7 @@ pub async fn download_release<F: Fn(u64) + Copy>(
     release: &Release,
     on_progress: F,
 ) -> Result<Vec<u8>> {
-    let resp = download_http()
+    let resp = download_http()?
         .get(&release.url)
         .send()
         .await?

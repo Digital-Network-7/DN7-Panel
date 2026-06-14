@@ -62,15 +62,7 @@ pub fn load() -> Vec<PanelUser> {
 
 pub fn save(users: &[PanelUser]) -> Result<()> {
     let path = users_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, serde_json::to_string_pretty(users)?)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
+    crate::paths::write_private(&path, serde_json::to_string_pretty(users)?.as_bytes())?;
     Ok(())
 }
 

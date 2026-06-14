@@ -1651,9 +1651,8 @@ async fn stream_body_to_temp(
 ) -> Result<std::path::PathBuf, Response> {
     use futures::StreamExt;
     use tokio::io::AsyncWriteExt;
-    let tmp = crate::file::temp_upload_path();
-    let mut f = match tokio::fs::File::create(&tmp).await {
-        Ok(f) => f,
+    let (f, tmp) = match crate::file::create_temp_upload() {
+        Ok(v) => v,
         Err(e) => {
             return Err(api_err_detail(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1662,6 +1661,7 @@ async fn stream_body_to_temp(
             ))
         }
     };
+    let mut f = tokio::fs::File::from_std(f);
     let mut total: u64 = 0;
     let mut stream = body.into_data_stream();
     let fail = |tmp: &std::path::PathBuf, resp: Response| {

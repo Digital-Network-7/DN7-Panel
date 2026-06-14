@@ -274,25 +274,13 @@ fn load_sessions() -> Option<HashMap<String, SessionRec>> {
     serde_json::from_str(&s).ok()
 }
 
-/// Persist the session map. Tokens are sensitive, so the file is written 0600.
+/// Persist the session map. Tokens are sensitive, so the file is written 0600
+/// atomically (no create-then-chmod window).
 fn write_sessions(map: &HashMap<String, SessionRec>) -> std::io::Result<()> {
     let path = sessions_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     let data = serde_json::to_string(map).unwrap_or_else(|_| "{}".to_string());
-    std::fs::write(&path, data)?;
-    set_file_perms_600(&path);
-    Ok(())
+    crate::paths::write_private(&path, data.as_bytes())
 }
-
-#[cfg(unix)]
-fn set_file_perms_600(path: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-}
-#[cfg(not(unix))]
-fn set_file_perms_600(_path: &std::path::Path) {}
 
 /// Constant-time-ish password comparison (avoids early-exit timing leak).
 pub fn password_matches(expected: &str, given: &str) -> bool {

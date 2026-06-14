@@ -87,12 +87,17 @@ fn persisted_random_key() -> Option<Vec<u8>> {
     }
     // Create it ATOMICALLY (O_EXCL): if two roles race on first run, only one
     // writes its key; the loser reads the winner's so both derive the same key.
+    // Mode 0600 is set at creation (not after) so the key is never briefly
+    // world-readable under a wide umask.
     use std::io::Write;
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
     {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    match opts.open(&path) {
         Ok(mut f) => {
             if f.write_all(&key).is_err() {
                 return None;

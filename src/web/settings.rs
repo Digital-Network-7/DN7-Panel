@@ -269,18 +269,11 @@ pub fn load() -> Option<WebSettings> {
     serde_json::from_str::<WebSettings>(&raw).ok()
 }
 
-/// Persist settings to `<data>/web.json` with 0600 perms.
+/// Persist settings to `<data>/web.json` with 0600 perms (atomic, no
+/// create-then-chmod window).
 pub fn save(s: &WebSettings) -> Result<()> {
     let path = settings_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, serde_json::to_string_pretty(s)?)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
+    crate::paths::write_private(&path, serde_json::to_string_pretty(s)?.as_bytes())?;
     Ok(())
 }
 

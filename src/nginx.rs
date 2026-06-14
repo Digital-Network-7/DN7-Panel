@@ -3278,8 +3278,7 @@ async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
     };
     std::fs::create_dir_all(&lo.cert_store)?;
     std::fs::write(named_crt_file(lo, &cert_name), cert_chain_pem)?;
-    std::fs::write(named_key_file(lo, &cert_name), &key_pem)?;
-    set_key_perms(&named_key_file(lo, &cert_name));
+    write_key_file(&named_key_file(lo, &cert_name), &key_pem)?;
     certs.retain(|c| c.name != cert_name);
     certs.push(NamedCert {
         name: cert_name.clone(),
@@ -3358,8 +3357,7 @@ async fn issue_le_named(op_id: &str, lo: &Layout, name: &str, domain: &str) -> R
 
     // Persist into the named cert store + manifest.
     std::fs::write(named_crt_file(lo, name), cert_chain_pem)?;
-    std::fs::write(named_key_file(lo, name), &key_pem)?;
-    set_key_perms(&named_key_file(lo, name));
+    write_key_file(&named_key_file(lo, name), &key_pem)?;
     let mut certs = load_named_certs();
     certs.retain(|c| c.name != name);
     certs.push(NamedCert {

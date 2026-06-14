@@ -142,11 +142,7 @@ impl UpdateState {
 
     pub fn save(&self) -> Result<()> {
         let path = state_path();
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(&path, serde_json::to_string_pretty(self)?)?;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        crate::paths::write_private(&path, serde_json::to_string_pretty(self)?.as_bytes())?;
         Ok(())
     }
 }

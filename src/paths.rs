@@ -51,6 +51,60 @@ pub fn ensure_dirs() {
     }
 }
 
+/// Atomically write `data` to `path` with owner-only (0600) permissions from
+/// the moment of creation. The bytes are written to a temp file in the *same*
+/// directory (created with O_EXCL + mode 0600, so it can't be pre-planted as a
+/// symlink and never lands world-readable), fsynced, then renamed over the
+/// target. Use this for every sensitive on-disk file (keys, session tokens,
+/// account config, update state) instead of `write` + later `chmod`, which
+/// leaves a brief window where a wide umask exposes the contents.
+pub fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let base = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("secret");
+    let mut last_err = None;
+    for _ in 0..16 {
+        let tmp = dir.join(format!(".{base}.tmp-{:016x}", rand::random::<u64>()));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        match opts.open(&tmp) {
+            Ok(mut f) => {
+                let r = f.write_all(data).and_then(|_| f.sync_all());
+                if let Err(e) = r {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(e);
+                }
+                drop(f);
+                if let Err(e) = std::fs::rename(&tmp, path) {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(e);
+                }
+                return Ok(());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_err = Some(e);
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "temp file name collision",
+        )
+    }))
+}
+
 /// Install a global `dn7` CLI dispatcher (best-effort; needs root). It routes
 /// `dn7 panel <args...>` to the canonical panel binary, so operators get
 /// `dn7 panel` (status banner), `dn7 panel reset`, `dn7 panel version`, etc.
@@ -115,16 +169,24 @@ fn clean_deleted(p: &std::path::Path) -> PathBuf {
 }
 
 /// Base directory for runtime files (pid/heartbeat/lock/settings/log). Prefers
-/// the canonical install dir (`/var/dn7/panel`) when it exists; falls back to
-/// the current directory when it's unavailable (e.g. a non-root run that
-/// couldn't write under `/var/dn7`).
+/// the canonical install dir (`/var/dn7/panel`) when it exists. When it isn't
+/// available (e.g. an unprivileged run that couldn't create `/var/dn7`), it
+/// falls back to a *stable per-user* state dir rather than the current working
+/// directory — sensitive files (`.panel_key`, `web.json`, `sessions.json`, …)
+/// must never drift with the launch directory or land in a shared/downloads
+/// folder.
 pub fn default_base_dir() -> PathBuf {
     let p = PathBuf::from(INSTALL_DIR);
     if p.is_dir() {
-        p
-    } else {
-        PathBuf::from(".")
+        return p;
     }
+    if let Some(home) = std::env::var_os("HOME") {
+        if !home.is_empty() {
+            return PathBuf::from(home).join(".local/state/dn7-panel");
+        }
+    }
+    // Last resort (HOME unset): a fixed temp-based dir — still not the CWD.
+    std::env::temp_dir().join("dn7-panel")
 }
 
 /// Ensure the panel is installed at and running from `/var/dn7/panel/dn7-panel`.

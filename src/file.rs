@@ -175,19 +175,42 @@ async fn run_as_user(
     Ok((out.status.code().unwrap_or(-1), out.stdout))
 }
 
-/// A short, collision-resistant suffix for a host temp file name (pid + a
-/// monotonic counter). Avoids pulling in a uuid dependency just for this.
-fn unique_suffix() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(0);
-    let n = N.fetch_add(1, Ordering::Relaxed);
-    format!("{}-{}", std::process::id(), n)
-}
-
-/// A unique temp-file path for staging a streamed upload before it's written to
-/// its final destination (host file / container archive).
-pub fn temp_upload_path() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("dn7-up-{}", unique_suffix()))
+/// Create a fresh staging file for a streamed upload in the system temp dir,
+/// opened with O_EXCL and mode 0600. The name is unpredictable (random) and
+/// O_EXCL refuses to follow a pre-planted symlink, so a local low-privilege
+/// user can't hijack the path to make the (high-privilege) panel overwrite an
+/// arbitrary file. Returns the open file and its path.
+pub fn create_temp_upload() -> std::io::Result<(std::fs::File, std::path::PathBuf)> {
+    let dir = std::env::temp_dir();
+    let mut last_err = None;
+    for _ in 0..16 {
+        let path = dir.join(format!(
+            "dn7-up-{:016x}{:016x}",
+            rand::random::<u64>(),
+            rand::random::<u64>()
+        ));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true); // O_CREAT | O_EXCL
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        match opts.open(&path) {
+            Ok(f) => return Ok((f, path)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_err = Some(e);
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "temp file name collision",
+        )
+    }))
 }
 
 /// Run `sh -c '<script>' sh "<arg>"` inside the container via the daemon exec
