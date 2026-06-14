@@ -933,11 +933,10 @@ function dkNetworks() {
     <div class="formgrid">
       <div><label class="lbl">${tr('dk.net_name')}</label><input id="nnName" class="field" placeholder="my-net" /></div>
       <div><label class="lbl">${tr('dk.net_mode')}</label><select id="nnDriver" class="field"><option value="bridge">bridge</option><option value="macvlan">macvlan</option><option value="ipvlan">ipvlan</option><option value="overlay">overlay</option></select></div>
-      <div><label class="lbl">${tr('dk.net_subnet')}</label><input id="nnSubnet" class="field mono" placeholder="172.20.0.0/16" /></div>
-      <div><label class="lbl">${tr('dk.net_gateway')}</label><input id="nnGateway" class="field mono" placeholder="172.20.0.1" /></div>
-      <div class="full"><label class="lbl">${tr('dk.net_iprange')}</label><input id="nnRange" class="field mono" placeholder="172.20.5.0/24" /></div>
+      <div><label class="lbl">${tr('dk.net_subnet')}${tr('dk.optional')}</label><input id="nnSubnet" class="field mono" placeholder="172.20.0.0/16" /></div>
+      <div><label class="lbl">${tr('dk.net_gateway')}${tr('dk.optional')}</label><input id="nnGateway" class="field mono" placeholder="172.20.0.1" /></div>
+      <div class="full"><label class="lbl">${tr('dk.net_iprange')}${tr('dk.optional')}</label><input id="nnRange" class="field mono" placeholder="172.20.5.0/24" /></div>
     </div>
-    <p class="formnote" style="margin-top:8px">${tr('dk.net_ipam_hint')}</p>
     <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="nnGo">${tr('dk.create')}</button></div>`, (close) => {
     $('nnGo').onclick = () => op('docker', {
       op: 'create_network', name: $('nnName').value.trim(), driver: $('nnDriver').value,
@@ -960,29 +959,31 @@ function dkSettings() {
   op('docker', { op: 'get_settings' }).then((s) => {
     const cg = s.cgroup_driver || 'systemd';
     body.innerHTML = `
-      <div style="max-width:580px">
-        <div class="sechead" style="margin-top:0"><h3>${tr('dk.set_mirrors')}</h3></div>
-        <p class="mut" style="font-size:12.5px;margin:0 0 8px">${tr('dk.set_mirrors_d')}</p>
+      <div style="max-width:560px">
+        <label class="lbl">${tr('dk.set_mirrors')}</label>
         <textarea id="dkMirrors" class="field mono" rows="4" spellcheck="false" placeholder="docker.m.daocloud.io">${esc((s.mirrors || []).join('\n'))}</textarea>
+        <p class="formnote">${tr('dk.set_mirrors_d')}</p>
 
-        <div class="sechead" style="margin-top:18px"><h3>${tr('dk.set_registries')}</h3></div>
-        <p class="mut" style="font-size:12.5px;margin:0 0 8px">${tr('dk.set_registries_d')}</p>
+        <label class="lbl" style="margin-top:18px">${tr('dk.set_registries')}</label>
         <textarea id="dkRegs" class="field mono" rows="3" spellcheck="false" placeholder="registry.example.com:5000">${esc((s.registries || []).join('\n'))}</textarea>
-        <div class="row" style="align-items:center;gap:12px;margin-top:12px"><button class="btn sm" id="dkSaveLists">${tr('ng.save')}</button><span class="err ok" id="dkListMsg"></span></div>
+        <p class="formnote">${tr('dk.set_registries_d')}</p>
+        <div class="row" style="align-items:center;gap:12px;margin-top:16px"><button class="btn" id="dkSaveLists" disabled>${tr('ng.save')}</button><span class="err ok" id="dkListMsg"></span></div>
 
-        <div class="sechead" style="margin-top:26px"><h3>${tr('dk.set_daemon')}</h3></div>
-        <p class="mut" style="font-size:12.5px;margin:0 0 12px">${tr('dk.set_daemon_d')}</p>
+        <div class="sechead" style="margin-top:30px"><h3>${tr('dk.set_daemon')}</h3></div>
+        <p class="formnote" style="margin:0 0 14px">${tr('dk.set_daemon_d')}</p>
         <div class="formgrid">
           <div><label class="lbl">${tr('dk.set_cgroup')}</label><select id="dkCgroup" class="field"><option value="systemd"${cg === 'systemd' ? ' selected' : ''}>systemd</option><option value="cgroupfs"${cg === 'cgroupfs' ? ' selected' : ''}>cgroupfs</option></select></div>
           <div><label class="lbl">${tr('dk.set_socket')}</label><input id="dkSocket" class="field mono" value="${esc(s.socket_path || '/var/run/docker.sock')}" /></div>
           <div><label class="lbl">${tr('dk.set_logsize')}</label><input id="dkLogSize" class="field" value="${esc(s.log_max_size || '10m')}" placeholder="10m" /></div>
           <div><label class="lbl">${tr('dk.set_logfile')}</label><input id="dkLogFile" class="field" type="number" min="1" value="${esc(String(s.log_max_file != null ? s.log_max_file : 3))}" /></div>
         </div>
-        <label class="switch" style="padding:0;margin-top:14px"><input type="checkbox" id="dkLogRotate" ${s.log_rotate ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.set_logrotate')}</b><span>${tr('dk.set_logrotate_d')}</span></span></label>
-        <label class="switch" style="padding:0;margin-top:10px"><input type="checkbox" id="dkGzip6" ${s.ipv6 ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.set_ipv6')}</b><span>${tr('dk.set_ipv6_d')}</span></span></label>
-        <label class="switch" style="padding:0;margin-top:10px"><input type="checkbox" id="dkIptables" ${s.iptables ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.set_iptables')}</b><span>${tr('dk.set_iptables_d')}</span></span></label>
-        <label class="switch" style="padding:0;margin-top:10px"><input type="checkbox" id="dkLiveRestore" ${s.live_restore ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.set_live')}</b><span>${tr('dk.set_live_d')}</span></span></label>
-        <div class="row" style="align-items:center;gap:12px;margin-top:16px"><button class="btn sm danger" id="dkSaveDaemon">${tr('dk.set_apply')}</button><span class="err ok" id="dkDaemonMsg"></span></div>
+        <div class="switchrow" style="margin-top:16px;gap:2px 24px">
+          <label class="switch" style="padding:7px 0"><input type="checkbox" id="dkLogRotate" ${s.log_rotate ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.set_logrotate')}</b><span>${tr('dk.set_logrotate_d')}</span></span></label>
+          <label class="switch" style="padding:7px 0"><input type="checkbox" id="dkGzip6" ${s.ipv6 ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.set_ipv6')}</b><span>${tr('dk.set_ipv6_d')}</span></span></label>
+          <label class="switch" style="padding:7px 0"><input type="checkbox" id="dkIptables" ${s.iptables ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.set_iptables')}</b><span>${tr('dk.set_iptables_d')}</span></span></label>
+          <label class="switch" style="padding:7px 0"><input type="checkbox" id="dkLiveRestore" ${s.live_restore ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.set_live')}</b><span>${tr('dk.set_live_d')}</span></span></label>
+        </div>
+        <div class="row" style="align-items:center;gap:12px;margin-top:18px"><button class="btn danger" id="dkSaveDaemon" disabled>${tr('dk.set_apply')}</button><span class="err ok" id="dkDaemonMsg"></span></div>
         <p class="formnote" style="margin-top:10px">${tr('dk.set_daemon_warn')}</p>
       </div>`;
 
