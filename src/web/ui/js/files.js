@@ -7,12 +7,15 @@ function renderFiles(v) {
   const home = (S.me && S.me.home) || '/';
   fileBrowser($('fbCard'), null, home);
 }
-function openFileBrowser(title, container) {
-  modal(title, '<div id="fbModal"></div>', (close, mask) => { fileBrowser(mask.querySelector('#fbModal'), container, '/'); }, true);
+function openFileBrowser(title, container, startPath, rootPath) {
+  modal(title, '<div id="fbModal"></div>', (close, mask) => { fileBrowser(mask.querySelector('#fbModal'), container, startPath || rootPath || '/', rootPath || '/'); }, true);
 }
 // Render an interactive file browser into `mount`. container=null → host.
-function fileBrowser(mount, container, startPath) {
-  let path = startPath || '/';
+// `rootPath` (default '/') is the lowest directory the user can navigate to —
+// used to root a volume browser at the volume's mountpoint.
+function fileBrowser(mount, container, startPath, rootPath) {
+  const root = rootPath || '/';
+  let path = startPath || root;
   mount.innerHTML = `
     <div class="fb-toolbar">
       <div class="fb-pathbar" id="fbPath"></div>
@@ -23,8 +26,10 @@ function fileBrowser(mount, container, startPath) {
     <div class="fb-list fb-scroll" id="fbList">${loading()}</div>`;
   const scope = () => (container ? { container } : {});
   const renderPath = () => {
-    const parts = path.split('/').filter(Boolean);
-    let acc = '', h = `<span class="seg2" data-p="/">${tr('files.root')}</span>`;
+    let rel = path;
+    if (root !== '/' && (path === root || path.startsWith(root + '/'))) rel = path.slice(root.length);
+    const parts = rel.split('/').filter(Boolean);
+    let acc = root === '/' ? '' : root, h = `<span class="seg2" data-p="${esc(root)}">${tr('files.root')}</span>`;
     parts.forEach((seg) => { acc += '/' + seg; h += `<span class="sepc">/</span><span class="seg2" data-p="${esc(acc)}">${esc(seg)}</span>`; });
     $('fbPath').innerHTML = h;
     document.querySelectorAll('#fbPath .seg2').forEach((s) => s.onclick = () => { path = s.dataset.p; load(); });
@@ -34,7 +39,7 @@ function fileBrowser(mount, container, startPath) {
     api('/api/files/list', { method: 'POST', body: JSON.stringify(Object.assign({ path }, scope())) }).then((b) => {
       const entries = b.data.entries || []; path = b.data.path || path; renderPath();
       const list = $('fbList'); list.innerHTML = '';
-      if (path !== '/') { const up = el('div', { class: 'fb-row' }, `<span class="fbic">↩</span><span class="nm dir">${tr('files.parent')}</span>`); up.querySelector('.nm').onclick = () => { path = path.replace(/\/[^/]+\/?$/, '') || '/'; load(); }; list.appendChild(up); }
+      if (path !== root) { const up = el('div', { class: 'fb-row' }, `<span class="fbic">↩</span><span class="nm dir">${tr('files.parent')}</span>`); up.querySelector('.nm').onclick = () => { let par = path.replace(/\/[^/]+\/?$/, '') || '/'; if (root !== '/' && par.length < root.length) par = root; path = par; load(); }; list.appendChild(up); }
       if (!entries.length && path === '/') { /* keep up row only */ }
       entries.forEach((e) => {
         const row = el('div', { class: 'fb-row' });

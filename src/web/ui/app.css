@@ -597,6 +597,8 @@ table.ctntbl { min-width: 1480px; }
 table.ctntbl th.act, table.ctntbl td.act { width: 200px; }
 table.imgtbl { min-width: 1080px; }
 table.imgtbl th.act, table.imgtbl td.act { width: 210px; }
+table.voltbl { min-width: 980px; }
+table.voltbl th.act, table.voltbl td.act { width: 160px; }
 /* Scroll-aware frozen-column shadows: a full-height ::after/::before per sticky
    cell (so the strip is continuous across rows, with no per-cell banding) shown
    only when there is scrolled-away content on that side. */

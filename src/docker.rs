@@ -954,6 +954,7 @@ async fn list_images() -> Result<Value> {
             "tag": tag,
             "size": human_size(img.size.max(0) as u64),
             "created": human_since(img.created),
+            "created_ts": img.created,
             "managed": managed_images.contains(&name) || managed_images.contains(&short_id),
             "in_use": used_images.contains(&name) || used_images.contains(&short_id),
         }));
@@ -3679,11 +3680,23 @@ async fn create_volume_op(req: &Req) -> Result<Value> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_volume_name"))?;
     validate_name(name)?;
-    let opts = bollard::volume::CreateVolumeOptions {
+    let mut opts = bollard::volume::CreateVolumeOptions {
         name: name.to_string(),
         driver: "local".to_string(),
         ..Default::default()
     };
+    // Optional host path: back the volume with a bind mount to an absolute host
+    // directory (local driver: type=none, o=bind, device=<path>).
+    if let Some(dev) = req.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if !dev.starts_with('/') {
+            return Err(anyhow!("ERR_CODE:docker.path_not_absolute"));
+        }
+        let mut o = HashMap::new();
+        o.insert("type".to_string(), "none".to_string());
+        o.insert("o".to_string(), "bind".to_string());
+        o.insert("device".to_string(), dev.to_string());
+        opts.driver_opts = o;
+    }
     dkr()?
         .create_volume(opts)
         .await

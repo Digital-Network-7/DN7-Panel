@@ -338,7 +338,7 @@ function dkImages(info) {
       const tagHtml = tags.map((t) => `<span class="imgtag">${esc(t)}</span>`).join('');
       h += `<tr><td class="mono mut" style="font-size:11px" data-tip="${esc(im.id)}">${esc(im.id)}</td>`
         + `<td data-tip="${esc(tags.join('\n'))}"><div class="clamp2">${tagHtml}</div></td>`
-        + `<td>${esc(im.size)}</td><td class="mut">${esc(im.created)}</td><td>${ref}</td>`
+        + `<td>${esc(im.size)}</td><td class="mut">${esc(fmtDateTime(im.created_ts))}</td><td>${ref}</td>`
         + `<td class="act">${acts}</td></tr>`;
     });
     $('dkIList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
@@ -478,17 +478,42 @@ function dkVolumes() {
   const body = $('dkBody');
   body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_volumes')}</h3><span class="sp"></span><button class="btn sm" id="dkVolNew">${tr('dk.vol_new')}</button><button class="btn sec sm" id="dkRefV">${tr('dk.refresh')}</button></div><div id="dkVList">${loading()}</div>`;
   $('dkRefV').onclick = dkVolumes;
-  $('dkVolNew').onclick = () => modal(tr('dk.vol_new'), `<label class="lbl">${tr('dk.vol_name')}</label><input id="dvName" class="field" placeholder="myapp-data" style="margin-bottom:16px" /><div class="row" style="justify-content:flex-end"><button class="btn" id="dvGo">${tr('dk.create')}</button></div>`, (close) => { $('dvGo').onclick = () => { const name = $('dvName').value.trim(); if (!name) return; op('docker', { op: 'create_volume', name }).then(() => { close(); toast(tr('common.created'), 'ok'); dkVolumes(); }).catch((e) => toast(e.message, 'err')); }; bindDirty('dvGo'); });
+  $('dkVolNew').onclick = () => modal(tr('dk.vol_new'), `
+    <label class="lbl">${tr('dk.vol_name')}</label>
+    <input id="dvName" class="field" placeholder="myapp-data" />
+    <label class="lbl" style="margin-top:14px">${tr('dk.vol_path')}${tr('dk.optional')}</label>
+    <input id="dvPath" class="field mono" placeholder="/data/myvol" />
+    <p class="formnote">${tr('dk.vol_path_d')}</p>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="dvGo" disabled>${tr('dk.create')}</button></div>`, (close) => {
+    attachPathSuggest($('dvPath'));
+    $('dvGo').onclick = () => {
+      const name = $('dvName').value.trim(); if (!name) return toast(tr('dk.vol_need_name'), 'err');
+      const path = $('dvPath').value.trim() || undefined;
+      op('docker', { op: 'create_volume', name, path }).then(() => { close(); toast(tr('common.created'), 'ok'); dkVolumes(); }).catch((e) => toast(e.message, 'err'));
+    };
+    bindDirty('dvGo', 'dvName');
+  });
   op('docker', { op: 'list_volumes' }).then((d) => {
     const list = d.volumes || [];
     if (!list.length) { $('dkVList').innerHTML = `<div class="empty">${tr('dk.no_volumes')}</div>`; return; }
-    let h = `<table class="optable"><tr><th>${tr('dk.vol_name')}</th><th>${tr('dk.col_size')}</th><th>${tr('dk.vol_refs')}</th><th>${tr('dk.vol_mount')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
+    let h = `<table class="optable frztbl voltbl">`
+      + `<colgroup><col style="width:240px"><col style="width:420px"><col style="width:180px"><col style="width:160px"></colgroup>`
+      + `<tr><th>${tr('dk.vol_name')}</th><th>${tr('dk.vol_mount')}</th><th>${tr('dk.col_created')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
     list.forEach((v) => {
-      const act = v.managed ? `<span class="chip">${tr('dk.builtin')}</span>` : `<div class="actions"><button class="btn sm danger" data-rm="${esc(v.name)}">${tr('dk.delete')}</button></div>`;
-      h += `<tr><td><b>${esc(v.name)}</b></td><td>${esc(v.size)}</td><td class="mut">${v.refs >= 0 ? v.refs : '-'}</td><td class="mono mut" style="font-size:11px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(v.mountpoint)}">${esc(v.mountpoint)}</td><td class="act">${act}</td></tr>`;
+      const fileBtn = `<button class="btn sm sec" data-files="${esc(v.name)}" data-mp="${esc(v.mountpoint || '')}">${tr('dk.files')}</button>`;
+      const delBtn = v.managed
+        ? `<span class="chip">${tr('dk.builtin')}</span>`
+        : `<button class="btn sm danger" data-rm="${esc(v.name)}">${tr('dk.delete')}</button>`;
+      h += `<tr><td data-tip="${esc(v.name)}"><div class="clamp2"><b>${esc(v.name)}</b></div></td>`
+        + `<td data-tip="${esc(v.mountpoint || '')}"><div class="clamp2 mono mut" style="font-size:11px">${esc(v.mountpoint || '-')}</div></td>`
+        + `<td class="mut">${esc(fmtDateTime(v.created))}</td>`
+        + `<td class="act"><div class="actions">${fileBtn}${delBtn}</div></td></tr>`;
     });
     $('dkVList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
+    document.querySelectorAll('#dkVList [data-files]').forEach((b) => b.onclick = () => { const mp = b.dataset.mp; if (!mp) return toast(tr('dk.vol_no_mount'), 'err'); openFileBrowser(tr('dk.vol_files') + b.dataset.files, null, mp, mp); });
     document.querySelectorAll('#dkVList [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('dk.confirm_rm_vol', { name: b.dataset.rm }))) op('docker', { op: 'remove_volume', ref: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); dkVolumes(); }).catch((e) => toast(e.message, 'err')); });
+    wireStickyShadows($('dkVList').querySelector('.tablewrap'));
+    wireCellTips($('dkVList'));
   }).catch((e) => { $('dkVList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
 
@@ -759,6 +784,14 @@ function dkHuman(n) {
   return (i === 0 ? n : n.toFixed(2)) + u[i];
 }
 function dkFmtTime(secs) { return secs ? new Date(secs * 1000).toLocaleString() : '-'; }
+// Absolute YYYY-MM-DD HH:MM:SS from epoch seconds (number) or an ISO string.
+function fmtDateTime(v) {
+  if (v == null || v === '' || v === 0) return '-';
+  const d = (typeof v === 'number') ? new Date(v * 1000) : new Date(v);
+  if (isNaN(d.getTime())) return (typeof v === 'string' ? v : '-');
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
 
 // ---- Edit (recreate with new config) ----
 function dkEditForm(id, name) {
