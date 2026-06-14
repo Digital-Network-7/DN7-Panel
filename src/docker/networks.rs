@@ -306,3 +306,112 @@ pub(crate) async fn inspect_container_networks(req: &Req) -> Result<Value> {
 
     Ok(json!({ "attached": attached, "available": available }))
 }
+
+/// `create_network`: validate name/driver + optional IPv4 IPAM, then create.
+pub(crate) async fn create_network_op(req: &Req) -> Result<Value> {
+    let name = req
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_network_name"))?;
+    validate_name(name)?;
+    // Driver (whitelisted; default bridge).
+    let driver = req
+        .driver
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("bridge");
+    if !net_driver_allowed(driver) {
+        return Err(anyhow!("ERR_CODE:docker.bad_net_driver"));
+    }
+    // Optional IPv4 IPAM config.
+    let subnet = opt_trim(&req.subnet);
+    let gateway = opt_trim(&req.gateway);
+    let ip_range = opt_trim(&req.ip_range);
+    if let Some(s) = subnet.as_deref() {
+        valid_cidr(s)?;
+    }
+    if let Some(g) = gateway.as_deref() {
+        valid_ipv4(g)?;
+    }
+    if let Some(r) = ip_range.as_deref() {
+        valid_cidr(r)?;
+    }
+    // Gateway / range only make sense with a subnet.
+    if subnet.is_none() && (gateway.is_some() || ip_range.is_some()) {
+        return Err(anyhow!("ERR_CODE:docker.net_range_needs_subnet"));
+    }
+    let ipam = if subnet.is_some() {
+        bollard::models::Ipam {
+            config: Some(vec![bollard::models::IpamConfig {
+                subnet,
+                gateway,
+                ip_range,
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }
+    } else {
+        Default::default()
+    };
+    let opts = bollard::network::CreateNetworkOptions {
+        name: name.to_string(),
+        driver: driver.to_string(),
+        ipam,
+        ..Default::default()
+    };
+    dkr()?
+        .create_network(opts)
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    Ok(json!({ "created": name }))
+}
+
+/// `remove_network`: delete, mapping in-use / predefined failures to clear codes.
+pub(crate) async fn remove_network_op(req: &Req) -> Result<Value> {
+    let r = need_ref(req)?;
+    if let Err(e) = dkr()?.remove_network(&r).await {
+        let raw = e.to_string().to_lowercase();
+        let msg = if raw.contains("active endpoints") || raw.contains("in use") {
+            "ERR_CODE:docker.network_in_use".to_string()
+        } else if raw.contains("predefined") || raw.contains("pre-defined") {
+            "ERR_CODE:docker.network_predefined".to_string()
+        } else {
+            friendly_docker_err(&e)
+        };
+        return Err(anyhow!(msg));
+    }
+    Ok(json!({ "removed": r }))
+}
+
+/// `connect_network`: attach a container to a network.
+pub(crate) async fn connect_network_op(req: &Req) -> Result<Value> {
+    let r = need_ref(req)?;
+    let net = need_network(req)?;
+    let cfg = bollard::network::ConnectNetworkOptions {
+        container: r.clone(),
+        endpoint_config: Default::default(),
+    };
+    dkr()?
+        .connect_network(&net, cfg)
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    Ok(json!({ "connected": net }))
+}
+
+/// `disconnect_network`: detach a container from a network.
+pub(crate) async fn disconnect_network_op(req: &Req) -> Result<Value> {
+    let r = need_ref(req)?;
+    let net = need_network(req)?;
+    let cfg = bollard::network::DisconnectNetworkOptions {
+        container: r.clone(),
+        force: false,
+    };
+    dkr()?
+        .disconnect_network(&net, cfg)
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    Ok(json!({ "disconnected": net }))
+}

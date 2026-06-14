@@ -251,10 +251,73 @@ pub async fn web_dispatch(req: &Value) -> Result<Value> {
 /// Dispatch one request. Long ops (`pull_image`, `install`) start a detached
 /// task and return an `op_id` immediately.
 async fn handle(req: &Req) -> Result<Value> {
-    // Guard: DN7 Panel-managed service containers/images (nginx / mysql) can't be
-    // operated on from the generic Docker channel at all — they're managed by
-    // their own modules so state/volumes stay consistent. This applies to every
-    // caller (web console AND the mini-program relay).
+    guard_managed_ops(req).await?;
+    match req.op.as_str() {
+        "info" => docker_info().await,
+        "list_images" => list_images().await,
+        "pull_image" => start_pull(req),
+        "create_container" => {
+            check_port_conflicts(req).await?;
+            start_create(req)
+        }
+        "install" => start_install(req),
+        "list_ops" => Ok(ops_snapshot()),
+        "op_log" => {
+            let op_id = req.op_id.as_deref().unwrap_or("");
+            Ok(op_log(op_id))
+        }
+        "dismiss_op" => {
+            if let Some(op_id) = req.op_id.as_deref() {
+                op_dismiss(op_id);
+            }
+            Ok(json!({ "dismissed": true }))
+        }
+        "remove_image" => remove_image_op(req).await,
+        "tag_image" => add_image_tags(req).await,
+        "retag_image" => retag_image(req).await,
+        "list_containers" => list_containers().await,
+        "list_dirs" => list_dir_suggest(req),
+        "inspect_container" => inspect_container(req).await,
+        "start_container" => container_action(req, "start").await,
+        "stop_container" => container_action(req, "stop").await,
+        "restart_container" => container_action(req, "restart").await,
+        "remove_container" => container_action(req, "remove").await,
+        "pause_container" => container_action(req, "pause").await,
+        "unpause_container" => container_action(req, "unpause").await,
+        "kill_container" => container_action(req, "kill").await,
+        "logs" => container_logs(req).await,
+        "list_networks" => list_networks().await,
+        "create_network" => create_network_op(req).await,
+        "remove_network" => remove_network_op(req).await,
+        "inspect_container_networks" => inspect_container_networks(req).await,
+        "rename_network" => rename_network(req).await,
+        "network_ips" => network_ips(req).await,
+        "set_network_ip" => set_network_ip(req).await,
+        "connect_network" => connect_network_op(req).await,
+        "disconnect_network" => disconnect_network_op(req).await,
+        "list_volumes" => list_volumes().await,
+        "create_volume" => create_volume_op(req).await,
+        "remove_volume" => remove_volume_op(req).await,
+        "get_settings" => Ok(dk_settings_json()),
+        "set_settings" => set_dk_settings(req).await,
+        "set_registry_lists" => set_registry_lists(req).await,
+        "rename_container" => rename_container(req).await,
+        "commit_container" => commit_container_op(req).await,
+        "container_stats" => container_stats(req).await,
+        "get_container_config" => get_container_config(req).await,
+        "backup_container" => start_backup_container(req),
+        "list_backups" => list_backups(req).await,
+        "delete_backup" => delete_backup(req),
+        "restore_backup" => start_restore_backup(req),
+        other => Err(anyhow!("unsupported op: {other}")),
+    }
+}
+
+/// Reject operations on DN7 Panel-managed service containers/images (nginx /
+/// mysql) on the generic Docker channel — they're managed by their own modules
+/// so state/volumes stay consistent. Applies to every caller (web console AND
+/// the mini-program relay).
+async fn guard_managed_ops(req: &Req) -> Result<()> {
     const CONTAINER_OPS: &[&str] = &[
         "start_container",
         "stop_container",
@@ -286,240 +349,7 @@ async fn handle(req: &Req) -> Result<Value> {
             }
         }
     }
-    match req.op.as_str() {
-        "info" => docker_info().await,
-        "list_images" => list_images().await,
-        "pull_image" => start_pull(req),
-        "create_container" => {
-            check_port_conflicts(req).await?;
-            start_create(req)
-        }
-        "install" => start_install(req),
-        "list_ops" => Ok(ops_snapshot()),
-        "op_log" => {
-            let op_id = req.op_id.as_deref().unwrap_or("");
-            Ok(op_log(op_id))
-        }
-        "dismiss_op" => {
-            if let Some(op_id) = req.op_id.as_deref() {
-                op_dismiss(op_id);
-            }
-            Ok(json!({ "dismissed": true }))
-        }
-        "remove_image" => {
-            let r = need_ref(req)?;
-            let dkr = dkr()?;
-            let opts = bollard::image::RemoveImageOptions {
-                force: true,
-                ..Default::default()
-            };
-            dkr.remove_image(&r, Some(opts), None)
-                .await
-                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-            Ok(json!({ "removed": r }))
-        }
-        "tag_image" => add_image_tags(req).await,
-        "retag_image" => retag_image(req).await,
-        "list_containers" => list_containers().await,
-        "list_dirs" => list_dir_suggest(req),
-        "inspect_container" => inspect_container(req).await,
-        "start_container" => {
-            let r = need_ref(req)?;
-            dkr()?
-                .start_container(
-                    &r,
-                    None::<bollard::container::StartContainerOptions<String>>,
-                )
-                .await
-                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-            Ok(json!({ "started": r }))
-        }
-        "stop_container" => {
-            let r = need_ref(req)?;
-            dkr()?
-                .stop_container(&r, None)
-                .await
-                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-            Ok(json!({ "stopped": r }))
-        }
-        "restart_container" => {
-            let r = need_ref(req)?;
-            dkr()?
-                .restart_container(&r, None)
-                .await
-                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-            Ok(json!({ "restarted": r }))
-        }
-        "remove_container" => {
-            let r = need_ref(req)?;
-            // Protect DN7 Panel-managed service containers (nginx / mysql) from
-            // deletion here — they must be removed from their own pages so the
-            // associated state/volumes are handled correctly.
-            if let Some(why) = managed_container_guard(&r).await {
-                return Err(anyhow!(why));
-            }
-            let opts = bollard::container::RemoveContainerOptions {
-                force: true,
-                ..Default::default()
-            };
-            dkr()?
-                .remove_container(&r, Some(opts))
-                .await
-                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-            Ok(json!({ "removed": r }))
-        }
-        "logs" => container_logs(req).await,
-        "list_networks" => list_networks().await,
-        "create_network" => {
-            let name = req
-                .name
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_network_name"))?;
-            validate_name(name)?;
-            // Driver (whitelisted; default bridge).
-            let driver = req
-                .driver
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .unwrap_or("bridge");
-            if !net_driver_allowed(driver) {
-                return Err(anyhow!("ERR_CODE:docker.bad_net_driver"));
-            }
-            // Optional IPv4 IPAM config.
-            let subnet = opt_trim(&req.subnet);
-            let gateway = opt_trim(&req.gateway);
-            let ip_range = opt_trim(&req.ip_range);
-            if let Some(s) = subnet.as_deref() {
-                valid_cidr(s)?;
-            }
-            if let Some(g) = gateway.as_deref() {
-                valid_ipv4(g)?;
-            }
-            if let Some(r) = ip_range.as_deref() {
-                valid_cidr(r)?;
-            }
-            // Gateway / range only make sense with a subnet.
-            if subnet.is_none() && (gateway.is_some() || ip_range.is_some()) {
-                return Err(anyhow!("ERR_CODE:docker.net_range_needs_subnet"));
-            }
-            let ipam = if subnet.is_some() {
-                bollard::models::Ipam {
-                    config: Some(vec![bollard::models::IpamConfig {
-                        subnet,
-                        gateway,
-                        ip_range,
-                        ..Default::default()
-                    }]),
-                    ..Default::default()
-                }
-            } else {
-                Default::default()
-            };
-            let opts = bollard::network::CreateNetworkOptions {
-                name: name.to_string(),
-                driver: driver.to_string(),
-                ipam,
-                ..Default::default()
-            };
-            dkr()?
-                .create_network(opts)
-                .await
-                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-            Ok(json!({ "created": name }))
-        }
-        "remove_network" => {
-            let r = need_ref(req)?;
-            if let Err(e) = dkr()?.remove_network(&r).await {
-                // The usual failure is an in-use / predefined network; give a
-                // clear hint instead of the raw docker error.
-                let raw = e.to_string().to_lowercase();
-                let msg = if raw.contains("active endpoints") || raw.contains("in use") {
-                    "ERR_CODE:docker.network_in_use".to_string()
-                } else if raw.contains("predefined") || raw.contains("pre-defined") {
-                    "ERR_CODE:docker.network_predefined".to_string()
-                } else {
-                    friendly_docker_err(&e)
-                };
-                return Err(anyhow!(msg));
-            }
-            Ok(json!({ "removed": r }))
-        }
-        "inspect_container_networks" => inspect_container_networks(req).await,
-        "rename_network" => rename_network(req).await,
-        "network_ips" => network_ips(req).await,
-        "set_network_ip" => set_network_ip(req).await,
-        "connect_network" => {
-            let r = need_ref(req)?;
-            let net = need_network(req)?;
-            let cfg = bollard::network::ConnectNetworkOptions {
-                container: r.clone(),
-                endpoint_config: Default::default(),
-            };
-            dkr()?
-                .connect_network(&net, cfg)
-                .await
-                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-            Ok(json!({ "connected": net }))
-        }
-        "disconnect_network" => {
-            let r = need_ref(req)?;
-            let net = need_network(req)?;
-            let cfg = bollard::network::DisconnectNetworkOptions {
-                container: r.clone(),
-                force: false,
-            };
-            dkr()?
-                .disconnect_network(&net, cfg)
-                .await
-                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-            Ok(json!({ "disconnected": net }))
-        }
-        "list_volumes" => list_volumes().await,
-        "create_volume" => create_volume_op(req).await,
-        "remove_volume" => remove_volume_op(req).await,
-        "get_settings" => Ok(dk_settings_json()),
-        "set_settings" => set_dk_settings(req).await,
-        "set_registry_lists" => set_registry_lists(req).await,
-        "pause_container" => {
-            let r = need_ref(req)?;
-            dkr()?
-                .pause_container(&r)
-                .await
-                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-            Ok(json!({ "paused": r }))
-        }
-        "unpause_container" => {
-            let r = need_ref(req)?;
-            dkr()?
-                .unpause_container(&r)
-                .await
-                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-            Ok(json!({ "resumed": r }))
-        }
-        "kill_container" => {
-            let r = need_ref(req)?;
-            if let Some(why) = managed_container_guard(&r).await {
-                return Err(anyhow!(why));
-            }
-            dkr()?
-                .kill_container(&r, None::<bollard::container::KillContainerOptions<String>>)
-                .await
-                .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-            Ok(json!({ "killed": r }))
-        }
-        "rename_container" => rename_container(req).await,
-        "commit_container" => commit_container_op(req).await,
-        "container_stats" => container_stats(req).await,
-        "get_container_config" => get_container_config(req).await,
-        "backup_container" => start_backup_container(req),
-        "list_backups" => list_backups(req).await,
-        "delete_backup" => delete_backup(req),
-        "restore_backup" => start_restore_backup(req),
-        other => Err(anyhow!("unsupported op: {other}")),
-    }
+    Ok(())
 }
 
 /// DN7 Panel-managed service containers (nginx / mysql) must not be removed from

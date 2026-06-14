@@ -357,3 +357,17 @@ pub(crate) fn list_dir_suggest(req: &Req) -> Result<Value> {
     out.truncate(50);
     Ok(json!({ "dirs": out }))
 }
+
+/// `remove_image`: force-remove an image reference (callers pre-check guards).
+pub(crate) async fn remove_image_op(req: &Req) -> Result<Value> {
+    let r = need_ref(req)?;
+    let opts = bollard::image::RemoveImageOptions {
+        force: true,
+        ..Default::default()
+    };
+    dkr()?
+        .remove_image(&r, Some(opts), None)
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    Ok(json!({ "removed": r }))
+}
