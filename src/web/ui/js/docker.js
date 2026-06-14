@@ -50,30 +50,6 @@ function renderDocker(v) {
 }
 
 function dkContainers() {
-  const body = $('dkBody');
-  body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_containers')}</h3><span class="sp"></span><button class="btn sm" id="dkNew">${tr('dk.create_container')}</button><button class="btn sec sm" id="dkRefC">${tr('dk.refresh')}</button></div><div id="dkCList">` + loading() + '</div>';
-  $('dkRefC').onclick = dkContainers;
-  $('dkNew').onclick = () => dkCreateForm();
-  op('docker', { op: 'list_containers' }).then((d) => {
-    const list = d.containers || [];
-    if (!list.length) { $('dkCList').innerHTML = `<div class="empty">${tr('dk.no_containers')}</div>`; return; }
-    let h = `<table class="optable"><tr><th>${tr('dk.col_name')}</th><th>${tr('dk.col_image')}</th><th>${tr('dk.col_status')}</th><th>${tr('dk.col_ports')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
-    list.forEach((c) => {
-      const running = c.state === 'running';
-      h += `<tr>
-        <td><b>${esc(c.name)}</b><div class="mut mono" style="font-size:11px">${esc(c.id)}</div></td>
-        <td class="mono" style="font-size:12px">${esc(c.image)}</td>
-        <td><span class="chip ${running ? 'on' : 'off'}"><span class="dot-s ${running ? 'on' : ''}"></span>${esc(c.status || c.state)}</span></td>
-        <td class="mono" style="font-size:11.5px">${esc(c.ports || '-')}</td>
-        <td class="act"><div class="actions" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-shell="${c.has_shell ? 1 : 0}" data-running="${running ? 1 : 0}" data-managed="${c.managed ? 1 : 0}"></div></td>
-      </tr>`;
-    });
-    $('dkCList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
-    document.querySelectorAll('#dkCList .actions').forEach((a) => buildContainerActions(a, dkContainers));
-  }).catch((e) => { $('dkCList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
-}
-
-function dkContainers() {
   document.querySelectorAll('.dk-pop').forEach((p) => p.remove());
   const body = $('dkBody');
   body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_containers')}</h3><span class="sp"></span><button class="btn sm" id="dkNew">${tr('dk.create_container')}</button><button class="btn sec sm" id="dkRefC">${tr('dk.refresh')}</button></div><div id="dkCList">` + loading() + '</div>';
@@ -82,16 +58,24 @@ function dkContainers() {
   op('docker', { op: 'list_containers' }).then((d) => {
     const list = d.containers || [];
     if (!list.length) { $('dkCList').innerHTML = `<div class="empty">${tr('dk.no_containers')}</div>`; return; }
-    let h = `<table class="optable"><tr><th>${tr('dk.col_name')}</th><th>${tr('dk.col_image')}</th><th>${tr('dk.col_status')}</th><th>${tr('dk.col_ports')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
+    let h = `<table class="optable ctntbl"><tr>`
+      + `<th>${tr('dk.col_name')}</th><th>${tr('dk.col_image')}</th><th>${tr('dk.col_status')}</th>`
+      + `<th>${tr('dk.col_ip')}</th><th>${tr('dk.col_ports')}</th><th>${tr('dk.col_desc')}</th>`
+      + `<th>${tr('dk.col_uptime')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
     list.forEach((c) => {
       const running = c.state === 'running';
-      const paused = c.state === 'paused';
-      const cls = running ? 'on' : (paused ? 'warn' : 'off');
+      const ports = (c.ports || '').split(',').map((p) => p.trim()).filter(Boolean);
+      const portCell = ports.length ? ports.map((p) => `<span class="portlbl">${esc(p)}</span>`).join(' ') : '<span class="mut">-</span>';
+      const desc = c.description ? `<span title="${esc(c.description)}">${esc(c.description)}</span>` : '<span class="mut">-</span>';
+      const uptime = running && c.uptime ? esc(c.uptime.replace(/^Up\s+/i, '')) : '<span class="mut">-</span>';
       h += `<tr>
         <td><b>${esc(c.name)}</b><div class="mut mono" style="font-size:11px">${esc(c.id)}</div></td>
         <td class="mono" style="font-size:12px">${esc(c.image)}</td>
-        <td><span class="statuswrap" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}"><span class="chip ${cls}"><span class="dot-s ${running ? 'on' : ''}"></span>${esc(c.status || c.state)}</span></span></td>
-        <td class="mono" style="font-size:11.5px">${esc(c.ports || '-')}</td>
+        <td><span class="statuswrap" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}">${ctnStateChip(c.state)}</span></td>
+        <td class="mono" style="font-size:12px">${c.ip ? esc(c.ip) : '<span class="mut">-</span>'}</td>
+        <td class="portcell">${portCell}</td>
+        <td class="desccell mut" style="font-size:12px">${desc}</td>
+        <td class="mut" style="font-size:12px;white-space:nowrap">${uptime}</td>
         <td class="act"><div class="actions" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-shell="${c.has_shell ? 1 : 0}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}"></div></td>
       </tr>`;
     });
@@ -99,6 +83,17 @@ function dkContainers() {
     document.querySelectorAll('#dkCList .actions').forEach((a) => buildContainerActions(a, dkContainers));
     document.querySelectorAll('#dkCList .statuswrap').forEach((s) => buildStatusControls(s, dkContainers));
   }).catch((e) => { $('dkCList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+}
+
+// A clean state chip (decoupled from the long status text, which now feeds the
+// uptime column). Colour + label reflect the lifecycle state.
+function ctnStateChip(state) {
+  let cls = 'off', dot = '', key = 'dk.st_stopped';
+  if (state === 'running') { cls = 'on'; dot = ' on'; key = 'dk.st_running'; }
+  else if (state === 'paused') { cls = 'warn'; key = 'dk.st_paused'; }
+  else if (state === 'restarting') { cls = 'warn'; dot = ' init'; key = 'dk.st_restarting'; }
+  else if (state === 'created') { cls = ''; key = 'dk.st_created'; }
+  return `<span class="chip ${cls}"><span class="dot-s${dot}"></span>${tr(key)}</span>`;
 }
 
 // Build the lifecycle controls (start/stop/restart/force/pause/resume) shown on
@@ -122,6 +117,7 @@ function buildStatusControls(holder, reload) {
   }
   if (!items.length) return;
   holder.style.cursor = 'pointer';
+  holder.insertAdjacentHTML('beforeend', '<span class="c-caret">▾</span>');
   mkHoverPanel(holder, items);
 }
 
@@ -149,16 +145,19 @@ function buildContainerActions(holder, reload) {
   if (running) items.push({ label: tr('dk.monitor'), fn: () => dkMonitor(id, name) });
   items.push({ label: tr('dk.rename'), fn: () => dkRenameForm(id, name, reload) });
   items.push({ label: tr('dk.commit'), fn: () => dkCommitForm(id, name) });
+  items.push({ sep: true });
   items.push({ label: tr('dk.delete'), cls: 'danger', fn: async () => { if (await confirmDanger(tr('dk.confirm_rm_ctn', { name }))) doCAction('remove_container', id, reload); } });
   mkHoverPanel(adv, items);
 }
 
-// Create a body-anchored hover panel of action buttons for `trigger`. Avoids
-// clipping by the scrollable table wrapper (position:fixed, measured on show).
+// Create a body-anchored hover menu for `trigger`. Body-anchored (position:
+// fixed) so it isn't clipped by the scrollable table wrapper. Items render as
+// clean menu rows; `{ sep:true }` inserts a divider.
 function mkHoverPanel(trigger, items) {
   const panel = el('div', { class: 'dk-pop' });
   items.forEach((it) => {
-    const b = el('button', { class: 'btn sm ' + (it.cls != null ? it.cls : 'sec') }, it.label);
+    if (it.sep) { panel.appendChild(el('div', { class: 'mi-sep' })); return; }
+    const b = el('button', { class: 'mi' + (it.cls === 'danger' ? ' danger' : '') }, it.label);
     b.onclick = () => { hide(); it.fn(); };
     panel.appendChild(b);
   });

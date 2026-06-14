@@ -1051,6 +1051,34 @@ async fn list_containers() -> Result<Value> {
             .map(|l| l.contains_key("dn7.mysql"))
             .unwrap_or(false);
         let managed = name == crate::mysql::CONTAINER || has_mysql_label;
+        // First non-empty IPv4 across the container's networks.
+        let ip = c
+            .network_settings
+            .as_ref()
+            .and_then(|n| n.networks.as_ref())
+            .and_then(|nets| {
+                nets.values()
+                    .filter_map(|e| e.ip_address.clone())
+                    .find(|s| !s.is_empty())
+            })
+            .unwrap_or_default();
+        // A human description from OCI image labels (best-effort; often empty).
+        let description = c
+            .labels
+            .as_ref()
+            .and_then(|l| {
+                l.get("org.opencontainers.image.description")
+                    .or_else(|| l.get("org.opencontainers.image.title"))
+                    .cloned()
+            })
+            .unwrap_or_default();
+        // Uptime/duration text (running: "Up 2 hours"; otherwise the status).
+        let running = state == "running";
+        let uptime = if running {
+            c.status.clone().unwrap_or_default()
+        } else {
+            String::new()
+        };
         items.push(json!({
             "id": short_id,
             "name": name,
@@ -1058,6 +1086,9 @@ async fn list_containers() -> Result<Value> {
             "state": state,
             "status": c.status.clone().unwrap_or_default(),
             "ports": fmt_ports(&c.ports),
+            "ip": ip,
+            "description": description,
+            "uptime": uptime,
             "has_shell": has_shell,
             "managed": managed,
         }));
