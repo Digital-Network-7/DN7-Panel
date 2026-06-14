@@ -55,39 +55,8 @@ pub(crate) fn start_pull(req: &Req) -> Result<Value> {
         .to_string();
     validate_token(&image)?;
 
-    let mirror = req
-        .mirror
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let registry = req
-        .registry
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-
-    // Decide the actual pull source and whether a rename is needed afterwards.
-    let (pull_ref, final_ref) = if let Some(reg) = registry {
-        // Private registry: pull `<registry>/<image>` verbatim (no Docker Hub
-        // mirror applies). Validate against the configured list.
-        if !registry_allowed(reg) {
-            return Err(anyhow!("ERR_CODE:docker.bad_registry"));
-        }
-        (format!("{reg}/{}", with_default_tag(&image)), None)
-    } else {
-        match mirror {
-            Some(host) => {
-                if !mirror_allowed(host) {
-                    return Err(anyhow!("ERR_CODE:docker.bad_mirror"));
-                }
-                match docker_io_path(&image) {
-                    Some(path) => (format!("{host}/{path}"), Some(with_default_tag(&image))),
-                    None => (image.clone(), None),
-                }
-            }
-            None => (image.clone(), None),
-        }
-    };
+    // Decide the actual pull source and whether a post-pull rename is needed.
+    let (pull_ref, final_ref) = resolve_pull_source(req, &image)?;
 
     let shown = final_ref
         .clone()
@@ -119,6 +88,47 @@ pub(crate) fn start_pull(req: &Req) -> Result<Value> {
     });
 
     Ok(json!({ "op_id": op_id, "target": shown }))
+}
+
+/// Resolve where to actually pull from, and the final local name to end up with.
+/// Returns `(pull_ref, final_ref)`: `pull_ref` is pulled, then renamed to
+/// `final_ref` when `Some` (and different). A private registry is pulled
+/// verbatim; a Docker Hub mirror rewrites the host but we rename back to the
+/// canonical `docker.io` name afterwards. Both registry/mirror hosts are
+/// validated against the configured allow-lists.
+fn resolve_pull_source(req: &Req, image: &str) -> Result<(String, Option<String>)> {
+    let mirror = req
+        .mirror
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let registry = req
+        .registry
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    if let Some(reg) = registry {
+        // Private registry: pull `<registry>/<image>` verbatim (no Docker Hub
+        // mirror applies).
+        if !registry_allowed(reg) {
+            return Err(anyhow!("ERR_CODE:docker.bad_registry"));
+        }
+        return Ok((format!("{reg}/{}", with_default_tag(image)), None));
+    }
+    match mirror {
+        Some(host) => {
+            if !mirror_allowed(host) {
+                return Err(anyhow!("ERR_CODE:docker.bad_mirror"));
+            }
+            match docker_io_path(image) {
+                // Pull from the mirror, then rename back to the canonical name.
+                Some(path) => Ok((format!("{host}/{path}"), Some(with_default_tag(image)))),
+                None => Ok((image.to_string(), None)),
+            }
+        }
+        None => Ok((image.to_string(), None)),
+    }
 }
 
 /// Tag an image `source` as `target` (target = repo[:tag]).
