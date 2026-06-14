@@ -542,10 +542,30 @@ table.kvtbl th { text-align:left; color:var(--mut); font-weight:500; }
 /* ---- Container table: pinned Name (left) + Actions (right), middle scrolls. */
 table.ctntbl { border-collapse: separate; border-spacing: 0; min-width: 100%; }
 table.ctntbl th, table.ctntbl td { background: var(--panel-solid); white-space: nowrap; }
-table.ctntbl td.desccell { white-space: normal; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+table.ctntbl td.desccell { white-space: normal; max-width: 240px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 table.ctntbl td.portcell { white-space: normal; min-width: 160px; }
 table.ctntbl th:first-child, table.ctntbl td:first-child { position: sticky; left: 0; z-index: 2; box-shadow: 6px 0 8px -6px rgba(0,0,0,.35); }
 table.ctntbl th.act, table.ctntbl td.act { position: sticky; right: 0; z-index: 2; box-shadow: -6px 0 8px -6px rgba(0,0,0,.35); }
 table.ctntbl tr:first-child th:first-child, table.ctntbl tr:first-child th.act { z-index: 3; }
 .portlbl { display: inline-block; font-size: 11px; color: var(--mut); border: 1px solid var(--line2);
   border-radius: 6px; padding: 1px 7px; margin: 2px 4px 2px 0; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* ---- Container monitor modal: a clean 2×2 stat-card grid. ---- */
+.mongrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 560px) { .mongrid { grid-template-columns: 1fr; } }
+.moncard { background: var(--panel2); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; }
+.moncard .mon-k { font-size: 11.5px; color: var(--mut); letter-spacing: .05em; text-transform: uppercase; }
+.moncard .mon-big { font-size: 28px; font-weight: 650; line-height: 1; margin: 10px 0 4px; }
+.moncard .mon-unit { font-size: 14px; color: var(--mut); font-weight: 500; margin-left: 3px; }
+.moncard .mon-pct { font-size: 14px; color: var(--mut); font-weight: 500; margin-left: 10px; }
+.moncard .mon-sub { font-size: 12px; color: var(--mut); }
+.mon-bar { height: 8px; border-radius: 6px; background: var(--line); overflow: hidden; margin-top: 12px; }
+.mon-bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--cy), var(--br)); transition: width .5s ease; }
+.mon-bar.warn > i { background: linear-gradient(90deg, var(--warn), var(--err)); }
+.mon-duo { display: flex; gap: 10px; margin-top: 14px; }
+.mon-duo > div { flex: 1; background: var(--panel-solid); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.mon-duo .mon-io-k { font-size: 11.5px; color: var(--mut); display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
+.mon-duo .mon-io-v { font-size: 17px; font-weight: 600; }
+.mon-arrow { font-weight: 700; }
+.mon-arrow.dn { color: var(--ok); }
+.mon-arrow.up { color: var(--cy); }

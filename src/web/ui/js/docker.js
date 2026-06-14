@@ -129,20 +129,20 @@ function buildContainerActions(holder, reload) {
   // their own pages — show a plain "内置" tag, no action buttons.
   if (managed) { holder.innerHTML = `<span class="chip">${tr('dk.builtin')}</span>`; return; }
   const mk = (label, cls, fn) => { const b = el('button', { class: 'btn sm ' + (cls || 'sec') }, label); b.onclick = fn; holder.appendChild(b); };
-  // Outermost: at most 5 — terminal, files, logs, networks, advanced.
+  // Outermost: terminal, files, advanced (logs/networks moved into Advanced /
+  // the create-edit tabs respectively).
   if (running && hasShell) mk(tr('dk.terminal'), '', () => openTerminalModal(tr('dk.ctn_term') + name, () => ticket().then((t) => `/api/container/terminal?ticket=${encodeURIComponent(t)}&container=${encodeURIComponent(id)}`)));
   if (running) mk(tr('dk.files'), 'sec', () => openFileBrowser(tr('dk.ctn_files') + name, id));
-  mk(tr('dk.logs'), 'sec', () => dkLogs(id, name));
-  mk(tr('dk.networks'), 'sec', () => dkContainerNetworks(id, name));
   // Advanced menu (the button itself does nothing; items show on hover).
   const adv = el('button', { class: 'btn sm sec' }, tr('dk.advanced') + ' ▾');
   holder.appendChild(adv);
   const items = [
+    { label: tr('dk.logs'), fn: () => dkLogs(id, name) },
     { label: tr('dk.edit'), fn: () => dkEditForm(id, name) },
     { label: tr('dk.upgrade'), fn: () => dkUpgradeForm(id, name) },
-    { label: tr('dk.backup'), fn: () => dkBackups(id, name) },
   ];
   if (running) items.push({ label: tr('dk.monitor'), fn: () => dkMonitor(id, name) });
+  items.push({ label: tr('dk.backup'), fn: () => dkBackups(id, name) });
   items.push({ label: tr('dk.rename'), fn: () => dkRenameForm(id, name, reload) });
   items.push({ label: tr('dk.commit'), fn: () => dkCommitForm(id, name) });
   items.push({ sep: true });
@@ -185,21 +185,6 @@ function doCAction(o, id, reload) { op('docker', { op: o, ref: id }).then(() => 
 function dkLogs(id, name) {
   modal(tr('dk.logs_title') + name, '<div id="dkLogWrap">' + loading() + '</div>', () => {
     op('docker', { op: 'logs', ref: id, tail: 400 }).then((d) => { $('dkLogWrap').innerHTML = '<pre class="out" id="dkLogOut" style="max-height:64vh"></pre>'; $('dkLogOut').textContent = d.logs || tr('dk.empty_log'); $('dkLogOut').scrollTop = $('dkLogOut').scrollHeight; }).catch((e) => { $('dkLogWrap').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
-  });
-}
-
-function dkContainerNetworks(id, name) {
-  modal(tr('dk.net_title') + name, '<div id="cnBody">' + loading() + '</div>', () => {
-    const load = () => op('docker', { op: 'inspect_container_networks', ref: id }).then((d) => {
-      let h = `<h3 style="font-size:13px;margin:0 0 8px">${tr('dk.connected')}</h3>`;
-      h += (d.attached || []).map((n) => `<div class="row" style="margin-bottom:6px"><span class="chip on">${esc(n)}</span><button class="btn sm sec" data-dis="${esc(n)}">${tr('dk.disconnect')}</button></div>`).join('') || `<div class="mut" style="margin-bottom:10px">${tr('dk.none')}</div>`;
-      h += `<h3 style="font-size:13px;margin:14px 0 8px">${tr('dk.connectable')}</h3>`;
-      h += (d.available || []).map((n) => `<div class="row" style="margin-bottom:6px"><span class="chip">${esc(n.name)}</span><button class="btn sm" data-con="${esc(n.name)}">${tr('dk.connect')}</button></div>`).join('') || `<div class="mut">${tr('dk.none')}</div>`;
-      $('cnBody').innerHTML = h;
-      document.querySelectorAll('#cnBody [data-con]').forEach((b) => b.onclick = () => op('docker', { op: 'connect_network', ref: id, network: b.dataset.con }).then(load).catch((e) => toast(e.message, 'err')));
-      document.querySelectorAll('#cnBody [data-dis]').forEach((b) => b.onclick = () => op('docker', { op: 'disconnect_network', ref: id, network: b.dataset.dis }).then(load).catch((e) => toast(e.message, 'err')));
-    }).catch((e) => { $('cnBody').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
-    load();
   });
 }
 
@@ -585,15 +570,39 @@ function dkCommitForm(id, name) {
 function dkMonitor(id, name) {
   modal(tr('dk.monitor') + ' · ' + name, `<div id="monBody">${loading()}</div>`, (close, root) => {
     let stop = false;
-    const bar = (pct) => `<div style="height:8px;border-radius:6px;background:var(--panel2);overflow:hidden;margin:4px 0 14px"><div style="height:100%;width:${Math.min(100, pct).toFixed(1)}%;background:var(--ok);transition:width .4s"></div></div>`;
     const renderMon = (s) => {
+      const cpu = s.cpu_pct || 0;
       const memPct = s.mem_limit > 0 ? (s.mem_used / s.mem_limit * 100) : 0;
       $('monBody').innerHTML = `
-        <div class="row" style="justify-content:space-between"><span class="mut">${tr('dk.mon_cpu')}</span><b>${(s.cpu_pct || 0).toFixed(2)}%</b></div>${bar(s.cpu_pct || 0)}
-        <div class="row" style="justify-content:space-between"><span class="mut">${tr('dk.mon_mem')}</span><b>${dkHuman(s.mem_used)} / ${dkHuman(s.mem_limit)} (${memPct.toFixed(1)}%)</b></div>${bar(memPct)}
-        <div class="row" style="justify-content:space-between"><span class="mut">${tr('dk.mon_net')}</span><b>↓ ${dkHuman(s.net_rx)} · ↑ ${dkHuman(s.net_tx)}</b></div>
-        <div class="row" style="justify-content:space-between;margin-top:8px"><span class="mut">${tr('dk.mon_blk')}</span><b>${tr('dk.mon_read')} ${dkHuman(s.blk_read)} · ${tr('dk.mon_write')} ${dkHuman(s.blk_write)}</b></div>
-        <p class="formnote" style="margin-top:12px">${tr('dk.mon_hint')}</p>`;
+        <div class="mongrid">
+          <div class="moncard">
+            <div class="mon-k">${tr('dk.mon_cpu')}</div>
+            <div class="mon-big">${cpu.toFixed(1)}<span class="mon-unit">%</span></div>
+            <div class="mon-sub">${tr('dk.mon_cores', { n: s.cpu_online || 1 })}</div>
+            <div class="mon-bar ${cpu > 85 ? 'warn' : ''}"><i style="width:${Math.min(100, cpu).toFixed(1)}%"></i></div>
+          </div>
+          <div class="moncard">
+            <div class="mon-k">${tr('dk.mon_mem')}</div>
+            <div class="mon-big">${dkHuman(s.mem_used)}<span class="mon-pct">${memPct.toFixed(1)}%</span></div>
+            <div class="mon-sub">/ ${dkHuman(s.mem_limit)}</div>
+            <div class="mon-bar ${memPct > 85 ? 'warn' : ''}"><i style="width:${Math.min(100, memPct).toFixed(1)}%"></i></div>
+          </div>
+          <div class="moncard">
+            <div class="mon-k">${tr('dk.mon_net')}</div>
+            <div class="mon-duo">
+              <div><div class="mon-io-k"><span class="mon-arrow dn">↓</span>${tr('dk.mon_rx')}</div><div class="mon-io-v">${dkHuman(s.net_rx)}</div></div>
+              <div><div class="mon-io-k"><span class="mon-arrow up">↑</span>${tr('dk.mon_tx')}</div><div class="mon-io-v">${dkHuman(s.net_tx)}</div></div>
+            </div>
+          </div>
+          <div class="moncard">
+            <div class="mon-k">${tr('dk.mon_blk')}</div>
+            <div class="mon-duo">
+              <div><div class="mon-io-k">${tr('dk.mon_read')}</div><div class="mon-io-v">${dkHuman(s.blk_read)}</div></div>
+              <div><div class="mon-io-k">${tr('dk.mon_write')}</div><div class="mon-io-v">${dkHuman(s.blk_write)}</div></div>
+            </div>
+          </div>
+        </div>
+        <p class="formnote" style="margin-top:14px">${tr('dk.mon_hint')}</p>`;
     };
     const tick = () => {
       if (stop || !document.body.contains(root)) { stop = true; return; }
