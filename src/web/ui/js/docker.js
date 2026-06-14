@@ -349,17 +349,19 @@ function dkCreateModal(info, networks, opts) {
         <label class="switch"><input type="checkbox" id="ccTty" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.alloc_tty')}</b><span>${tr('dk.alloc_tty_d')}</span></span></label>
         <label class="switch"><input type="checkbox" id="ccStart" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.start_after')}</b><span>${tr('dk.start_after_d')}</span></span></label>
       </div>
+      <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="ccGo">${opts.submitLabel || tr('dk.create')}</button></div>
+      <div class="hidden" id="ccJob" style="margin-top:14px"></div>
     </div>
     <div id="ccNet" class="hidden">
-      <div class="formgrid">
-        <div class="full"><label class="lbl">${tr('dk.net_join')}</label><select id="ccNetSel" class="field">${netOpts}</select></div>
-        <div><label class="lbl">${tr('dk.mac_addr')}</label><div class="row" style="gap:6px;flex-wrap:nowrap"><input id="ccMac" class="field mono" placeholder="02:42:ac:11:00:02" style="flex:1" /><button type="button" class="btn sec sm" id="ccMacGen" title="${tr('dk.gen_random')}">⟳</button></div></div>
-        <div><label class="lbl">${tr('dk.ipv4_addr')}</label><div class="row" style="gap:6px;flex-wrap:nowrap"><input id="ccIpv4" class="field mono" placeholder="172.20.0.10" style="flex:1" /><button type="button" class="btn sec sm" id="ccIpv4Gen" title="${tr('dk.gen_random')}">⟳</button></div></div>
+      <label class="lbl">${tr('dk.net_join')}</label>
+      <div class="kvlist" id="ccNets"></div>
+      <button type="button" class="kvadd" id="ccNetAdd">${tr('dk.net_add')}</button>
+      <p class="formnote" style="margin-top:8px">${tr('dk.net_static_hint')}</p>
+      <div class="formgrid" style="margin-top:16px">
         <div><label class="lbl">${tr('dk.hostname')}</label><input id="ccHost" class="field" placeholder="web-01" /></div>
         <div><label class="lbl">${tr('dk.domainname')}</label><input id="ccDomain" class="field" placeholder="example.com" /></div>
         <div class="full"><label class="lbl">${tr('dk.dns')}</label><input id="ccDns" class="field mono" placeholder="1.1.1.1 8.8.8.8" /><p class="formnote" style="margin-top:5px">${tr('dk.dns_hint')}</p></div>
       </div>
-      <p class="formnote" style="margin-top:8px">${tr('dk.net_static_hint')}</p>
     </div>
     <div id="ccPortsT" class="hidden">
       <label class="lbl">${tr('dk.port_map')}</label><div class="kvlist" id="ccPorts"></div><button type="button" class="kvadd" id="ccPortsAdd">${tr('dk.add_port')}</button>
@@ -377,9 +379,7 @@ function dkCreateModal(info, networks, opts) {
     </div>
     <div id="ccEnvT" class="hidden">
       <label class="lbl">${tr('dk.env')}</label><div class="kvlist" id="ccEnv"></div><button type="button" class="kvadd" id="ccEnvAdd">${tr('dk.add_env')}</button>
-    </div>
-    <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="ccGo">${opts.submitLabel || tr('dk.create')}</button></div>
-    <div class="hidden" id="ccJob" style="margin-top:14px"></div>`, (close, root) => {
+    </div>`, (close, root) => {
     loadImageOptions(prefill ? prefill.image : undefined);    // Tab switching.
     const panes = { basic: 'ccBasic', net: 'ccNet', ports: 'ccPortsT', vol: 'ccVolT', res: 'ccRes', env: 'ccEnvT' };
     const tabs = root.querySelector('#ccTabs');
@@ -400,12 +400,34 @@ function dkCreateModal(info, networks, opts) {
     $('ccPortsAdd').onclick = () => portRow();
     $('ccEnvAdd').onclick = () => envRow();
     $('ccVolAdd').onclick = () => volRow();
-    // Network tab wiring: random MAC/IPv4 generators.
-    $('ccMac').value = randMac();
-    $('ccMacGen').onclick = () => { $('ccMac').value = randMac(); $('ccMac').dispatchEvent(new Event('input', { bubbles: true })); };
-    const curSubnet = () => { const o = $('ccNetSel').options[$('ccNetSel').selectedIndex]; return o ? (o.dataset.subnet || '') : ''; };
-    $('ccIpv4Gen').onclick = () => { const ip = randIpFromSubnet(curSubnet()); if (ip) { $('ccIpv4').value = ip; $('ccIpv4').dispatchEvent(new Event('input', { bubbles: true })); } else toast(tr('dk.ipv4_need_subnet'), 'err'); };
-    $('ccNetSel').onchange = () => { const ip = randIpFromSubnet(curSubnet()); $('ccIpv4').value = ip || ''; };
+    // Network tab: a container can join several networks. Each row is a network
+    // pick + optional MAC (auto-random) + optional static IPv4 (auto from the
+    // chosen network's subnet).
+    const netRow = (v) => {
+      const row = el('div', { class: 'netrow' });
+      row.innerHTML = `<select class="nr-net field">${netOpts}</select>`
+        + `<input class="nr-mac field mono" placeholder="${tr('dk.mac_addr')}" />`
+        + `<button type="button" class="btn sec sm nr-g nr-macgen" title="${tr('dk.gen_random')}">⟳</button>`
+        + `<input class="nr-ip field mono" placeholder="${tr('dk.ipv4_addr')}" />`
+        + `<button type="button" class="btn sec sm nr-g nr-ipgen" title="${tr('dk.gen_random')}">⟳</button>`
+        + `<button type="button" class="rm">×</button>`;
+      const sel = row.querySelector('.nr-net'), mac = row.querySelector('.nr-mac'), ip = row.querySelector('.nr-ip');
+      mac.value = (v && v.mac) || randMac();
+      if (v && v.network) sel.value = v.network;
+      if (v && v.ipv4) ip.value = v.ipv4;
+      const subnet = () => { const o = sel.options[sel.selectedIndex]; return o ? (o.dataset.subnet || '') : ''; };
+      sel.onchange = () => { if (!ip.value) { const g = randIpFromSubnet(subnet()); if (g) ip.value = g; } };
+      row.querySelector('.nr-macgen').onclick = () => { mac.value = randMac(); mac.dispatchEvent(new Event('input', { bubbles: true })); };
+      row.querySelector('.nr-ipgen').onclick = () => { const g = randIpFromSubnet(subnet()); if (g) { ip.value = g; ip.dispatchEvent(new Event('input', { bubbles: true })); } else toast(tr('dk.ipv4_need_subnet'), 'err'); };
+      row.querySelector('.rm').onclick = () => row.remove();
+      $('ccNets').appendChild(row);
+    };
+    $('ccNetAdd').onclick = () => netRow();
+    const readNetworks = () => Array.from($('ccNets').querySelectorAll('.netrow')).map((r) => ({
+      network: r.querySelector('.nr-net').value,
+      mac: r.querySelector('.nr-mac').value.trim() || undefined,
+      ipv4: r.querySelector('.nr-ip').value.trim() || undefined,
+    })).filter((n) => n.network);
     // Pre-fill from an existing container (edit / upgrade).
     if (prefill) {
       const cfg = prefill;
@@ -425,9 +447,7 @@ function dkCreateModal(info, networks, opts) {
       (cfg.ports || []).forEach((p) => portRow({ h: p.host, c: p.container, proto: p.proto }));
       (cfg.env || []).forEach((e) => { const i = e.indexOf('='); envRow({ k: i >= 0 ? e.slice(0, i) : e, v: i >= 0 ? e.slice(i + 1) : '' }); });
       (cfg.volumes || []).forEach((v) => volRow({ h: v.host, c: v.container }));
-      if (cfg.network) { $('ccNetSel').value = cfg.network; }
-      if (cfg.mac) $('ccMac').value = cfg.mac;
-      $('ccIpv4').value = cfg.ipv4 || '';
+      (cfg.networks || []).forEach((n) => netRow(n));
       $('ccHost').value = cfg.hostname || '';
       $('ccDomain').value = cfg.domainname || '';
       $('ccDns').value = (cfg.dns || []).join(' ');
@@ -441,9 +461,7 @@ function dkCreateModal(info, networks, opts) {
       const ports = readKv('ccPorts').map((r) => ({ host: Number(r[0]), container: Number(r[1]), proto: r.proto || 'tcp' })).filter((p) => p.host && p.container);
       const env = readKv('ccEnv').map((r) => (r[0] ? r[0] + '=' + (r[1] || '') : '')).filter(Boolean);
       const volumes = readKv('ccVol').map((r) => ({ host: r[0], container: r[1], readonly: !!r.ro })).filter((vv) => vv.host && vv.container);
-      const network = $('ccNetSel').value || undefined;
-      const mac = $('ccMac').value.trim();
-      const ipv4 = $('ccIpv4').value.trim();
+      const networks = readNetworks();
       const dns = $('ccDns').value.trim().split(/[\s,]+/).filter(Boolean);
       const cpuShares = Number($('ccCpuShares').value) || 0;
       const cpusV = Number($('ccCpus').value) || 0;
@@ -451,7 +469,7 @@ function dkCreateModal(info, networks, opts) {
       const body = {
         op: 'create_container', image, name: $('ccName').value.trim() || undefined, restart: $('ccRestart').value,
         ports, env, volumes, command: $('ccCmd').value.trim() || undefined, tty: $('ccTty').checked, start: $('ccStart').checked,
-        network, mac: network && mac ? mac : undefined, ipv4: network && ipv4 ? ipv4 : undefined,
+        networks,
         hostname: $('ccHost').value.trim() || undefined, domainname: $('ccDomain').value.trim() || undefined,
         dns: dns.length ? dns : undefined, cpu_shares: cpuShares || undefined,
         cpus: cpusV > 0 ? String(cpusV) : undefined, memory: memV > 0 ? memV + 'm' : undefined,

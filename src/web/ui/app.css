@@ -285,7 +285,14 @@
   .kvrow .sep { color:var(--mut); flex:0 0 auto; font-size:13px; }
   .kvrow .rm { flex:0 0 auto; width:30px; height:30px; border-radius:8px; border:1px solid var(--line); background:var(--hov); color:var(--err); cursor:pointer; font-size:16px; line-height:1; }
   .kvrow .ro { flex:0 0 auto; display:flex; align-items:center; gap:5px; font-size:12px; color:var(--mut); white-space:nowrap; }
-  .kvadd { align-self:flex-start; font-size:12.5px; color:var(--cy); cursor:pointer; background:none; border:none; padding:2px 0; }
+  .kvadd { display:block; margin:12px auto 0; font-size:12.5px; color:var(--mut); cursor:pointer; background:var(--hov); border:1px dashed var(--line2); border-radius:9px; padding:8px 18px; transition:border-color .14s,color .14s; }
+  .kvadd:hover { border-color:var(--cy); color:var(--cy); }
+  /* Network attachment row (create/edit container — a container can join many). */
+  .netrow { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+  .netrow .nr-net { flex:0 0 32%; }
+  .netrow .nr-mac, .netrow .nr-ip { flex:1; min-width:0; }
+  .netrow .nr-g { flex:0 0 auto; }
+  .netrow .rm { flex:0 0 auto; width:30px; height:30px; border-radius:8px; border:1px solid var(--line); background:var(--hov); color:var(--err); cursor:pointer; font-size:16px; line-height:1; }
   /* Toggle switch (single on/off control) — used for site options. */
   .switch { display:flex; align-items:center; gap:11px; padding:11px 0; }
   .switch .swbox { position:relative; width:40px; height:22px; flex:0 0 auto; border-radius:99px; background:var(--hov); border:1px solid var(--line2); transition:background .18s; cursor:pointer; }
@@ -341,7 +348,7 @@
   .filepick { display:flex; align-items:center; gap:10px; margin-top:6px; }
   .filepick .fp-name { font-size:12px; color:var(--mut); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .modal { background:var(--panel-solid); border:1px solid var(--line2); border-radius:16px; box-shadow:var(--shadow); width:760px; max-width:100%; max-height:88vh; display:flex; flex-direction:column; overflow:hidden; }
-  .modal.big { width:1000px; height:80vh; }
+  .modal.big { width:1000px; max-height:88vh; }
   .modal-h { display:flex; align-items:center; gap:12px; padding:15px 18px; border-bottom:1px solid var(--line); }
   .modal-h h3 { margin:0; font-size:15px; flex:1; }
   .modal-b { padding:18px; overflow:auto; flex:1; }
@@ -386,7 +393,7 @@
      the toolbar is a fixed flex item (the list scrolls beneath it) — relying on
      the modal body's own scroll left a gap above a sticky toolbar where rows
      showed through. */
-  .modal-b > #fbModal { display:flex; flex-direction:column; height:100%; min-height:0; }
+  .modal-b > #fbModal { display:flex; flex-direction:column; height:72vh; min-height:0; }
   .modal-b > #fbModal .fb-toolbar { position:static; }
   .modal-b > #fbModal .fb-scroll { flex:1 1 auto; min-height:0; overflow-y:auto; }
   .fb-pathbar { flex:1; min-width:0; display:flex; align-items:center; gap:4px; flex-wrap:nowrap; overflow-x:auto; white-space:nowrap;

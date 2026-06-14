@@ -91,6 +91,11 @@ struct Req {
     start: Option<bool>,
     #[serde(default)]
     network: Option<String>,
+    /// Networks to join at create time (each with optional MAC / static IPv4).
+    /// A container can be attached to several networks; the first is set on the
+    /// create call, the rest are connected right after.
+    #[serde(default)]
+    networks: Option<Vec<NetAttach>>,
     // network create options
     #[serde(default)]
     driver: Option<String>,
@@ -155,6 +160,18 @@ struct PortMap {
     container: i64,
     #[serde(default)]
     proto: Option<String>, // "tcp" | "udp", default tcp
+}
+
+/// One network attachment for a container: the network name plus an optional
+/// MAC address and static IPv4 for the endpoint on that network.
+#[derive(Debug, Deserialize, Clone, Default)]
+struct NetAttach {
+    #[serde(default)]
+    network: String,
+    #[serde(default)]
+    mac: Option<String>,
+    #[serde(default)]
+    ipv4: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -1700,6 +1717,9 @@ struct CreateSpec {
     config: bollard::container::Config<String>,
     /// When set, remove this existing container before creating (edit/upgrade).
     replace: Option<String>,
+    /// Networks (beyond the first) to connect after creation, each with an
+    /// optional MAC / static IPv4.
+    extra_networks: Vec<NetAttach>,
 }
 
 /// Build a bollard create config from a validated request. Every user value is
@@ -1744,17 +1764,72 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
         maximum_retry_count: None,
     };
 
-    // Network (optional; must be an existing network). Empty => default bridge.
-    let mut network: Option<String> = None;
-    if let Some(net) = req
+    // Network attachments (a container can join several). Prefer the explicit
+    // list; fall back to the legacy single network/mac/ipv4 fields. Each is
+    // validated; the first is applied on the create call (host_config +
+    // networking_config), the rest are connected right after creation.
+    let mut attachments: Vec<NetAttach> = Vec::new();
+    if let Some(list) = &req.networks {
+        for a in list {
+            let name = a.network.trim();
+            if name.is_empty() {
+                continue;
+            }
+            validate_token(name)?;
+            let mac = match opt_trim(&a.mac) {
+                Some(m) => {
+                    valid_mac(&m)?;
+                    Some(m)
+                }
+                None => None,
+            };
+            let ipv4 = match opt_trim(&a.ipv4) {
+                Some(ip) => {
+                    valid_ipv4(&ip)?;
+                    Some(ip)
+                }
+                None => None,
+            };
+            if attachments.iter().any(|x| x.network == name) {
+                continue; // dedupe
+            }
+            attachments.push(NetAttach {
+                network: name.to_string(),
+                mac,
+                ipv4,
+            });
+        }
+    } else if let Some(net) = req
         .network
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
         validate_token(net)?;
-        network = Some(net.to_string());
+        let mac = match opt_trim(&req.mac) {
+            Some(m) => {
+                valid_mac(&m)?;
+                Some(m)
+            }
+            None => None,
+        };
+        let ipv4 = match opt_trim(&req.ipv4) {
+            Some(ip) => {
+                valid_ipv4(&ip)?;
+                Some(ip)
+            }
+            None => None,
+        };
+        attachments.push(NetAttach {
+            network: net.to_string(),
+            mac,
+            ipv4,
+        });
     }
+    if attachments.len() > 16 {
+        return Err(anyhow!("ERR_CODE:docker.too_many_networks"));
+    }
+    let network: Option<String> = attachments.first().map(|a| a.network.clone());
 
     // Port mappings -> exposed_ports + host port bindings.
     let mut exposed: HashMap<String, HashMap<(), ()>> = HashMap::new();
@@ -1894,38 +1969,23 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
         None => None,
     };
 
-    // Per-endpoint network options: static IPv4 and/or MAC address. These are
-    // only honoured when a (user-defined) network is selected.
-    let mac = match opt_trim(&req.mac) {
-        Some(m) => {
-            valid_mac(&m)?;
-            Some(m)
-        }
-        None => None,
-    };
-    let ipv4 = match opt_trim(&req.ipv4) {
-        Some(ip) => {
-            valid_ipv4(&ip)?;
-            Some(ip)
-        }
-        None => None,
-    };
-    if (mac.is_some() || ipv4.is_some()) && network.is_none() {
-        return Err(anyhow!("ERR_CODE:docker.endpoint_needs_network"));
-    }
-
-    // Build the per-network endpoint config when MAC/IPv4 are requested.
-    let networking_config = match (&network, mac.is_some() || ipv4.is_some()) {
-        (Some(net), true) => {
+    // Per-endpoint network options for the FIRST attachment (static IPv4 / MAC),
+    // applied on the create call. Remaining attachments are connected after.
+    let first = attachments.first().cloned();
+    let networking_config = match &first {
+        Some(a) if a.mac.is_some() || a.ipv4.is_some() => {
             let mut endpoints = HashMap::new();
             endpoints.insert(
-                net.clone(),
+                a.network.clone(),
                 bollard::models::EndpointSettings {
-                    ipam_config: ipv4.clone().map(|ip| bollard::models::EndpointIpamConfig {
-                        ipv4_address: Some(ip),
-                        ..Default::default()
-                    }),
-                    mac_address: mac.clone(),
+                    ipam_config: a
+                        .ipv4
+                        .clone()
+                        .map(|ip| bollard::models::EndpointIpamConfig {
+                            ipv4_address: Some(ip),
+                            ..Default::default()
+                        }),
+                    mac_address: a.mac.clone(),
                     ..Default::default()
                 },
             );
@@ -1935,6 +1995,7 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
         }
         _ => None,
     };
+    let extra_networks: Vec<NetAttach> = attachments.into_iter().skip(1).collect();
 
     // Optional command override.
     let cmd: Option<Vec<String>> = match req
@@ -1989,6 +2050,7 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
             start: req.start.unwrap_or(true),
             config,
             replace: opt_trim(&req.replace),
+            extra_networks,
         },
         display_name,
     ))
@@ -2167,6 +2229,30 @@ async fn create_container(spec: CreateSpec) -> Result<(String, bool)> {
         .await
         .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
     let id = created.id;
+    // Connect any additional networks before starting, each with its optional
+    // MAC / static IPv4 endpoint config.
+    for a in &spec.extra_networks {
+        let endpoint = bollard::models::EndpointSettings {
+            ipam_config: a
+                .ipv4
+                .clone()
+                .map(|ip| bollard::models::EndpointIpamConfig {
+                    ipv4_address: Some(ip),
+                    ..Default::default()
+                }),
+            mac_address: a.mac.clone(),
+            ..Default::default()
+        };
+        dkr.connect_network(
+            &a.network,
+            bollard::network::ConnectNetworkOptions {
+                container: id.clone(),
+                endpoint_config: endpoint,
+            },
+        )
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    }
     if spec.start {
         dkr.start_container(
             &id,
@@ -2377,29 +2463,24 @@ async fn container_create_body(dkr: &Docker, reference: &str) -> Result<Value> {
         .unwrap_or("unless-stopped")
         .to_string();
 
-    // Network + per-endpoint MAC / IPv4 (first user-defined network).
-    let network_mode = hc.network_mode.clone().unwrap_or_default();
-    let network = if network_mode.is_empty()
-        || matches!(
-            network_mode.as_str(),
-            "default" | "bridge" | "host" | "none"
-        ) {
-        String::new()
-    } else {
-        network_mode.clone()
-    };
-    let (mut mac, mut ipv4) = (String::new(), String::new());
-    if !network.is_empty() {
-        if let Some(ns) = &c.network_settings {
-            if let Some(nets) = &ns.networks {
-                if let Some(ep) = nets.get(&network_mode).or_else(|| nets.values().next()) {
-                    mac = ep.mac_address.clone().unwrap_or_default();
-                    ipv4 = ep
+    // Network attachments + per-endpoint MAC / IPv4 (all user-defined networks
+    // the container is on; built-in host/none modes can't be recreated this way).
+    let mut networks: Vec<Value> = Vec::new();
+    if let Some(ns) = &c.network_settings {
+        if let Some(nets) = &ns.networks {
+            for (nname, ep) in nets {
+                if matches!(nname.as_str(), "host" | "none") {
+                    continue;
+                }
+                networks.push(json!({
+                    "network": nname,
+                    "mac": ep.mac_address.clone().unwrap_or_default(),
+                    "ipv4": ep
                         .ipam_config
                         .as_ref()
                         .and_then(|i| i.ipv4_address.clone())
-                        .unwrap_or_default();
-                }
+                        .unwrap_or_default(),
+                }));
             }
         }
     }
@@ -2422,9 +2503,7 @@ async fn container_create_body(dkr: &Docker, reference: &str) -> Result<Value> {
         "volumes": volumes,
         "command": cmd,
         "tty": cfg.tty.unwrap_or(false),
-        "network": network,
-        "mac": mac,
-        "ipv4": ipv4,
+        "networks": networks,
         "hostname": cfg.hostname.clone().unwrap_or_default(),
         "domainname": cfg.domainname.clone().unwrap_or_default(),
         "dns": hc.dns.clone().unwrap_or_default(),
@@ -3629,6 +3708,7 @@ mod tests {
             restart: None,
             start: None,
             network: None,
+            networks: None,
             driver: None,
             subnet: None,
             gateway: None,
@@ -3847,9 +3927,49 @@ mod tests {
 
     #[test]
     fn build_create_spec_rejects_endpoint_without_network() {
+        // A NetAttach with an empty network name is skipped (not an endpoint).
         let mut req = mk_req("nginx");
-        req.ipv4 = Some("172.20.0.10".into());
-        assert!(build_create_spec(&req).is_err());
+        req.networks = Some(vec![NetAttach {
+            network: String::new(),
+            mac: None,
+            ipv4: Some("172.20.0.10".into()),
+        }]);
+        let (spec, _) = build_create_spec(&req).unwrap();
+        assert!(spec.config.networking_config.is_none());
+        assert!(spec.extra_networks.is_empty());
+    }
+
+    #[test]
+    fn build_create_spec_multi_network() {
+        let mut req = mk_req("nginx");
+        req.networks = Some(vec![
+            NetAttach {
+                network: "neta".into(),
+                mac: Some("02:42:ac:14:00:0a".into()),
+                ipv4: Some("172.20.0.10".into()),
+            },
+            NetAttach {
+                network: "netb".into(),
+                mac: None,
+                ipv4: None,
+            },
+        ]);
+        let (spec, _) = build_create_spec(&req).unwrap();
+        // First network on the create call.
+        assert_eq!(
+            spec.config
+                .host_config
+                .as_ref()
+                .unwrap()
+                .network_mode
+                .as_deref(),
+            Some("neta")
+        );
+        let nc = spec.config.networking_config.as_ref().unwrap();
+        assert!(nc.endpoints_config.contains_key("neta"));
+        // Second network connected after creation.
+        assert_eq!(spec.extra_networks.len(), 1);
+        assert_eq!(spec.extra_networks[0].network, "netb");
     }
 
     #[test]
