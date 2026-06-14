@@ -98,9 +98,11 @@
   .chip.on { color:var(--ok); border-color:rgba(52,211,153,.4); background:rgba(52,211,153,.10); }
   .chip.off { color:var(--mut); }
   .chip.warn { color:var(--warn); border-color:rgba(251,191,36,.4); background:rgba(251,191,36,.10); }
+  .chip.amber { color:var(--warn); border-color:rgba(251,191,36,.4); background:rgba(251,191,36,.10); }
   .dot-s { width:7px; height:7px; border-radius:99px; background:var(--mut); display:inline-block; }
   .dot-s.on { background:var(--ok); box-shadow:0 0 8px rgba(52,211,153,.7); }
   .dot-s.warn { background:var(--warn); }
+  .dot-s.amber { background:var(--warn); }
   .dot-s.init { background:var(--warn); animation:dotpulse 1.1s ease-in-out infinite; }
   @keyframes dotpulse { 0%,100%{ opacity:1; } 50%{ opacity:.35; } }
   /* Role labels (user management) — uniform box, colour-only variation. */

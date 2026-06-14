@@ -201,8 +201,8 @@ function wireCellTips(scope) {
 function ctnStateChip(state) {
   let cls = 'off', dot = '', key = 'dk.st_stopped';
   if (state === 'running') { cls = 'on'; dot = ' on'; key = 'dk.st_running'; }
-  else if (state === 'paused') { cls = 'warn'; dot = ' warn'; key = 'dk.st_paused'; }
-  else if (state === 'restarting') { cls = 'warn'; dot = ' init'; key = 'dk.st_restarting'; }
+  else if (state === 'paused') { cls = 'amber'; dot = ' amber'; key = 'dk.st_paused'; }
+  else if (state === 'restarting') { cls = 'amber'; dot = ' init'; key = 'dk.st_restarting'; }
   else if (state === 'created') { cls = ''; key = 'dk.st_created'; }
   return `<span class="chip ${cls}"><span class="dot-s${dot}"></span>${tr(key)}</span>`;
 }
@@ -372,19 +372,20 @@ function dkImages(info) {
   }).catch((e) => { $('dkIList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
 
-// Tag an image: shows the image's current tags, then a tag-input where each tag
-// typed + Enter becomes a removable chip. All collected chips are applied at once.
+// Manage an image's tags: the box is pre-filled with the current tags as
+// removable chips; add new ones with Enter, remove existing ones with ×. On
+// save the backend reconciles the desired set (adds new tags, untags removed).
 function dkTagForm(name, existing, info) {
-  const chips = [];
-  const ex = (existing || []).filter(Boolean);
+  const orig = (existing || []).filter(Boolean);
+  const chips = orig.slice();
   modal(tr('dk.tag_title') + name, `
-    ${ex.length ? `<label class="lbl">${tr('dk.tag_existing')}</label><div class="tagchips" style="margin:0 0 16px">${ex.map((t) => `<span class="imgtag">${esc(t)}</span>`).join('')}</div>` : ''}
-    <label class="lbl">${tr('dk.tag_new')}</label>
+    <label class="lbl">${tr('dk.tag_manage')}</label>
     <div class="taginput" id="tgBox"><input id="tgInput" placeholder="${tr('dk.tag_ph')}" /></div>
     <p class="formnote" style="margin-top:6px">${tr('dk.tag_hint')}</p>
-    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="tgGo" disabled>${tr('dk.tag_apply')}</button></div>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="tgGo" disabled>${tr('ng.save')}</button></div>
   `, (close) => {
     const box = $('tgBox'), input = $('tgInput'), go = $('tgGo');
+    const changed = () => { const a = chips.slice().sort(), b = orig.slice().sort(); return a.length !== b.length || a.some((x, i) => x !== b[i]); };
     const render = () => {
       box.querySelectorAll('.tagchip').forEach((e) => e.remove());
       chips.forEach((t, i) => {
@@ -393,7 +394,7 @@ function dkTagForm(name, existing, info) {
         c.querySelector('button').onclick = () => { chips.splice(i, 1); render(); };
         box.insertBefore(c, input);
       });
-      go.disabled = chips.length === 0;
+      go.disabled = !changed();
     };
     const add = () => { const v = input.value.trim(); if (v && !chips.includes(v)) { chips.push(v); input.value = ''; render(); } };
     input.onkeydown = (e) => {
@@ -402,10 +403,11 @@ function dkTagForm(name, existing, info) {
     };
     input.onblur = add;
     box.onclick = () => input.focus();
+    render();
     go.onclick = () => {
       add();
       if (!chips.length) return toast(tr('dk.tag_empty'), 'err');
-      op('docker', { op: 'tag_image', ref: name, tags: chips.slice() }).then(() => { toast(tr('dk.tag_done'), 'ok'); close(); dkImages(info); }).catch((e) => toast(e.message, 'err'));
+      op('docker', { op: 'retag_image', ref: name, tags: chips.slice() }).then(() => { toast(tr('dk.tag_done'), 'ok'); close(); dkImages(info); }).catch((e) => toast(e.message, 'err'));
     };
   });
 }

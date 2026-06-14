@@ -461,6 +461,7 @@ async fn handle(req: &Req) -> Result<Value> {
             Ok(json!({ "removed": r }))
         }
         "tag_image" => add_image_tags(req).await,
+        "retag_image" => retag_image(req).await,
         "list_containers" => list_containers().await,
         "list_dirs" => list_dir_suggest(req),
         "inspect_container" => inspect_container(req).await,
@@ -910,6 +911,69 @@ async fn add_image_tags(req: &Req) -> Result<Value> {
         .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
     }
     Ok(json!({ "tagged": src, "count": tags.len() }))
+}
+
+/// Reconcile an image's tags to a desired set: add the new ones (docker tag),
+/// then untag the removed ones (docker rmi <repo:tag>, force=false). Adds run
+/// first so the image always keeps at least one tag while old ones are dropped.
+async fn retag_image(req: &Req) -> Result<Value> {
+    let reference = need_ref(req)?;
+    if managed_image_guard(&reference).await {
+        return Err(anyhow!("ERR_CODE:docker.image_in_use_builtin"));
+    }
+    let mut desired: Vec<String> = req
+        .tags
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    desired.dedup();
+    if desired.is_empty() {
+        return Err(anyhow!("ERR_CODE:docker.tag_empty"));
+    }
+    if desired.len() > 20 {
+        return Err(anyhow!("ERR_CODE:docker.too_many_tags"));
+    }
+    for t in &desired {
+        if validate_token(t).is_err() {
+            return Err(anyhow!("ERR_CODE:docker.bad_tag"));
+        }
+    }
+    let dkr = dkr()?;
+    let info = dkr
+        .inspect_image(&reference)
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    let current: Vec<String> = info
+        .repo_tags
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t != "<none>:<none>")
+        .collect();
+    let add: Vec<&String> = desired.iter().filter(|t| !current.contains(t)).collect();
+    let remove: Vec<&String> = current.iter().filter(|t| !desired.contains(t)).collect();
+
+    for t in &add {
+        let (repo, tag) = split_repo_tag(t);
+        dkr.tag_image(
+            &reference,
+            Some(bollard::image::TagImageOptions::<String> { repo, tag }),
+        )
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    }
+    for t in &remove {
+        let opts = bollard::image::RemoveImageOptions {
+            force: false,
+            noprune: false,
+        };
+        dkr.remove_image(t, Some(opts), None)
+            .await
+            .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    }
+    Ok(json!({ "added": add.len(), "removed": remove.len() }))
 }
 
 async fn list_images() -> Result<Value> {
