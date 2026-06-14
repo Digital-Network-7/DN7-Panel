@@ -75,18 +75,16 @@ pub(crate) fn start_install(req: &Req) -> Result<Value> {
 
     let op_t = op_id.clone();
     let inst_t = inst_id.clone();
+    let spec = InstallSpec {
+        engine,
+        version,
+        port,
+        inst_id: inst_id.clone(),
+        password,
+        admin_user,
+    };
     tokio::spawn(async move {
-        match run_install_detached(
-            &op_t,
-            &engine,
-            &version,
-            port,
-            &inst_t,
-            password,
-            &admin_user,
-        )
-        .await
-        {
+        match run_install_detached(&op_t, spec).await {
             Ok(()) => op_finish(&op_t, "done", "", &inst_t),
             Err(e) => op_finish(&op_t, "error", &e.to_string(), ""),
         }
@@ -94,20 +92,31 @@ pub(crate) fn start_install(req: &Req) -> Result<Value> {
     Ok(json!({ "op_id": op_id, "inst_id": inst_id }))
 }
 
+/// Parameters for a detached MySQL/MariaDB install (bundled to keep the
+/// argument count sane).
+pub(crate) struct InstallSpec {
+    engine: String,
+    version: String,
+    port: Option<i64>,
+    inst_id: String,
+    password: Option<String>,
+    admin_user: String,
+}
+
 /// Pull the image (streaming progress), create the data volume, then create and
 /// start the container with a generated root password. Writes the manifest on
 /// success so the instance is tracked even across restarts.
-pub(crate) async fn run_install_detached(
-    op_id: &str,
-    engine: &str,
-    version: &str,
-    port: Option<i64>,
-    inst_id: &str,
-    password: Option<String>,
-    admin_user: &str,
-) -> Result<()> {
+pub(crate) async fn run_install_detached(op_id: &str, spec: InstallSpec) -> Result<()> {
+    let InstallSpec {
+        engine,
+        version,
+        port,
+        inst_id,
+        password,
+        admin_user,
+    } = spec;
     let dkr = dkr()?;
-    let image = image_ref(engine, version);
+    let image = image_ref(&engine, &version);
 
     // 0. If exposing a host port, fail fast when it's already published by
     // another container (a clearer error than Docker's late "port is allocated").
@@ -126,7 +135,7 @@ pub(crate) async fn run_install_detached(
     // 2. Create a named data volume so the data survives container recreation.
     let volume = VOLUME.to_string();
     op_push(op_id, &pmsg("my.creating_volume", &[]));
-    create_volume(&dkr, &volume, inst_id, engine).await?;
+    create_volume(&dkr, &volume, &inst_id, &engine).await?;
 
     // 3. Use the provided root password, or generate one; store encrypted.
     let password = password.unwrap_or_else(gen_password);
@@ -136,7 +145,7 @@ pub(crate) async fn run_install_detached(
     let container = CONTAINER.to_string();
     op_push(op_id, &pmsg("my.creating_container", &[]));
     create_mysql_container(
-        &dkr, &container, &image, engine, inst_id, &volume, port, &password,
+        &dkr, &container, &image, &engine, &inst_id, &volume, port, &password,
     )
     .await?;
     op_push(op_id, &pmsg("my.starting", &[]));
@@ -150,15 +159,15 @@ pub(crate) async fn run_install_detached(
     // 5. Persist the manifest first (now the instance is officially
     // DN7 Panel-managed and will show up in the list even while initializing).
     let m = Manifest {
-        id: inst_id.to_string(),
-        engine: engine.to_string(),
-        version: version.to_string(),
+        id: inst_id.clone(),
+        engine: engine.clone(),
+        version: version.clone(),
         container: container.clone(),
         volume,
         port,
         root_enc,
         created_at: now_secs(),
-        admin_user: admin_user.to_string(),
+        admin_user: admin_user.clone(),
     };
     save_manifest(&m)?;
 
@@ -167,19 +176,7 @@ pub(crate) async fn run_install_detached(
     // queries fail until this completes, so block the op until it's truly ready.
     op_push(op_id, &pmsg("my.waiting_ready", &[]));
     if wait_ready(&container, &password, op_id, 180).await {
-        // When the admin account isn't root, create it as a full-privilege user
-        // sharing the same password (root stays the panel's internal superuser).
-        if admin_user != "root" && valid_ident(admin_user, false) {
-            let esc_user = sql_escape(admin_user);
-            let esc_pw = sql_escape(&password);
-            let create =
-                format!("CREATE USER IF NOT EXISTS '{esc_user}'@'%' IDENTIFIED BY '{esc_pw}';");
-            let grant =
-                format!("GRANT ALL PRIVILEGES ON *.* TO '{esc_user}'@'%' WITH GRANT OPTION;");
-            let _ = run_stmt(&container, &password, &create).await;
-            let _ = run_stmt(&container, &password, &grant).await;
-            let _ = run_stmt(&container, &password, "FLUSH PRIVILEGES;").await;
-        }
+        create_admin_user(&container, &password, &admin_user).await;
         op_push(op_id, &pmsg("my.install_done", &[]));
     } else {
         // Don't hard-fail: the container exists and may still come up. Surface
@@ -187,6 +184,22 @@ pub(crate) async fn run_install_detached(
         op_push(op_id, &pmsg("my.init_timeout", &[]));
     }
     Ok(())
+}
+
+/// When the admin account isn't root, create it as a full-privilege user
+/// sharing the same password (root stays the panel's internal superuser).
+/// No-op for `root` or an invalid identifier.
+async fn create_admin_user(container: &str, password: &str, admin_user: &str) {
+    if admin_user == "root" || !valid_ident(admin_user, false) {
+        return;
+    }
+    let esc_user = sql_escape(admin_user);
+    let esc_pw = sql_escape(password);
+    let create = format!("CREATE USER IF NOT EXISTS '{esc_user}'@'%' IDENTIFIED BY '{esc_pw}';");
+    let grant = format!("GRANT ALL PRIVILEGES ON *.* TO '{esc_user}'@'%' WITH GRANT OPTION;");
+    let _ = run_stmt(container, password, &create).await;
+    let _ = run_stmt(container, password, &grant).await;
+    let _ = run_stmt(container, password, "FLUSH PRIVILEGES;").await;
 }
 
 pub(crate) fn now_secs() -> i64 {
