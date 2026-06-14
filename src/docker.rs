@@ -1268,6 +1268,17 @@ fn fmt_port_map(pm: &HashMap<String, Option<Vec<bollard::models::PortBinding>>>)
 }
 
 /// Tail a container's logs (via the daemon API).
+/// Strip non-text bytes from decoded log output: keep newlines/tabs and any
+/// valid printable character (including CJK/emoji), drop control characters and
+/// the U+FFFD replacement marker left by invalid UTF-8. This turns a binary
+/// line (e.g. a raw TLS handshake logged verbatim) into harmless short text
+/// instead of a wall of escapes / boxes.
+fn sanitize_log(s: &str) -> String {
+    s.chars()
+        .filter(|&c| c == '\n' || c == '\r' || c == '\t' || (!c.is_control() && c != '\u{FFFD}'))
+        .collect()
+}
+
 async fn container_logs(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
     let tail = req.tail.unwrap_or(200).clamp(1, 2000);
@@ -1280,21 +1291,26 @@ async fn container_logs(req: &Req) -> Result<Value> {
         ..Default::default()
     };
     let mut stream = dkr.logs(&r, Some(opts));
-    let mut text = String::new();
+    let mut bytes: Vec<u8> = Vec::new();
     while let Some(item) = stream.next().await {
         match item {
-            Ok(out) => {
-                // LogOutput derefs to the raw bytes of the line.
-                text.push_str(&String::from_utf8_lossy(&out.into_bytes()));
-            }
+            Ok(out) => bytes.extend_from_slice(&out.into_bytes()),
             Err(e) => {
-                if text.is_empty() {
-                    return Err(anyhow!(friendly_docker_err(&e)));
+                // "bytes remaining on stream" and similar end-of-stream framing
+                // errors (common with TTY containers / stream teardown) are
+                // benign — keep whatever we've already collected.
+                let msg = e.to_string();
+                if msg.contains("bytes remaining") || !bytes.is_empty() {
+                    break;
                 }
-                break;
+                return Err(anyhow!(friendly_docker_err(&e)));
             }
         }
     }
+    // Decode leniently, then drop non-text bytes so a stray binary line (e.g. a
+    // TLS handshake probe logged verbatim) doesn't fill the view with control /
+    // replacement characters. Keeps newlines/tabs and all valid (incl. CJK) text.
+    let mut text = sanitize_log(&String::from_utf8_lossy(&bytes));
     // If there's no output, a constantly-restarting container is the usual
     // cause. Surface its state + last exit code so the user understands why.
     if text.trim().is_empty() {
@@ -3656,6 +3672,15 @@ async fn sh(script: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitizes_binary_log() {
+        // Control bytes + invalid UTF-8 are dropped; text + newlines/CJK kept.
+        let raw = String::from_utf8_lossy(b"hi\n\x16\x03\x01\x00ok\xEE\x01world\t!");
+        let out = sanitize_log(&raw);
+        assert_eq!(out, "hi\nokworld\t!");
+        assert_eq!(sanitize_log("日志 ok"), "日志 ok");
+    }
 
     #[test]
     fn validates_refs() {
