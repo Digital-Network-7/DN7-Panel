@@ -150,13 +150,26 @@ function dkContainers() {
 }
 
 // Toggle scroll-aware frozen-column shadows on the container table wrapper.
+function updateStickyShadows(wrap) {
+  if (!wrap) return;
+  wrap.classList.toggle('scl', wrap.scrollLeft > 1);
+  wrap.classList.toggle('scr', wrap.scrollLeft + wrap.clientWidth < wrap.scrollWidth - 1);
+}
 function wireStickyShadows(wrap) {
   if (!wrap) return;
-  const upd = () => {
-    wrap.classList.toggle('scl', wrap.scrollLeft > 1);
-    wrap.classList.toggle('scr', wrap.scrollLeft + wrap.clientWidth < wrap.scrollWidth - 1);
-  };
+  const upd = () => updateStickyShadows(wrap);
   wrap.addEventListener('scroll', upd, { passive: true });
+  // Recompute on viewport resize — a wider window may stop the table from
+  // overflowing (so the right shadow must hide) and vice-versa. Bind the window
+  // listener once and re-resolve the current wrapper each time to avoid leaks.
+  if (!wireStickyShadows._bound) {
+    wireStickyShadows._bound = true;
+    window.addEventListener('resize', () => updateStickyShadows(document.querySelector('#dkCList .tablewrap')));
+  }
+  // Also react to layout changes that don't fire window resize (sidebar toggle).
+  if (window.ResizeObserver) {
+    new ResizeObserver(upd).observe(wrap);
+  }
   upd();
   setTimeout(upd, 60);
 }
@@ -506,7 +519,7 @@ function dkCreateModal(info, networks, opts) {
         + `<select class="vr-vol field hidden">${volOpts}</select>`
         + `<span class="sep">→</span>`
         + `<input class="vr-ctn field" placeholder="/app" />`
-        + `<label class="ro"><input type="checkbox" class="vr-ro" /> ${tr('dk.readonly')}</label>`
+        + `<label class="tgl"><input type="checkbox" class="vr-ro" /><span class="tglbox"></span><span class="tgltxt">${tr('dk.readonly')}</span></label>`
         + `<button type="button" class="rm">×</button>`;
       const type = row.querySelector('.vr-type'), host = row.querySelector('.vr-host'), vsel = row.querySelector('.vr-vol');
       const syncType = () => { const isVol = type.value === 'vol'; host.classList.toggle('hidden', isVol); vsel.classList.toggle('hidden', !isVol); };
@@ -856,16 +869,15 @@ function kvRow(id, cells, opts) {
     row.appendChild(sel);
   }
   if (opts.ipv6) {
-    const lab = el('label', { class: 'ro' });
-    lab.innerHTML = '<input type="checkbox" /> IPv6';
+    const lab = el('label', { class: 'tgl', title: tr('dk.ipv6_hint') });
+    lab.innerHTML = '<input type="checkbox" /><span class="tglbox"></span><span class="tgltxt">IPv6</span>';
     const cb = lab.querySelector('input'); cb._ipv6 = true;
     if (opts.ipv6Val) cb.checked = true;
-    lab.title = tr('dk.ipv6_hint');
     row.appendChild(lab);
   }
   if (opts.ro) {
-    const lab = el('label', { class: 'ro' });
-    lab.innerHTML = `<input type="checkbox" /> ${tr('dk.readonly')}`;
+    const lab = el('label', { class: 'tgl' });
+    lab.innerHTML = `<input type="checkbox" /><span class="tglbox"></span><span class="tgltxt">${tr('dk.readonly')}</span>`;
     lab.querySelector('input')._ro = true;
     row.appendChild(lab);
   }
