@@ -38,6 +38,17 @@ function selxOpen(sel) {
     }
     pop.appendChild(opt);
   });
+  // Optional search box (opt-in via `data-selx-search`): filters options live.
+  let searchInput = null;
+  if (sel.hasAttribute('data-selx-search')) {
+    searchInput = el('input', { class: 'selx-search', placeholder: tr('common.search') });
+    searchInput.addEventListener('mousedown', (e) => e.stopPropagation());
+    searchInput.addEventListener('input', () => {
+      const q = searchInput.value.trim().toLowerCase();
+      pop.querySelectorAll('.selx-opt').forEach((o) => o.classList.toggle('selx-hide', !!q && !o.textContent.toLowerCase().includes(q)));
+    });
+    pop.insertBefore(searchInput, pop.firstChild);
+  }
   document.body.appendChild(pop);
   SELX.pop = pop;
   // Position under (or above, if no room) the select, matching its width.
@@ -50,6 +61,7 @@ function selxOpen(sel) {
   // Scroll the selected option into view within the popup only.
   const selOpt = pop.querySelector('.selx-opt.sel');
   if (selOpt) selOpt.scrollIntoView({ block: 'nearest' });
+  if (searchInput) setTimeout(() => searchInput.focus(), 0);
 }
 // Intercept native dropdown on pointerdown (capture) for any <select>.
 document.addEventListener('mousedown', (e) => {
@@ -69,7 +81,7 @@ document.addEventListener('keydown', (e) => {
   }
   if (!SELX.pop) return;
   if (e.key === 'Escape') { e.preventDefault(); selxClose(); return; }
-  const opts = Array.from(SELX.pop.querySelectorAll('.selx-opt:not(.dis)'));
+  const opts = Array.from(SELX.pop.querySelectorAll('.selx-opt:not(.dis):not(.selx-hide)'));
   if (!opts.length) return;
   let cur = opts.findIndex((o) => o.classList.contains('active'));
   if (cur < 0) cur = opts.findIndex((o) => o.classList.contains('sel'));

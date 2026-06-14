@@ -65,6 +65,8 @@
      change / dynamic options); we only intercept its dropdown and render this. */
   .selx-pop { position:fixed; z-index:120; max-height:260px; overflow-y:auto;
     background:var(--panel-solid); border:1px solid var(--line2); border-radius:10px; box-shadow:var(--shadow); padding:4px; }
+  .selx-search { width:100%; box-sizing:border-box; margin-bottom:4px; padding:7px 10px; font-size:13px; border:1px solid var(--line2); border-radius:8px; background:var(--panel2); color:var(--fg); outline:none; position:sticky; top:0; }
+  .selx-opt.selx-hide { display:none; }
   .selx-opt { padding:9px 11px; font-size:13px; cursor:pointer; border-radius:7px; display:flex; align-items:center; gap:8px; }
   .selx-opt:hover, .selx-opt.active { background:var(--hov); }
   .selx-opt.sel { color:var(--cy); }

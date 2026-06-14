@@ -28,6 +28,7 @@ function renderNginx(v) {
         <button data-t="hosts">${tr('ng.tab_hosts')}</button>
         <button data-t="access">${tr('ng.tab_access')}</button>
         <button data-t="certs">${tr('ng.tab_certs')}</button>
+        <button data-t="default">${tr('ng.tab_default')}</button>
         <button data-t="settings">${tr('ng.tab_settings')}</button>
       </div>
       <div id="ngBody"></div>`;
@@ -37,6 +38,7 @@ function renderNginx(v) {
       tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === t));
       if (t === 'access') ngAccessTab(v);
       else if (t === 'certs') ngCertsTab(v);
+      else if (t === 'default') ngDefaultTab(v);
       else if (t === 'settings') ngSettingsTab(v);
       else ngHostsTab(v);
     };
@@ -104,11 +106,13 @@ function ngAddSite(reload, site) {
         <div class="full" id="nsKindFields"></div>
       </div>
       <div style="margin-top:14px"><label class="lbl">${tr('ng.access_label')}</label><select id="nsAccess" class="field"><option value="">${tr('ng.access_public')}</option></select><p class="formnote" style="margin-top:6px">${tr('ng.access_hint')}</p></div>
-      <div style="margin-top:8px">
+      <div class="switchrow" style="margin-top:8px;gap:2px 18px">
         <label class="switch"><input type="checkbox" id="nsCache" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.sw_cache')}</b><span>${tr('ng.sw_cache_d')}</span></span></label>
         <label class="switch"><input type="checkbox" id="nsBlock" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.sw_block')}</b><span>${tr('ng.sw_block_d')}</span></span></label>
         <label class="switch"><input type="checkbox" id="nsWs" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.sw_ws')}</b><span>${tr('ng.sw_ws_d')}</span></span></label>
       </div>
+      <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="nsGo">${editing ? tr('ng.save') : tr('ng.create')}</button></div>
+      <div class="hidden" id="nsJob" style="margin-top:14px"></div>
     </div>
     <div class="ftab-pane" data-p="rules">
       <p class="mut" style="font-size:12.5px;margin:0 0 12px">${tr('ng.rules_intro')}</p>
@@ -141,9 +145,7 @@ function ngAddSite(reload, site) {
       <p class="mut" style="font-size:12.5px;margin:0 0 10px">${tr('ng.conf_intro')}</p>
       <textarea id="nsConf" class="field mono confbox" rows="13" spellcheck="false" placeholder="${tr('ng.conf_ph')}"></textarea>
       <p class="formnote">${tr('ng.conf_note')}</p>
-    </div>
-    <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="nsGo">${editing ? tr('ng.save') : tr('ng.create')}</button></div>
-    <div class="hidden" id="nsJob" style="margin-top:14px"></div>`, (close) => {
+    </div>`, (close) => {
     document.querySelectorAll('#nsTabs button').forEach((b) => b.onclick = () => {
       document.querySelectorAll('#nsTabs button').forEach((x) => x.className = x === b ? 'on' : '');
       document.querySelectorAll('.ftab-pane').forEach((p) => p.className = 'ftab-pane' + (p.dataset.p === b.dataset.t ? ' on' : ''));
@@ -181,14 +183,13 @@ function ngAddSite(reload, site) {
       if (selectedCert && !names.includes(selectedCert)) {
         opts += `<option value="${esc(selectedCert)}" selected data-sub="${esc(selectedCert)}">${esc(selectedCert)}</option>`;
       }
-      list.innerHTML = `<select id="nsCertSel" class="field">${opts}</select>`;
+      list.innerHTML = `<select id="nsCertSel" class="field" data-selx-search>${opts}</select>`;
       $('nsCertSel').onchange = () => { selectedCert = $('nsCertSel').value; };
     };
     const loadCertList = () => {
-      const base = baseDomain($('nsName').value.trim());
       $('nsCertList').innerHTML = loading();
       op('nginx', { op: 'list_named_certs' }).then((d) => {
-        domainCerts = (d.certs || []).filter((c) => c.has_cert && base && baseDomain(c.domain) === base);
+        domainCerts = (d.certs || []).filter((c) => c.has_cert);
         renderCertList();
       }).catch(() => { domainCerts = []; renderCertList(); });
     };
@@ -241,12 +242,9 @@ function ngAddSite(reload, site) {
             <button type="button" data-s="local">${tr('ng.src_local')}</button>
           </div>
           <div id="nsSrcUpload" style="margin-top:12px">
-            <label class="lbl">${tr('ng.static_dirname')}</label><input id="nsRoot" class="field" placeholder="mysite" style="margin-bottom:10px" />
             <label class="lbl">${tr('ng.upload_content')}</label>
             <div class="dropz" id="nsDrop"><b>${tr('ng.drop_a')}</b>${tr('ng.drop_b')}<br/><span style="font-size:11.5px">${editing ? tr('ng.drop_keep') : tr('ng.drop_sub')}</span></div>
             <input type="file" id="nsZip" accept=".zip" class="hidden" />
-            <input type="file" id="nsDir" webkitdirectory multiple class="hidden" />
-            <div class="row" style="gap:8px;margin-top:8px"><button type="button" class="btn sm sec" id="nsPickZip">${tr('ng.pick_zip')}</button><button type="button" class="btn sm sec" id="nsPickDir">${tr('ng.pick_dir')}</button></div>
             <div class="uplist" id="nsUpList"></div>
           </div>
           <div id="nsSrcLocal" class="hidden" style="margin-top:12px">
@@ -268,11 +266,8 @@ function ngAddSite(reload, site) {
     };
     const wireStaticPickers = () => {
       const drop = $('nsDrop');
-      $('nsPickZip').onclick = () => $('nsZip').click();
-      $('nsPickDir').onclick = () => $('nsDir').click();
       drop.onclick = () => $('nsZip').click();
       $('nsZip').onchange = (e) => { const f = e.target.files[0]; if (!f) return; staticUpload.mode = 'zip'; staticUpload.zip = f; staticUpload.files = []; $('nsUpList').innerHTML = tr('ng.sel_zip', { name: esc(f.name), size: fmtBytes(f.size) }); };
-      $('nsDir').onchange = (e) => { const fs = Array.from(e.target.files || []); if (!fs.length) return; staticUpload.mode = 'dir'; staticUpload.zip = null; staticUpload.files = fs; $('nsUpList').innerHTML = tr('ng.sel_files', { n: fs.length }) + '<br/>' + fs.slice(0, 20).map((f) => esc(f.webkitRelativePath || f.name)).join('<br/>') + (fs.length > 20 ? '<br/>…' : ''); };
       ['dragover', 'dragenter'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('drag'); }));
       ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('drag'); }));
       drop.addEventListener('drop', (e) => { const f = (e.dataTransfer.files || [])[0]; if (f && /\.zip$/i.test(f.name)) { staticUpload.mode = 'zip'; staticUpload.zip = f; staticUpload.files = []; $('nsUpList').innerHTML = tr('ng.sel_zip', { name: esc(f.name), size: fmtBytes(f.size) }); } });
@@ -292,13 +287,12 @@ function ngAddSite(reload, site) {
           $('nsCtn').value = site.container;
         }
         if ($('nsCtnPort')) $('nsCtnPort').value = site.container_port || '';
-      } else if (site.kind === 'static' && $('nsRoot')) {
+      } else if (site.kind === 'static') {
         if (site.local_root) {
           setStaticSource('local');
           if ($('nsLocalRoot')) $('nsLocalRoot').value = site.local_root;
         } else {
           setStaticSource('upload');
-          $('nsRoot').value = site.root || '';
         }
       }
     };
@@ -383,7 +377,7 @@ function ngAddSite(reload, site) {
       if (!body.server_name) return toast(tr('ng.need_domain'), 'err');
       if (k === 'proxy_host') { body.scheme = $('nsScheme').value; const p = $('nsTarget').value.trim(); if (!p) return toast(tr('ng.need_host_port'), 'err'); body.target_url = /^\d+$/.test(p) ? '127.0.0.1:' + p : p; }
       else if (k === 'proxy_container') { body.scheme = $('nsScheme').value; body.container = $('nsCtn').value.trim(); body.container_port = Number($('nsCtnPort').value); if (!body.container) return toast(tr('ng.need_container'), 'err'); }
-      else { if (staticSource === 'local') { const lr = ($('nsLocalRoot') ? $('nsLocalRoot').value.trim() : ''); if (!lr) return toast(tr('ng.need_local_dir'), 'err'); body.local_root = lr; } else { body.root = $('nsRoot').value.trim(); if (!body.root) return toast(tr('ng.need_static_dir'), 'err'); if (!editing && !staticUpload.mode) return toast(tr('ng.need_upload'), 'err'); } }
+      else { if (staticSource === 'local') { const lr = ($('nsLocalRoot') ? $('nsLocalRoot').value.trim() : ''); if (!lr) return toast(tr('ng.need_local_dir'), 'err'); body.local_root = lr; } else { body.root = (editing && site.root) ? site.root : ('site-' + Math.random().toString(36).slice(2, 10)); if (!editing && !staticUpload.mode) return toast(tr('ng.need_upload'), 'err'); } }
       if (body.ssl) {
         if (certMethod === 'self') {
           body.cert_mode = 'self';
@@ -601,15 +595,12 @@ function ngAccessForm(reload, al) {
   });
 }
 
-// ---- Tab 4: Settings (default site for unmatched requests) ----
-function ngSettingsTab(v) {
+// ---- Tab: Default site (catch-all for unmatched requests) ----
+function ngDefaultTab(v) {
   const body = $('ngBody');
   body.innerHTML = loading();
   op('nginx', { op: 'get_settings' }).then((d) => {
     const ds = (d.default_site) || { mode: '404', redirect_url: '' };
-    const t = d.tuning || {};
-    const bktOpts = [32, 64, 128, 256, 512].map((n) => `<option value="${n}"${Number(t.server_names_hash_bucket_size) === n ? ' selected' : ''}>${n}</option>`).join('');
-    const lvlOpts = Array.from({ length: 9 }, (_, i) => i + 1).map((n) => `<option value="${n}"${Number(t.gzip_comp_level) === n ? ' selected' : ''}>${n}</option>`).join('');
     body.innerHTML = `
       <div style="max-width:560px">
         <div class="sechead" style="margin-top:0"><h3>${tr('ng.default_site')}</h3></div>
@@ -623,10 +614,33 @@ function ngSettingsTab(v) {
           <option value="redirect">${tr('ng.ds_redirect')}</option>
         </select>
         <div id="ngDsRedirectWrap" class="hidden"><label class="lbl">${tr('ng.ds_redirect_url')}</label><input id="ngDsUrl" class="field" placeholder="https://example.com" value="${esc(ds.redirect_url || '')}" style="margin-bottom:12px" /></div>
-        <div class="row" style="align-items:center;gap:12px"><button class="btn sm" id="ngDsSave">${tr('ng.save')}</button><span class="err ok" id="ngDsMsg"></span></div>
+        <div class="row" style="align-items:center;gap:12px"><button class="btn sm" id="ngDsSave" disabled>${tr('ng.save')}</button><span class="err ok" id="ngDsMsg"></span></div>
         </div>
+      </div>`;
+    $('ngDsMode').value = ds.mode || '404';
+    const sync = () => $('ngDsRedirectWrap').classList.toggle('hidden', $('ngDsMode').value !== 'redirect');
+    $('ngDsMode').onchange = sync; sync();
+    $('ngDsSave').onclick = () => {
+      const m = $('ngDsMsg');
+      const bodyReq = { op: 'set_default_site', default_mode: $('ngDsMode').value, redirect_url: $('ngDsUrl') ? $('ngDsUrl').value.trim() : '' };
+      $('ngDsSave').disabled = true;
+      op('nginx', bodyReq).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); if ($('ngDsSave')._dirtyReset) $('ngDsSave')._dirtyReset(); }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('ngDsSave').disabled = false; });
+    };
+    bindDirty('ngDsSave', 'ngDsBox');
+  }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+}
 
-        <div class="sechead" style="margin-top:26px"><h3>${tr('ng.perf_sec')}</h3></div>
+// ---- Tab: Settings (performance / tuning) ----
+function ngSettingsTab(v) {
+  const body = $('ngBody');
+  body.innerHTML = loading();
+  op('nginx', { op: 'get_settings' }).then((d) => {
+    const t = d.tuning || {};
+    const bktOpts = [32, 64, 128, 256, 512].map((n) => `<option value="${n}"${Number(t.server_names_hash_bucket_size) === n ? ' selected' : ''}>${n}</option>`).join('');
+    const lvlOpts = Array.from({ length: 9 }, (_, i) => i + 1).map((n) => `<option value="${n}"${Number(t.gzip_comp_level) === n ? ' selected' : ''}>${n}</option>`).join('');
+    body.innerHTML = `
+      <div style="max-width:560px">
+        <div class="sechead" style="margin-top:0"><h3>${tr('ng.perf_sec')}</h3></div>
         <p class="mut" style="font-size:12.5px;margin:0 0 14px">${tr('ng.perf_desc')}</p>
         <div id="ngTuneBox">
         <div class="formgrid">
@@ -640,24 +654,10 @@ function ngSettingsTab(v) {
           <div><label class="lbl">${tr('ng.t_gmin')}</label><input id="ngGmin" class="field" type="number" min="0" value="${esc(String(t.gzip_min_length != null ? t.gzip_min_length : 20))}" /></div>
           <div><label class="lbl">${tr('ng.t_gcl')}</label><select id="ngGcl" class="field">${lvlOpts}</select></div>
         </div>
-        <div class="row" style="align-items:center;gap:12px;margin-top:16px"><button class="btn sm" id="ngTuneSave">${tr('ng.save')}</button><span class="err ok" id="ngTuneMsg"></span></div>
+        <div class="row" style="align-items:center;gap:12px;margin-top:16px"><button class="btn sm" id="ngTuneSave" disabled>${tr('ng.save')}</button><span class="err ok" id="ngTuneMsg"></span></div>
         <p class="formnote" style="margin-top:10px">${tr('ng.perf_note')}</p>
         </div>
       </div>`;
-
-    // Default site.
-    $('ngDsMode').value = ds.mode || '404';
-    const sync = () => $('ngDsRedirectWrap').classList.toggle('hidden', $('ngDsMode').value !== 'redirect');
-    $('ngDsMode').onchange = sync; sync();
-    $('ngDsSave').onclick = () => {
-      const m = $('ngDsMsg');
-      const bodyReq = { op: 'set_default_site', default_mode: $('ngDsMode').value, redirect_url: $('ngDsUrl') ? $('ngDsUrl').value.trim() : '' };
-      $('ngDsSave').disabled = true;
-      op('nginx', bodyReq).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); if ($('ngDsSave')._dirtyReset) $('ngDsSave')._dirtyReset(); }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('ngDsSave').disabled = false; });
-    };
-    bindDirty('ngDsSave', 'ngDsBox');
-
-    // Performance / tuning.
     const syncGz = () => $('ngGzipWrap').classList.toggle('hidden', !$('ngGzip').checked);
     $('ngGzip').onchange = syncGz; syncGz();
     $('ngTuneSave').onclick = () => {
