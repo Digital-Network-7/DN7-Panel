@@ -72,3 +72,26 @@ If a single function truly cannot drop under 40 lines without harming clarity
 named functions. Document any deliberate, reviewed exception with a short
 `// NOTE:` explaining why — exceptions should be rare and justified, not the
 norm.
+
+## Execution discipline (don't get stuck)
+
+Large refactors are done by *acting in small, verified steps* — not by
+planning the whole thing in your head first.
+
+- **Bias to action.** Decide the cut, make it, run the build. Don't keep
+  re-deriving the perfect plan. A compiling 80%-clean split beats a perfect
+  plan that never lands.
+- **Work in commit-sized increments.** Extract one module, run
+  `cargo fmt && cargo clippy --all-targets && cargo test`, commit. Repeat.
+  Never let an in-progress refactor sit in a non-compiling state across many
+  edits.
+- **Let the compiler drive.** Move code, build, fix exactly what the errors
+  say, repeat. The compiler is faster and more accurate than exhaustively
+  reasoning about visibility/imports up front.
+- **Default visibility for moved items: `pub(crate)`.** Slight over-exposure is
+  fine for an internal split; tighten later if it matters.
+- **Keep structs whose fields are read across modules in the parent module**
+  (descendant submodules can read a parent's private fields), or make the
+  fields `pub(crate)`. This avoids a cascade of field-visibility edits.
+- Use mechanical tools (sed/awk) to move line ranges rather than retyping —
+  it's faster and avoids transcription errors.
