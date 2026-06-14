@@ -57,7 +57,7 @@ function openUpdate() {
     // Re-attach the progress poller only if an update is already running (so a
     // transient error on open can't trigger the restart/reload path).
     api('/api/update/status').then((b) => {
-      if (b.data && b.data.in_progress) { $('uProg').classList.remove('hidden'); pollUpdStatus(); }
+      if (b.data && b.data.in_progress) { resetUpdProg(); $('uProg').classList.remove('hidden'); pollUpdStatus(); }
     }).catch(() => {});
   });
 }
@@ -123,60 +123,92 @@ function loadChangelog() {
 
 function applyUpdate() {
   const btn = $('uApply'); if (btn) { btn.disabled = true; btn.textContent = tr('upd.starting'); }
+  resetUpdProg();
   api('/api/update/apply', { method: 'POST' }).then((b) => {
     if (b.data && b.data.started === false) toast(tr('upd.in_progress'));
     // Show the progress immediately (indeterminate until the first byte count),
     // so a fast download still gives visible feedback.
-    const prog = $('uProg');
-    if (prog) {
-      prog.classList.remove('hidden');
-      const bar = prog.querySelector('.prog'), pi = prog.querySelector('.prog > i');
-      if (bar) { bar.classList.add('indet'); bar.classList.remove('done', 'err'); }
-      if (pi) pi.style.width = '0%';
-      const txt = $('uProgTxt'); if (txt) txt.textContent = tr('upd.starting');
-    }
+    setUpdBar(0, 'indet');
+    updTxt(tr('upd.starting'));
     pollUpdStatus();
   }).catch((e) => { toast(e.message, 'err'); if (btn) { btn.disabled = false; btn.textContent = tr('upd.retry'); } });
 }
 
+// Progress is presented in three phases mapped onto one bar:
+//   1) download → 0–60% (driven by real byte progress)
+//   2) install  → 60–100% (auto-ramps +5%/s, full in ~8s) while we wait for the
+//      backend to confirm; a confirmation (the panel restarting, i.e. the
+//      status request failing) jumps straight to phase 3
+//   3) done     → 100%, a short countdown, then reload onto the new build.
+function setUpdBar(pct, cls) {
+  const prog = $('uProg'); if (!prog) return;
+  prog.classList.remove('hidden');
+  const bar = prog.querySelector('.prog'), pi = prog.querySelector('.prog > i');
+  if (!bar) return;
+  bar.classList.remove('indet', 'done', 'err');
+  if (cls) bar.classList.add(cls);
+  if (pi && pct != null) pi.style.width = Math.max(0, Math.min(100, pct)) + '%';
+}
+function updTxt(s) { const t = $('uProgTxt'); if (t) t.textContent = s; }
+function resetUpdProg() {
+  if (UPD.ramp) { clearInterval(UPD.ramp); UPD.ramp = null; }
+  if (UPD.cd) { clearInterval(UPD.cd); UPD.cd = null; }
+  UPD.refreshing = false;
+}
+function startInstallRamp() {
+  if (UPD.ramp || UPD.refreshing) return;
+  UPD.rampPct = 60;
+  setUpdBar(60, '');
+  updTxt(tr('upd.installing'));
+  UPD.ramp = setInterval(() => {
+    if (UPD.refreshing) { clearInterval(UPD.ramp); UPD.ramp = null; return; }
+    UPD.rampPct = Math.min(100, UPD.rampPct + 1); // +5%/s (the 40% install span fills in ~8s)
+    setUpdBar(UPD.rampPct, '');
+    if (UPD.rampPct >= 100) { clearInterval(UPD.ramp); UPD.ramp = null; }
+  }, 200);
+}
+function enterRefreshState() {
+  if (UPD.refreshing) return;
+  UPD.refreshing = true;
+  if (UPD.ramp) { clearInterval(UPD.ramp); UPD.ramp = null; }
+  if (UPD.polling) { clearInterval(UPD.polling); UPD.polling = null; }
+  setUpdBar(100, 'done');
+  let n = 3;
+  updTxt(tr('upd.refresh_in', { n }));
+  UPD.cd = setInterval(() => {
+    n--;
+    if (n <= 0) { clearInterval(UPD.cd); UPD.cd = null; updTxt(tr('upd.restarting')); waitForRestart(); }
+    else updTxt(tr('upd.refresh_in', { n }));
+  }, 1000);
+}
+
 function pollUpdStatus() {
   if (UPD.polling) clearInterval(UPD.polling);
+  const mb = (n) => (n / 1048576).toFixed(1);
   const tick = () => {
     api('/api/update/status').then((b) => {
-      const d = b.data, prog = $('uProg');
-      if (!prog) { clearInterval(UPD.polling); return; }
-      const bar = prog.querySelector('.prog'), pi = prog.querySelector('.prog > i'), txt = $('uProgTxt');
-      const mb = (n) => (n / 1048576).toFixed(1);
+      const d = b.data;
+      if (!$('uProg')) { clearInterval(UPD.polling); UPD.polling = null; return; }
+      if (UPD.refreshing) return;
       if (d.phase === 'downloading') {
-        prog.classList.remove('hidden');
-        if (d.total_bytes) { bar.classList.remove('indet'); pi.style.width = d.progress + '%'; }
-        else { bar.classList.add('indet'); }
-        txt.textContent = tr('upd.downloading', { pct: d.progress }) + (d.total_bytes ? ` (${mb(d.done_bytes)}/${mb(d.total_bytes)} MB)` : '');
+        if (UPD.ramp) { clearInterval(UPD.ramp); UPD.ramp = null; }
+        if (d.total_bytes) setUpdBar((d.progress || 0) * 0.6, '');
+        else setUpdBar(null, 'indet');
+        updTxt(tr('upd.downloading', { pct: d.progress }) + (d.total_bytes ? ` (${mb(d.done_bytes)}/${mb(d.total_bytes)} MB)` : ''));
       } else if (d.phase === 'installing') {
-        prog.classList.remove('hidden');
-        bar.classList.remove('indet'); bar.classList.add('done'); pi.style.width = '100%';
-        txt.textContent = tr('upd.installing');
+        startInstallRamp();
       } else if (d.phase === 'error') {
-        bar.classList.remove('indet', 'done'); bar.classList.add('err');
-        txt.textContent = tr('upd.error');
-        clearInterval(UPD.polling);
+        if (UPD.ramp) { clearInterval(UPD.ramp); UPD.ramp = null; }
+        setUpdBar(100, 'err');
+        updTxt(tr('upd.error'));
+        clearInterval(UPD.polling); UPD.polling = null;
         const btn = $('uApply'); if (btn) { btn.disabled = false; btn.textContent = tr('upd.retry'); }
       }
-      // else: idle / not-yet-started — keep polling; the run ends via the
-      // install→restart path (caught below) or an error above.
+      // else idle / not-yet-started — keep polling.
     }).catch(() => {
-      // Server unreachable → the panel is restarting on the new version. Fill
-      // the bar, show the message, then wait for it to come back and reload.
-      const prog = $('uProg');
-      if (prog) {
-        const bar = prog.querySelector('.prog'), pi = prog.querySelector('.prog > i');
-        prog.classList.remove('hidden');
-        if (bar) { bar.classList.remove('indet', 'err'); bar.classList.add('done'); }
-        if (pi) pi.style.width = '100%';
-      }
-      const txt = $('uProgTxt'); if (txt) txt.textContent = tr('upd.restarting');
-      clearInterval(UPD.polling);
-      waitForRestart();
+      // Server unreachable → install finished and the panel is restarting onto
+      // the new build. Move to the final phase: fill, count down, then reload.
+      enterRefreshState();
     });
   };
   tick();

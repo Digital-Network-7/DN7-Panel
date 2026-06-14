@@ -65,6 +65,13 @@ let DK_INFO = {};
 function dkVerChips() {
   return `<span class="chip">Docker ${esc(DK_INFO.server_version || '')}</span><span class="chip">API ${esc(DK_INFO.client_version || '')}</span>`;
 }
+// Actions-column width: English/Japanese labels are wider than CJK, so the
+// frozen Actions column needs more room or buttons overflow it. `base` is the
+// compact (zh) width; widen it for the longer-label languages.
+function ngActW(base) {
+  const l = (typeof curLang === 'function') ? curLang() : 'en';
+  return (l === 'en' || l === 'ja') ? base + 64 : base;
+}
 
 function renderDocker(v) {
   v.innerHTML = `<div style="padding:8px">${loading(tr('dk.detecting'))}</div>`;
@@ -125,7 +132,7 @@ function dkContainers() {
     if (!list.length) { $('dkCList').innerHTML = `<div class="empty">${tr('dk.no_containers')}</div>`; return; }
     let h = `<table class="optable frztbl ctntbl">`
       + `<colgroup><col style="width:190px"><col style="width:210px"><col style="width:120px">`
-      + `<col style="width:200px"><col style="width:210px"><col style="width:230px"><col style="width:120px"><col style="width:200px"></colgroup>`
+      + `<col style="width:200px"><col style="width:210px"><col style="width:230px"><col style="width:120px"><col style="width:${ngActW(200)}px"></colgroup>`
       + `<tr>`
       + `<th>${tr('dk.col_name')}</th><th>${tr('dk.col_image')}</th><th>${tr('dk.col_status')}</th>`
       + `<th>${tr('dk.col_ip')}</th><th>${tr('dk.col_ports')}</th><th>${tr('dk.col_desc')}</th>`
@@ -349,7 +356,7 @@ function dkImages(info) {
     const list = d.images || [];
     if (!list.length) { $('dkIList').innerHTML = `<div class="empty">${tr('dk.no_images')}</div>`; return; }
     let h = `<table class="optable frztbl imgtbl">`
-      + `<colgroup><col style="width:130px"><col style="width:300px"><col style="width:120px"><col style="width:160px"><col style="width:130px"><col style="width:210px"></colgroup>`
+      + `<colgroup><col style="width:130px"><col style="width:300px"><col style="width:120px"><col style="width:160px"><col style="width:130px"><col style="width:${ngActW(210)}px"></colgroup>`
       + `<tr><th>${tr('dk.col_id')}</th><th>${tr('dk.col_tags')}</th><th>${tr('dk.col_size')}</th><th>${tr('dk.col_created')}</th><th>${tr('dk.col_status')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
     list.forEach((im) => {
       const ref = im.in_use
@@ -998,6 +1005,8 @@ function dkMonitor(id, name) {
     const renderMon = (s) => {
       const cpu = s.cpu_pct || 0;
       const memPct = s.mem_limit > 0 ? (s.mem_used / s.mem_limit * 100) : 0;
+      const upIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V7"/><path d="M6 11l6-6 6 6"/><path d="M5 21h14"/></svg>';
+      const dnIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v12"/><path d="M6 13l6 6 6-6"/><path d="M5 3h14"/></svg>';
       $('monBody').innerHTML = `
         <div class="mongrid">
           <div class="moncard">
@@ -1012,11 +1021,11 @@ function dkMonitor(id, name) {
             <div class="mon-sub">/ ${dkHuman(s.mem_limit)}</div>
             <div class="mon-bar ${memPct > 85 ? 'warn' : ''}"><i style="width:${Math.min(100, memPct).toFixed(1)}%"></i></div>
           </div>
-          <div class="moncard">
+          <div class="moncard netcard">
             <div class="mon-k">${tr('dk.mon_net')}</div>
-            <div class="mon-duo">
-              <div><div class="mon-io-k"><span class="mon-arrow dn">↓</span>${tr('dk.mon_rx')}</div><div class="mon-io-v">${dkHuman(s.net_rx)}</div></div>
-              <div><div class="mon-io-k"><span class="mon-arrow up">↑</span>${tr('dk.mon_tx')}</div><div class="mon-io-v">${dkHuman(s.net_tx)}</div></div>
+            <div class="netsplit" style="margin-top:8px">
+              <div class="netcell dn"><div class="nethdr"><span class="netic">${dnIcon}</span><span>${tr('dk.mon_rx')}</span></div><div class="netval">${dkHuman(s.net_rx)}</div></div>
+              <div class="netcell up"><div class="nethdr"><span class="netic">${upIcon}</span><span>${tr('dk.mon_tx')}</span></div><div class="netval">${dkHuman(s.net_tx)}</div></div>
             </div>
           </div>
           <div class="moncard">
