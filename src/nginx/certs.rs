@@ -288,9 +288,7 @@ where
     F: FnOnce(Vec<(String, String)>) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
-    use instant_acme::{
-        Account, AuthorizationStatus, ChallengeType, Identifier, NewAccount, NewOrder, OrderStatus,
-    };
+    use instant_acme::{Account, Identifier, NewAccount, NewOrder, OrderStatus};
 
     // Create (or implicitly register) an ACME account with Let's Encrypt.
     op_push(op_id, &pmsg("ng.le_account", &[]));
@@ -317,25 +315,7 @@ where
         .map_err(|e| anyhow!("创建订单失败：{e}"))?;
 
     // Collect the HTTP-01 challenge response for each pending authorization.
-    let authorizations = order
-        .authorizations()
-        .await
-        .map_err(|e| anyhow!("获取授权失败：{e}"))?;
-    let mut to_serve: Vec<(String, String)> = Vec::new();
-    let mut ready_urls: Vec<String> = Vec::new();
-    for authz in &authorizations {
-        if !matches!(authz.status, AuthorizationStatus::Pending) {
-            continue;
-        }
-        let challenge = authz
-            .challenges
-            .iter()
-            .find(|c| c.r#type == ChallengeType::Http01)
-            .ok_or_else(|| anyhow!("ERR_CODE:nginx.le_no_http01"))?;
-        let key_auth = order.key_authorization(challenge);
-        to_serve.push((challenge.token.clone(), key_auth.as_str().to_string()));
-        ready_urls.push(challenge.url.clone());
-    }
+    let (to_serve, ready_urls) = acme_collect_http01(&mut order).await?;
 
     // Make the challenge responses reachable over HTTP, then tell LE we're ready.
     serve(to_serve.clone()).await?;
@@ -359,8 +339,7 @@ where
     // Poll the order until it's ready (or fails), then finalize.
     op_push(op_id, &pmsg("ng.wait_verify", &[]));
     let mut tries = 0;
-    let key_pem;
-    let cert_chain_pem = loop {
+    let (cert_chain_pem, key_pem) = loop {
         tokio::time::sleep(std::time::Duration::from_secs(if tries == 0 {
             1
         } else {
@@ -374,23 +353,7 @@ where
         match state.status {
             OrderStatus::Ready => {
                 op_push(op_id, &pmsg("ng.verify_ok", &[]));
-                let key_pair =
-                    rcgen::KeyPair::generate().map_err(|e| anyhow!("生成私钥失败：{e}"))?;
-                let mut csr_params = rcgen::CertificateParams::new(vec![host.to_string()])
-                    .map_err(|e| anyhow!("生成 CSR 参数失败：{e}"))?;
-                csr_params
-                    .distinguished_name
-                    .push(rcgen::DnType::CommonName, host.to_string());
-                let csr = csr_params
-                    .serialize_request(&key_pair)
-                    .map_err(|e| anyhow!("生成 CSR 失败：{e}"))?;
-                order
-                    .finalize(csr.der())
-                    .await
-                    .map_err(|e| anyhow!("finalize 失败：{e}"))?;
-                let chain = wait_for_cert(&mut order).await?;
-                key_pem = key_pair.serialize_pem();
-                break chain;
+                break acme_issue_cert(&mut order, host).await?;
             }
             OrderStatus::Invalid => {
                 let detail = acme_failure_detail(&mut order).await;
@@ -409,6 +372,54 @@ where
     };
 
     Ok((cert_chain_pem, key_pem))
+}
+
+/// Collect the HTTP-01 challenge `(token, key_authorization)` pairs to serve and
+/// the challenge URLs to mark ready, for every pending authorization on `order`.
+async fn acme_collect_http01(
+    order: &mut instant_acme::Order,
+) -> Result<(Vec<(String, String)>, Vec<String>)> {
+    use instant_acme::{AuthorizationStatus, ChallengeType};
+    let authorizations = order
+        .authorizations()
+        .await
+        .map_err(|e| anyhow!("获取授权失败：{e}"))?;
+    let mut to_serve: Vec<(String, String)> = Vec::new();
+    let mut ready_urls: Vec<String> = Vec::new();
+    for authz in &authorizations {
+        if !matches!(authz.status, AuthorizationStatus::Pending) {
+            continue;
+        }
+        let challenge = authz
+            .challenges
+            .iter()
+            .find(|c| c.r#type == ChallengeType::Http01)
+            .ok_or_else(|| anyhow!("ERR_CODE:nginx.le_no_http01"))?;
+        let key_auth = order.key_authorization(challenge);
+        to_serve.push((challenge.token.clone(), key_auth.as_str().to_string()));
+        ready_urls.push(challenge.url.clone());
+    }
+    Ok((to_serve, ready_urls))
+}
+
+/// Once an order is Ready: generate a keypair + CSR, finalize, and download the
+/// issued chain. Returns (cert_chain_pem, key_pem).
+async fn acme_issue_cert(order: &mut instant_acme::Order, host: &str) -> Result<(String, String)> {
+    let key_pair = rcgen::KeyPair::generate().map_err(|e| anyhow!("生成私钥失败：{e}"))?;
+    let mut csr_params = rcgen::CertificateParams::new(vec![host.to_string()])
+        .map_err(|e| anyhow!("生成 CSR 参数失败：{e}"))?;
+    csr_params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, host.to_string());
+    let csr = csr_params
+        .serialize_request(&key_pair)
+        .map_err(|e| anyhow!("生成 CSR 失败：{e}"))?;
+    order
+        .finalize(csr.der())
+        .await
+        .map_err(|e| anyhow!("finalize 失败：{e}"))?;
+    let chain = wait_for_cert(order).await?;
+    Ok((chain, key_pair.serialize_pem()))
 }
 
 /// Pre-flight the HTTP-01 challenge against THIS host (localhost:80, with the
