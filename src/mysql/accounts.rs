@@ -115,8 +115,30 @@ pub(crate) async fn create_user(req: &Req) -> Result<Value> {
             return Err(anyhow!("ERR_CODE:mysql.bad_auth_plugin"));
         }
     }
-    let esc_pw = sql_escape(pwd);
-    let auth = match (m.engine.as_str(), plugin) {
+    let auth = mysql_auth_clause(&m.engine, plugin, &sql_escape(pwd));
+
+    // Resource limits (0 = unlimited / not set) + optional SSL requirement.
+    let with = mysql_limits_clause(req)?;
+    let ssl = if req.require_ssl.unwrap_or(false) {
+        " REQUIRE SSL"
+    } else {
+        ""
+    };
+
+    let sql = format!(
+        "CREATE USER '{}'@'{}' {auth}{ssl}{with};",
+        sql_escape(user),
+        sql_escape(host),
+    );
+    run_stmt(&m.container, &password, &sql).await?;
+    Ok(json!({ "created": user, "host": host }))
+}
+
+/// The `IDENTIFIED ...` auth clause for `CREATE USER`. `esc_pw` is the already
+/// sql-escaped password; `plugin` is a pre-validated auth plugin (or None for
+/// the engine default). MySQL and MariaDB differ in syntax.
+fn mysql_auth_clause(engine: &str, plugin: Option<&str>, esc_pw: &str) -> String {
+    match (engine, plugin) {
         // MySQL: IDENTIFIED WITH <plugin> BY '<pw>'
         ("mysql", Some(p)) => format!("IDENTIFIED WITH {p} BY '{esc_pw}'"),
         // MariaDB ed25519: IDENTIFIED VIA ed25519 USING PASSWORD('<pw>')
@@ -125,10 +147,12 @@ pub(crate) async fn create_user(req: &Req) -> Result<Value> {
         }
         // Everything else (incl. native on either engine): IDENTIFIED BY '<pw>'
         _ => format!("IDENTIFIED BY '{esc_pw}'"),
-    };
+    }
+}
 
-    // Resource limits (0 = unlimited / not set). Only emit a WITH clause when
-    // at least one limit is positive.
+/// The optional ` WITH <limits>` clause for `CREATE USER`. Each limit is
+/// validated; 0 means "unset". Returns an empty string when no limit is set.
+fn mysql_limits_clause(req: &Req) -> Result<String> {
     let mq = req.max_queries.unwrap_or(0);
     let mc = req.max_connections.unwrap_or(0);
     let muc = req.max_user_connections.unwrap_or(0);
@@ -147,24 +171,11 @@ pub(crate) async fn create_user(req: &Req) -> Result<Value> {
     if muc > 0 {
         limit_clause.push_str(&format!(" MAX_USER_CONNECTIONS {muc}"));
     }
-    let with = if limit_clause.is_empty() {
+    Ok(if limit_clause.is_empty() {
         String::new()
     } else {
         format!(" WITH{limit_clause}")
-    };
-    let ssl = if req.require_ssl.unwrap_or(false) {
-        " REQUIRE SSL"
-    } else {
-        ""
-    };
-
-    let sql = format!(
-        "CREATE USER '{}'@'{}' {auth}{ssl}{with};",
-        sql_escape(user),
-        sql_escape(host),
-    );
-    run_stmt(&m.container, &password, &sql).await?;
-    Ok(json!({ "created": user, "host": host }))
+    })
 }
 
 /// Drop a user `'name'@'host'`. root and system accounts are protected.
