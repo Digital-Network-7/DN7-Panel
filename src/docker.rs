@@ -1158,17 +1158,31 @@ async fn list_containers() -> Result<Value> {
             .map(|l| l.contains_key("dn7.mysql"))
             .unwrap_or(false);
         let managed = name == crate::mysql::CONTAINER || has_mysql_label;
-        // First non-empty IPv4 across the container's networks.
-        let ip = c
+        // Every attached network's IPv4, formatted "ip (network)". A container
+        // can have several NICs, so the UI shows one per line. Sorted by network
+        // name for stable ordering.
+        let mut ip_list: Vec<String> = Vec::new();
+        if let Some(nets) = c
             .network_settings
             .as_ref()
             .and_then(|n| n.networks.as_ref())
-            .and_then(|nets| {
-                nets.values()
-                    .filter_map(|e| e.ip_address.clone())
-                    .find(|s| !s.is_empty())
-            })
-            .unwrap_or_default();
+        {
+            let mut entries: Vec<(String, String)> = nets
+                .iter()
+                .filter_map(|(nname, e)| {
+                    e.ip_address
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .map(|ip| (nname.clone(), ip))
+                })
+                .collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            ip_list = entries
+                .into_iter()
+                .map(|(nname, ip)| format!("{ip} ({nname})"))
+                .collect();
+        }
+        let ip = ip_list.first().cloned().unwrap_or_default();
         // A human description from OCI image labels (best-effort; often empty).
         let description = c
             .labels
@@ -1194,6 +1208,7 @@ async fn list_containers() -> Result<Value> {
             "status": c.status.clone().unwrap_or_default(),
             "ports": fmt_ports(&c.ports),
             "ip": ip,
+            "ips": ip_list,
             "description": description,
             "uptime": uptime,
             "has_shell": has_shell,

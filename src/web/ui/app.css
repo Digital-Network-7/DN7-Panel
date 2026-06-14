@@ -580,7 +580,7 @@ table.kvtbl th { text-align:left; color:var(--mut); font-weight:500; }
 
 /* ---- Container table: fixed column widths, pinned Name (left) + Actions
    (right); the middle scrolls horizontally; every cell clamps to 2 lines. */
-table.ctntbl { border-collapse: separate; border-spacing: 0; table-layout: fixed; width: 100%; min-width: 1420px; }
+table.ctntbl { border-collapse: separate; border-spacing: 0; table-layout: fixed; width: 100%; min-width: 1480px; }
 table.ctntbl th, table.ctntbl td { background: var(--bg); vertical-align: middle; }
 table.ctntbl th:first-child, table.ctntbl td:first-child { position: sticky; left: 0; z-index: 2; }
 table.ctntbl th.act, table.ctntbl td.act { position: sticky; right: 0; z-index: 2; width: 200px; }
