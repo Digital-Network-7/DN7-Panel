@@ -139,10 +139,12 @@ const TOAST_ICONS = {
 };
 function toast(msg, kind) {
   const k = (kind === 'ok' || kind === 'err' || kind === 'warn') ? kind : 'info';
+  let wrap = $('toastWrap');
+  if (!wrap) { wrap = el('div', { id: 'toastWrap', class: 'toast-wrap' }); document.body.appendChild(wrap); }
   const t = el('div', { class: 'toast ' + k });
   t.innerHTML = `<svg class="ti" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${TOAST_ICONS[k]}</svg><span class="tx"></span>`;
   t.querySelector('.tx').textContent = msg;
-  document.body.appendChild(t);
+  wrap.appendChild(t);
   setTimeout(() => { t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2600);
 }
 function confirmDanger(msg) { return new Promise((res) => { modal(tr('common.confirm'), `<p style="margin:0 0 18px">${esc(msg)}</p><div class="row" style="justify-content:flex-end"><button class="btn sec" id="cdNo">${tr('common.cancel')}</button><button class="btn danger" id="cdYes">${tr('common.ok')}</button></div>`, (close) => { $('cdNo').onclick = () => { close(); res(false); }; $('cdYes').onclick = () => { close(); res(true); }; }); }); }

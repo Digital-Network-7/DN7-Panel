@@ -721,7 +721,7 @@ function dkCreateModal(info, networks, opts) {
       $('ccNets').appendChild(row);
       refreshNetUI();
     };
-    $('ccNetAdd').onclick = () => netRow();
+    $('ccNetAdd').onclick = () => netRow({ genip: true });
     const readNetworks = () => Array.from($('ccNets').querySelectorAll('.netrow')).map((r) => ({
       network: r.querySelector('.nr-net').value,
       mac: r.querySelector('.nr-mac').value.trim() || undefined,
@@ -774,6 +774,13 @@ function dkCreateModal(info, networks, opts) {
       const env = readKv('ccEnv').map((r) => (r[0] ? r[0] + '=' + (r[1] || '') : '')).filter(Boolean);
       const volumes = readVolumes();
       const networks = readNetworks();
+      // Validate any static IPv4 against its network's declared subnet so a bad
+      // address fails here with a clear message instead of a cryptic docker error.
+      for (const n of networks) {
+        if (!n.ipv4) continue;
+        const sub = (netList.find((x) => x.name === n.network) || {}).subnet;
+        if (sub && !ipInSubnet(n.ipv4, sub)) return toast(tr('dk.net_ip_outside', { ip: n.ipv4, net: n.network, subnet: sub }), 'err');
+      }
       const dns = $('ccDns').value.trim().split(/[\s,]+/).filter(Boolean);
       const cpuShares = Number($('ccCpuShares').value) || 0;
       const cpusV = Number($('ccCpus').value) || 0;
@@ -812,6 +819,25 @@ function randIpFromSubnet(subnet) {
   if (base.length !== 4) return '';
   base[3] = String(2 + Math.floor(Math.random() * 250));
   return base.join('.');
+}
+
+// True if an IPv4 address falls within a CIDR subnet (e.g. 172.20.0.5 in
+// 172.20.0.0/16). Returns true when the subnet is unparseable (skip check).
+function ipInSubnet(ip, cidr) {
+  const toInt = (s) => {
+    const p = s.split('.');
+    if (p.length !== 4) return null;
+    let n = 0;
+    for (const o of p) { const v = Number(o); if (!Number.isInteger(v) || v < 0 || v > 255) return null; n = (n * 256) + v; }
+    return n >>> 0;
+  };
+  const parts = (cidr || '').split('/');
+  if (parts.length !== 2) return true;
+  const net = toInt(parts[0]), bits = Number(parts[1]), addr = toInt(ip);
+  if (net == null || addr == null || !Number.isInteger(bits) || bits < 0 || bits > 32) return true;
+  if (bits === 0) return true;
+  const mask = (0xFFFFFFFF << (32 - bits)) >>> 0;
+  return (net & mask) === (addr & mask);
 }
 
 // Human-readable byte size + epoch-second timestamp helpers (monitor/backups).
