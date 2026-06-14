@@ -18,7 +18,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config::PanelConfig;
-use crate::fetch::{self, Release, SourceKind, SourceProbe};
+use crate::fetch::{self, Release, SourceKind};
 
 // ---------------------------------------------------------------------------
 // Global self-update progress state (read by the UI via /api/update/status).
@@ -85,29 +85,27 @@ pub fn in_progress() -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Persisted update preferences + sticky source choice (`<data>/update.json`).
+// Persisted update preferences (`<data>/update.json`).
 // ---------------------------------------------------------------------------
-
-const STICKY_TTL_SECS: u64 = 7 * 24 * 3600;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateState {
     /// Apply updates automatically when a newer version is found.
     #[serde(default)]
     pub auto: bool,
-    /// Source preference: `auto` (probe + sticky) | `github` | `dn7`.
+    /// Update source: `dn7` (default; Digital Network 7 mirror) or `github`
+    /// (the "preview experience" channel). No auto speed-probe.
     #[serde(default = "default_pref")]
     pub source_pref: String,
-    /// Last probe winner (`github`/`dn7`) when `source_pref` is `auto`.
+    /// Legacy fields kept for backward compatibility with older state files.
     #[serde(default)]
     pub chosen: Option<String>,
-    /// Epoch seconds of the last probe (for the sticky TTL).
     #[serde(default)]
     pub probed_at: u64,
 }
 
 fn default_pref() -> String {
-    "auto".to_string()
+    "dn7".to_string()
 }
 
 impl Default for UpdateState {
@@ -178,32 +176,13 @@ pub fn is_newer(current: &str, latest: &str) -> bool {
 // Source resolution
 // ---------------------------------------------------------------------------
 
-/// Pick the release to use per the persisted preference / sticky choice,
-/// probing when needed. Does not download (only resolves metadata).
+/// Pick the release to use per the persisted preference. No speed probing: the
+/// "preview" toggle maps to `github`; default is the Digital Network 7 mirror
+/// (`dn7`), which is reliable from mainland China.
 async fn resolve_release(cfg: &PanelConfig) -> Result<Release> {
-    let mut st = UpdateState::load();
-    // Explicit preference wins.
-    if let Some(k) = SourceKind::from_str(&st.source_pref) {
-        return fetch::release_from(cfg, k).await;
-    }
-    // Sticky: reuse a fresh remembered winner.
-    if let Some(chosen) = st.chosen.as_deref().and_then(SourceKind::from_str) {
-        if now_secs().saturating_sub(st.probed_at) < STICKY_TTL_SECS {
-            return fetch::release_from(cfg, chosen).await;
-        }
-    }
-    // Probe both and remember the winner.
-    if let Some(win) = fetch::probe_winner(cfg).await {
-        st.chosen = Some(win.as_str().to_string());
-        st.probed_at = now_secs();
-        let _ = st.save();
-        return fetch::release_from(cfg, win).await;
-    }
-    // Neither probe connected; try GitHub, then dn7.
-    match fetch::release_from(cfg, SourceKind::Github).await {
-        Ok(r) => Ok(r),
-        Err(_) => fetch::release_from(cfg, SourceKind::Dn7).await,
-    }
+    let st = UpdateState::load();
+    let k = SourceKind::from_str(&st.source_pref).unwrap_or(SourceKind::Dn7);
+    fetch::release_from(cfg, k).await
 }
 
 /// Result of an update check, surfaced to the UI.
@@ -215,42 +194,16 @@ pub struct CheckResult {
     pub source: Option<String>,
     pub auto: bool,
     pub source_pref: String,
-    pub sources: Vec<SourceProbe>,
 }
 
-/// Probe both sources (for display + sticky refresh) and report whether a newer
-/// version is available.
+/// Resolve the latest version from the selected source (no probing) and report
+/// whether a newer build is available.
 pub async fn check(cfg: &PanelConfig) -> CheckResult {
     set_phase(PHASE_CHECKING);
-    let probes = fetch::probe_sources(cfg).await;
+    let st = UpdateState::load();
+    let k = SourceKind::from_str(&st.source_pref).unwrap_or(SourceKind::Dn7);
     let current = env!("CARGO_PKG_VERSION").to_string();
-    // Highest version among sources that responded.
-    let latest = probes
-        .iter()
-        .filter(|p| p.ok)
-        .filter_map(|p| p.version.clone())
-        .max_by(|a, b| {
-            parse_semver(a)
-                .unwrap_or((0, 0, 0))
-                .cmp(&parse_semver(b).unwrap_or((0, 0, 0)))
-        });
-    let mut st = UpdateState::load();
-    // Refresh the sticky winner from this probe when in auto mode.
-    let source = if let Some(k) = SourceKind::from_str(&st.source_pref) {
-        Some(k.as_str().to_string())
-    } else {
-        let win = probes
-            .iter()
-            .filter(|p| p.ok)
-            .max_by_key(|p| p.kbps)
-            .map(|p| p.name.to_string());
-        if let Some(w) = &win {
-            st.chosen = Some(w.clone());
-            st.probed_at = now_secs();
-            let _ = st.save();
-        }
-        win
-    };
+    let latest = fetch::release_from(cfg, k).await.ok().map(|r| r.version);
     let has_update = latest
         .as_deref()
         .map(|l| is_newer(&current, l))
@@ -262,10 +215,9 @@ pub async fn check(cfg: &PanelConfig) -> CheckResult {
         current,
         latest,
         has_update,
-        source,
+        source: Some(k.as_str().to_string()),
         auto: st.auto,
         source_pref: st.source_pref,
-        sources: probes,
     }
 }
 

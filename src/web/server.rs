@@ -2134,7 +2134,7 @@ async fn update_config_get(State(state): State<Shared>, headers: header::HeaderM
 struct UpdateConfigReq {
     #[serde(default)]
     auto: Option<bool>,
-    /// "auto" | "github" | "dn7"
+    /// "github" (preview channel) | "dn7" (default mirror)
     #[serde(default)]
     source_pref: Option<String>,
 }
@@ -2152,13 +2152,10 @@ async fn update_config_put(
         st.auto = a;
     }
     if let Some(p) = req.source_pref {
-        if !matches!(p.as_str(), "auto" | "github" | "dn7") {
+        // Legacy "auto" maps to the default mirror; otherwise github/dn7 only.
+        let p = if p == "auto" { "dn7".to_string() } else { p };
+        if !matches!(p.as_str(), "github" | "dn7") {
             return api_err(StatusCode::BAD_REQUEST, "update.source_invalid");
-        }
-        // Switching preference invalidates any sticky probe winner.
-        if p != st.source_pref {
-            st.chosen = None;
-            st.probed_at = 0;
         }
         st.source_pref = p;
     }

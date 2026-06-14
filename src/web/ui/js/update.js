@@ -38,12 +38,8 @@ function openUpdate() {
             <label class="switch" style="padding:0"><input type="checkbox" id="uAuto"/><span class="swbox"></span></label>
           </div>
           <div class="upd-row">
-            <div class="upd-row-t"><b>${tr('upd.source')}</b></div>
-            <select id="uSource" class="field" style="width:auto;min-width:172px">
-              <option value="auto">${tr('upd.src_auto')}</option>
-              <option value="github">GitHub</option>
-              <option value="dn7">Digital Network 7</option>
-            </select>
+            <div class="upd-row-t"><b>${tr('upd.beta')}</b><span>${tr('upd.beta_d')}</span></div>
+            <label class="switch" style="padding:0"><input type="checkbox" id="uBeta"/><span class="swbox"></span></label>
           </div>
         </div>
       </div>
@@ -52,11 +48,11 @@ function openUpdate() {
     UPD.close = close;
     api('/api/update/config').then((b) => {
       $('uAuto').checked = !!b.data.auto;
-      $('uSource').value = b.data.source_pref || 'auto';
+      $('uBeta').checked = b.data.source_pref === 'github';
     }).catch(() => {});
     $('uCheck').onclick = runUpdCheck;
     $('uAuto').onchange = saveUpdCfg;
-    $('uSource').onchange = saveUpdCfg;
+    $('uBeta').onchange = () => { saveUpdCfg(); runUpdCheck(); };
     runUpdCheck();
     // Re-attach the progress poller only if an update is already running (so a
     // transient error on open can't trigger the restart/reload path).
@@ -67,7 +63,7 @@ function openUpdate() {
 }
 
 function saveUpdCfg() {
-  api('/api/update/config', { method: 'POST', body: JSON.stringify({ auto: $('uAuto').checked, source_pref: $('uSource').value }) })
+  api('/api/update/config', { method: 'POST', body: JSON.stringify({ auto: $('uAuto').checked, source_pref: $('uBeta').checked ? 'github' : 'dn7' }) })
     .then(() => toast(tr('upd.saved'))).catch((e) => toast(e.message, 'err'));
 }
 
