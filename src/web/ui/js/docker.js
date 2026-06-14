@@ -350,12 +350,13 @@ function dkVolumes() {
 }
 
 function dkCreateForm() {
-  // Fetch host capacity (CPU/mem caps) and the network list up front so the
-  // Resources / Network tabs can be populated.
+  // Fetch host capacity (CPU/mem caps), networks and volumes up front so the
+  // Resources / Network / Volumes tabs can be populated.
   Promise.all([
     op('docker', { op: 'info' }).catch(() => ({})),
     op('docker', { op: 'list_networks' }).catch(() => ({ networks: [] })),
-  ]).then(([info, nd]) => dkCreateModal(info || {}, (nd && nd.networks) || []));
+    op('docker', { op: 'list_volumes' }).catch(() => ({ volumes: [] })),
+  ]).then(([info, nd, vd]) => dkCreateModal(info || {}, (nd && nd.networks) || [], { volumes: (vd && vd.volumes) || [] }));
 }
 
 function dkCreateModal(info, networks, opts) {
@@ -366,9 +367,12 @@ function dkCreateModal(info, networks, opts) {
   const cpuMax = hostCpus > 0 ? hostCpus : 2;
   const memMaxMb = hostMem > 0 ? (hostMem / 1048576) : 0;
   const memMaxTxt = memMaxMb > 0 ? memMaxMb.toFixed(2) + 'MB' : '';
-  const netOpts = `<option value="">${tr('dk.net_default')}</option>` +
-    networks.filter((n) => n.name !== 'host' && n.name !== 'none')
-      .map((n) => `<option value="${esc(n.name)}" data-subnet="${esc(n.subnet || '')}">${esc(n.name)}</option>`).join('');
+  const vols = opts.volumes || [];
+  // Network options: just the real networks (bridge included once). No row =
+  // default bridge; adding a row defaults to the first network.
+  const netOpts = networks.filter((n) => n.name !== 'host' && n.name !== 'none')
+    .map((n) => `<option value="${esc(n.name)}" data-subnet="${esc(n.subnet || '')}">${esc(n.name)}</option>`).join('');
+  const volOpts = `<option value="">${tr('dk.vol_pick')}</option>` + vols.map((v) => `<option value="${esc(v.name)}">${esc(v.name)}</option>`).join('');
   modal(opts.title || tr('dk.create_container'), `
     <div class="subtabs" id="ccTabs">
       <button data-s="basic" class="on">${tr('dk.tab_basic')}</button>
@@ -412,8 +416,8 @@ function dkCreateModal(info, networks, opts) {
     <div id="ccRes" class="hidden">
       <div class="formgrid">
         <div><label class="lbl">${tr('dk.cpu_weight')}</label><input id="ccCpuShares" class="field" type="number" min="0" value="1024" /><p class="formnote" style="margin-top:5px">${tr('dk.cpu_weight_hint')}</p></div>
-        <div><label class="lbl">${tr('dk.cpu_limit')}</label><input id="ccCpus" class="field" type="number" min="0" max="${cpuMax}" step="0.1" value="0" /><p class="formnote" style="margin-top:5px">${tr('dk.cpu_limit_hint', { n: cpuMax })}</p></div>
-        <div class="full"><label class="lbl">${tr('dk.mem_limit')}</label><input id="ccMem" class="field" type="number" min="0" value="0" /><p class="formnote" style="margin-top:5px">${memMaxTxt ? tr('dk.mem_limit_hint', { n: memMaxTxt }) : tr('dk.mem_limit_off')}</p></div>
+        <div><label class="lbl">${tr('dk.cpu_limit')}</label><div class="field-suffix"><input id="ccCpus" class="field" type="number" min="0" max="${cpuMax}" step="0.1" value="0" /><span class="suffix-tag">${tr('dk.unit_core')}</span></div><p class="formnote" style="margin-top:5px">${tr('dk.cpu_limit_hint', { n: cpuMax })}</p></div>
+        <div class="full"><label class="lbl">${tr('dk.mem_limit')}</label><div class="field-suffix"><input id="ccMem" class="field" type="number" min="0" value="0" /><button type="button" class="suffix-btn" id="ccMemUnit">MB</button></div><p class="formnote" style="margin-top:5px" id="ccMemHint"></p></div>
       </div>
       <label class="switch" style="margin-top:12px"><input type="checkbox" id="ccPriv" /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.privileged')}</b><span>${tr('dk.privileged_d')}</span></span></label>
     </div>
@@ -429,27 +433,52 @@ function dkCreateModal(info, networks, opts) {
     });
     // Dynamic row helpers.
     const portRow = (v) => kvRow('ccPorts', [
-      { ph: tr('dk.host_port'), val: v && v.h }, { sep: ':' }, { ph: tr('dk.container_port'), val: v && v.c },
+      { ph: tr('dk.host_port'), val: v && v.h }, { sep: '→' }, { ph: tr('dk.container_port'), val: v && v.c },
     ], { proto: true, protoVal: v && v.proto });
     const envRow = (v) => kvRow('ccEnv', [
-      { ph: 'KEY', val: v && v.k }, { sep: '=' }, { ph: 'VALUE', val: v && v.v, grow: true },
+      { ph: 'KEY', val: v && v.k, flex: '0 0 34%' }, { sep: '=' }, { ph: 'VALUE', val: v && v.v, flex: '1 1 auto' },
     ]);
-    const volRow = (v) => kvRow('ccVol', [
-      { ph: tr('dk.host_path'), val: v && v.h, grow: true }, { sep: ':' }, { ph: tr('dk.container_path'), val: v && v.c, grow: true },
-    ], { ro: true });
+    // Volume row: source is a host path or a docker named volume (toggle), then
+    // the container path.
+    const volRow = (v) => {
+      const row = el('div', { class: 'kvrow volrow' });
+      row.innerHTML = `<select class="vr-type field"><option value="host">${tr('dk.vol_src_host')}</option><option value="vol">${tr('dk.vol_src_vol')}</option></select>`
+        + `<input class="vr-host field" placeholder="/data/app" />`
+        + `<select class="vr-vol field hidden">${volOpts}</select>`
+        + `<span class="sep">→</span>`
+        + `<input class="vr-ctn field" placeholder="/app" />`
+        + `<label class="ro"><input type="checkbox" class="vr-ro" /> ${tr('dk.readonly')}</label>`
+        + `<button type="button" class="rm">×</button>`;
+      const type = row.querySelector('.vr-type'), host = row.querySelector('.vr-host'), vsel = row.querySelector('.vr-vol');
+      const syncType = () => { const isVol = type.value === 'vol'; host.classList.toggle('hidden', isVol); vsel.classList.toggle('hidden', !isVol); };
+      type.onchange = syncType;
+      if (v) {
+        const isVol = v.host && !v.host.startsWith('/');
+        type.value = isVol ? 'vol' : 'host';
+        if (isVol) vsel.value = v.host; else host.value = v.host || '';
+        row.querySelector('.vr-ctn').value = v.container || '';
+        if (v.readonly) row.querySelector('.vr-ro').checked = true;
+      }
+      syncType();
+      row.querySelector('.rm').onclick = () => row.remove();
+      $('ccVol').appendChild(row);
+    };
+    const readVolumes = () => Array.from($('ccVol').querySelectorAll('.volrow')).map((r) => {
+      const isVol = r.querySelector('.vr-type').value === 'vol';
+      const src = isVol ? r.querySelector('.vr-vol').value : r.querySelector('.vr-host').value.trim();
+      return { host: src, container: r.querySelector('.vr-ctn').value.trim(), readonly: r.querySelector('.vr-ro').checked };
+    }).filter((vv) => vv.host && vv.container);
     $('ccPortsAdd').onclick = () => portRow();
     $('ccEnvAdd').onclick = () => envRow();
     $('ccVolAdd').onclick = () => volRow();
     // Network tab: a container can join several networks. Each row is a network
     // pick + optional MAC (auto-random) + optional static IPv4 (auto from the
-    // chosen network's subnet).
+    // chosen network's subnet). The random generators sit inside the inputs.
     const netRow = (v) => {
       const row = el('div', { class: 'netrow' });
       row.innerHTML = `<select class="nr-net field">${netOpts}</select>`
-        + `<input class="nr-mac field mono" placeholder="${tr('dk.mac_addr')}" />`
-        + `<button type="button" class="btn sec sm nr-g nr-macgen" title="${tr('dk.gen_random')}">⟳</button>`
-        + `<input class="nr-ip field mono" placeholder="${tr('dk.ipv4_addr')}" />`
-        + `<button type="button" class="btn sec sm nr-g nr-ipgen" title="${tr('dk.gen_random')}">⟳</button>`
+        + `<div class="ifield"><input class="nr-mac field mono" placeholder="${tr('dk.mac_addr')}" /><button type="button" class="ifield-btn nr-macgen" title="${tr('dk.gen_random')}">${MY_DICE}</button></div>`
+        + `<div class="ifield"><input class="nr-ip field mono" placeholder="${tr('dk.ipv4_addr')}" /><button type="button" class="ifield-btn nr-ipgen" title="${tr('dk.gen_random')}">${MY_DICE}</button></div>`
         + `<button type="button" class="rm">×</button>`;
       const sel = row.querySelector('.nr-net'), mac = row.querySelector('.nr-mac'), ip = row.querySelector('.nr-ip');
       mac.value = (v && v.mac) || randMac();
@@ -468,6 +497,14 @@ function dkCreateModal(info, networks, opts) {
       mac: r.querySelector('.nr-mac').value.trim() || undefined,
       ipv4: r.querySelector('.nr-ip').value.trim() || undefined,
     })).filter((n) => n.network);
+    // Memory unit (MB/GB) toggle.
+    let memUnit = 'MB';
+    const updMemHint = () => {
+      const max = memMaxMb > 0 ? (memUnit === 'GB' ? (memMaxMb / 1024).toFixed(2) + 'GB' : memMaxMb.toFixed(0) + 'MB') : '';
+      $('ccMemHint').textContent = max ? tr('dk.mem_limit_hint', { n: max }) : tr('dk.mem_limit_off');
+    };
+    $('ccMemUnit').onclick = () => { memUnit = memUnit === 'MB' ? 'GB' : 'MB'; $('ccMemUnit').textContent = memUnit; updMemHint(); $('ccMem').dispatchEvent(new Event('input', { bubbles: true })); };
+    updMemHint();
     // Pre-fill from an existing container (edit / upgrade).
     if (prefill) {
       const cfg = prefill;
@@ -486,7 +523,7 @@ function dkCreateModal(info, networks, opts) {
       $('ccStart').checked = true;
       (cfg.ports || []).forEach((p) => portRow({ h: p.host, c: p.container, proto: p.proto }));
       (cfg.env || []).forEach((e) => { const i = e.indexOf('='); envRow({ k: i >= 0 ? e.slice(0, i) : e, v: i >= 0 ? e.slice(i + 1) : '' }); });
-      (cfg.volumes || []).forEach((v) => volRow({ h: v.host, c: v.container }));
+      (cfg.volumes || []).forEach((v) => volRow({ host: v.host, container: v.container, readonly: v.readonly }));
       (cfg.networks || []).forEach((n) => netRow(n));
       $('ccHost').value = cfg.hostname || '';
       $('ccDomain').value = cfg.domainname || '';
@@ -500,7 +537,7 @@ function dkCreateModal(info, networks, opts) {
       const image = $('ccImg').value.trim(); if (!image) return toast(tr('dk.need_image'), 'err');
       const ports = readKv('ccPorts').map((r) => ({ host: Number(r[0]), container: Number(r[1]), proto: r.proto || 'tcp' })).filter((p) => p.host && p.container);
       const env = readKv('ccEnv').map((r) => (r[0] ? r[0] + '=' + (r[1] || '') : '')).filter(Boolean);
-      const volumes = readKv('ccVol').map((r) => ({ host: r[0], container: r[1], readonly: !!r.ro })).filter((vv) => vv.host && vv.container);
+      const volumes = readVolumes();
       const networks = readNetworks();
       const dns = $('ccDns').value.trim().split(/[\s,]+/).filter(Boolean);
       const cpuShares = Number($('ccCpuShares').value) || 0;
@@ -512,7 +549,7 @@ function dkCreateModal(info, networks, opts) {
         networks,
         hostname: $('ccHost').value.trim() || undefined, domainname: $('ccDomain').value.trim() || undefined,
         dns: dns.length ? dns : undefined, cpu_shares: cpuShares || undefined,
-        cpus: cpusV > 0 ? String(cpusV) : undefined, memory: memV > 0 ? memV + 'm' : undefined,
+        cpus: cpusV > 0 ? String(cpusV) : undefined, memory: memV > 0 ? memV + (memUnit === 'GB' ? 'g' : 'm') : undefined,
         privileged: $('ccPriv').checked || undefined,
       };
       if (opts.replaceName) body.replace = opts.replaceName;
@@ -556,9 +593,11 @@ function dkEditForm(id, name) {
   Promise.all([
     op('docker', { op: 'info' }).catch(() => ({})),
     op('docker', { op: 'list_networks' }).catch(() => ({ networks: [] })),
+    op('docker', { op: 'list_volumes' }).catch(() => ({ volumes: [] })),
     op('docker', { op: 'get_container_config', ref: id }),
-  ]).then(([info, nd, cd]) => {
+  ]).then(([info, nd, vd, cd]) => {
     dkCreateModal(info || {}, (nd && nd.networks) || [], {
+      volumes: (vd && vd.volumes) || [],
       prefill: cd.config || {}, replaceName: name,
       title: tr('dk.edit') + ' · ' + name, submitLabel: tr('dk.save'),
       confirmMsg: tr('dk.edit_confirm'), doneMsg: tr('dk.edited'),
@@ -718,7 +757,8 @@ function kvRow(id, cells, opts) {
   cells.forEach((c) => {
     if (c.sep != null) { row.appendChild(el('span', { class: 'sep' }, c.sep)); return; }
     const i = el('input', { class: 'field' + (c.grow ? ' grow' : ''), placeholder: c.ph || '' });
-    if (c.grow) i.style.flex = '1';
+    if (c.flex) i.style.flex = c.flex;
+    else if (c.grow) i.style.flex = '1';
     if (c.val != null) i.value = c.val;
     row.appendChild(i);
   });

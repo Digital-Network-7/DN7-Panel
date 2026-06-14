@@ -1914,7 +1914,14 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
         for v in vols {
             let host = v.host.trim();
             let container = v.container.trim();
-            validate_path(host)?;
+            // Source is either an absolute host path (bind mount) or a named
+            // docker volume (no leading slash). The container target must always
+            // be an absolute path.
+            if host.starts_with('/') {
+                validate_path(host)?;
+            } else {
+                validate_name(host)?;
+            }
             validate_path(container)?;
             binds.push(if v.readonly {
                 format!("{host}:{container}:ro")
