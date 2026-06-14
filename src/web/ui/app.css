@@ -637,6 +637,16 @@ table.nettbl td .clamp1 { display: -webkit-box; -webkit-box-orient: vertical; -w
 .tagchip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; background: var(--hov); border: 1px solid var(--line2); border-radius: 7px; padding: 3px 4px 3px 9px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .tagchip button { border: none; background: none; color: var(--mut); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 3px; border-radius: 5px; }
 .tagchip button:hover { color: var(--err); }
+/* File drop / picker (image import modal). */
+.filedrop { display: flex; align-items: center; gap: 14px; padding: 18px 16px; border: 1.5px dashed var(--line2); border-radius: 12px; background: var(--panel2); cursor: pointer; transition: border-color .15s, background .15s; }
+.filedrop:hover { border-color: var(--cy); }
+.filedrop.has { border-style: solid; border-color: var(--cy); }
+.filedrop input[type=file] { display: none; }
+.filedrop .fd-ic { width: 42px; height: 42px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; border-radius: 11px; background: var(--hov); color: var(--cy); }
+.filedrop .fd-ic svg { width: 22px; height: 22px; }
+.filedrop .fd-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.filedrop .fd-main b { font-size: 13px; word-break: break-all; }
+.filedrop .fd-sub { font-size: 11.5px; color: var(--mut); }
 /* Pull-tasks modal: a list of running/finished image pulls. */
 .pt-row { padding: 11px 2px; border-bottom: 1px solid var(--line); }
 .pt-row:last-child { border-bottom: none; }

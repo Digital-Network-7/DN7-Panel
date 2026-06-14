@@ -328,11 +328,16 @@ function dkLogs(id, name) {
 
 function dkImages(info) {
   const body = $('dkBody');
-  body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_images')}</h3><span class="sp"></span><button class="btn sm" id="dkPull">${tr('dk.pull_image')}</button><button class="btn sm" id="dkImport">${tr('dk.img_import')}</button><button class="btn sec sm" id="dkTasks">${tr('dk.pull_tasks')}</button><button class="btn sec sm" id="dkRefI">${tr('dk.refresh')}</button></div><div id="dkIList">` + loading() + '</div>';
+  body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_images')}</h3><span class="sp"></span><button class="btn sm" id="dkPull">${tr('dk.pull_image')}</button><button class="btn sec sm" id="dkRefI">${tr('dk.refresh')}</button><button class="btn sec sm" id="dkAdv">${tr('dk.advanced')} ▾</button></div><div id="dkIList">` + loading() + '</div>';
   $('dkRefI').onclick = () => dkImages(info);
   $('dkPull').onclick = dkPullForm;
-  $('dkTasks').onclick = dkPullTasks;
-  $('dkImport').onclick = () => dkImportForm(info);
+  mkHoverPanel($('dkAdv'), [
+    { label: tr('dk.img_import'), fn: () => dkImportForm(info) },
+    { label: tr('dk.pull_tasks'), fn: () => dkPullTasks() },
+    { sep: true },
+    { label: tr('dk.set_mirrors'), fn: () => dkRegistryListForm('mirror') },
+    { label: tr('dk.set_registries'), fn: () => dkRegistryListForm('registry') },
+  ]);
   op('docker', { op: 'list_images' }).then((d) => {
     const list = d.images || [];
     if (!list.length) { $('dkIList').innerHTML = `<div class="empty">${tr('dk.no_images')}</div>`; return; }
@@ -418,10 +423,20 @@ function dkImageDownload(name) {
 function dkImportForm(info) {
   modal(tr('dk.img_import'), `
     <label class="lbl">${tr('dk.img_import_label')}</label>
-    <input id="iiFile" type="file" accept=".tar,.tar.gz,.tgz,.gz" class="field" />
-    <p class="formnote" style="margin-top:6px">${tr('dk.img_import_hint')}</p>
-    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="iiGo">${tr('dk.img_import_btn')}</button></div>
+    <label class="filedrop" id="iiDrop">
+      <input id="iiFile" type="file" accept=".tar,.tar.gz,.tgz,.gz" />
+      <span class="fd-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M5 20h14"/></svg></span>
+      <span class="fd-main"><b id="iiName">${tr('dk.img_choose_file')}</b><span class="fd-sub">${tr('dk.img_import_formats')}</span></span>
+    </label>
+    <p class="formnote" style="margin-top:8px">${tr('dk.img_import_hint')}</p>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="iiGo" disabled>${tr('dk.img_import_btn')}</button></div>
     <div class="hidden" id="iiJob" style="margin-top:12px"></div>`, (close) => {
+    $('iiFile').onchange = () => {
+      const f = $('iiFile').files[0];
+      $('iiName').textContent = f ? f.name : tr('dk.img_choose_file');
+      $('iiGo').disabled = !f;
+      $('iiDrop').classList.toggle('has', !!f);
+    };
     $('iiGo').onclick = async () => {
       const f = $('iiFile').files[0]; if (!f) return toast(tr('dk.img_need_file'), 'err');
       $('iiGo').disabled = true; $('iiJob').classList.remove('hidden'); $('iiJob').innerHTML = `<div class="mut">${tr('dk.img_importing')}</div>`;
@@ -433,7 +448,32 @@ function dkImportForm(info) {
         toast(tr('dk.img_imported'), 'ok'); close(); dkImages(info);
       } catch (e) { toast(e.message, 'err'); $('iiGo').disabled = false; $('iiJob').innerHTML = ''; }
     };
-    bindDirty('iiGo');
+  });
+}
+
+// Edit the panel-side mirror / private-registry lists (used by the pull dialog).
+// `which` is 'mirror' or 'registry'. Saved without touching the Docker daemon.
+function dkRegistryListForm(which) {
+  const isMirror = which === 'mirror';
+  const title = isMirror ? tr('dk.set_mirrors') : tr('dk.set_registries');
+  const hint = isMirror ? tr('dk.set_mirrors_d') : tr('dk.set_registries_d');
+  const ph = isMirror ? 'docker.m.daocloud.io' : 'registry.example.com:5000';
+  modal(title, `
+    <label class="lbl">${title}</label>
+    <textarea id="rlList" class="field mono" rows="5" spellcheck="false" placeholder="${ph}"></textarea>
+    <p class="formnote">${hint}</p>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="rlGo" disabled>${tr('ng.save')}</button></div>`, (close) => {
+    let other = [];
+    op('docker', { op: 'get_settings' }).then((s) => {
+      $('rlList').value = ((isMirror ? s.mirrors : s.registries) || []).join('\n');
+      other = (isMirror ? s.registries : s.mirrors) || [];
+      bindDirty('rlGo', 'rlList');
+    }).catch(() => {});
+    $('rlGo').onclick = () => {
+      const lines = $('rlList').value.split('\n').map((x) => x.trim()).filter(Boolean);
+      const settings = isMirror ? { mirrors: lines, registries: other } : { mirrors: other, registries: lines };
+      op('docker', { op: 'set_registry_lists', settings }).then(() => { toast(tr('common.saved'), 'ok'); close(); }).catch((e) => toast(e.message, 'err'));
+    };
   });
 }
 
@@ -709,14 +749,26 @@ function dkCreateModal(info, networks, opts) {
         + `<div class="ifield"><input class="nr-ip field mono" placeholder="${tr('dk.ipv4_addr')}" /><button type="button" class="ifield-btn nr-ipgen" title="${tr('dk.gen_random')}">${MY_DICE}</button></div>`
         + `<button type="button" class="rm">×</button>`;
       const sel = row.querySelector('.nr-net'), mac = row.querySelector('.nr-mac'), ip = row.querySelector('.nr-ip');
+      const ipgenBtn = row.querySelector('.nr-ipgen');
       if (def) sel.value = def;
       mac.value = (v && v.mac) || randMac();
       const subnet = () => { const o = sel.options[sel.selectedIndex]; return o ? (o.dataset.subnet || '') : ''; };
+      // The default `bridge` (and any subnet-less network) can't take a static
+      // IPv4 — disable the field there so the form matches what Docker allows.
+      const supportsIp = () => sel.value !== 'bridge' && !!subnet();
+      const syncIp = () => {
+        const ok = supportsIp();
+        ip.disabled = !ok;
+        ipgenBtn.style.display = ok ? '' : 'none';
+        if (!ok) { ip.value = ''; ip.placeholder = tr('dk.net_no_static'); }
+        else ip.placeholder = tr('dk.ipv4_addr');
+      };
       if (v && v.ipv4) ip.value = v.ipv4;
-      else if (v && v.genip) { const g = randIpFromSubnet(subnet()); if (g) ip.value = g; }
-      sel.onchange = () => { if (!ip.value) { const g = randIpFromSubnet(subnet()); if (g) ip.value = g; } refreshNetUI(); };
+      else if (v && v.genip && supportsIp()) { const g = randIpFromSubnet(subnet()); if (g) ip.value = g; }
+      syncIp();
+      sel.onchange = () => { syncIp(); if (supportsIp() && !ip.value) { const g = randIpFromSubnet(subnet()); if (g) ip.value = g; } refreshNetUI(); };
       row.querySelector('.nr-macgen').onclick = () => { mac.value = randMac(); mac.dispatchEvent(new Event('input', { bubbles: true })); };
-      row.querySelector('.nr-ipgen').onclick = () => { const g = randIpFromSubnet(subnet()); if (g) { ip.value = g; ip.dispatchEvent(new Event('input', { bubbles: true })); } else toast(tr('dk.ipv4_need_subnet'), 'err'); };
+      ipgenBtn.onclick = () => { if (!supportsIp()) return; const g = randIpFromSubnet(subnet()); if (g) { ip.value = g; ip.dispatchEvent(new Event('input', { bubbles: true })); } else toast(tr('dk.ipv4_need_subnet'), 'err'); };
       row.querySelector('.rm').onclick = () => { row.remove(); refreshNetUI(); };
       $('ccNets').appendChild(row);
       refreshNetUI();
@@ -764,9 +816,9 @@ function dkCreateModal(info, networks, opts) {
       $('ccMem').value = cfg.memory ? Math.round(Number(cfg.memory) / 1048576) : 0;
       $('ccPriv').checked = !!cfg.privileged;
     } else {
-      // New container: pre-add the default bridge network with a random MAC and
-      // a random IPv4 so the row reflects Docker's default attachment.
-      netRow({ network: 'bridge', genip: true });
+      // New container: pre-add the default bridge network (random MAC). The
+      // default bridge can't take a static IPv4, so none is generated for it.
+      netRow({ network: 'bridge' });
     }
     const doSubmit = () => {
       const image = $('ccImg').value.trim(); if (!image) return toast(tr('dk.need_image'), 'err');
@@ -1164,7 +1216,7 @@ function dkNetIpPool(name) {
   });
 }
 
-// ---- Settings tab (mirror/registry lists + daemon.json knobs) ----
+// ---- Settings tab (daemon.json knobs; mirror/registry lists live under Images → Advanced) ----
 function dkSettings() {
   const body = $('dkBody');
   body.innerHTML = loading();
@@ -1172,16 +1224,7 @@ function dkSettings() {
     const cg = s.cgroup_driver || 'systemd';
     body.innerHTML = `
       <div style="max-width:560px">
-        <label class="lbl">${tr('dk.set_mirrors')}</label>
-        <textarea id="dkMirrors" class="field mono" rows="4" spellcheck="false" placeholder="docker.m.daocloud.io">${esc((s.mirrors || []).join('\n'))}</textarea>
-        <p class="formnote">${tr('dk.set_mirrors_d')}</p>
-
-        <label class="lbl" style="margin-top:18px">${tr('dk.set_registries')}</label>
-        <textarea id="dkRegs" class="field mono" rows="3" spellcheck="false" placeholder="registry.example.com:5000">${esc((s.registries || []).join('\n'))}</textarea>
-        <p class="formnote">${tr('dk.set_registries_d')}</p>
-        <div class="row" style="align-items:center;gap:12px;margin-top:16px"><button class="btn" id="dkSaveLists" disabled>${tr('ng.save')}</button><span class="err ok" id="dkListMsg"></span></div>
-
-        <div class="sechead" style="margin-top:30px"><h3>${tr('dk.set_daemon')}</h3></div>
+        <div class="sechead" style="margin-top:0"><h3>${tr('dk.set_daemon')}</h3></div>
         <p class="formnote" style="margin:0 0 14px">${tr('dk.set_daemon_d')}</p>
         <div class="formgrid">
           <div><label class="lbl">${tr('dk.set_cgroup')}</label><select id="dkCgroup" class="field"><option value="systemd"${cg === 'systemd' ? ' selected' : ''}>systemd</option><option value="cgroupfs"${cg === 'cgroupfs' ? ' selected' : ''}>cgroupfs</option></select></div>
@@ -1199,10 +1242,7 @@ function dkSettings() {
         <p class="formnote" style="margin-top:10px">${tr('dk.set_daemon_warn')}</p>
       </div>`;
 
-    const linesOf = (id) => $(id).value.split('\n').map((x) => x.trim()).filter(Boolean);
     const collect = () => ({
-      mirrors: linesOf('dkMirrors'),
-      registries: linesOf('dkRegs'),
       ipv6: $('dkGzip6').checked,
       iptables: $('dkIptables').checked,
       live_restore: $('dkLiveRestore').checked,
@@ -1212,18 +1252,11 @@ function dkSettings() {
       log_max_file: Number($('dkLogFile').value) || 3,
       socket_path: $('dkSocket').value.trim(),
     });
-    // Saving just the lists doesn't restart docker (mirror/registry are panel-side).
-    $('dkSaveLists').onclick = () => {
-      const m = $('dkListMsg'); $('dkSaveLists').disabled = true;
-      op('docker', { op: 'set_settings', settings: collect() }).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); dkSettingsReset(); }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('dkSaveLists').disabled = false; });
-    };
     $('dkSaveDaemon').onclick = async () => {
       if (!await confirmDanger(tr('dk.set_restart_confirm'))) return;
       const m = $('dkDaemonMsg'); m.className = 'err ok'; m.textContent = tr('dk.set_applying'); $('dkSaveDaemon').disabled = true;
-      op('docker', { op: 'set_settings', settings: collect() }).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); dkSettingsReset(); }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('dkSaveDaemon').disabled = false; });
+      op('docker', { op: 'set_settings', settings: collect() }).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); if ($('dkSaveDaemon')._dirtyReset) $('dkSaveDaemon')._dirtyReset(); }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('dkSaveDaemon').disabled = false; });
     };
-    const dkSettingsReset = () => { if ($('dkSaveLists')._dirtyReset) $('dkSaveLists')._dirtyReset(); if ($('dkSaveDaemon')._dirtyReset) $('dkSaveDaemon')._dirtyReset(); };
-    bindDirty('dkSaveLists', 'dkBody');
     bindDirty('dkSaveDaemon', 'dkBody');
   }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }

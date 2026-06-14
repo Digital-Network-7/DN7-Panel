@@ -623,6 +623,7 @@ async fn handle(req: &Req) -> Result<Value> {
         "remove_volume" => remove_volume_op(req).await,
         "get_settings" => Ok(dk_settings_json()),
         "set_settings" => set_dk_settings(req).await,
+        "set_registry_lists" => set_registry_lists(req).await,
         "pause_container" => {
             let r = need_ref(req)?;
             dkr()?
@@ -4090,6 +4091,13 @@ async fn set_dk_settings(req: &Req) -> Result<Value> {
     let incoming: DockerSettings =
         serde_json::from_value(v).map_err(|_| anyhow!("ERR_CODE:docker.bad_settings"))?;
 
+    // Mirror/registry lists are managed separately (Images → Advanced) and must
+    // not be touched by the daemon-settings save — preserve them from the store.
+    let mut incoming = incoming;
+    let stored = load_dk_settings();
+    incoming.mirrors = stored.mirrors;
+    incoming.registries = stored.registries;
+
     // Validate.
     for m in incoming.mirrors.iter().chain(incoming.registries.iter()) {
         if !valid_host_line(m) {
@@ -4117,6 +4125,34 @@ async fn set_dk_settings(req: &Req) -> Result<Value> {
     // Apply the daemon.json-backed knobs (may restart dockerd). Best-effort with
     // backup + rollback; surfaces a clear error if the daemon won't come back.
     apply_daemon_settings(&incoming).await?;
+    Ok(json!({ "ok": true }))
+}
+
+/// Save only the panel-side mirror/registry lists (used by the pull dialog).
+/// Does NOT touch daemon.json or restart Docker — these are panel-side only.
+async fn set_registry_lists(req: &Req) -> Result<Value> {
+    #[derive(Deserialize)]
+    struct Lists {
+        #[serde(default)]
+        mirrors: Vec<String>,
+        #[serde(default)]
+        registries: Vec<String>,
+    }
+    let v = req
+        .settings
+        .clone()
+        .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_settings"))?;
+    let lists: Lists =
+        serde_json::from_value(v).map_err(|_| anyhow!("ERR_CODE:docker.bad_settings"))?;
+    for m in lists.mirrors.iter().chain(lists.registries.iter()) {
+        if !valid_host_line(m) {
+            return Err(anyhow!("ERR_CODE:docker.bad_host_line"));
+        }
+    }
+    let mut cur = load_dk_settings();
+    cur.mirrors = lists.mirrors;
+    cur.registries = lists.registries;
+    save_dk_settings(&cur)?;
     Ok(json!({ "ok": true }))
 }
 
