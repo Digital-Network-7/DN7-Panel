@@ -155,31 +155,13 @@ pub(crate) async fn users_update(
     }
     // Optional role change (also adjusts the sudo group). The new role must
     // also be strictly below the actor.
-    if let Some(role) = &req.role {
-        if !matches!(role.as_str(), "admin" | "user") {
-            return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.bad_role"))).into_response();
-        }
-        if role_level(role) >= actor_lvl {
-            return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
-        }
-        if *role != target.role {
-            if let Err(e) = crate::web::users::set_sudo(&req.username, role == "admin").await {
-                return Json(op_err_body(e)).into_response();
-            }
-        }
+    if let Err(r) = apply_role_change(&req, &target.role, actor_lvl).await {
+        return r;
     }
     // Optional password reset (admin-set; no old password needed).
-    let pw = if req.pw_salt.is_some() || req.pw_hash.is_some() {
-        let salt = req.pw_salt.clone().unwrap_or_default();
-        let hash = req.pw_hash.clone().unwrap_or_default();
-        let salt_ok = salt.len() == 32 && salt.bytes().all(|b| b.is_ascii_hexdigit());
-        let hash_ok = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
-        if !salt_ok || !hash_ok {
-            return api_err(StatusCode::BAD_REQUEST, "settings.pw_format");
-        }
-        Some((salt, hash.to_lowercase()))
-    } else {
-        None
+    let pw = match parse_pw_update(&req) {
+        Ok(p) => p,
+        Err(r) => return r,
     };
     let res = crate::web::users::update(&req.username, |u| {
         if let Some(f) = &req.full_name {
@@ -212,6 +194,47 @@ pub(crate) async fn users_update(
     }
     audit::record(&actor.username, "user.update", &req.username, true, "");
     Json(json!({ "ok": true })).into_response()
+}
+
+/// Apply an optional role change: validate the role, ensure it's strictly below
+/// the actor's level, and adjust the sudo group when it actually changes.
+#[allow(clippy::result_large_err)]
+async fn apply_role_change(
+    req: &UpdateUserReq,
+    target_role: &str,
+    actor_lvl: u8,
+) -> Result<(), Response> {
+    let Some(role) = &req.role else { return Ok(()) };
+    if !matches!(role.as_str(), "admin" | "user") {
+        return Err(Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.bad_role"))).into_response());
+    }
+    if role_level(role) >= actor_lvl {
+        return Err(api_err(StatusCode::FORBIDDEN, "auth.forbidden"));
+    }
+    if role != target_role {
+        if let Err(e) = crate::web::users::set_sudo(&req.username, role == "admin").await {
+            return Err(Json(op_err_body(e)).into_response());
+        }
+    }
+    Ok(())
+}
+
+/// Parse + validate an optional admin password reset (client-computed salt +
+/// hash). Returns `Some((salt, hash_lowercased))`, `None` when absent, or the
+/// error `Response`.
+#[allow(clippy::result_large_err)]
+fn parse_pw_update(req: &UpdateUserReq) -> Result<Option<(String, String)>, Response> {
+    if req.pw_salt.is_none() && req.pw_hash.is_none() {
+        return Ok(None);
+    }
+    let salt = req.pw_salt.clone().unwrap_or_default();
+    let hash = req.pw_hash.clone().unwrap_or_default();
+    let salt_ok = salt.len() == 32 && salt.bytes().all(|b| b.is_ascii_hexdigit());
+    let hash_ok = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
+    if !salt_ok || !hash_ok {
+        return Err(api_err(StatusCode::BAD_REQUEST, "settings.pw_format"));
+    }
+    Ok(Some((salt, hash.to_lowercase())))
 }
 
 #[derive(serde::Deserialize)]
