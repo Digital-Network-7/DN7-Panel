@@ -447,7 +447,8 @@ function dkCreateModal(info, networks, opts) {
         <div><label class="lbl">${tr('dk.restart_policy')}</label><select id="ccRestart" class="field"><option value="unless-stopped">unless-stopped</option><option value="always">always</option><option value="no">no</option></select></div>
         <div class="full"><label class="lbl">${tr('dk.start_cmd')}</label><input id="ccCmd" class="field" placeholder="${tr('dk.cmd_ph')}" /></div>
       </div>
-      <div style="margin-top:10px">
+      <div class="switchrow" style="margin-top:10px">
+        <label class="switch"><input type="checkbox" id="ccStdin" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.alloc_stdin')}</b><span>${tr('dk.alloc_stdin_d')}</span></span></label>
         <label class="switch"><input type="checkbox" id="ccTty" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.alloc_tty')}</b><span>${tr('dk.alloc_tty_d')}</span></span></label>
         <label class="switch"><input type="checkbox" id="ccStart" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.start_after')}</b><span>${tr('dk.start_after_d')}</span></span></label>
       </div>
@@ -472,10 +473,10 @@ function dkCreateModal(info, networks, opts) {
       <label class="lbl">${tr('dk.volumes')}</label><div class="kvlist" id="ccVol"></div><button type="button" class="kvadd" id="ccVolAdd">${tr('dk.add_vol')}</button>
     </div>
     <div id="ccRes" class="hidden">
-      <div class="formgrid">
+      <div class="formgrid res3">
         <div><label class="lbl">${tr('dk.cpu_weight')}</label><input id="ccCpuShares" class="field" type="number" min="0" value="1024" /><p class="formnote" style="margin-top:5px">${tr('dk.cpu_weight_hint')}</p></div>
         <div><label class="lbl">${tr('dk.cpu_limit')}</label><div class="field-suffix"><input id="ccCpus" class="field" type="number" min="0" max="${cpuMax}" step="0.1" value="0" /><span class="suffix-tag">${tr('dk.unit_core')}</span></div><p class="formnote" style="margin-top:5px">${tr('dk.cpu_limit_hint', { n: cpuMax })}</p></div>
-        <div class="full"><label class="lbl">${tr('dk.mem_limit')}</label><div class="field-suffix"><input id="ccMem" class="field" type="number" min="0" value="0" /><button type="button" class="suffix-btn" id="ccMemUnit">MB</button></div><p class="formnote" style="margin-top:5px" id="ccMemHint"></p></div>
+        <div><label class="lbl">${tr('dk.mem_limit')}</label><div class="field-suffix"><input id="ccMem" class="field" type="number" min="0" value="0" /><button type="button" class="suffix-btn" id="ccMemUnit">MB</button></div><p class="formnote" style="margin-top:5px" id="ccMemHint"></p></div>
       </div>
       <label class="switch" style="margin-top:12px"><input type="checkbox" id="ccPriv" /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.privileged')}</b><span>${tr('dk.privileged_d')}</span></span></label>
     </div>
@@ -542,8 +543,9 @@ function dkCreateModal(info, networks, opts) {
       const sel = row.querySelector('.nr-net'), mac = row.querySelector('.nr-mac'), ip = row.querySelector('.nr-ip');
       mac.value = (v && v.mac) || randMac();
       if (v && v.network) sel.value = v.network;
-      if (v && v.ipv4) ip.value = v.ipv4;
       const subnet = () => { const o = sel.options[sel.selectedIndex]; return o ? (o.dataset.subnet || '') : ''; };
+      if (v && v.ipv4) ip.value = v.ipv4;
+      else if (v && v.genip) { const g = randIpFromSubnet(subnet()); if (g) ip.value = g; }
       sel.onchange = () => { if (!ip.value) { const g = randIpFromSubnet(subnet()); if (g) ip.value = g; } };
       row.querySelector('.nr-macgen').onclick = () => { mac.value = randMac(); mac.dispatchEvent(new Event('input', { bubbles: true })); };
       row.querySelector('.nr-ipgen').onclick = () => { const g = randIpFromSubnet(subnet()); if (g) { ip.value = g; ip.dispatchEvent(new Event('input', { bubbles: true })); } else toast(tr('dk.ipv4_need_subnet'), 'err'); };
@@ -579,6 +581,7 @@ function dkCreateModal(info, networks, opts) {
       $('ccRestart').value = cfg.restart || 'unless-stopped';
       $('ccCmd').value = cfg.command || '';
       $('ccTty').checked = !!cfg.tty;
+      $('ccStdin').checked = !!cfg.interactive;
       $('ccStart').checked = true;
       (cfg.ports || []).forEach((p) => portRow({ h: p.host, c: p.container, proto: p.proto }));
       (cfg.env || []).forEach((e) => { const i = e.indexOf('='); envRow({ k: i >= 0 ? e.slice(0, i) : e, v: i >= 0 ? e.slice(i + 1) : '' }); });
@@ -591,6 +594,10 @@ function dkCreateModal(info, networks, opts) {
       $('ccCpus').value = cfg.cpus ? Number(cfg.cpus) : 0;
       $('ccMem').value = cfg.memory ? Math.round(Number(cfg.memory) / 1048576) : 0;
       $('ccPriv').checked = !!cfg.privileged;
+    } else {
+      // New container: pre-add the default bridge network with a random MAC and
+      // a random IPv4 so the row reflects Docker's default attachment.
+      netRow({ network: 'bridge', genip: true });
     }
     const doSubmit = () => {
       const image = $('ccImg').value.trim(); if (!image) return toast(tr('dk.need_image'), 'err');
@@ -604,7 +611,7 @@ function dkCreateModal(info, networks, opts) {
       const memV = Number($('ccMem').value) || 0;
       const body = {
         op: 'create_container', image, name: $('ccName').value.trim() || undefined, restart: $('ccRestart').value,
-        ports, env, volumes, command: $('ccCmd').value.trim() || undefined, tty: $('ccTty').checked, start: $('ccStart').checked,
+        ports, env, volumes, command: $('ccCmd').value.trim() || undefined, tty: $('ccTty').checked, interactive: $('ccStdin').checked, start: $('ccStart').checked,
         networks,
         hostname: $('ccHost').value.trim() || undefined, domainname: $('ccDomain').value.trim() || undefined,
         dns: dns.length ? dns : undefined, cpu_shares: cpuShares || undefined,

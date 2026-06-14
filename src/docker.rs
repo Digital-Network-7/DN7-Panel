@@ -145,6 +145,9 @@ struct Req {
     // allocate a pseudo-TTY (-t); keeps shells like `ubuntu`/`bash` alive
     #[serde(default)]
     tty: Option<bool>,
+    // keep STDIN open (-i); maps to open_stdin so the container accepts input
+    #[serde(default)]
+    interactive: Option<bool>,
     // resource limits (cgroup v2 only): cpus like "0.5"/"2"; memory like "512m"/"1g"
     #[serde(default)]
     cpus: Option<String>,
@@ -2027,6 +2030,9 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
     }
 
     let tty = req.tty.unwrap_or(false);
+    // -i: keep STDIN open. Defaults to the same value as -t so a single legacy
+    // `tty: true` request still behaves as before (interactive + TTY).
+    let interactive = req.interactive.unwrap_or(tty);
 
     // CPU weight (cpu-shares). Default 1024 (docker's own default). 0 or unset
     // means "leave at default".
@@ -2135,7 +2141,7 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
         cmd,
         env: if env.is_empty() { None } else { Some(env) },
         tty: Some(tty),
-        open_stdin: Some(tty),
+        open_stdin: Some(interactive),
         hostname,
         domainname,
         exposed_ports: if exposed.is_empty() {
@@ -2608,6 +2614,7 @@ async fn container_create_body(dkr: &Docker, reference: &str) -> Result<Value> {
         "volumes": volumes,
         "command": cmd,
         "tty": cfg.tty.unwrap_or(false),
+        "interactive": cfg.open_stdin.unwrap_or(false),
         "networks": networks,
         "hostname": cfg.hostname.clone().unwrap_or_default(),
         "domainname": cfg.domainname.clone().unwrap_or_default(),
@@ -3842,6 +3849,7 @@ mod tests {
             path: None,
             command: None,
             tty: None,
+            interactive: None,
             cpus: None,
             memory: None,
             channel: None,
