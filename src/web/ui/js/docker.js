@@ -201,7 +201,7 @@ function wireCellTips(scope) {
 function ctnStateChip(state) {
   let cls = 'off', dot = '', key = 'dk.st_stopped';
   if (state === 'running') { cls = 'on'; dot = ' on'; key = 'dk.st_running'; }
-  else if (state === 'paused') { cls = 'warn'; key = 'dk.st_paused'; }
+  else if (state === 'paused') { cls = 'warn'; dot = ' warn'; key = 'dk.st_paused'; }
   else if (state === 'restarting') { cls = 'warn'; dot = ' init'; key = 'dk.st_restarting'; }
   else if (state === 'created') { cls = ''; key = 'dk.st_created'; }
   return `<span class="chip ${cls}"><span class="dot-s${dot}"></span>${tr(key)}</span>`;
@@ -214,13 +214,13 @@ function buildStatusControls(holder, reload) {
   const id = holder.dataset.id, state = holder.dataset.state;
   const items = [];
   if (state === 'running') {
-    items.push({ label: tr('dk.stop'), fn: () => doCAction('stop_container', id, reload) });
+    items.push({ label: tr('dk.stop'), fn: () => doStopAction(id, reload) });
     items.push({ label: tr('dk.restart'), fn: () => doCAction('restart_container', id, reload) });
     items.push({ label: tr('dk.pause'), fn: () => doCAction('pause_container', id, reload) });
     items.push({ label: tr('dk.force_stop'), cls: 'danger', fn: async () => { if (await confirmDanger(tr('dk.confirm_force', { name: holder.dataset.name }))) doCAction('kill_container', id, reload); } });
   } else if (state === 'paused') {
     items.push({ label: tr('dk.resume'), cls: '', fn: () => doCAction('unpause_container', id, reload) });
-    items.push({ label: tr('dk.stop'), fn: () => doCAction('stop_container', id, reload) });
+    items.push({ label: tr('dk.stop'), fn: () => doStopAction(id, reload) });
     items.push({ label: tr('dk.restart'), fn: () => doCAction('restart_container', id, reload) });
   } else {
     items.push({ label: tr('dk.start'), cls: '', fn: () => doCAction('start_container', id, reload) });
@@ -228,7 +228,6 @@ function buildStatusControls(holder, reload) {
   }
   if (!items.length) return;
   holder.style.cursor = 'pointer';
-  holder.insertAdjacentHTML('beforeend', '<span class="c-caret">▾</span>');
   mkHoverPanel(holder, items);
 }
 
@@ -239,11 +238,17 @@ function buildContainerActions(holder, reload) {
   const mk = (label, cls, fn) => { const b = el('button', { class: 'btn sm ' + (cls || 'sec') }, label); b.onclick = fn; holder.appendChild(b); };
   // DN7 Panel-managed service containers (nginx / mysql): lifecycle/edit/delete/
   // logs belong to their own pages. Only safe read-only observe actions show
-  // here — Terminal, Files, Monitor — and each only when it actually applies.
+  // here — Terminal, Files, and an Advanced menu carrying Monitor.
   if (managed) {
     if (running && hasShell) mk(tr('dk.terminal'), '', () => openTerminalModal(tr('dk.ctn_term') + name, () => ticket().then((t) => `/api/container/terminal?ticket=${encodeURIComponent(t)}&container=${encodeURIComponent(id)}`)));
     if (running) mk(tr('dk.files'), 'sec', () => openFileBrowser(tr('dk.ctn_files') + name, id));
-    if (running) mk(tr('dk.monitor'), 'sec', () => dkMonitor(id, name));
+    const mitems = [];
+    if (running) mitems.push({ label: tr('dk.monitor'), fn: () => dkMonitor(id, name) });
+    if (mitems.length) {
+      const advm = el('button', { class: 'btn sm sec' }, tr('dk.advanced') + ' ▾');
+      holder.appendChild(advm);
+      mkHoverPanel(advm, mitems);
+    }
     return;
   }
   // Outermost: terminal, files, advanced (logs/networks moved into Advanced /
@@ -305,6 +310,16 @@ function mkHoverPanel(trigger, items) {
 
 function doCAction(o, id, reload) { op('docker', { op: o, ref: id }).then(() => { toast(tr('dk.op_ok'), 'ok'); reload && reload(); }).catch((e) => toast(e.message, 'err')); }
 
+// Stopping takes a while (docker waits for the container to exit). Give instant
+// feedback that the command was sent, then confirm completion — but only if the
+// user is still on the Docker page when it finishes.
+function doStopAction(id, reload) {
+  toast(tr('dk.stop_sent'));
+  op('docker', { op: 'stop_container', ref: id }).then(() => {
+    if (S.tab === 'docker') { toast(tr('dk.stop_done'), 'ok'); reload && reload(); }
+  }).catch((e) => toast(e.message, 'err'));
+}
+
 function dkLogs(id, name) {
   modal(tr('dk.logs_title') + name, '<div id="dkLogWrap">' + loading() + '</div>', () => {
     op('docker', { op: 'logs', ref: id, tail: 400 }).then((d) => { $('dkLogWrap').innerHTML = '<pre class="out" id="dkLogOut" style="max-height:64vh"></pre>'; $('dkLogOut').textContent = d.logs || tr('dk.empty_log'); $('dkLogOut').scrollTop = $('dkLogOut').scrollHeight; }).catch((e) => { $('dkLogWrap').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
@@ -333,9 +348,9 @@ function dkImages(info) {
         : im.in_use
           ? `<button class="btn sm danger" data-rmused="1">${tr('dk.delete')}</button>`
           : `<button class="btn sm danger" data-rm="${esc(im.name)}">${tr('dk.delete')}</button>`;
-      const acts = `<div class="actions"><button class="btn sm sec" data-dl="${esc(im.name)}">${tr('dk.img_download')}</button><button class="btn sm sec" data-tag="${esc(im.name)}">${tr('dk.tag_btn')}</button>${delBtn}</div>`;
       const tags = (im.tags && im.tags.length) ? im.tags : [im.name];
       const tagHtml = tags.map((t) => `<span class="imgtag">${esc(t)}</span>`).join('');
+      const acts = `<div class="actions"><button class="btn sm sec" data-dl="${esc(im.name)}">${tr('dk.img_download')}</button><button class="btn sm sec" data-tag="${esc(im.name)}" data-tags="${esc(JSON.stringify(tags))}">${tr('dk.tag_btn')}</button>${delBtn}</div>`;
       h += `<tr><td class="mono mut" style="font-size:11px" data-tip="${esc(im.id)}">${esc(im.id)}</td>`
         + `<td data-tip="${esc(tags.join('\n'))}"><div class="clamp2">${tagHtml}</div></td>`
         + `<td>${esc(im.size)}</td><td class="mut">${esc(fmtDateTime(im.created_ts))}</td><td>${ref}</td>`
@@ -343,7 +358,7 @@ function dkImages(info) {
     });
     $('dkIList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
     document.querySelectorAll('#dkIList [data-dl]').forEach((b) => b.onclick = () => dkImageDownload(b.dataset.dl));
-    document.querySelectorAll('#dkIList [data-tag]').forEach((b) => b.onclick = () => dkTagForm(b.dataset.tag, info));
+    document.querySelectorAll('#dkIList [data-tag]').forEach((b) => b.onclick = () => dkTagForm(b.dataset.tag, JSON.parse(b.dataset.tags || '[]'), info));
     document.querySelectorAll('#dkIList [data-rmbuiltin]').forEach((b) => b.onclick = () => toast(tr('dk.img_builtin_block'), 'err'));
     document.querySelectorAll('#dkIList [data-rmused]').forEach((b) => b.onclick = () => toast(tr('dk.img_in_use_block'), 'err'));
     document.querySelectorAll('#dkIList [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('dk.confirm_rm_img', { name: b.dataset.rm }))) op('docker', { op: 'remove_image', ref: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); dkImages(info); }).catch((e) => toast(e.message, 'err')); });
@@ -352,19 +367,40 @@ function dkImages(info) {
   }).catch((e) => { $('dkIList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
 
-// Tag an image: add one or more new repo:tag references (one per line).
-function dkTagForm(name, info) {
+// Tag an image: shows the image's current tags, then a tag-input where each tag
+// typed + Enter becomes a removable chip. All collected chips are applied at once.
+function dkTagForm(name, existing, info) {
+  const chips = [];
+  const ex = (existing || []).filter(Boolean);
   modal(tr('dk.tag_title') + name, `
+    ${ex.length ? `<label class="lbl">${tr('dk.tag_existing')}</label><div class="tagchips" style="margin:0 0 16px">${ex.map((t) => `<span class="imgtag">${esc(t)}</span>`).join('')}</div>` : ''}
     <label class="lbl">${tr('dk.tag_new')}</label>
-    <textarea id="tgList" class="field mono" rows="4" placeholder="myrepo/app:v1&#10;myrepo/app:latest"></textarea>
+    <div class="taginput" id="tgBox"><input id="tgInput" placeholder="${tr('dk.tag_ph')}" /></div>
     <p class="formnote" style="margin-top:6px">${tr('dk.tag_hint')}</p>
     <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="tgGo" disabled>${tr('dk.tag_apply')}</button></div>
   `, (close) => {
-    bindDirty($('tgGo'), $('tgList'));
-    $('tgGo').onclick = () => {
-      const tags = $('tgList').value.split('\n').map((s) => s.trim()).filter(Boolean);
-      if (!tags.length) return toast(tr('dk.tag_empty'), 'err');
-      op('docker', { op: 'tag_image', ref: name, tags }).then(() => { toast(tr('dk.tag_done'), 'ok'); close(); dkImages(info); }).catch((e) => toast(e.message, 'err'));
+    const box = $('tgBox'), input = $('tgInput'), go = $('tgGo');
+    const render = () => {
+      box.querySelectorAll('.tagchip').forEach((e) => e.remove());
+      chips.forEach((t, i) => {
+        const c = el('span', { class: 'tagchip' });
+        c.innerHTML = `<span>${esc(t)}</span><button type="button">×</button>`;
+        c.querySelector('button').onclick = () => { chips.splice(i, 1); render(); };
+        box.insertBefore(c, input);
+      });
+      go.disabled = chips.length === 0;
+    };
+    const add = () => { const v = input.value.trim(); if (v && !chips.includes(v)) { chips.push(v); input.value = ''; render(); } };
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); add(); }
+      else if (e.key === 'Backspace' && !input.value && chips.length) { chips.pop(); render(); }
+    };
+    input.onblur = add;
+    box.onclick = () => input.focus();
+    go.onclick = () => {
+      add();
+      if (!chips.length) return toast(tr('dk.tag_empty'), 'err');
+      op('docker', { op: 'tag_image', ref: name, tags: chips.slice() }).then(() => { toast(tr('dk.tag_done'), 'ok'); close(); dkImages(info); }).catch((e) => toast(e.message, 'err'));
     };
   });
 }

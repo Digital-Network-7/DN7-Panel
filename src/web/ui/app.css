@@ -100,6 +100,7 @@
   .chip.warn { color:var(--warn); border-color:rgba(251,191,36,.4); background:rgba(251,191,36,.10); }
   .dot-s { width:7px; height:7px; border-radius:99px; background:var(--mut); display:inline-block; }
   .dot-s.on { background:var(--ok); box-shadow:0 0 8px rgba(52,211,153,.7); }
+  .dot-s.warn { background:var(--warn); box-shadow:0 0 8px rgba(251,191,36,.6); }
   .dot-s.init { background:var(--warn); animation:dotpulse 1.1s ease-in-out infinite; }
   @keyframes dotpulse { 0%,100%{ opacity:1; } 50%{ opacity:.35; } }
   /* Role labels (user management) — uniform box, colour-only variation. */
@@ -622,6 +623,14 @@ table.voltbl th.act, table.voltbl td.act { width: 160px; }
 /* Image name shown as a label/chip (clamped to 2 lines by its wrapping cell). */
 .imgtag { display: inline-block; max-width: 100%; font-size: 11.5px; color: var(--fg); background: var(--hov); border: 1px solid var(--line2);
   border-radius: 6px; padding: 2px 8px; margin: 0 5px 4px 0; white-space: normal; word-break: break-all; vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* Tag-input (image tagging modal): chips + an inline text input in one field. */
+.tagchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.taginput { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 42px; padding: 7px 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; cursor: text; }
+.taginput:focus-within { border-color: var(--cy); box-shadow: 0 0 0 3px var(--acc-soft); }
+.taginput input { flex: 1; min-width: 140px; border: none; background: none; color: var(--fg); outline: none; font: inherit; padding: 2px 0; }
+.tagchip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; background: var(--hov); border: 1px solid var(--line2); border-radius: 7px; padding: 3px 4px 3px 9px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.tagchip button { border: none; background: none; color: var(--mut); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 3px; border-radius: 5px; }
+.tagchip button:hover { color: var(--err); }
 /* Pull-tasks modal: a list of running/finished image pulls. */
 .pt-row { padding: 11px 2px; border-bottom: 1px solid var(--line); }
 .pt-row:last-child { border-bottom: none; }
