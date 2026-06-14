@@ -166,6 +166,8 @@ struct PortMap {
     container: i64,
     #[serde(default)]
     proto: Option<String>, // "tcp" | "udp", default tcp
+    #[serde(default)]
+    ipv6: Option<bool>, // also bind the host IPv6 wildcard (::) for this port
 }
 
 /// One network attachment for a container: the network name plus an optional
@@ -1949,13 +1951,19 @@ fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
             }
             let key = format!("{}/{}", p.container, proto);
             exposed.insert(key.clone(), HashMap::new());
-            bindings.insert(
-                key,
-                Some(vec![PortBinding {
-                    host_ip: None,
+            // Default IPv4 wildcard (0.0.0.0) binding; when ipv6 is on, also add
+            // an IPv6 wildcard (::) binding for the same host port.
+            let mut binds = vec![PortBinding {
+                host_ip: None,
+                host_port: Some(p.host.to_string()),
+            }];
+            if p.ipv6.unwrap_or(false) {
+                binds.push(PortBinding {
+                    host_ip: Some("::".to_string()),
                     host_port: Some(p.host.to_string()),
-                }]),
-            );
+                });
+            }
+            bindings.insert(key, Some(binds));
         }
     }
 
@@ -2530,7 +2538,9 @@ async fn container_create_body(dkr: &Docker, reference: &str) -> Result<Value> {
         .trim_start_matches('/')
         .to_string();
 
-    // Ports from host_config.port_bindings ("port/proto" -> [{host_port}]).
+    // Ports from host_config.port_bindings ("port/proto" -> [{host_ip, host_port}]).
+    // A port mapped on both 0.0.0.0 and :: appears as two bindings sharing the
+    // same host port — collapse them into one row and flag ipv6.
     let mut ports = Vec::new();
     if let Some(pb) = &hc.port_bindings {
         for (key, binds) in pb {
@@ -2539,10 +2549,22 @@ async fn container_create_body(dkr: &Docker, reference: &str) -> Result<Value> {
                 None => (key.parse::<i64>().unwrap_or(0), "tcp".to_string()),
             };
             if let Some(list) = binds {
+                let mut seen: HashMap<i64, bool> = HashMap::new();
                 for b in list {
                     if let Some(hp) = b.host_port.as_deref().and_then(|s| s.parse::<i64>().ok()) {
-                        ports.push(json!({ "host": hp, "container": cport, "proto": proto }));
+                        let is6 = b
+                            .host_ip
+                            .as_deref()
+                            .map(|s| s.contains(':'))
+                            .unwrap_or(false);
+                        let e = seen.entry(hp).or_insert(false);
+                        *e = *e || is6;
                     }
+                }
+                for (hp, v6) in seen {
+                    ports.push(
+                        json!({ "host": hp, "container": cport, "proto": proto, "ipv6": v6 }),
+                    );
                 }
             }
         }
@@ -3917,6 +3939,7 @@ mod tests {
             host: 8080,
             container: 80,
             proto: None,
+            ipv6: None,
         }]);
         req.env = Some(vec!["FOO=bar".into()]);
         req.volumes = Some(vec![VolumeMap {
@@ -3960,6 +3983,7 @@ mod tests {
             host: 0,
             container: 80,
             proto: None,
+            ipv6: None,
         }]);
         assert!(build_create_spec(&req).is_err());
     }

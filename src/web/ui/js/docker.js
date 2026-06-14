@@ -426,10 +426,11 @@ function dkCreateModal(info, networks, opts) {
   const memMaxMb = hostMem > 0 ? (hostMem / 1048576) : 0;
   const memMaxTxt = memMaxMb > 0 ? memMaxMb.toFixed(2) + 'MB' : '';
   const vols = opts.volumes || [];
-  // Network options: just the real networks (bridge included once). No row =
-  // default bridge; adding a row defaults to the first network.
-  const netOpts = networks.filter((n) => n.name !== 'host' && n.name !== 'none')
-    .map((n) => `<option value="${esc(n.name)}" data-subnet="${esc(n.subnet || '')}">${esc(n.name)}</option>`).join('');
+  // Eligible networks (bridge included once; host/none excluded). A container
+  // can join several, but never the same network twice — selects only offer
+  // networks not already chosen by another row.
+  const netList = networks.filter((n) => n.name !== 'host' && n.name !== 'none')
+    .map((n) => ({ name: n.name, subnet: n.subnet || '' }));
   const volOpts = `<option value="">${tr('dk.vol_pick')}</option>` + vols.map((v) => `<option value="${esc(v.name)}">${esc(v.name)}</option>`).join('');
   modal(opts.title || tr('dk.create_container'), `
     <div class="subtabs" id="ccTabs">
@@ -493,7 +494,7 @@ function dkCreateModal(info, networks, opts) {
     // Dynamic row helpers.
     const portRow = (v) => kvRow('ccPorts', [
       { ph: tr('dk.host_port'), val: v && v.h }, { sep: '→' }, { ph: tr('dk.container_port'), val: v && v.c },
-    ], { proto: true, protoVal: v && v.proto });
+    ], { proto: true, protoVal: v && v.proto, ipv6: true, ipv6Val: v && v.ipv6 });
     const envRow = (v) => kvRow('ccEnv', [
       { ph: 'KEY', val: v && v.k, flex: '0 0 34%' }, { sep: '=' }, { ph: 'VALUE', val: v && v.v, flex: '1 1 auto' },
     ]);
@@ -531,26 +532,46 @@ function dkCreateModal(info, networks, opts) {
     $('ccPortsAdd').onclick = () => portRow();
     $('ccEnvAdd').onclick = () => envRow();
     $('ccVolAdd').onclick = () => volRow();
-    // Network tab: a container can join several networks. Each row is a network
-    // pick + optional MAC (auto-random) + optional static IPv4 (auto from the
-    // chosen network's subnet). The random generators sit inside the inputs.
+    // Network tab: a container can join several networks (never the same one
+    // twice). Each row is a network pick + optional MAC (auto-random) + optional
+    // static IPv4 (auto from the chosen network's subnet). The random generators
+    // sit inside the inputs.
+    const usedNets = () => Array.from($('ccNets').querySelectorAll('.nr-net')).map((s) => s.value);
+    // Re-prune every select so it only offers networks not chosen elsewhere, and
+    // hide the add button once every eligible network is taken.
+    const refreshNetUI = () => {
+      const used = usedNets();
+      Array.from($('ccNets').querySelectorAll('.netrow')).forEach((row) => {
+        const sel = row.querySelector('.nr-net');
+        const cur = sel.value;
+        sel.innerHTML = netList.filter((n) => n.name === cur || !used.includes(n.name))
+          .map((n) => `<option value="${esc(n.name)}" data-subnet="${esc(n.subnet)}">${esc(n.name)}</option>`).join('');
+        sel.value = cur;
+      });
+      const remaining = netList.filter((n) => !used.includes(n.name));
+      $('ccNetAdd').style.display = remaining.length ? '' : 'none';
+    };
     const netRow = (v) => {
+      const used = usedNets();
+      const def = (v && v.network) || ((netList.find((n) => !used.includes(n.name)) || netList[0] || {}).name) || '';
       const row = el('div', { class: 'netrow' });
-      row.innerHTML = `<select class="nr-net field">${netOpts}</select>`
+      const allOpts = netList.map((n) => `<option value="${esc(n.name)}" data-subnet="${esc(n.subnet)}">${esc(n.name)}</option>`).join('');
+      row.innerHTML = `<select class="nr-net field">${allOpts}</select>`
         + `<div class="ifield"><input class="nr-mac field mono" placeholder="${tr('dk.mac_addr')}" /><button type="button" class="ifield-btn nr-macgen" title="${tr('dk.gen_random')}">${MY_DICE}</button></div>`
         + `<div class="ifield"><input class="nr-ip field mono" placeholder="${tr('dk.ipv4_addr')}" /><button type="button" class="ifield-btn nr-ipgen" title="${tr('dk.gen_random')}">${MY_DICE}</button></div>`
         + `<button type="button" class="rm">×</button>`;
       const sel = row.querySelector('.nr-net'), mac = row.querySelector('.nr-mac'), ip = row.querySelector('.nr-ip');
+      if (def) sel.value = def;
       mac.value = (v && v.mac) || randMac();
-      if (v && v.network) sel.value = v.network;
       const subnet = () => { const o = sel.options[sel.selectedIndex]; return o ? (o.dataset.subnet || '') : ''; };
       if (v && v.ipv4) ip.value = v.ipv4;
       else if (v && v.genip) { const g = randIpFromSubnet(subnet()); if (g) ip.value = g; }
-      sel.onchange = () => { if (!ip.value) { const g = randIpFromSubnet(subnet()); if (g) ip.value = g; } };
+      sel.onchange = () => { if (!ip.value) { const g = randIpFromSubnet(subnet()); if (g) ip.value = g; } refreshNetUI(); };
       row.querySelector('.nr-macgen').onclick = () => { mac.value = randMac(); mac.dispatchEvent(new Event('input', { bubbles: true })); };
       row.querySelector('.nr-ipgen').onclick = () => { const g = randIpFromSubnet(subnet()); if (g) { ip.value = g; ip.dispatchEvent(new Event('input', { bubbles: true })); } else toast(tr('dk.ipv4_need_subnet'), 'err'); };
-      row.querySelector('.rm').onclick = () => row.remove();
+      row.querySelector('.rm').onclick = () => { row.remove(); refreshNetUI(); };
       $('ccNets').appendChild(row);
+      refreshNetUI();
     };
     $('ccNetAdd').onclick = () => netRow();
     const readNetworks = () => Array.from($('ccNets').querySelectorAll('.netrow')).map((r) => ({
@@ -583,7 +604,7 @@ function dkCreateModal(info, networks, opts) {
       $('ccTty').checked = !!cfg.tty;
       $('ccStdin').checked = !!cfg.interactive;
       $('ccStart').checked = true;
-      (cfg.ports || []).forEach((p) => portRow({ h: p.host, c: p.container, proto: p.proto }));
+      (cfg.ports || []).forEach((p) => portRow({ h: p.host, c: p.container, proto: p.proto, ipv6: p.ipv6 }));
       (cfg.env || []).forEach((e) => { const i = e.indexOf('='); envRow({ k: i >= 0 ? e.slice(0, i) : e, v: i >= 0 ? e.slice(i + 1) : '' }); });
       (cfg.volumes || []).forEach((v) => volRow({ host: v.host, container: v.container, readonly: v.readonly }));
       (cfg.networks || []).forEach((n) => netRow(n));
@@ -601,7 +622,7 @@ function dkCreateModal(info, networks, opts) {
     }
     const doSubmit = () => {
       const image = $('ccImg').value.trim(); if (!image) return toast(tr('dk.need_image'), 'err');
-      const ports = readKv('ccPorts').map((r) => ({ host: Number(r[0]), container: Number(r[1]), proto: r.proto || 'tcp' })).filter((p) => p.host && p.container);
+      const ports = readKv('ccPorts').map((r) => ({ host: Number(r[0]), container: Number(r[1]), proto: r.proto || 'tcp', ipv6: r.ipv6 || undefined })).filter((p) => p.host && p.container);
       const env = readKv('ccEnv').map((r) => (r[0] ? r[0] + '=' + (r[1] || '') : '')).filter(Boolean);
       const volumes = readVolumes();
       const networks = readNetworks();
@@ -829,11 +850,19 @@ function kvRow(id, cells, opts) {
     row.appendChild(i);
   });
   if (opts.proto) {
-    const sel = el('select', { class: 'field', style: 'flex:0 0 70px' });
-    sel.innerHTML = '<option value="tcp">tcp</option><option value="udp">udp</option>';
+    const sel = el('select', { class: 'field', style: 'flex:0 0 78px' });
+    sel.innerHTML = '<option value="tcp">TCP</option><option value="udp">UDP</option>';
     if (opts.protoVal === 'udp') sel.value = 'udp';
     sel._proto = true;
     row.appendChild(sel);
+  }
+  if (opts.ipv6) {
+    const lab = el('label', { class: 'ro' });
+    lab.innerHTML = '<input type="checkbox" /> IPv6';
+    const cb = lab.querySelector('input'); cb._ipv6 = true;
+    if (opts.ipv6Val) cb.checked = true;
+    lab.title = tr('dk.ipv6_hint');
+    row.appendChild(lab);
   }
   if (opts.ro) {
     const lab = el('label', { class: 'ro' });
@@ -853,8 +882,10 @@ function readKv(id) {
     const out = vals;
     const proto = row.querySelector('select');
     if (proto && proto._proto) out.proto = proto.value;
-    const ro = row.querySelector('input[type="checkbox"]');
-    if (ro && ro._ro) out.ro = ro.checked;
+    row.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+      if (cb._ro) out.ro = cb.checked;
+      if (cb._ipv6) out.ipv6 = cb.checked;
+    });
     return out;
   });
 }
