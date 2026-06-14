@@ -58,7 +58,10 @@ function dkContainers() {
   op('docker', { op: 'list_containers' }).then((d) => {
     const list = d.containers || [];
     if (!list.length) { $('dkCList').innerHTML = `<div class="empty">${tr('dk.no_containers')}</div>`; return; }
-    let h = `<table class="optable ctntbl"><tr>`
+    let h = `<table class="optable ctntbl">`
+      + `<colgroup><col style="width:190px"><col style="width:210px"><col style="width:120px">`
+      + `<col style="width:140px"><col style="width:210px"><col style="width:230px"><col style="width:120px"><col style="width:200px"></colgroup>`
+      + `<tr>`
       + `<th>${tr('dk.col_name')}</th><th>${tr('dk.col_image')}</th><th>${tr('dk.col_status')}</th>`
       + `<th>${tr('dk.col_ip')}</th><th>${tr('dk.col_ports')}</th><th>${tr('dk.col_desc')}</th>`
       + `<th>${tr('dk.col_uptime')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
@@ -66,16 +69,17 @@ function dkContainers() {
       const running = c.state === 'running';
       const ports = (c.ports || '').split(',').map((p) => p.trim()).filter(Boolean);
       const portCell = ports.length ? ports.map((p) => `<span class="portlbl">${esc(p)}</span>`).join(' ') : '<span class="mut">-</span>';
-      const desc = c.description ? `<span title="${esc(c.description)}">${esc(c.description)}</span>` : '<span class="mut">-</span>';
+      const desc = c.description ? esc(c.description) : '<span class="mut">-</span>';
       const uptime = running && c.uptime ? esc(c.uptime.replace(/^Up\s+/i, '')) : '<span class="mut">-</span>';
+      const builtin = c.managed ? ` <span class="chip">${tr('dk.builtin')}</span>` : '';
       h += `<tr>
-        <td><b>${esc(c.name)}</b><div class="mut mono" style="font-size:11px">${esc(c.id)}</div></td>
-        <td class="mono" style="font-size:12px">${esc(c.image)}</td>
+        <td title="${esc(c.name)}"><div class="clamp1"><b>${esc(c.name)}</b>${builtin}</div><div class="clamp1 mut mono" style="font-size:11px">${esc(c.id)}</div></td>
+        <td title="${esc(c.image)}"><div class="clamp2 mono" style="font-size:12px">${esc(c.image)}</div></td>
         <td><span class="statuswrap" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}">${ctnStateChip(c.state)}</span></td>
-        <td class="mono" style="font-size:12px">${c.ip ? esc(c.ip) : '<span class="mut">-</span>'}</td>
-        <td class="portcell">${portCell}</td>
-        <td class="desccell mut" style="font-size:12px">${desc}</td>
-        <td class="mut" style="font-size:12px;white-space:nowrap">${uptime}</td>
+        <td><div class="clamp2 mono" style="font-size:12px">${c.ip ? esc(c.ip) : '<span class="mut">-</span>'}</div></td>
+        <td title="${esc(c.ports || '')}"><div class="clamp2 portcell">${portCell}</div></td>
+        <td title="${esc(c.description || '')}"><div class="clamp2 mut" style="font-size:12px">${desc}</div></td>
+        <td><div class="clamp2 mut" style="font-size:12px">${uptime}</div></td>
         <td class="act"><div class="actions" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-shell="${c.has_shell ? 1 : 0}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}"></div></td>
       </tr>`;
     });
@@ -125,10 +129,20 @@ function buildContainerActions(holder, reload) {
   const id = holder.dataset.id, name = holder.dataset.name, hasShell = holder.dataset.shell === '1';
   const state = holder.dataset.state, running = state === 'running';
   const managed = holder.dataset.managed === '1';
-  // DN7 Panel-managed service containers (nginx / mysql) are operated only from
-  // their own pages — show a plain "内置" tag, no action buttons.
-  if (managed) { holder.innerHTML = `<span class="chip">${tr('dk.builtin')}</span>`; return; }
   const mk = (label, cls, fn) => { const b = el('button', { class: 'btn sm ' + (cls || 'sec') }, label); b.onclick = fn; holder.appendChild(b); };
+  // DN7 Panel-managed service containers (nginx / mysql): lifecycle/edit/delete
+  // belong to their own pages, but read-only observe actions are safe here —
+  // Terminal, Files, and an Advanced menu with Logs + Monitor.
+  if (managed) {
+    if (running && hasShell) mk(tr('dk.terminal'), '', () => openTerminalModal(tr('dk.ctn_term') + name, () => ticket().then((t) => `/api/container/terminal?ticket=${encodeURIComponent(t)}&container=${encodeURIComponent(id)}`)));
+    if (running) mk(tr('dk.files'), 'sec', () => openFileBrowser(tr('dk.ctn_files') + name, id));
+    const advm = el('button', { class: 'btn sm sec' }, tr('dk.advanced') + ' ▾');
+    holder.appendChild(advm);
+    const mitems = [{ label: tr('dk.logs'), fn: () => dkLogs(id, name) }];
+    if (running) mitems.push({ label: tr('dk.monitor'), fn: () => dkMonitor(id, name) });
+    mkHoverPanel(advm, mitems);
+    return;
+  }
   // Outermost: terminal, files, advanced (logs/networks moved into Advanced /
   // the create-edit tabs respectively).
   if (running && hasShell) mk(tr('dk.terminal'), '', () => openTerminalModal(tr('dk.ctn_term') + name, () => ticket().then((t) => `/api/container/terminal?ticket=${encodeURIComponent(t)}&container=${encodeURIComponent(id)}`)));
@@ -166,9 +180,15 @@ function mkHoverPanel(trigger, items) {
     document.body.appendChild(panel);
     panel.style.visibility = 'hidden'; panel.style.display = 'flex';
     const r = trigger.getBoundingClientRect();
-    const pw = panel.offsetWidth;
+    const pw = panel.offsetWidth, ph = panel.offsetHeight;
     let left = Math.min(r.left, window.innerWidth - pw - 8); if (left < 8) left = 8;
-    panel.style.top = (r.bottom + 4) + 'px';
+    // Prefer below the trigger; flip above when there isn't room at the bottom.
+    let top = r.bottom + 4;
+    if (top + ph > window.innerHeight - 8) {
+      const above = r.top - ph - 4;
+      top = above >= 8 ? above : Math.max(8, window.innerHeight - ph - 8);
+    }
+    panel.style.top = top + 'px';
     panel.style.left = left + 'px';
     panel.style.visibility = 'visible';
   };
