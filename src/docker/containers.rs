@@ -31,82 +31,86 @@ pub(crate) async fn list_containers() -> Result<Value> {
 
     let mut items = Vec::new();
     for (c, has_shell) in containers.into_iter().zip(shells) {
-        let id = c.id.clone().unwrap_or_default();
-        let short_id = id.chars().take(12).collect::<String>();
-        let name = c
-            .names
-            .as_ref()
-            .and_then(|n| n.first())
-            .map(|s| s.trim_start_matches('/').to_string())
-            .unwrap_or_default();
-        let state = c.state.clone().unwrap_or_default();
-        // DN7 Panel-managed service containers (nginx / mysql) are marked so the UI
-        // can show "内置" and hide direct controls (the panel also refuses ops
-        // on them — see `managed_container_guard`).
-        let has_mysql_label = c
-            .labels
-            .as_ref()
-            .map(|l| l.contains_key("dn7.mysql"))
-            .unwrap_or(false);
-        let managed = name == crate::mysql::CONTAINER || has_mysql_label;
-        // Every attached network's IPv4, formatted "ip (network)". A container
-        // can have several NICs, so the UI shows one per line. Sorted by network
-        // name for stable ordering.
-        let mut ip_list: Vec<String> = Vec::new();
-        if let Some(nets) = c
-            .network_settings
-            .as_ref()
-            .and_then(|n| n.networks.as_ref())
-        {
-            let mut entries: Vec<(String, String)> = nets
-                .iter()
-                .filter_map(|(nname, e)| {
-                    e.ip_address
-                        .clone()
-                        .filter(|s| !s.is_empty())
-                        .map(|ip| (nname.clone(), ip))
-                })
-                .collect();
-            entries.sort_by(|a, b| a.0.cmp(&b.0));
-            ip_list = entries
-                .into_iter()
-                .map(|(nname, ip)| format!("{ip} ({nname})"))
-                .collect();
-        }
-        let ip = ip_list.first().cloned().unwrap_or_default();
-        // A human description from OCI image labels (best-effort; often empty).
-        let description = c
-            .labels
-            .as_ref()
-            .and_then(|l| {
-                l.get("org.opencontainers.image.description")
-                    .or_else(|| l.get("org.opencontainers.image.title"))
-                    .cloned()
-            })
-            .unwrap_or_default();
-        // Uptime/duration text (running: "Up 2 hours"; otherwise the status).
-        let running = state == "running";
-        let uptime = if running {
-            c.status.clone().unwrap_or_default()
-        } else {
-            String::new()
-        };
-        items.push(json!({
-            "id": short_id,
-            "name": name,
-            "image": c.image.clone().unwrap_or_default(),
-            "state": state,
-            "status": c.status.clone().unwrap_or_default(),
-            "ports": fmt_ports(&c.ports),
-            "ip": ip,
-            "ips": ip_list,
-            "description": description,
-            "uptime": uptime,
-            "has_shell": has_shell,
-            "managed": managed,
-        }));
+        items.push(container_row(c, has_shell));
     }
     Ok(json!({ "containers": items }))
+}
+
+/// Build one container list row (id/name/state/ports/ips/managed/…) from a
+/// docker `ContainerSummary` and its probed shell availability.
+fn container_row(c: bollard::models::ContainerSummary, has_shell: bool) -> Value {
+    let id = c.id.clone().unwrap_or_default();
+    let short_id = id.chars().take(12).collect::<String>();
+    let name = c
+        .names
+        .as_ref()
+        .and_then(|n| n.first())
+        .map(|s| s.trim_start_matches('/').to_string())
+        .unwrap_or_default();
+    let state = c.state.clone().unwrap_or_default();
+    // DN7 Panel-managed service containers (nginx / mysql) are marked so the UI
+    // can show "内置" and hide direct controls (the panel also refuses ops on
+    // them — see `managed_container_guard`).
+    let has_mysql_label = c
+        .labels
+        .as_ref()
+        .map(|l| l.contains_key("dn7.mysql"))
+        .unwrap_or(false);
+    let managed = name == crate::mysql::CONTAINER || has_mysql_label;
+    // Every attached network's IPv4, formatted "ip (network)". A container can
+    // have several NICs, so the UI shows one per line. Sorted by network name.
+    let mut ip_list: Vec<String> = Vec::new();
+    if let Some(nets) = c
+        .network_settings
+        .as_ref()
+        .and_then(|n| n.networks.as_ref())
+    {
+        let mut entries: Vec<(String, String)> = nets
+            .iter()
+            .filter_map(|(nname, e)| {
+                e.ip_address
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .map(|ip| (nname.clone(), ip))
+            })
+            .collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        ip_list = entries
+            .into_iter()
+            .map(|(nname, ip)| format!("{ip} ({nname})"))
+            .collect();
+    }
+    let ip = ip_list.first().cloned().unwrap_or_default();
+    // A human description from OCI image labels (best-effort; often empty).
+    let description = c
+        .labels
+        .as_ref()
+        .and_then(|l| {
+            l.get("org.opencontainers.image.description")
+                .or_else(|| l.get("org.opencontainers.image.title"))
+                .cloned()
+        })
+        .unwrap_or_default();
+    // Uptime/duration text (running: "Up 2 hours"; otherwise empty).
+    let uptime = if state == "running" {
+        c.status.clone().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    json!({
+        "id": short_id,
+        "name": name,
+        "image": c.image.clone().unwrap_or_default(),
+        "state": state,
+        "status": c.status.clone().unwrap_or_default(),
+        "ports": fmt_ports(&c.ports),
+        "ip": ip,
+        "ips": ip_list,
+        "description": description,
+        "uptime": uptime,
+        "has_shell": has_shell,
+        "managed": managed,
+    })
 }
 
 /// Format published ports like docker ps (e.g. "0.0.0.0:8080->80/tcp").
