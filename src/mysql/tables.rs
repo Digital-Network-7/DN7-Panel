@@ -208,34 +208,62 @@ pub(crate) fn canonical_col_type(s: &str) -> Option<String> {
         return None;
     }
     let lower = s.to_ascii_lowercase();
-    let base;
-    let mut args: Option<String> = None;
-    let tail;
-    if let Some(i) = lower.find('(') {
-        let j = lower.find(')')?;
-        if j < i || lower[j + 1..].contains('(') || lower[..i].contains(')') {
-            return None;
-        }
-        let inner = lower[i + 1..j].trim();
-        // 1 or 2 numeric components (e.g. DECIMAL(m,d)); each ≤4 digits.
-        let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
-        if parts.is_empty() || parts.len() > 2 {
-            return None;
-        }
-        for p in &parts {
-            if p.is_empty() || p.len() > 4 || !p.chars().all(|c| c.is_ascii_digit()) {
-                return None;
-            }
-        }
-        args = Some(parts.join(","));
-        base = lower[..i].trim();
-        tail = lower[j + 1..].trim();
-    } else {
-        // No length: the first word is the base type, the rest are modifiers.
-        let mut it = lower.splitn(2, char::is_whitespace);
-        base = it.next().unwrap_or("").trim();
-        tail = it.next().unwrap_or("").trim();
+    let (base, args, tail) = split_col_type(&lower)?;
+    if !col_base_known(base) {
+        return None;
     }
+    // Trailing modifiers: only UNSIGNED / ZEROFILL (in any order), nothing else.
+    let (unsigned, zerofill) = col_type_modifiers(tail)?;
+    let mut out = base.to_ascii_uppercase();
+    if let Some(a) = args {
+        out.push('(');
+        out.push_str(&a);
+        out.push(')');
+    }
+    if unsigned {
+        out.push_str(" UNSIGNED");
+    }
+    if zerofill {
+        out.push_str(" ZEROFILL");
+    }
+    Some(out)
+}
+
+/// Split a lowercased column type into (base, optional "(args)" digits, tail of
+/// trailing modifiers). Validates the length args (1-2 numeric, ≤4 digits) and
+/// the parenthesis structure. Returns None on any malformed shape.
+fn split_col_type(lower: &str) -> Option<(&str, Option<String>, &str)> {
+    let Some(i) = lower.find('(') else {
+        // No length: first word is the base type, the rest are modifiers.
+        let mut it = lower.splitn(2, char::is_whitespace);
+        let base = it.next().unwrap_or("").trim();
+        let tail = it.next().unwrap_or("").trim();
+        return Some((base, None, tail));
+    };
+    let j = lower.find(')')?;
+    if j < i || lower[j + 1..].contains('(') || lower[..i].contains(')') {
+        return None;
+    }
+    let inner = lower[i + 1..j].trim();
+    // 1 or 2 numeric components (e.g. DECIMAL(m,d)); each ≤4 digits.
+    let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
+    if parts.is_empty() || parts.len() > 2 {
+        return None;
+    }
+    for p in &parts {
+        if p.is_empty() || p.len() > 4 || !p.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+    }
+    Some((
+        lower[..i].trim(),
+        Some(parts.join(",")),
+        lower[j + 1..].trim(),
+    ))
+}
+
+/// Whether `base` is a recognized MySQL column base type.
+fn col_base_known(base: &str) -> bool {
     const NOARG: &[&str] = &[
         "tinytext",
         "text",
@@ -272,10 +300,12 @@ pub(crate) fn canonical_col_type(s: &str) -> Option<String> {
         "time",
         "year",
     ];
-    if !NOARG.contains(&base) && !OPTARG.contains(&base) {
-        return None;
-    }
-    // Trailing modifiers: only UNSIGNED / ZEROFILL (in any order), nothing else.
+    NOARG.contains(&base) || OPTARG.contains(&base)
+}
+
+/// Parse trailing column-type modifiers: only UNSIGNED / ZEROFILL (any order,
+/// no repeats), nothing else. Returns (unsigned, zerofill) or None if invalid.
+fn col_type_modifiers(tail: &str) -> Option<(bool, bool)> {
     let mut unsigned = false;
     let mut zerofill = false;
     for w in tail.split_whitespace() {
@@ -285,19 +315,7 @@ pub(crate) fn canonical_col_type(s: &str) -> Option<String> {
             _ => return None,
         }
     }
-    let mut out = base.to_ascii_uppercase();
-    if let Some(a) = args {
-        out.push('(');
-        out.push_str(&a);
-        out.push(')');
-    }
-    if unsigned {
-        out.push_str(" UNSIGNED");
-    }
-    if zerofill {
-        out.push_str(" ZEROFILL");
-    }
-    Some(out)
+    Some((unsigned, zerofill))
 }
 
 /// Modify a column's name / type / nullability / default via ALTER TABLE.
