@@ -70,7 +70,31 @@ pub(crate) fn site_from_req(req: &Req) -> Result<Site> {
         access_id: String::new(),
     };
 
-    match kind.as_str() {
+    apply_site_kind(&mut site, req)?;
+
+    // Validate + normalize any custom path rules.
+    if let Some(locs) = &req.locations {
+        site.locations = validate_locations(locs)?;
+    }
+
+    // Optional raw nginx directives (validated structurally here; nginx -t is
+    // the final gate when the conf is written).
+    let extra = req.extra_conf.as_deref().unwrap_or("").trim();
+    validate_extra_conf(extra)?;
+    site.extra_conf = extra.to_string();
+
+    site.access_id = resolve_access_ref(req)?;
+
+    if ssl && !matches!(cert_mode.as_str(), "self" | "le" | "manual" | "named") {
+        return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
+    }
+    Ok(site)
+}
+
+/// Set the kind-specific destination fields (proxy target / container+port /
+/// static root) on a site from the request, validating each.
+fn apply_site_kind(site: &mut Site, req: &Req) -> Result<()> {
+    match site.kind.as_str() {
         "proxy_host" => {
             let t = req
                 .target_url
@@ -109,8 +133,7 @@ pub(crate) fn site_from_req(req: &Req) -> Result<Site> {
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
             if let Some(p) = local {
-                let abs = valid_local_root(p)?;
-                site.local_root = abs;
+                site.local_root = valid_local_root(p)?;
             } else {
                 let r = req
                     .root
@@ -126,19 +149,11 @@ pub(crate) fn site_from_req(req: &Req) -> Result<Site> {
         }
         _ => return Err(anyhow!("ERR_CODE:nginx.unknown_site_kind")),
     }
+    Ok(())
+}
 
-    // Validate + normalize any custom path rules.
-    if let Some(locs) = &req.locations {
-        site.locations = validate_locations(locs)?;
-    }
-
-    // Optional raw nginx directives (validated structurally here; nginx -t is
-    // the final gate when the conf is written).
-    let extra = req.extra_conf.as_deref().unwrap_or("").trim();
-    validate_extra_conf(extra)?;
-    site.extra_conf = extra.to_string();
-
-    // Optional access list reference — must exist when set.
+/// Resolve + validate the optional access-list reference (must exist when set).
+fn resolve_access_ref(req: &Req) -> Result<String> {
     let access_id = req
         .access_id
         .as_deref()
@@ -148,12 +163,7 @@ pub(crate) fn site_from_req(req: &Req) -> Result<Site> {
     if !access_id.is_empty() && !load_access().iter().any(|a| a.id == access_id) {
         return Err(anyhow!("ERR_CODE:nginx.access_not_found"));
     }
-    site.access_id = access_id;
-
-    if ssl && !matches!(cert_mode.as_str(), "self" | "le" | "manual" | "named") {
-        return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
-    }
-    Ok(site)
+    Ok(access_id)
 }
 
 /// Validate + normalize a list of custom path rules.
