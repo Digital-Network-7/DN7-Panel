@@ -431,19 +431,26 @@ pub async fn renew_due_certs() {
         Err(_) => return,
     };
     const WITHIN: i64 = 30; // LE certs last 90d; renew comfortably before expiry.
+    renew_due_site_certs(&lo, WITHIN).await;
+    renew_due_named_certs(&lo, WITHIN).await;
+}
+
+/// Auto-renew per-site certs (LE reissue / self-signed regenerate) that expire
+/// within `within` days. Named-cert and manual sites are skipped here.
+async fn renew_due_site_certs(lo: &Layout, within: i64) {
     for site in load_sites() {
         if !site.ssl || !site.cert_name.is_empty() {
-            continue; // named certs handled below; manual isn't auto-renewed
+            continue; // named certs handled separately; manual isn't auto-renewed
         }
         let crt = lo.cert_store.join(format!("{}.crt", site.id));
-        if !cert_due(&crt, WITHIN) {
+        if !cert_due(&crt, within) {
             continue;
         }
         match site.cert_mode.as_str() {
             "le" => {
                 let op_id = new_op_id();
                 op_create(&op_id, "cert", &primary_host(&site.server_name));
-                match issue_le(&op_id, &lo, &site).await {
+                match issue_le(&op_id, lo, &site).await {
                     Ok(()) => {
                         op_finish(&op_id, "done", "");
                         tracing::info!(site = %site.server_name, "auto-renewed Let's Encrypt certificate");
@@ -455,27 +462,32 @@ pub async fn renew_due_certs() {
                 }
             }
             "self" => {
-                if gen_self_signed(&lo, &site).await.is_ok() {
-                    let _ = write_site_conf(&lo, &site, &[]).await;
-                    let _ = validate_and_reload(&lo).await;
+                if gen_self_signed(lo, &site).await.is_ok() {
+                    let _ = write_site_conf(lo, &site, &[]).await;
+                    let _ = validate_and_reload(lo).await;
                 }
             }
             _ => {}
         }
     }
+}
+
+/// Auto-renew standalone named certs that expire within `within` days. Sites
+/// reference these cert files directly, so nginx is reloaded after each renewal.
+async fn renew_due_named_certs(lo: &Layout, within: i64) {
     for c in load_named_certs() {
         if c.domain.is_empty() {
             continue;
         }
-        let crt = named_crt_file(&lo, &c.name);
-        if !cert_due(&crt, WITHIN) {
+        let crt = named_crt_file(lo, &c.name);
+        if !cert_due(&crt, within) {
             continue;
         }
         match c.cert_mode.as_str() {
             "le" => {
                 let op_id = new_op_id();
                 op_create(&op_id, "cert", &primary_host(&c.domain));
-                match issue_le_named(&op_id, &lo, &c.name, &c.domain).await {
+                match issue_le_named(&op_id, lo, &c.name, &c.domain).await {
                     Ok(()) => op_finish(&op_id, "done", ""),
                     Err(e) => op_finish(&op_id, "error", &e.to_string()),
                 }
@@ -483,17 +495,15 @@ pub async fn renew_due_certs() {
             "self" => {
                 let host = primary_host(&c.domain);
                 let _ = gen_self_signed_to(
-                    &named_crt_file(&lo, &c.name),
-                    &named_key_file(&lo, &c.name),
+                    &named_crt_file(lo, &c.name),
+                    &named_key_file(lo, &c.name),
                     &host,
                 )
                 .await;
             }
             _ => continue,
         }
-        // Sites reference the named cert files directly, so reload nginx to pick
-        // up the freshly renewed certificate.
-        let _ = validate_and_reload(&lo).await;
+        let _ = validate_and_reload(lo).await;
     }
 }
 

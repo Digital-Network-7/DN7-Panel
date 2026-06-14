@@ -145,7 +145,16 @@ pub(crate) async fn run_install_detached(op_id: &str, spec: InstallSpec) -> Resu
     let container = CONTAINER.to_string();
     op_push(op_id, &pmsg("my.creating_container", &[]));
     create_mysql_container(
-        &dkr, &container, &image, &engine, &inst_id, &volume, port, &password,
+        &dkr,
+        &MysqlContainerSpec {
+            container: &container,
+            image: &image,
+            engine: &engine,
+            inst_id: &inst_id,
+            volume: &volume,
+            port,
+            password: &password,
+        },
     )
     .await?;
     op_push(op_id, &pmsg("my.starting", &[]));
@@ -284,15 +293,21 @@ pub(crate) async fn create_volume(
 /// the root password set, DN7 Panel labels applied, and an optional host port
 /// binding for 3306. All values are validated; nothing is passed to a shell.
 #[allow(clippy::too_many_arguments)]
+/// Parameters for creating the managed MySQL/MariaDB container (bundled to keep
+/// the argument count sane; borrows live only for the create call).
+pub(crate) struct MysqlContainerSpec<'a> {
+    pub container: &'a str,
+    pub image: &'a str,
+    pub engine: &'a str,
+    pub inst_id: &'a str,
+    pub volume: &'a str,
+    pub port: Option<i64>,
+    pub password: &'a str,
+}
+
 pub(crate) async fn create_mysql_container(
     dkr: &Docker,
-    container: &str,
-    image: &str,
-    engine: &str,
-    inst_id: &str,
-    volume: &str,
-    port: Option<i64>,
-    password: &str,
+    spec: &MysqlContainerSpec<'_>,
 ) -> Result<()> {
     use bollard::models::{HostConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum};
 
@@ -300,18 +315,18 @@ pub(crate) async fn create_mysql_container(
     // MARIADB_ROOT_PASSWORD but also honors MYSQL_ROOT_PASSWORD — set both so
     // either engine initializes cleanly.
     let env = vec![
-        format!("MYSQL_ROOT_PASSWORD={password}"),
-        format!("MARIADB_ROOT_PASSWORD={password}"),
+        format!("MYSQL_ROOT_PASSWORD={}", spec.password),
+        format!("MARIADB_ROOT_PASSWORD={}", spec.password),
     ];
 
     // Mount the named volume at the data dir (same path for MySQL & MariaDB).
-    let binds = vec![format!("{volume}:/var/lib/mysql")];
+    let binds = vec![format!("{}:/var/lib/mysql", spec.volume)];
 
     // Optional host port -> container 3306/tcp.
     let mut exposed: HashMap<String, HashMap<(), ()>> = HashMap::new();
     let mut bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
     exposed.insert("3306/tcp".to_string(), HashMap::new());
-    if let Some(p) = port {
+    if let Some(p) = spec.port {
         bindings.insert(
             "3306/tcp".to_string(),
             Some(vec![PortBinding {
@@ -323,8 +338,8 @@ pub(crate) async fn create_mysql_container(
 
     let mut labels = HashMap::new();
     labels.insert(LABEL_MANAGED.to_string(), "1".to_string());
-    labels.insert(LABEL_ID.to_string(), inst_id.to_string());
-    labels.insert(LABEL_ENGINE.to_string(), engine.to_string());
+    labels.insert(LABEL_ID.to_string(), spec.inst_id.to_string());
+    labels.insert(LABEL_ENGINE.to_string(), spec.engine.to_string());
 
     let host_config = HostConfig {
         restart_policy: Some(RestartPolicy {
@@ -341,7 +356,7 @@ pub(crate) async fn create_mysql_container(
     };
 
     let config = bollard::container::Config {
-        image: Some(image.to_string()),
+        image: Some(spec.image.to_string()),
         env: Some(env),
         labels: Some(labels),
         exposed_ports: Some(exposed),
@@ -350,7 +365,7 @@ pub(crate) async fn create_mysql_container(
     };
 
     let options = Some(bollard::container::CreateContainerOptions {
-        name: container.to_string(),
+        name: spec.container.to_string(),
         platform: None,
     });
     dkr.create_container(options, config)
@@ -514,13 +529,15 @@ pub(crate) async fn recreate_container(
     }
     create_mysql_container(
         &dkr,
-        &m.container,
-        image,
-        &m.engine,
-        &m.id,
-        &m.volume,
-        port,
-        password,
+        &MysqlContainerSpec {
+            container: &m.container,
+            image,
+            engine: &m.engine,
+            inst_id: &m.id,
+            volume: &m.volume,
+            port,
+            password,
+        },
     )
     .await?;
     dkr.start_container(
