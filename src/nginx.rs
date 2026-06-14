@@ -281,7 +281,7 @@ struct WebGlobal {
 struct HttpTuning {
     #[serde(default = "d_snhbs")]
     server_names_hash_bucket_size: u32,
-    #[serde(default)]
+    #[serde(default = "d_gzip_on")]
     gzip: bool,
     #[serde(default = "d_ghdr")]
     client_header_buffer_size: String,
@@ -298,25 +298,28 @@ fn d_snhbs() -> u32 {
     64
 }
 fn d_ghdr() -> String {
-    "1k".to_string()
+    "32k".to_string()
 }
 fn d_gmin() -> u32 {
     20
 }
 fn d_cmbs() -> String {
-    "1m".to_string()
+    "50m".to_string()
 }
 fn d_gcl() -> u8 {
     1
 }
 fn d_kat() -> u32 {
-    75
+    60
+}
+fn d_gzip_on() -> bool {
+    true
 }
 impl Default for HttpTuning {
     fn default() -> Self {
         HttpTuning {
             server_names_hash_bucket_size: d_snhbs(),
-            gzip: false,
+            gzip: true,
             client_header_buffer_size: d_ghdr(),
             gzip_min_length: d_gmin(),
             client_max_body_size: d_cmbs(),
@@ -462,6 +465,18 @@ fn named_crt_file(lo: &Layout, name: &str) -> std::path::PathBuf {
 }
 fn named_key_file(lo: &Layout, name: &str) -> std::path::PathBuf {
     lo.cert_store.join(format!("cert-{name}.key"))
+}
+/// Derive a filesystem-safe cert manifest key from a domain. Certs are keyed by
+/// (unique) domain now — there's no separate user-chosen name. `*` (wildcard)
+/// is replaced so the result stays a valid cert name / filename token.
+fn cert_name_from_domain(domain: &str) -> String {
+    domain
+        .trim()
+        .to_ascii_lowercase()
+        .replace('*', "_wildcard_")
+        .chars()
+        .take(64)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -837,6 +852,7 @@ async fn handle(req: &Req) -> Result<Value> {
         "remove_site" => remove_site(req).await,
         "list_named_certs" => list_named_certs().await,
         "create_cert" => create_cert(req).await,
+        "renew_cert" => renew_cert(req).await,
         "delete_cert" => delete_cert(req).await,
         "list_access" => list_access().await,
         "save_access" => save_access_op(req).await,
@@ -2019,47 +2035,38 @@ fn sites_using_certs() -> HashMap<String, Vec<String>> {
 ///   - "le":     Let's Encrypt for `domain` (detached → returns {op_id})
 async fn create_cert(req: &Req) -> Result<Value> {
     let lo = layout()?;
-    let name = req
-        .cert_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_cert_name"))?
-        .to_string();
-    if !valid_cert_name(&name) {
-        return Err(anyhow!("ERR_CODE:nginx.bad_cert_name_chars"));
-    }
     let mode = req.cert_mode.as_deref().unwrap_or("self");
     if !matches!(mode, "self" | "le" | "manual") {
         return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
     }
-    let mut certs = load_named_certs();
-    if certs.iter().any(|c| c.name == name) {
-        return Err(anyhow!("ERR_CODE:nginx.cert_exists"));
-    }
+    // Certs are identified by their (unique) domain — no separate name.
     let domain = req
         .server_name
         .as_deref()
         .map(str::trim)
         .unwrap_or("")
         .to_string();
-    // One certificate per domain: reject a second named cert for the same host.
-    if !domain.is_empty()
-        && certs
-            .iter()
-            .any(|c| !c.domain.is_empty() && c.domain.eq_ignore_ascii_case(&domain))
+    if domain.is_empty() {
+        return Err(anyhow!("ERR_CODE:nginx.need_cert_domain"));
+    }
+    if !valid_server_name(&domain) {
+        return Err(anyhow!("ERR_CODE:nginx.bad_domain"));
+    }
+    let name = cert_name_from_domain(&domain);
+    if !valid_cert_name(&name) {
+        return Err(anyhow!("ERR_CODE:nginx.bad_cert_name_chars"));
+    }
+    let mut certs = load_named_certs();
+    // One certificate per domain.
+    if certs
+        .iter()
+        .any(|c| c.name == name || (!c.domain.is_empty() && c.domain.eq_ignore_ascii_case(&domain)))
     {
         return Err(anyhow!("ERR_CODE:nginx.cert_domain_exists"));
     }
 
     match mode {
         "self" => {
-            if domain.is_empty() {
-                return Err(anyhow!("ERR_CODE:nginx.need_cert_domain"));
-            }
-            if !valid_server_name(&domain) {
-                return Err(anyhow!("ERR_CODE:nginx.bad_domain"));
-            }
             let host = primary_host(&domain);
             gen_self_signed_to(
                 &named_crt_file(&lo, &name),
@@ -2079,9 +2086,6 @@ async fn create_cert(req: &Req) -> Result<Value> {
             write_key_file(&named_key_file(&lo, &name), key)?;
         }
         "le" => {
-            if domain.is_empty() || !valid_server_name(&domain) {
-                return Err(anyhow!("ERR_CODE:nginx.le_need_domain"));
-            }
             return start_named_cert_issue(lo, name, domain);
         }
         _ => {}
@@ -2094,6 +2098,40 @@ async fn create_cert(req: &Req) -> Result<Value> {
     });
     save_named_certs(&certs)?;
     Ok(json!({ "name": name }))
+}
+
+/// Renew a named cert in place: re-issue (LE) or regenerate (self-signed).
+/// Manual certs have no automated renewal.
+async fn renew_cert(req: &Req) -> Result<Value> {
+    let lo = layout()?;
+    let name = req
+        .cert_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("ERR_CODE:nginx.missing_cert_name"))?;
+    let cert = load_named_certs()
+        .into_iter()
+        .find(|c| c.name == name)
+        .ok_or_else(|| anyhow!("ERR_CODE:nginx.cert_not_found"))?;
+    match cert.cert_mode.as_str() {
+        "le" => start_named_cert_issue(lo, cert.name.clone(), cert.domain.clone()),
+        "self" => {
+            if cert.domain.is_empty() {
+                return Err(anyhow!("ERR_CODE:nginx.need_cert_domain"));
+            }
+            let host = primary_host(&cert.domain);
+            gen_self_signed_to(
+                &named_crt_file(&lo, &cert.name),
+                &named_key_file(&lo, &cert.name),
+                &host,
+            )
+            .await?;
+            let _ = validate_and_reload(&lo).await;
+            Ok(json!({ "renewed": cert.name }))
+        }
+        _ => Err(anyhow!("ERR_CODE:nginx.manual_no_renew")),
+    }
 }
 
 /// Delete a standalone named certificate. Refuses while a site still uses it.

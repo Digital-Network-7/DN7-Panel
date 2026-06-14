@@ -439,16 +439,18 @@ function ngCertsTab(v) {
     let h = `<div class="row" style="margin-bottom:12px"><span class="mut" style="font-size:12.5px;flex:1">${tr('ng.cert_lib_intro')}</span><button class="btn sm" id="ngCertNew">${tr('ng.create_cert')}</button></div><p class="formnote" style="margin-top:0;margin-bottom:12px">${tr('ng.autorenew_note')}</p>`;
     if (!certs.length) { h += `<div class="empty">${tr('ng.cert_lib_empty')}</div>`; }
     else {
-      h += `<table class="optable"><tr><th>${tr('ng.col_name')}</th><th>${tr('ng.col_domain')}</th><th>${tr('ng.col_mode')}</th><th>${tr('ng.col_expire')}</th><th>${tr('ng.col_used')}</th><th class="act">${tr('ng.col_actions')}</th></tr>`;
+      h += `<table class="optable"><tr><th>${tr('ng.col_domain')}</th><th>${tr('ng.col_mode')}</th><th>${tr('ng.col_expire')}</th><th>${tr('ng.col_used')}</th><th class="act">${tr('ng.col_actions')}</th></tr>`;
       certs.forEach((c) => {
         const modeLabel = { le: tr('ng.mode_le'), self: tr('ng.mode_self'), manual: tr('ng.mode_manual') }[c.cert_mode] || c.cert_mode;
         const used = (c.used_by && c.used_by.length) ? esc(c.used_by.join('、')) : `<span class="mut">${tr('ng.unused')}</span>`;
-        h += `<tr><td><b>${esc(c.name)}</b>${c.has_cert ? '' : ` <span class="chip warn">${tr('ng.missing')}</span>`}</td><td class="mut">${esc(c.domain || '-')}</td><td class="mut">${esc(modeLabel)}</td><td class="mono" style="font-size:12px">${esc(c.not_after || '-')}</td><td style="font-size:12px">${used}</td><td class="act"><button class="btn sm danger" data-del="${esc(c.name)}">${tr('ng.delete')}</button></td></tr>`;
+        const renewBtn = c.cert_mode === 'manual' ? '' : `<button class="btn sm sec" data-renew="${esc(c.name)}">${tr('ng.renew_now')}</button>`;
+        h += `<tr><td><b>${esc(c.domain || c.name)}</b>${c.has_cert ? '' : ` <span class="chip amber">${tr('ng.missing')}</span>`}</td><td class="mut">${esc(modeLabel)}</td><td class="mono" style="font-size:12px">${esc(c.not_after || '-')}</td><td style="font-size:12px">${used}</td><td class="act">${renewBtn}<button class="btn sm danger" data-del="${esc(c.name)}">${tr('ng.delete')}</button></td></tr>`;
       });
       h += '</table>';
     }
     body.innerHTML = '<div class="tablewrap">' + h + '</div>';
     $('ngCertNew').onclick = () => ngCreateCert(load);
+    document.querySelectorAll('#ngBody [data-renew]').forEach((b) => b.onclick = () => op('nginx', { op: 'renew_cert', cert_name: b.dataset.renew }).then((r) => { toast(r.op_id ? tr('ng.renewing') : tr('ng.renewed'), 'ok'); setTimeout(load, r.op_id ? 4000 : 300); }).catch((e) => toast(e.message, 'err')));
     document.querySelectorAll('#ngBody [data-del]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('ng.confirm_del_cert', { name: b.dataset.del }))) op('nginx', { op: 'delete_cert', cert_name: b.dataset.del }).then(() => { toast(tr('common.deleted'), 'ok'); load(); }).catch((e) => toast(e.message, 'err')); });
   }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
   body.innerHTML = loading();
@@ -459,7 +461,6 @@ function ngCertsTab(v) {
 function ngCreateCert(reload) {
   modal(tr('ng.create_cert'), `
     <div class="formgrid">
-      <div class="full"><label class="lbl">${tr('ng.cert_name')}</label><input id="ccName" class="field" placeholder="${tr('ng.cert_name_ph')}" /></div>
       <div class="full"><label class="lbl">${tr('ng.cert_mode')}</label><select id="ccMode" class="field"><option value="le">${tr('ng.cm_le')}</option><option value="manual">${tr('ng.cm_manual')}</option><option value="self">${tr('ng.cm_self')}</option></select></div>
       <div class="full" id="ccDomainWrap"><label class="lbl">${tr('ng.domain')}</label><input id="ccDomain" class="field" placeholder="example.com" /></div>
       <div class="full hidden" id="ccManual">
@@ -480,7 +481,6 @@ function ngCreateCert(reload) {
     const sync = () => {
       const m = $('ccMode').value;
       $('ccManual').classList.toggle('hidden', m !== 'manual');
-      $('ccDomainWrap').classList.toggle('hidden', m === 'manual');
       $('ccHint').textContent = m === 'le' ? tr('ng.hint_le') : m === 'self' ? tr('ng.hint_self') : tr('ng.hint_manual');
     };
     $('ccMode').onchange = sync; sync();
@@ -501,14 +501,14 @@ function ngCreateCert(reload) {
 
     $('ccGo').onclick = () => {
       const mode = $('ccMode').value;
-      const body = { op: 'create_cert', cert_name: $('ccName').value.trim(), cert_mode: mode };
-      if (!body.cert_name) return toast(tr('ng.need_cert_name'), 'err');
+      const domain = $('ccDomain').value.trim();
+      if (!domain) return toast(tr('ng.need_domain'), 'err');
+      const body = { op: 'create_cert', cert_mode: mode, server_name: domain };
       if (mode === 'manual') {
         if (!pem.key || !pem.cert) return toast(tr('ng.need_cert_files'), 'err');
         body.cert_pem = pem.cert + (pem.chain ? '\n' + pem.chain : '');
         body.key_pem = pem.key;
       }
-      else { body.server_name = $('ccDomain').value.trim(); if (!body.server_name) return toast(tr('ng.need_domain'), 'err'); }
       $('ccGo').disabled = true; $('ccJob').classList.remove('hidden'); $('ccJob').innerHTML = `<div class="mut">${tr('ng.submitting')}</div>`;
       op('nginx', body).then((r) => {
         if (r.op_id) renderJob($('ccJob'), 'nginx', r.op_id, '', { onDone: () => { toast(tr('ng.cert_created'), 'ok'); close(); reload(); }, onError: () => { $('ccGo').disabled = false; } });
@@ -644,36 +644,43 @@ function ngSettingsTab(v) {
         <p class="mut" style="font-size:12.5px;margin:0 0 14px">${tr('ng.perf_desc')}</p>
         <div id="ngTuneBox">
         <div class="formgrid">
-          <div><label class="lbl">${tr('ng.t_cmbs')}</label><input id="ngCmbs" class="field" value="${esc(t.client_max_body_size || '1m')}" placeholder="1m" /></div>
-          <div><label class="lbl">${tr('ng.t_chdr')}</label><input id="ngChdr" class="field" value="${esc(t.client_header_buffer_size || '1k')}" placeholder="1k" /></div>
-          <div><label class="lbl">${tr('ng.t_kat')}</label><input id="ngKat" class="field" type="number" min="0" value="${esc(String(t.keepalive_timeout != null ? t.keepalive_timeout : 75))}" /></div>
+          <div><label class="lbl">${tr('ng.t_cmbs')}</label><div class="field-suffix"><input id="ngCmbs" class="field" type="number" min="0" value="${esc(String(parseInt(t.client_max_body_size, 10) || 50))}" /><span class="suffix-tag">MB</span></div></div>
+          <div><label class="lbl">${tr('ng.t_chdr')}</label><div class="field-suffix"><input id="ngChdr" class="field" type="number" min="0" value="${esc(String(parseInt(t.client_header_buffer_size, 10) || 32))}" /><span class="suffix-tag">KB</span></div></div>
+          <div><label class="lbl">${tr('ng.t_kat')}</label><input id="ngKat" class="field" type="number" min="0" value="${esc(String(t.keepalive_timeout != null ? t.keepalive_timeout : 60))}" /></div>
           <div><label class="lbl">${tr('ng.t_snhbs')}</label><select id="ngSnhbs" class="field">${bktOpts}</select></div>
         </div>
-        <label class="switch" style="padding:0;margin-top:14px"><input type="checkbox" id="ngGzip" ${t.gzip ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.t_gzip')}</b><span>${tr('ng.t_gzip_d')}</span></span></label>
+        <label class="switch" style="padding:0;margin-top:14px"><input type="checkbox" id="ngGzip" ${t.gzip !== false ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.t_gzip')}</b><span>${tr('ng.t_gzip_d')}</span></span></label>
         <div id="ngGzipWrap" class="formgrid" style="margin-top:12px">
           <div><label class="lbl">${tr('ng.t_gmin')}</label><input id="ngGmin" class="field" type="number" min="0" value="${esc(String(t.gzip_min_length != null ? t.gzip_min_length : 20))}" /></div>
           <div><label class="lbl">${tr('ng.t_gcl')}</label><select id="ngGcl" class="field">${lvlOpts}</select></div>
         </div>
-        <div class="row" style="align-items:center;gap:12px;margin-top:16px"><button class="btn sm" id="ngTuneSave" disabled>${tr('ng.save')}</button><span class="err ok" id="ngTuneMsg"></span></div>
+        <div class="row" style="align-items:center;gap:12px;margin-top:16px"><button class="btn sm" id="ngTuneSave" disabled>${tr('ng.save')}</button><button class="btn sm sec" id="ngTuneDefault">${tr('ng.restore_defaults')}</button><span class="err ok" id="ngTuneMsg"></span></div>
         <p class="formnote" style="margin-top:10px">${tr('ng.perf_note')}</p>
         </div>
       </div>`;
     const syncGz = () => $('ngGzipWrap').classList.toggle('hidden', !$('ngGzip').checked);
     $('ngGzip').onchange = syncGz; syncGz();
-    $('ngTuneSave').onclick = () => {
+    const collect = () => ({
+      op: 'set_tuning',
+      client_max_body_size: (Number($('ngCmbs').value) || 0) + 'm',
+      client_header_buffer_size: (Number($('ngChdr').value) || 0) + 'k',
+      keepalive_timeout: Number($('ngKat').value) || 0,
+      server_names_hash_bucket_size: Number($('ngSnhbs').value),
+      gzip: $('ngGzip').checked,
+      gzip_min_length: Number($('ngGmin').value) || 0,
+      gzip_comp_level: Number($('ngGcl').value),
+    });
+    const save = (bodyReq) => {
       const m = $('ngTuneMsg');
-      const bodyReq = {
-        op: 'set_tuning',
-        client_max_body_size: $('ngCmbs').value.trim(),
-        client_header_buffer_size: $('ngChdr').value.trim(),
-        keepalive_timeout: Number($('ngKat').value) || 0,
-        server_names_hash_bucket_size: Number($('ngSnhbs').value),
-        gzip: $('ngGzip').checked,
-        gzip_min_length: Number($('ngGmin').value) || 0,
-        gzip_comp_level: Number($('ngGcl').value),
-      };
       $('ngTuneSave').disabled = true;
       op('nginx', bodyReq).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); if ($('ngTuneSave')._dirtyReset) $('ngTuneSave')._dirtyReset(); }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('ngTuneSave').disabled = false; });
+    };
+    $('ngTuneSave').onclick = () => save(collect());
+    $('ngTuneDefault').onclick = () => {
+      $('ngCmbs').value = '50'; $('ngChdr').value = '32'; $('ngKat').value = '60';
+      $('ngSnhbs').value = '64'; $('ngGzip').checked = true; syncGz();
+      $('ngGmin').value = '20'; $('ngGcl').value = '1';
+      save(collect());
     };
     bindDirty('ngTuneSave', 'ngTuneBox');
   }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
