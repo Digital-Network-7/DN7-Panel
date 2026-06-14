@@ -204,49 +204,14 @@ pub(crate) const DROPIN: &str = "/etc/systemd/system/docker.service.d/dn7-docker
 /// write, (re)configure the systemd socket override when needed, restart docker
 /// and verify it comes back — rolling everything back on failure.
 pub(crate) async fn apply_daemon_settings(s: &DockerSettings) -> Result<()> {
-    // Read + parse existing daemon.json (preserve unknown keys).
+    // Read existing daemon.json (preserve unknown keys) and the current drop-in.
     let prev = std::fs::read_to_string(DAEMON_JSON).unwrap_or_default();
-    let mut obj: serde_json::Map<String, Value> = serde_json::from_str(&prev)
-        .ok()
-        .and_then(|v: Value| v.as_object().cloned())
-        .unwrap_or_default();
-
-    obj.insert("ipv6".into(), json!(s.ipv6));
-    if s.ipv6 {
-        obj.entry("fixed-cidr-v6")
-            .or_insert_with(|| json!("fd00:dn7::/48"));
-    } else {
-        obj.remove("fixed-cidr-v6");
-    }
-    obj.insert("iptables".into(), json!(s.iptables));
-    obj.insert("live-restore".into(), json!(s.live_restore));
-    obj.insert(
-        "exec-opts".into(),
-        json!([format!("native.cgroupdriver={}", s.cgroup_driver)]),
-    );
-    if s.log_rotate {
-        obj.insert("log-driver".into(), json!("json-file"));
-        obj.insert(
-            "log-opts".into(),
-            json!({ "max-size": s.log_max_size, "max-file": s.log_max_file.to_string() }),
-        );
-    } else {
-        obj.remove("log-opts");
-    }
+    let prev_dropin = std::fs::read_to_string(DROPIN).ok();
     // Custom socket: daemon.json `hosts` + a systemd drop-in that drops the
     // unit's `-H fd://` (otherwise dockerd refuses: "hosts conflict").
     let custom_sock = s.socket_path != DEFAULT_SOCKET && s.socket_path != "/run/docker.sock";
-    let prev_dropin = std::fs::read_to_string(DROPIN).ok();
-    if custom_sock {
-        obj.insert(
-            "hosts".into(),
-            json!([format!("unix://{}", s.socket_path), "fd://"]),
-        );
-    } else {
-        obj.remove("hosts");
-    }
 
-    let body = serde_json::to_string_pretty(&Value::Object(obj))?;
+    let body = build_daemon_json(s, &prev, custom_sock)?;
 
     // Backup + write daemon.json.
     let backup = format!("{DAEMON_JSON}.dn7-bak");
@@ -279,11 +244,58 @@ pub(crate) async fn apply_daemon_settings(s: &DockerSettings) -> Result<()> {
         return Ok(());
     }
 
-    // Rollback: restore daemon.json + drop-in, reload, restart.
+    rollback_daemon(&prev, prev_dropin, reloaded).await;
+    Err(anyhow!("ERR_CODE:docker.daemon_restart_failed"))
+}
+
+/// Merge our managed keys into the existing daemon.json object (preserving any
+/// unknown keys) and return the pretty-printed body to write.
+fn build_daemon_json(s: &DockerSettings, prev: &str, custom_sock: bool) -> Result<String> {
+    let mut obj: serde_json::Map<String, Value> = serde_json::from_str(prev)
+        .ok()
+        .and_then(|v: Value| v.as_object().cloned())
+        .unwrap_or_default();
+
+    obj.insert("ipv6".into(), json!(s.ipv6));
+    if s.ipv6 {
+        obj.entry("fixed-cidr-v6")
+            .or_insert_with(|| json!("fd00:dn7::/48"));
+    } else {
+        obj.remove("fixed-cidr-v6");
+    }
+    obj.insert("iptables".into(), json!(s.iptables));
+    obj.insert("live-restore".into(), json!(s.live_restore));
+    obj.insert(
+        "exec-opts".into(),
+        json!([format!("native.cgroupdriver={}", s.cgroup_driver)]),
+    );
+    if s.log_rotate {
+        obj.insert("log-driver".into(), json!("json-file"));
+        obj.insert(
+            "log-opts".into(),
+            json!({ "max-size": s.log_max_size, "max-file": s.log_max_file.to_string() }),
+        );
+    } else {
+        obj.remove("log-opts");
+    }
+    if custom_sock {
+        obj.insert(
+            "hosts".into(),
+            json!([format!("unix://{}", s.socket_path), "fd://"]),
+        );
+    } else {
+        obj.remove("hosts");
+    }
+    Ok(serde_json::to_string_pretty(&Value::Object(obj))?)
+}
+
+/// Restore the previous daemon.json + drop-in and restart docker, after a failed
+/// settings apply.
+async fn rollback_daemon(prev: &str, prev_dropin: Option<String>, reloaded: bool) {
     if prev.is_empty() {
         let _ = std::fs::remove_file(DAEMON_JSON);
     } else {
-        let _ = std::fs::write(DAEMON_JSON, &prev);
+        let _ = std::fs::write(DAEMON_JSON, prev);
     }
     match prev_dropin {
         Some(d) => {
@@ -297,7 +309,6 @@ pub(crate) async fn apply_daemon_settings(s: &DockerSettings) -> Result<()> {
         let _ = sh("systemctl daemon-reload").await;
     }
     let _ = sh("systemctl restart docker").await;
-    Err(anyhow!("ERR_CODE:docker.daemon_restart_failed"))
 }
 
 /// Locate the dockerd binary for the systemd ExecStart override.
