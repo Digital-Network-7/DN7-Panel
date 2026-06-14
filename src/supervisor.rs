@@ -40,23 +40,64 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     tracing::info!(pid = std::process::id(), "supervisor started");
 
     // Heartbeat task: keep our heartbeat fresh so the panel's guardian sees us.
-    {
-        let hb = me.heartbeat.clone();
-        let interval = cfg.supervise_interval_secs.max(1);
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_secs(interval));
-            loop {
-                ticker.tick().await;
-                let _ = write_heartbeat(&hb);
-            }
-        });
-    }
-
+    spawn_heartbeat(me.heartbeat.clone(), cfg.supervise_interval_secs.max(1));
     // Janitor task: trim the daemon log so it can't grow without bound.
     crate::logrotate::spawn(cfg.clone());
 
-    let mut child: Option<Child> = None;
     let mut shutdown = signal_stream()?;
+
+    // If a panel is already alive (e.g. started by hand or by a previous
+    // supervisor), adopt it: monitor until it dies instead of spawning a dup.
+    if adopt_if_alive(&panel, &cfg, &mut shutdown).await {
+        return Ok(());
+    }
+
+    supervise_loop(&cfg, &_lock, shutdown).await
+}
+
+/// Background task that refreshes our heartbeat file every `interval` seconds so
+/// the panel's guardian can see the supervisor is alive.
+fn spawn_heartbeat(heartbeat: std::path::PathBuf, interval: u64) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(interval));
+        loop {
+            ticker.tick().await;
+            let _ = write_heartbeat(&heartbeat);
+        }
+    });
+}
+
+/// If a panel role is already alive, monitor it (don't spawn a duplicate) until
+/// it dies or we're asked to shut down. Returns `true` when a shutdown signal
+/// arrived (the caller should exit), `false` when there was no live panel or it
+/// died (the caller should proceed to (re)spawn).
+async fn adopt_if_alive(
+    panel: &RolePaths,
+    cfg: &PanelConfig,
+    shutdown: &mut tokio::sync::mpsc::Receiver<()>,
+) -> bool {
+    if !role_alive(panel, cfg.heartbeat_timeout_secs) {
+        return false;
+    }
+    tracing::info!("found a live panel on startup; adopting (monitor-only)");
+    tokio::select! {
+        _ = wait_until_panel_dead(panel, cfg) => false,
+        _ = shutdown.recv() => {
+            tracing::info!("shutdown signal received");
+            true
+        }
+    }
+}
+
+/// Supervise the panel child for the process lifetime: (re)spawn it, restart on
+/// exit, re-exec ourselves when a self-update lands a newer binary, and tear it
+/// down on a shutdown signal.
+async fn supervise_loop(
+    cfg: &PanelConfig,
+    lock: &crate::procfile::LockGuard,
+    mut shutdown: tokio::sync::mpsc::Receiver<()>,
+) -> Result<()> {
+    let mut child: Option<Child> = None;
 
     // Periodically check whether a self-update replaced the on-disk binary with
     // a newer version than this (long-lived) supervisor is running. If so,
@@ -66,19 +107,6 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     let mut version_check =
         tokio::time::interval(Duration::from_secs(cfg.supervise_interval_secs.max(1) * 20));
     version_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    // If an panel is already alive (e.g. started by hand or by a previous
-    // supervisor), adopt it: monitor until it dies instead of spawning a dup.
-    if role_alive(&panel, cfg.heartbeat_timeout_secs) {
-        tracing::info!("found a live panel on startup; adopting (monitor-only)");
-        tokio::select! {
-            _ = wait_until_panel_dead(&panel, &cfg) => {}
-            _ = shutdown.recv() => {
-                tracing::info!("shutdown signal received");
-                return Ok(());
-            }
-        }
-    }
 
     loop {
         if child.is_none() {
@@ -111,16 +139,16 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
                 // re-exec'ing (a second, disruptive restart) up to a
                 // version_check interval later. The panel is already gone, so
                 // there's nothing to kill first.
-                if updated || on_disk_is_newer(&cfg) {
+                if updated || on_disk_is_newer(cfg) {
                     tracing::info!("panel exited for self-update; re-exec'ing supervisor now");
-                    _lock.release();
+                    lock.release();
                     reexec_supervisor();
                     // reexec only returns on failure; fall through to restart.
                 }
                 tokio::time::sleep(Duration::from_secs(cfg.restart_backoff_secs)).await;
             }
             _ = version_check.tick() => {
-                if on_disk_is_newer(&cfg) {
+                if on_disk_is_newer(cfg) {
                     tracing::info!("on-disk binary is newer than this supervisor; re-exec'ing");
                     // Stop the current panel child cleanly first, then re-exec
                     // the (new) supervisor binary in our place. Release our role
@@ -128,7 +156,7 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
                     // the replacement would otherwise see the lock still held.
                     let _ = c.start_kill();
                     let _ = c.wait().await;
-                    _lock.release();
+                    lock.release();
                     reexec_supervisor();
                     // reexec only returns on failure; keep going if so.
                     child = None;
