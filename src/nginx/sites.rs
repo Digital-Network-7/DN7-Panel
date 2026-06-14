@@ -617,41 +617,10 @@ pub(crate) async fn update_site(req: &Req) -> Result<Value> {
     }
     cleanup_orphan_confs(&lo);
 
-    if site.ssl {
-        if !site.cert_name.is_empty() {
-            if !named_crt_file(&lo, &site.cert_name).exists() {
-                return Err(anyhow!("ERR_CODE:nginx.cert_not_found"));
-            }
-        } else {
-            let have = lo.cert_store.join(format!("{}.crt", site.id)).exists()
-                && lo.cert_store.join(format!("{}.key", site.id)).exists();
-            match site.cert_mode.as_str() {
-                "manual" => {
-                    let cert = req.cert_pem.as_deref().unwrap_or("");
-                    let key = req.key_pem.as_deref().unwrap_or("");
-                    if !cert.trim().is_empty() && !key.trim().is_empty() {
-                        write_cert_files(&lo, &site, cert, key)?;
-                    } else if !have {
-                        return Err(anyhow!("ERR_CODE:nginx.need_cert_key"));
-                    }
-                }
-                "le" => {
-                    let host_changed =
-                        primary_host(&old.server_name) != primary_host(&site.server_name);
-                    if !have || old.cert_mode != "le" || !old.cert_name.is_empty() || host_changed {
-                        // Needs a (re)issue → detached.
-                        return start_cert_issue(lo, site).await;
-                    }
-                    // else: reuse the existing LE cert as-is.
-                }
-                "self" => {
-                    if !have || old.cert_mode != "self" || !old.cert_name.is_empty() {
-                        gen_self_signed(&lo, &site).await?;
-                    }
-                }
-                _ => {}
-            }
-        }
+    // Prepare the cert (write manual files / regenerate self-signed as needed).
+    // A Let's Encrypt (re)issue runs detached, so return its op immediately.
+    if let CertPrep::ReissueLe = prepare_site_cert(&lo, req, &old, &site).await? {
+        return start_cert_issue(lo, site).await;
     }
 
     write_site_conf(&lo, &site, &[]).await?;
@@ -665,4 +634,57 @@ pub(crate) async fn update_site(req: &Req) -> Result<Value> {
     sites.push(site.clone());
     save_sites(&sites)?;
     Ok(json!({ "site": site }))
+}
+
+/// Outcome of preparing a site's certificate before writing its conf.
+enum CertPrep {
+    /// The cert is ready on disk (manual written / self-signed (re)generated /
+    /// an existing cert reused) — proceed to write the conf synchronously.
+    Ready,
+    /// A Let's Encrypt issue/renewal is required; the caller must start it
+    /// detached and return immediately.
+    ReissueLe,
+}
+
+/// Ensure the per-site certificate exists for an SSL site update: write manual
+/// cert files, regenerate a self-signed pair, or decide a Let's Encrypt reissue
+/// is needed. No-op for non-SSL sites or sites referencing a named cert.
+async fn prepare_site_cert(lo: &Layout, req: &Req, old: &Site, site: &Site) -> Result<CertPrep> {
+    if !site.ssl {
+        return Ok(CertPrep::Ready);
+    }
+    if !site.cert_name.is_empty() {
+        if !named_crt_file(lo, &site.cert_name).exists() {
+            return Err(anyhow!("ERR_CODE:nginx.cert_not_found"));
+        }
+        return Ok(CertPrep::Ready);
+    }
+    let have = lo.cert_store.join(format!("{}.crt", site.id)).exists()
+        && lo.cert_store.join(format!("{}.key", site.id)).exists();
+    match site.cert_mode.as_str() {
+        "manual" => {
+            let cert = req.cert_pem.as_deref().unwrap_or("");
+            let key = req.key_pem.as_deref().unwrap_or("");
+            if !cert.trim().is_empty() && !key.trim().is_empty() {
+                write_cert_files(lo, site, cert, key)?;
+            } else if !have {
+                return Err(anyhow!("ERR_CODE:nginx.need_cert_key"));
+            }
+        }
+        "le" => {
+            // Reissue when there's no usable cert, the mode/cert changed, or the
+            // primary domain changed; otherwise reuse the existing LE cert.
+            let host_changed = primary_host(&old.server_name) != primary_host(&site.server_name);
+            if !have || old.cert_mode != "le" || !old.cert_name.is_empty() || host_changed {
+                return Ok(CertPrep::ReissueLe);
+            }
+        }
+        "self" => {
+            if !have || old.cert_mode != "self" || !old.cert_name.is_empty() {
+                gen_self_signed(lo, site).await?;
+            }
+        }
+        _ => {}
+    }
+    Ok(CertPrep::Ready)
 }
