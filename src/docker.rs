@@ -133,6 +133,9 @@ struct Req {
     repo: Option<String>,
     #[serde(default)]
     tag: Option<String>,
+    // tag_image -> one or more new repo:tag references to add to an image
+    #[serde(default)]
+    tags: Option<Vec<String>>,
     // backup file name (list/delete/restore/download)
     #[serde(default)]
     backup: Option<String>,
@@ -457,6 +460,7 @@ async fn handle(req: &Req) -> Result<Value> {
                 .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
             Ok(json!({ "removed": r }))
         }
+        "tag_image" => add_image_tags(req).await,
         "list_containers" => list_containers().await,
         "list_dirs" => list_dir_suggest(req),
         "inspect_container" => inspect_container(req).await,
@@ -858,6 +862,52 @@ fn host_mem_bytes() -> u64 {
 }
 
 /// List images: id, repo:tag, size, created.
+/// Split an image reference into (repo, tag). The tag is the part after the
+/// last ':' *only* when that ':' comes after the last '/' (so a registry
+/// "host:port/name" without a tag isn't mis-split). Defaults to "latest".
+fn split_repo_tag(s: &str) -> (String, String) {
+    if let Some(colon) = s.rfind(':') {
+        let after_last_slash = s.rfind('/').map(|sl| colon > sl).unwrap_or(true);
+        if after_last_slash {
+            return (s[..colon].to_string(), s[colon + 1..].to_string());
+        }
+    }
+    (s.to_string(), "latest".to_string())
+}
+
+/// Add one or more new repo:tag references to an existing image (docker tag).
+async fn add_image_tags(req: &Req) -> Result<Value> {
+    let src = need_ref(req)?;
+    let tags: Vec<String> = req
+        .tags
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tags.is_empty() {
+        return Err(anyhow!("ERR_CODE:docker.tag_empty"));
+    }
+    if tags.len() > 20 {
+        return Err(anyhow!("ERR_CODE:docker.too_many_tags"));
+    }
+    let dkr = dkr()?;
+    for t in &tags {
+        if validate_token(t).is_err() {
+            return Err(anyhow!("ERR_CODE:docker.bad_tag"));
+        }
+        let (repo, tag) = split_repo_tag(t);
+        dkr.tag_image(
+            &src,
+            Some(bollard::image::TagImageOptions::<String> { repo, tag }),
+        )
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    }
+    Ok(json!({ "tagged": src, "count": tags.len() }))
+}
+
 async fn list_images() -> Result<Value> {
     let dkr = dkr()?;
     // Determine which images are used by DN7 Panel-managed service containers
@@ -4083,6 +4133,7 @@ mod tests {
             new_name: None,
             repo: None,
             tag: None,
+            tags: None,
             backup: None,
             path: None,
             command: None,

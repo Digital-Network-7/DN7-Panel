@@ -116,7 +116,7 @@ function dkContainers() {
   op('docker', { op: 'list_containers' }).then((d) => {
     const list = d.containers || [];
     if (!list.length) { $('dkCList').innerHTML = `<div class="empty">${tr('dk.no_containers')}</div>`; return; }
-    let h = `<table class="optable ctntbl">`
+    let h = `<table class="optable frztbl ctntbl">`
       + `<colgroup><col style="width:190px"><col style="width:210px"><col style="width:120px">`
       + `<col style="width:200px"><col style="width:210px"><col style="width:230px"><col style="width:120px"><col style="width:200px"></colgroup>`
       + `<tr>`
@@ -164,7 +164,7 @@ function wireStickyShadows(wrap) {
   // listener once and re-resolve the current wrapper each time to avoid leaks.
   if (!wireStickyShadows._bound) {
     wireStickyShadows._bound = true;
-    window.addEventListener('resize', () => updateStickyShadows(document.querySelector('#dkCList .tablewrap')));
+    window.addEventListener('resize', () => document.querySelectorAll('.tablewrap').forEach(updateStickyShadows));
   }
   // Also react to layout changes that don't fire window resize (sidebar toggle).
   if (window.ResizeObserver) {
@@ -320,26 +320,50 @@ function dkImages(info) {
   op('docker', { op: 'list_images' }).then((d) => {
     const list = d.images || [];
     if (!list.length) { $('dkIList').innerHTML = `<div class="empty">${tr('dk.no_images')}</div>`; return; }
-    let h = `<table class="optable"><tr><th>${tr('dk.col_image')}</th><th>${tr('dk.col_size')}</th><th>${tr('dk.col_created')}</th><th>${tr('dk.img_referenced')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
+    let h = `<table class="optable frztbl imgtbl">`
+      + `<colgroup><col style="width:130px"><col style="width:300px"><col style="width:120px"><col style="width:160px"><col style="width:130px"><col style="width:210px"></colgroup>`
+      + `<tr><th>${tr('dk.col_id')}</th><th>${tr('dk.col_image')}</th><th>${tr('dk.col_size')}</th><th>${tr('dk.col_created')}</th><th>${tr('dk.col_status')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
     list.forEach((im) => {
       const ref = im.in_use
-        ? `<span class="chip on"><span class="dot-s on"></span>${tr('ng.yes')}</span>`
-        : `<span class="chip">${tr('ng.no')}</span>`;
+        ? `<span class="chip on"><span class="dot-s on"></span>${tr('dk.img_inuse')}</span>`
+        : `<span class="chip">${tr('dk.img_idle')}</span>`;
       const delBtn = im.managed
         ? `<button class="btn sm danger" data-rmbuiltin="1">${tr('dk.delete')}</button>`
         : im.in_use
           ? `<button class="btn sm danger" data-rmused="1">${tr('dk.delete')}</button>`
           : `<button class="btn sm danger" data-rm="${esc(im.name)}">${tr('dk.delete')}</button>`;
-      const acts = `<div class="actions"><button class="btn sm sec" data-dl="${esc(im.name)}">${tr('dk.img_download')}</button>${delBtn}</div>`;
-      h += `<tr><td class="mono" style="font-size:12px">${esc(im.name)}</td><td>${esc(im.size)}</td><td class="mut">${esc(im.created)}</td><td>${ref}</td>
-        <td class="act">${acts}</td></tr>`;
+      const acts = `<div class="actions"><button class="btn sm sec" data-dl="${esc(im.name)}">${tr('dk.img_download')}</button><button class="btn sm sec" data-tag="${esc(im.name)}">${tr('dk.tag_btn')}</button>${delBtn}</div>`;
+      h += `<tr><td class="mono mut" style="font-size:11px" data-tip="${esc(im.id)}">${esc(im.id)}</td>`
+        + `<td data-tip="${esc(im.name)}"><div class="clamp2"><span class="imgtag">${esc(im.name)}</span></div></td>`
+        + `<td>${esc(im.size)}</td><td class="mut">${esc(im.created)}</td><td>${ref}</td>`
+        + `<td class="act">${acts}</td></tr>`;
     });
     $('dkIList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
     document.querySelectorAll('#dkIList [data-dl]').forEach((b) => b.onclick = () => dkImageDownload(b.dataset.dl));
+    document.querySelectorAll('#dkIList [data-tag]').forEach((b) => b.onclick = () => dkTagForm(b.dataset.tag, info));
     document.querySelectorAll('#dkIList [data-rmbuiltin]').forEach((b) => b.onclick = () => toast(tr('dk.img_builtin_block'), 'err'));
     document.querySelectorAll('#dkIList [data-rmused]').forEach((b) => b.onclick = () => toast(tr('dk.img_in_use_block'), 'err'));
     document.querySelectorAll('#dkIList [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('dk.confirm_rm_img', { name: b.dataset.rm }))) op('docker', { op: 'remove_image', ref: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); dkImages(info); }).catch((e) => toast(e.message, 'err')); });
+    wireStickyShadows($('dkIList').querySelector('.tablewrap'));
+    wireCellTips($('dkIList'));
   }).catch((e) => { $('dkIList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+}
+
+// Tag an image: add one or more new repo:tag references (one per line).
+function dkTagForm(name, info) {
+  modal(tr('dk.tag_title') + name, `
+    <label class="lbl">${tr('dk.tag_new')}</label>
+    <textarea id="tgList" class="field mono" rows="4" placeholder="myrepo/app:v1&#10;myrepo/app:latest"></textarea>
+    <p class="formnote" style="margin-top:6px">${tr('dk.tag_hint')}</p>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="tgGo" disabled>${tr('dk.tag_apply')}</button></div>
+  `, (close) => {
+    bindDirty($('tgGo'), $('tgList'));
+    $('tgGo').onclick = () => {
+      const tags = $('tgList').value.split('\n').map((s) => s.trim()).filter(Boolean);
+      if (!tags.length) return toast(tr('dk.tag_empty'), 'err');
+      op('docker', { op: 'tag_image', ref: name, tags }).then(() => { toast(tr('dk.tag_done'), 'ok'); close(); dkImages(info); }).catch((e) => toast(e.message, 'err'));
+    };
+  });
 }
 
 // Trigger an image export (`docker save`) download via a one-time ticket.

@@ -303,8 +303,8 @@
   .field-suffix { display:flex; align-items:stretch; }
   .field-suffix > input.field { flex:1; min-width:0; border-top-right-radius:0; border-bottom-right-radius:0; }
   .field-suffix .suffix-tag, .field-suffix .suffix-btn { flex:0 0 auto; display:flex; align-items:center; justify-content:center; min-width:48px; padding:0 12px; border:1px solid var(--line2); border-left:none; border-top-right-radius:10px; border-bottom-right-radius:10px; background:var(--panel2); color:var(--mut); font-size:13px; }
-  .field-suffix .suffix-btn { cursor:pointer; transition:color .12s,border-color .12s; }
-  .field-suffix .suffix-btn:hover { color:var(--cy); border-color:var(--cy); }
+  .field-suffix .suffix-btn { cursor:pointer; border-left:1px solid var(--line2); margin-left:-1px; position:relative; transition:color .12s,border-color .12s; }
+  .field-suffix .suffix-btn:hover { color:var(--cy); border-color:var(--cy); z-index:1; }
   /* Volume row: source-type select + host path / volume select + container path. */
   .volrow .vr-type { flex:0 0 116px; }
   .volrow .vr-host, .volrow .vr-vol, .volrow .vr-ctn { flex:1 1 auto; min-width:0; }
@@ -334,8 +334,10 @@
   .switchrow .switch { flex:1 1 200px; min-width:200px; align-items:flex-start; }
   .switchrow .switch .swbox { margin-top:2px; }
   /* Compact inline toggle (used inside dynamic rows, e.g. port IPv6 / volume
-     read-only). A modern switch — never a bare checkbox. */
-  .tgl { display:inline-flex; align-items:center; gap:8px; flex:0 0 auto; cursor:pointer; font-size:12.5px; color:var(--mut); white-space:nowrap; user-select:none; padding:0 2px; }
+     read-only). A modern switch wrapped in a card that stretches to the row
+     height so it lines up cleanly with the inputs/buttons beside it. */
+  .tgl { display:inline-flex; align-items:center; gap:9px; flex:0 0 auto; align-self:stretch; cursor:pointer; font-size:12.5px; color:var(--mut); white-space:nowrap; user-select:none; padding:0 13px; border:1px solid var(--line2); border-radius:10px; background:var(--panel2); transition:border-color .14s; }
+  .tgl:hover { border-color:var(--cy); }
   .tgl input { position:absolute; opacity:0; width:0; height:0; }
   .tgl .tglbox { position:relative; width:38px; height:21px; flex:0 0 auto; border-radius:99px; background:var(--hov); border:1px solid var(--line2); transition:background .18s,border-color .18s; }
   .tgl .tglbox::after { content:''; position:absolute; top:2px; left:2px; width:15px; height:15px; border-radius:50%; background:var(--mut); transition:transform .18s,background .18s; }
@@ -578,21 +580,26 @@ table.kvtbl th { text-align:left; color:var(--mut); font-weight:500; }
 .statuswrap .c-caret { font-size: 9px; color: var(--mut); transition: color .12s; }
 .statuswrap:hover .c-caret { color: var(--cy); }
 
-/* ---- Container table: fixed column widths, pinned Name (left) + Actions
-   (right); the middle scrolls horizontally; every cell clamps to 2 lines. */
-table.ctntbl { border-collapse: separate; border-spacing: 0; table-layout: fixed; width: 100%; min-width: 1480px; }
-table.ctntbl th, table.ctntbl td { background: var(--bg); vertical-align: middle; }
-table.ctntbl th:first-child, table.ctntbl td:first-child { position: sticky; left: 0; z-index: 2; }
-table.ctntbl th.act, table.ctntbl td.act { position: sticky; right: 0; z-index: 2; width: 200px; }
-table.ctntbl td.act .actions { flex-wrap: wrap; }
-table.ctntbl tr:first-child th:first-child, table.ctntbl tr:first-child th.act { z-index: 3; }
+/* ---- Frozen-column tables (container + image lists): pinned first column
+   (left) + Actions column (right); the middle scrolls horizontally; every cell
+   clamps to 2 lines. Shared base; each table sets its own min-width. ---- */
+.frztbl { border-collapse: separate; border-spacing: 0; table-layout: fixed; width: 100%; }
+.frztbl th, .frztbl td { background: var(--bg); vertical-align: middle; }
+.frztbl th:first-child, .frztbl td:first-child { position: sticky; left: 0; z-index: 2; }
+.frztbl th.act, .frztbl td.act { position: sticky; right: 0; z-index: 2; }
+.frztbl td.act .actions { flex-wrap: wrap; }
+.frztbl tr:first-child th:first-child, .frztbl tr:first-child th.act { z-index: 3; }
+table.ctntbl { min-width: 1480px; }
+table.ctntbl th.act, table.ctntbl td.act { width: 200px; }
+table.imgtbl { min-width: 1080px; }
+table.imgtbl th.act, table.imgtbl td.act { width: 210px; }
 /* Scroll-aware frozen-column shadows: a full-height ::after/::before per sticky
    cell (so the strip is continuous across rows, with no per-cell banding) shown
    only when there is scrolled-away content on that side. */
-.tablewrap.scl table.ctntbl th:first-child::after, .tablewrap.scl table.ctntbl td:first-child::after {
+.tablewrap.scl .frztbl th:first-child::after, .tablewrap.scl .frztbl td:first-child::after {
   content: ''; position: absolute; top: 0; bottom: -1px; right: 0; width: 14px; transform: translateX(100%);
   background: linear-gradient(to right, rgba(0,0,0,.16), transparent); pointer-events: none; }
-.tablewrap.scr table.ctntbl th.act::before, .tablewrap.scr table.ctntbl td.act::before {
+.tablewrap.scr .frztbl th.act::before, .tablewrap.scr .frztbl td.act::before {
   content: ''; position: absolute; top: 0; bottom: -1px; left: 0; width: 14px; transform: translateX(-100%);
   background: linear-gradient(to left, rgba(0,0,0,.16), transparent); pointer-events: none; }
 /* Clamp any cell content to 1 or 2 lines (ellipsis); full text on hover (title). */
@@ -601,6 +608,9 @@ table.ctntbl tr:first-child th:first-child, table.ctntbl tr:first-child th.act {
 .clamp2 { -webkit-line-clamp: 2; }
 .portlbl { display: inline-block; font-size: 11px; color: var(--mut); border: 1px solid var(--line2);
   border-radius: 6px; padding: 1px 7px; margin: 1px 4px 1px 0; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* Image name shown as a label/chip (clamped to 2 lines by its wrapping cell). */
+.imgtag { display: inline; font-size: 11.5px; color: var(--fg); background: var(--hov); border: 1px solid var(--line2);
+  border-radius: 6px; padding: 2px 8px; white-space: normal; word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
 
 /* ---- Container monitor modal: a clean 2×2 stat-card grid. ---- */
 .mongrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
