@@ -399,6 +399,16 @@ fn www_dir() -> std::path::PathBuf {
 /// Host nginx config drop-in directory.
 const HOST_CONFD: &str = "/etc/nginx/conf.d";
 
+/// Where we write HTTP Basic Auth htpasswd files. This MUST live under
+/// `/etc/nginx` (not the panel's private `/var/dn7/...` tree): the nginx
+/// *worker* opens `auth_basic_user_file` at request time as its run-user
+/// (www-data / nginx), so the file and every parent directory must be
+/// traversable by that account — and on SELinux systems the file needs an
+/// nginx-readable context, which `/etc/nginx/*` already carries. Keeping it
+/// under the panel dir made the worker hit EACCES and return 500 for every
+/// request (correct password or not).
+const HOST_ACCESS_DIR: &str = "/etc/nginx/dn7-access";
+
 /// Whether host nginx setup has been completed (marker file present).
 fn is_setup() -> bool {
     setup_marker().exists()
@@ -490,7 +500,7 @@ fn access_dir() -> std::path::PathBuf {
     base_dir().join("access")
 }
 fn htpasswd_path(id: &str) -> std::path::PathBuf {
-    access_dir().join(format!("{id}.htpasswd"))
+    std::path::Path::new(HOST_ACCESS_DIR).join(format!("{id}.htpasswd"))
 }
 fn websettings_file() -> std::path::PathBuf {
     base_dir().join("websettings.json")
@@ -734,11 +744,21 @@ fn apr1_with_salt(password: &str, salt: &str) -> String {
 /// Write (or remove) an access list's htpasswd file from its stored hashes.
 fn write_htpasswd(list: &AccessList) -> Result<()> {
     let path = htpasswd_path(&list.id);
+    // Remove any stale copy left in the panel's private tree by older builds
+    // (that location 500s — the nginx worker can't read it).
+    let _ = std::fs::remove_file(access_dir().join(format!("{}.htpasswd", list.id)));
     if list.users.is_empty() {
         let _ = std::fs::remove_file(&path);
         return Ok(());
     }
-    std::fs::create_dir_all(access_dir())?;
+    std::fs::create_dir_all(HOST_ACCESS_DIR)?;
+    // The directory must be traversable by the nginx worker user (it opens the
+    // file at request time), so force 0755 even under a restrictive umask.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(HOST_ACCESS_DIR, std::fs::Permissions::from_mode(0o755));
+    }
     let mut body = String::new();
     for u in &list.users {
         body.push_str(&format!("{}:{}\n", u.username, u.hash));
@@ -1768,6 +1788,15 @@ pub async fn resync_confs() {
         Err(_) => return,
     };
     cleanup_orphan_confs(&lo);
+    // Re-emit every access list's htpasswd file. Older builds wrote these under
+    // the panel's private tree (which the nginx worker can't read → 500); this
+    // moves them to /etc/nginx/dn7-access and the conf rewrite below repoints
+    // auth_basic_user_file at the new path — fully healing the 500 on upgrade.
+    for list in load_access() {
+        if let Err(e) = write_htpasswd(&list) {
+            tracing::warn!(access = %list.id, "htpasswd resync failed: {e}");
+        }
+    }
     let mut wrote = false;
     for mut site in load_sites() {
         if site.ssl {
@@ -2418,6 +2447,7 @@ async fn delete_access_op(req: &Req) -> Result<Value> {
     }
     save_access(&lists)?;
     let _ = std::fs::remove_file(htpasswd_path(id));
+    let _ = std::fs::remove_file(access_dir().join(format!("{id}.htpasswd")));
     Ok(json!({ "deleted": id }))
 }
 
