@@ -59,6 +59,13 @@ function attachPathSuggest(input) {
   window.addEventListener('scroll', () => { if (box) place(); }, true);
 }
 
+// Docker engine + API version chips shown in each list tab's header (in place
+// of a redundant title). Populated by renderDocker from the `info` response.
+let DK_INFO = {};
+function dkVerChips() {
+  return `<span class="chip">Docker ${esc(DK_INFO.server_version || '')}</span><span class="chip">API ${esc(DK_INFO.client_version || '')}</span>`;
+}
+
 function renderDocker(v) {
   v.innerHTML = `<div style="padding:8px">${loading(tr('dk.detecting'))}</div>`;
   // If an install job is still running (user left + came back), re-attach.
@@ -98,8 +105,8 @@ function renderDocker(v) {
         <button data-t="networks">${tr('dk.tab_networks')}</button>
         <button data-t="settings">${tr('dk.tab_settings')}</button>
       </div>
-      <div class="row" style="margin-bottom:14px"><span class="chip">Docker ${esc(info.server_version || '')}</span><span class="chip">API ${esc(info.client_version || '')}</span><span class="sp" style="flex:1"></span></div>
       <div id="dkBody"></div>`;
+    DK_INFO = info;
     const tabs = $('dkTabs');
     const sel = (t) => { tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === t)); if (t === 'containers') dkContainers(); else if (t === 'images') dkImages(info); else if (t === 'volumes') dkVolumes(); else if (t === 'settings') dkSettings(); else dkNetworks(); };
     tabs.querySelectorAll('button').forEach((b) => b.onclick = () => sel(b.dataset.t));
@@ -110,7 +117,7 @@ function renderDocker(v) {
 function dkContainers() {
   document.querySelectorAll('.dk-pop').forEach((p) => p.remove());
   const body = $('dkBody');
-  body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_containers')}</h3><span class="sp"></span><button class="btn sm" id="dkNew">${tr('dk.create_container')}</button><button class="btn sec sm" id="dkRefC">${tr('dk.refresh')}</button></div><div id="dkCList">` + loading() + '</div>';
+  body.innerHTML = `<div class="sechead">${dkVerChips()}<span class="sp"></span><button class="btn sm" id="dkNew">${tr('dk.create_container')}</button><button class="btn sec sm" id="dkRefC">${tr('dk.refresh')}</button></div><div id="dkCList">` + loading() + '</div>';
   $('dkRefC').onclick = dkContainers;
   $('dkNew').onclick = () => dkCreateForm();
   op('docker', { op: 'list_containers' }).then((d) => {
@@ -328,7 +335,7 @@ function dkLogs(id, name) {
 
 function dkImages(info) {
   const body = $('dkBody');
-  body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_images')}</h3><span class="sp"></span><button class="btn sm" id="dkPull">${tr('dk.pull_image')}</button><button class="btn sec sm" id="dkRefI">${tr('dk.refresh')}</button><button class="btn sec sm" id="dkAdv">${tr('dk.advanced')} ▾</button></div><div id="dkIList">` + loading() + '</div>';
+  body.innerHTML = `<div class="sechead">${dkVerChips()}<span class="sp"></span><button class="btn sm" id="dkPull">${tr('dk.pull_image')}</button><button class="btn sec sm" id="dkRefI">${tr('dk.refresh')}</button><button class="btn sec sm" id="dkAdv">${tr('dk.advanced')} ▾</button></div><div id="dkIList">` + loading() + '</div>';
   $('dkRefI').onclick = () => dkImages(info);
   $('dkPull').onclick = dkPullForm;
   mkHoverPanel($('dkAdv'), [
@@ -554,7 +561,7 @@ function dkPullTasks() {
 // ---- Volumes tab ----
 function dkVolumes() {
   const body = $('dkBody');
-  body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_volumes')}</h3><span class="sp"></span><button class="btn sm" id="dkVolNew">${tr('dk.vol_new')}</button><button class="btn sec sm" id="dkRefV">${tr('dk.refresh')}</button></div><div id="dkVList">${loading()}</div>`;
+  body.innerHTML = `<div class="sechead">${dkVerChips()}<span class="sp"></span><button class="btn sm" id="dkVolNew">${tr('dk.vol_new')}</button><button class="btn sec sm" id="dkRefV">${tr('dk.refresh')}</button></div><div id="dkVList">${loading()}</div>`;
   $('dkRefV').onclick = dkVolumes;
   $('dkVolNew').onclick = () => modal(tr('dk.vol_new'), `
     <label class="lbl">${tr('dk.vol_name')}</label>
@@ -1127,7 +1134,7 @@ function readKv(id) {
 
 function dkNetworks() {
   const body = $('dkBody');
-  body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_networks')}</h3><span class="sp"></span><button class="btn sm" id="dkNetNew">${tr('dk.create_network')}</button><button class="btn sec sm" id="dkRefN">${tr('dk.refresh')}</button></div><div id="dkNList">` + loading() + '</div>';
+  body.innerHTML = `<div class="sechead">${dkVerChips()}<span class="sp"></span><button class="btn sm" id="dkNetNew">${tr('dk.create_network')}</button><button class="btn sec sm" id="dkRefN">${tr('dk.refresh')}</button></div><div id="dkNList">` + loading() + '</div>';
   $('dkRefN').onclick = dkNetworks;
   $('dkNetNew').onclick = () => modal(tr('dk.create_network'), `
     <div class="formgrid">
