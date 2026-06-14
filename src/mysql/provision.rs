@@ -14,6 +14,31 @@ pub(crate) fn validate_port(port: i64) -> Result<()> {
 
 /// Start a detached install op. Returns `{op_id}` immediately.
 pub(crate) fn start_install(req: &Req) -> Result<Value> {
+    // Single-instance: refuse if one already exists (the user manages multiple
+    // databases inside it, not multiple instances).
+    if load_manifest(INSTANCE_ID).is_ok() {
+        return Err(anyhow!("ERR_CODE:mysql.instance_exists"));
+    }
+    let spec = parse_install_req(req)?;
+
+    let inst_id = spec.inst_id.clone();
+    let op_id = new_op_id();
+    op_create(&op_id, "install", &inst_id);
+
+    let op_t = op_id.clone();
+    let inst_t = inst_id.clone();
+    tokio::spawn(async move {
+        match run_install_detached(&op_t, spec).await {
+            Ok(()) => op_finish(&op_t, "done", "", &inst_t),
+            Err(e) => op_finish(&op_t, "error", &e.to_string(), ""),
+        }
+    });
+    Ok(json!({ "op_id": op_id, "inst_id": inst_id }))
+}
+
+/// Validate an install request into an `InstallSpec` (engine/version/port +
+/// admin account name and optional explicit password).
+fn parse_install_req(req: &Req) -> Result<InstallSpec> {
     let engine = req
         .engine
         .as_deref()
@@ -33,8 +58,7 @@ pub(crate) fn start_install(req: &Req) -> Result<Value> {
     if !valid_version(&engine, &version) {
         return Err(anyhow!("ERR_CODE:mysql.bad_version"));
     }
-    let expose = req.expose.unwrap_or(false);
-    let port = if expose {
+    let port = if req.expose.unwrap_or(false) {
         let p = req.port.unwrap_or(3306);
         validate_port(p)?;
         Some(p)
@@ -63,33 +87,14 @@ pub(crate) fn start_install(req: &Req) -> Result<Value> {
         _ => None,
     };
 
-    // Single-instance: refuse if one already exists (the user manages multiple
-    // databases inside it, not multiple instances).
-    if load_manifest(INSTANCE_ID).is_ok() {
-        return Err(anyhow!("ERR_CODE:mysql.instance_exists"));
-    }
-
-    let inst_id = INSTANCE_ID.to_string();
-    let op_id = new_op_id();
-    op_create(&op_id, "install", &inst_id);
-
-    let op_t = op_id.clone();
-    let inst_t = inst_id.clone();
-    let spec = InstallSpec {
+    Ok(InstallSpec {
         engine,
         version,
         port,
-        inst_id: inst_id.clone(),
+        inst_id: INSTANCE_ID.to_string(),
         password,
         admin_user,
-    };
-    tokio::spawn(async move {
-        match run_install_detached(&op_t, spec).await {
-            Ok(()) => op_finish(&op_t, "done", "", &inst_t),
-            Err(e) => op_finish(&op_t, "error", &e.to_string(), ""),
-        }
-    });
-    Ok(json!({ "op_id": op_id, "inst_id": inst_id }))
+    })
 }
 
 /// Parameters for a detached MySQL/MariaDB install (bundled to keep the
