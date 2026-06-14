@@ -516,17 +516,7 @@ pub(crate) async fn check_port_conflicts(req: &Req) -> Result<()> {
     };
 
     // (a) Duplicate host port (same protocol) within the form itself.
-    let mut seen: std::collections::HashSet<(i64, String)> = std::collections::HashSet::new();
-    for p in ports {
-        let proto = p.proto.as_deref().unwrap_or("tcp").to_string();
-        if !seen.insert((p.host, proto.clone())) {
-            return Err(anyhow!(
-                "宿主机端口 {}/{} 在表单中重复，请勿映射同一端口多次。",
-                p.host,
-                proto.to_uppercase()
-            ));
-        }
-    }
+    reject_duplicate_ports(ports)?;
 
     // Containers whose ports we may reuse (edit/upgrade replaces them).
     let mut excluded: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -538,36 +528,7 @@ pub(crate) async fn check_port_conflicts(req: &Req) -> Result<()> {
     }
 
     // Map every host port published by a running container -> owner name.
-    let dkr = dkr()?;
-    let opts = bollard::container::ListContainersOptions::<String> {
-        all: false,
-        ..Default::default()
-    };
-    let containers = dkr
-        .list_containers(Some(opts))
-        .await
-        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-    let mut held: HashMap<(i64, String), String> = HashMap::new();
-    for c in &containers {
-        let name = c
-            .names
-            .as_ref()
-            .and_then(|n| n.first())
-            .map(|s| s.trim_start_matches('/').to_string())
-            .unwrap_or_default();
-        if let Some(pts) = &c.ports {
-            for prt in pts {
-                if let Some(pub_port) = prt.public_port {
-                    let proto = prt
-                        .typ
-                        .map(|t| format!("{t:?}").to_lowercase())
-                        .unwrap_or_else(|| "tcp".to_string());
-                    held.entry((pub_port as i64, proto))
-                        .or_insert_with(|| name.clone());
-                }
-            }
-        }
-    }
+    let held = held_host_ports().await?;
 
     // (b) container conflict, then (c) host-process conflict.
     for p in ports {
@@ -596,6 +557,57 @@ pub(crate) async fn check_port_conflicts(req: &Req) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Reject a host port + protocol mapped more than once within the same request.
+fn reject_duplicate_ports(ports: &[PortMap]) -> Result<()> {
+    let mut seen: std::collections::HashSet<(i64, String)> = std::collections::HashSet::new();
+    for p in ports {
+        let proto = p.proto.as_deref().unwrap_or("tcp").to_string();
+        if !seen.insert((p.host, proto.clone())) {
+            return Err(anyhow!(
+                "宿主机端口 {}/{} 在表单中重复，请勿映射同一端口多次。",
+                p.host,
+                proto.to_uppercase()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Map every host port currently published by a running container to its owner
+/// container name, keyed by (host_port, protocol).
+async fn held_host_ports() -> Result<HashMap<(i64, String), String>> {
+    let dkr = dkr()?;
+    let opts = bollard::container::ListContainersOptions::<String> {
+        all: false,
+        ..Default::default()
+    };
+    let containers = dkr
+        .list_containers(Some(opts))
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    let mut held: HashMap<(i64, String), String> = HashMap::new();
+    for c in &containers {
+        let name = c
+            .names
+            .as_ref()
+            .and_then(|n| n.first())
+            .map(|s| s.trim_start_matches('/').to_string())
+            .unwrap_or_default();
+        let Some(pts) = &c.ports else { continue };
+        for prt in pts {
+            if let Some(pub_port) = prt.public_port {
+                let proto = prt
+                    .typ
+                    .map(|t| format!("{t:?}").to_lowercase())
+                    .unwrap_or_else(|| "tcp".to_string());
+                held.entry((pub_port as i64, proto))
+                    .or_insert_with(|| name.clone());
+            }
+        }
+    }
+    Ok(held)
 }
 
 /// Validate the request, register a detached op, create the container via the
