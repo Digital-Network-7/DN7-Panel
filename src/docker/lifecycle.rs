@@ -156,85 +156,10 @@ pub(crate) async fn container_create_body(dkr: &Docker, reference: &str) -> Resu
         .trim_start_matches('/')
         .to_string();
 
-    // Ports from host_config.port_bindings ("port/proto" -> [{host_ip, host_port}]).
-    // A port mapped on both 0.0.0.0 and :: appears as two bindings sharing the
-    // same host port — collapse them into one row and flag ipv6.
-    let mut ports = Vec::new();
-    if let Some(pb) = &hc.port_bindings {
-        for (key, binds) in pb {
-            let (cport, proto) = match key.split_once('/') {
-                Some((p, pr)) => (p.parse::<i64>().unwrap_or(0), pr.to_string()),
-                None => (key.parse::<i64>().unwrap_or(0), "tcp".to_string()),
-            };
-            if let Some(list) = binds {
-                let mut seen: HashMap<i64, bool> = HashMap::new();
-                for b in list {
-                    if let Some(hp) = b.host_port.as_deref().and_then(|s| s.parse::<i64>().ok()) {
-                        let is6 = b
-                            .host_ip
-                            .as_deref()
-                            .map(|s| s.contains(':'))
-                            .unwrap_or(false);
-                        let e = seen.entry(hp).or_insert(false);
-                        *e = *e || is6;
-                    }
-                }
-                for (hp, v6) in seen {
-                    ports.push(
-                        json!({ "host": hp, "container": cport, "proto": proto, "ipv6": v6 }),
-                    );
-                }
-            }
-        }
-    }
-
-    // Volume binds "host:container[:ro]".
-    let mut volumes = Vec::new();
-    if let Some(binds) = &hc.binds {
-        for b in binds {
-            let parts: Vec<&str> = b.split(':').collect();
-            if parts.len() >= 2 && parts[0].starts_with('/') {
-                volumes.push(json!({
-                    "host": parts[0],
-                    "container": parts[1],
-                    "readonly": parts.get(2).map(|m| *m == "ro").unwrap_or(false),
-                }));
-            }
-        }
-    }
-
-    let restart = hc
-        .restart_policy
-        .and_then(|p| p.name)
-        .map(|n| match n {
-            bollard::models::RestartPolicyNameEnum::ALWAYS => "always",
-            bollard::models::RestartPolicyNameEnum::NO => "no",
-            _ => "unless-stopped",
-        })
-        .unwrap_or("unless-stopped")
-        .to_string();
-
-    // Network attachments + per-endpoint MAC / IPv4 (all user-defined networks
-    // the container is on; built-in host/none modes can't be recreated this way).
-    let mut networks: Vec<Value> = Vec::new();
-    if let Some(ns) = &c.network_settings {
-        if let Some(nets) = &ns.networks {
-            for (nname, ep) in nets {
-                if matches!(nname.as_str(), "host" | "none") {
-                    continue;
-                }
-                networks.push(json!({
-                    "network": nname,
-                    "mac": ep.mac_address.clone().unwrap_or_default(),
-                    "ipv4": ep
-                        .ipam_config
-                        .as_ref()
-                        .and_then(|i| i.ipv4_address.clone())
-                        .unwrap_or_default(),
-                }));
-            }
-        }
-    }
+    let ports = inspect_ports(&hc);
+    let volumes = inspect_volumes(&hc);
+    let restart = inspect_restart(&hc);
+    let networks = inspect_networks(c.network_settings.as_ref());
 
     let cmd = cfg.cmd.as_ref().map(|v| v.join(" ")).unwrap_or_default();
     let cpus = hc
@@ -264,6 +189,96 @@ pub(crate) async fn container_create_body(dkr: &Docker, reference: &str) -> Resu
         "memory": memory,
         "privileged": hc.privileged.unwrap_or(false),
     }))
+}
+
+/// Recreate-form ports from `host_config.port_bindings` ("port/proto" -> binds).
+/// A port mapped on both 0.0.0.0 and :: shares one host port — collapse into one
+/// row and flag ipv6.
+fn inspect_ports(hc: &bollard::models::HostConfig) -> Vec<Value> {
+    let mut ports = Vec::new();
+    let Some(pb) = &hc.port_bindings else {
+        return ports;
+    };
+    for (key, binds) in pb {
+        let (cport, proto) = match key.split_once('/') {
+            Some((p, pr)) => (p.parse::<i64>().unwrap_or(0), pr.to_string()),
+            None => (key.parse::<i64>().unwrap_or(0), "tcp".to_string()),
+        };
+        let Some(list) = binds else { continue };
+        let mut seen: HashMap<i64, bool> = HashMap::new();
+        for b in list {
+            if let Some(hp) = b.host_port.as_deref().and_then(|s| s.parse::<i64>().ok()) {
+                let is6 = b
+                    .host_ip
+                    .as_deref()
+                    .map(|s| s.contains(':'))
+                    .unwrap_or(false);
+                let e = seen.entry(hp).or_insert(false);
+                *e = *e || is6;
+            }
+        }
+        for (hp, v6) in seen {
+            ports.push(json!({ "host": hp, "container": cport, "proto": proto, "ipv6": v6 }));
+        }
+    }
+    ports
+}
+
+/// Recreate-form volume rows from `host_config.binds` ("host:container[:ro]").
+fn inspect_volumes(hc: &bollard::models::HostConfig) -> Vec<Value> {
+    let mut volumes = Vec::new();
+    let Some(binds) = &hc.binds else {
+        return volumes;
+    };
+    for b in binds {
+        let parts: Vec<&str> = b.split(':').collect();
+        if parts.len() >= 2 && parts[0].starts_with('/') {
+            volumes.push(json!({
+                "host": parts[0],
+                "container": parts[1],
+                "readonly": parts.get(2).map(|m| *m == "ro").unwrap_or(false),
+            }));
+        }
+    }
+    volumes
+}
+
+/// Restart-policy name as a recreate-form string.
+fn inspect_restart(hc: &bollard::models::HostConfig) -> String {
+    hc.restart_policy
+        .as_ref()
+        .and_then(|p| p.name)
+        .map(|n| match n {
+            bollard::models::RestartPolicyNameEnum::ALWAYS => "always",
+            bollard::models::RestartPolicyNameEnum::NO => "no",
+            _ => "unless-stopped",
+        })
+        .unwrap_or("unless-stopped")
+        .to_string()
+}
+
+/// Recreate-form network attachments (user-defined networks only; built-in
+/// host/none modes can't be recreated this way) with per-endpoint MAC / IPv4.
+fn inspect_networks(ns: Option<&bollard::models::NetworkSettings>) -> Vec<Value> {
+    let mut networks: Vec<Value> = Vec::new();
+    let Some(nets) = ns.and_then(|n| n.networks.as_ref()) else {
+        return networks;
+    };
+    for (nname, ep) in nets {
+        if matches!(nname.as_str(), "host" | "none") {
+            continue;
+        }
+        networks.push(json!({
+            "network": nname,
+            "mac": ep.mac_address.clone().unwrap_or_default(),
+            "ipv4": ep
+                .ipam_config
+                .as_ref()
+                .and_then(|i| i.ipv4_address.clone())
+                .unwrap_or_default(),
+        }));
+    }
+    networks
 }
 
 /// get_container_config op: pre-fill the edit/upgrade form.
