@@ -417,13 +417,22 @@ async fn handle(req: &Req) -> Result<Value> {
             if managed_image_guard(r).await {
                 return Err(anyhow!("ERR_CODE:docker.image_in_use_builtin"));
             }
+            if let Some(owner) = image_in_use_guard(r).await {
+                return Err(anyhow!(
+                    "镜像正在被容器「{}」引用，无法删除。请先删除相关容器后再试。",
+                    owner
+                ));
+            }
         }
     }
     match req.op.as_str() {
         "info" => docker_info().await,
         "list_images" => list_images().await,
         "pull_image" => start_pull(req),
-        "create_container" => start_create(req),
+        "create_container" => {
+            check_port_conflicts(req).await?;
+            start_create(req)
+        }
         "install" => start_install(req),
         "list_ops" => Ok(ops_snapshot()),
         "op_log" => {
@@ -974,6 +983,48 @@ async fn all_used_image_refs(dkr: &Docker) -> std::collections::HashSet<String> 
     out
 }
 
+/// If `reference` (a repo:tag or short id) is used by any container (running or
+/// stopped), return that container's name so an image removal can be refused
+/// with a helpful message instead of leaving a dangling/forced delete.
+async fn image_in_use_guard(reference: &str) -> Option<String> {
+    let dkr = dkr().ok()?;
+    let opts = bollard::container::ListContainersOptions::<String> {
+        all: true,
+        ..Default::default()
+    };
+    let containers = dkr.list_containers(Some(opts)).await.ok()?;
+    let want_short = reference
+        .strip_prefix("sha256:")
+        .unwrap_or(reference)
+        .chars()
+        .take(12)
+        .collect::<String>();
+    for c in containers {
+        let img = c.image.clone().unwrap_or_default();
+        let iid_short = c
+            .image_id
+            .as_deref()
+            .map(|i| {
+                i.strip_prefix("sha256:")
+                    .unwrap_or(i)
+                    .chars()
+                    .take(12)
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        if img == reference || (!want_short.is_empty() && iid_short == want_short) {
+            return Some(
+                c.names
+                    .as_ref()
+                    .and_then(|n| n.first())
+                    .map(|s| s.trim_start_matches('/').to_string())
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    None
+}
+
 /// Format a byte count like docker's human sizes (e.g. "12.3MB").
 fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
@@ -1330,9 +1381,47 @@ fn fmt_port_map(pm: &HashMap<String, Option<Vec<bollard::models::PortBinding>>>)
 /// line (e.g. a raw TLS handshake logged verbatim) into harmless short text
 /// instead of a wall of escapes / boxes.
 fn sanitize_log(s: &str) -> String {
-    s.chars()
+    let filtered: String = s
+        .chars()
         .filter(|&c| c == '\n' || c == '\r' || c == '\t' || (!c.is_control() && c != '\u{FFFD}'))
-        .collect()
+        .collect();
+    strip_hex_escapes(&filtered)
+}
+
+/// Remove literal C-style hex escapes like `\x16\x03\x01…` that some servers
+/// (notably nginx) write into their access logs when a client sends raw binary
+/// to a text endpoint (e.g. a TLS ClientHello to a plain-HTTP port). They are
+/// valid text but render as a wall of noise, so any run of them is collapsed
+/// away. Three-digit octal escapes (`\NNN`) emitted by some loggers go too.
+fn strip_hex_escapes(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        // \xHH (hex byte escape)
+        if i + 4 <= chars.len()
+            && chars[i] == '\\'
+            && (chars[i + 1] == 'x' || chars[i + 1] == 'X')
+            && chars[i + 2].is_ascii_hexdigit()
+            && chars[i + 3].is_ascii_hexdigit()
+        {
+            i += 4;
+            continue;
+        }
+        // \NNN (3-digit octal byte escape)
+        if i + 4 <= chars.len()
+            && chars[i] == '\\'
+            && ('0'..='7').contains(&chars[i + 1])
+            && ('0'..='7').contains(&chars[i + 2])
+            && ('0'..='7').contains(&chars[i + 3])
+        {
+            i += 4;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
 }
 
 async fn container_logs(req: &Req) -> Result<Value> {
@@ -2273,6 +2362,115 @@ fn split_command(s: &str) -> Result<Vec<String>> {
         return Err(anyhow!("ERR_CODE:docker.cmd_too_many_args"));
     }
     Ok(out)
+}
+
+/// True when a host port is already bound by some other process on the box.
+/// Only `AddrInUse` counts as busy — a permission error (privileged port and
+/// we're not root) must not be reported as a conflict (false positive).
+fn port_busy(port: i64, proto: &str) -> bool {
+    if !(1..=65535).contains(&port) {
+        return false;
+    }
+    let addr = ("0.0.0.0", port as u16);
+    let inuse = |e: std::io::Error| e.kind() == std::io::ErrorKind::AddrInUse;
+    if proto == "udp" {
+        std::net::UdpSocket::bind(addr).err().is_some_and(inuse)
+    } else {
+        std::net::TcpListener::bind(addr).err().is_some_and(inuse)
+    }
+}
+
+/// Reject a create/edit when its published host ports clash with: (a) another
+/// port in the same form, (b) a port already published by a different running
+/// container, or (c) a port held by some other host process. The container being
+/// replaced (edit/upgrade) is excluded so it can reuse its own ports.
+async fn check_port_conflicts(req: &Req) -> Result<()> {
+    let ports = match &req.ports {
+        Some(p) if !p.is_empty() => p,
+        _ => return Ok(()),
+    };
+
+    // (a) Duplicate host port (same protocol) within the form itself.
+    let mut seen: std::collections::HashSet<(i64, String)> = std::collections::HashSet::new();
+    for p in ports {
+        let proto = p.proto.as_deref().unwrap_or("tcp").to_string();
+        if !seen.insert((p.host, proto.clone())) {
+            return Err(anyhow!(
+                "宿主机端口 {}/{} 在表单中重复，请勿映射同一端口多次。",
+                p.host,
+                proto.to_uppercase()
+            ));
+        }
+    }
+
+    // Containers whose ports we may reuse (edit/upgrade replaces them).
+    let mut excluded: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(r) = opt_trim(&req.replace) {
+        excluded.insert(r);
+    }
+    if let Some(n) = opt_trim(&req.name) {
+        excluded.insert(n);
+    }
+
+    // Map every host port published by a running container -> owner name.
+    let dkr = dkr()?;
+    let opts = bollard::container::ListContainersOptions::<String> {
+        all: false,
+        ..Default::default()
+    };
+    let containers = dkr
+        .list_containers(Some(opts))
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    let mut held: HashMap<(i64, String), String> = HashMap::new();
+    for c in &containers {
+        let name = c
+            .names
+            .as_ref()
+            .and_then(|n| n.first())
+            .map(|s| s.trim_start_matches('/').to_string())
+            .unwrap_or_default();
+        if let Some(pts) = &c.ports {
+            for prt in pts {
+                if let Some(pub_port) = prt.public_port {
+                    let proto = prt
+                        .typ
+                        .map(|t| format!("{t:?}").to_lowercase())
+                        .unwrap_or_else(|| "tcp".to_string());
+                    held.entry((pub_port as i64, proto))
+                        .or_insert_with(|| name.clone());
+                }
+            }
+        }
+    }
+
+    // (b) container conflict, then (c) host-process conflict.
+    for p in ports {
+        let proto = p.proto.as_deref().unwrap_or("tcp").to_string();
+        let key = (p.host, proto.clone());
+        match held.get(&key) {
+            Some(owner) if !excluded.contains(owner) => {
+                return Err(anyhow!(
+                    "宿主机端口 {}/{} 已被容器「{}」占用，无法映射。",
+                    p.host,
+                    proto.to_uppercase(),
+                    owner
+                ));
+            }
+            // Held by the container we're replacing — reusing it is fine.
+            Some(_) => {}
+            None => {
+                if port_busy(p.host, &proto) {
+                    return Err(anyhow!(
+                        "宿主机端口 {}/{} 已被其他进程占用，无法映射。",
+                        p.host,
+                        proto.to_uppercase()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Validate the request, register a detached op, create the container via the
@@ -3760,6 +3958,9 @@ mod tests {
         let out = sanitize_log(&raw);
         assert_eq!(out, "hi\nokworld\t!");
         assert_eq!(sanitize_log("日志 ok"), "日志 ok");
+        // Literal nginx-style hex escapes in an access log line are stripped.
+        let access = "1.2.3.4 - - \"\\x16\\x03\\x01\\x00\\xEE\" 400 154 \"-\"";
+        assert_eq!(sanitize_log(access), "1.2.3.4 - - \"\" 400 154 \"-\"");
     }
 
     #[test]

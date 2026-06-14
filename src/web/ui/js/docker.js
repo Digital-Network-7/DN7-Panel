@@ -224,17 +224,13 @@ function buildContainerActions(holder, reload) {
   const state = holder.dataset.state, running = state === 'running';
   const managed = holder.dataset.managed === '1';
   const mk = (label, cls, fn) => { const b = el('button', { class: 'btn sm ' + (cls || 'sec') }, label); b.onclick = fn; holder.appendChild(b); };
-  // DN7 Panel-managed service containers (nginx / mysql): lifecycle/edit/delete
-  // belong to their own pages, but read-only observe actions are safe here —
-  // Terminal, Files, and an Advanced menu with Logs + Monitor.
+  // DN7 Panel-managed service containers (nginx / mysql): lifecycle/edit/delete/
+  // logs belong to their own pages. Only safe read-only observe actions show
+  // here — Terminal, Files, Monitor — and each only when it actually applies.
   if (managed) {
     if (running && hasShell) mk(tr('dk.terminal'), '', () => openTerminalModal(tr('dk.ctn_term') + name, () => ticket().then((t) => `/api/container/terminal?ticket=${encodeURIComponent(t)}&container=${encodeURIComponent(id)}`)));
     if (running) mk(tr('dk.files'), 'sec', () => openFileBrowser(tr('dk.ctn_files') + name, id));
-    const advm = el('button', { class: 'btn sm sec' }, tr('dk.advanced') + ' ▾');
-    holder.appendChild(advm);
-    const mitems = [{ label: tr('dk.logs'), fn: () => dkLogs(id, name) }];
-    if (running) mitems.push({ label: tr('dk.monitor'), fn: () => dkMonitor(id, name) });
-    mkHoverPanel(advm, mitems);
+    if (running) mk(tr('dk.monitor'), 'sec', () => dkMonitor(id, name));
     return;
   }
   // Outermost: terminal, files, advanced (logs/networks moved into Advanced /
@@ -318,7 +314,9 @@ function dkImages(info) {
         : `<span class="chip">${tr('ng.no')}</span>`;
       const delBtn = im.managed
         ? `<button class="btn sm danger" data-rmbuiltin="1">${tr('dk.delete')}</button>`
-        : `<button class="btn sm danger" data-rm="${esc(im.name)}">${tr('dk.delete')}</button>`;
+        : im.in_use
+          ? `<button class="btn sm danger" data-rmused="1">${tr('dk.delete')}</button>`
+          : `<button class="btn sm danger" data-rm="${esc(im.name)}">${tr('dk.delete')}</button>`;
       const acts = `<div class="actions"><button class="btn sm sec" data-dl="${esc(im.name)}">${tr('dk.img_download')}</button>${delBtn}</div>`;
       h += `<tr><td class="mono" style="font-size:12px">${esc(im.name)}</td><td>${esc(im.size)}</td><td class="mut">${esc(im.created)}</td><td>${ref}</td>
         <td class="act">${acts}</td></tr>`;
@@ -326,6 +324,7 @@ function dkImages(info) {
     $('dkIList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
     document.querySelectorAll('#dkIList [data-dl]').forEach((b) => b.onclick = () => dkImageDownload(b.dataset.dl));
     document.querySelectorAll('#dkIList [data-rmbuiltin]').forEach((b) => b.onclick = () => toast(tr('dk.img_builtin_block'), 'err'));
+    document.querySelectorAll('#dkIList [data-rmused]').forEach((b) => b.onclick = () => toast(tr('dk.img_in_use_block'), 'err'));
     document.querySelectorAll('#dkIList [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('dk.confirm_rm_img', { name: b.dataset.rm }))) op('docker', { op: 'remove_image', ref: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); dkImages(info); }).catch((e) => toast(e.message, 'err')); });
   }).catch((e) => { $('dkIList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
