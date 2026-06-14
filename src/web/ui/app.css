@@ -543,10 +543,19 @@ table.kvtbl th { text-align:left; color:var(--mut); font-weight:500; }
    (right); the middle scrolls horizontally; every cell clamps to 2 lines. */
 table.ctntbl { border-collapse: separate; border-spacing: 0; table-layout: fixed; width: 100%; min-width: 1420px; }
 table.ctntbl th, table.ctntbl td { background: var(--panel-solid); vertical-align: middle; }
-table.ctntbl th:first-child, table.ctntbl td:first-child { position: sticky; left: 0; z-index: 2; box-shadow: 6px 0 8px -6px rgba(0,0,0,.35); }
-table.ctntbl th.act, table.ctntbl td.act { position: sticky; right: 0; z-index: 2; box-shadow: -6px 0 8px -6px rgba(0,0,0,.35); width: 200px; }
+table.ctntbl th:first-child, table.ctntbl td:first-child { position: sticky; left: 0; z-index: 2; }
+table.ctntbl th.act, table.ctntbl td.act { position: sticky; right: 0; z-index: 2; width: 200px; }
 table.ctntbl td.act .actions { flex-wrap: wrap; }
 table.ctntbl tr:first-child th:first-child, table.ctntbl tr:first-child th.act { z-index: 3; }
+/* Scroll-aware frozen-column shadows: a full-height ::after/::before per sticky
+   cell (so the strip is continuous across rows, with no per-cell banding) shown
+   only when there is scrolled-away content on that side. */
+.tablewrap.scl table.ctntbl th:first-child::after, .tablewrap.scl table.ctntbl td:first-child::after {
+  content: ''; position: absolute; top: 0; bottom: 0; right: 0; width: 16px; transform: translateX(100%);
+  background: linear-gradient(to right, rgba(0,0,0,.30), transparent); pointer-events: none; }
+.tablewrap.scr table.ctntbl th.act::before, .tablewrap.scr table.ctntbl td.act::before {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 16px; transform: translateX(-100%);
+  background: linear-gradient(to left, rgba(0,0,0,.30), transparent); pointer-events: none; }
 /* Clamp any cell content to 1 or 2 lines (ellipsis); full text on hover (title). */
 .clamp1, .clamp2 { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
 .clamp1 { -webkit-line-clamp: 1; }
@@ -573,3 +582,9 @@ table.ctntbl tr:first-child th:first-child, table.ctntbl tr:first-child th.act {
 .mon-arrow { font-weight: 700; }
 .mon-arrow.dn { color: var(--ok); }
 .mon-arrow.up { color: var(--cy); }
+
+/* ---- Custom hover tooltip (clamped table cells: name/image/ports/desc). ---- */
+.dk-tip { position: fixed; z-index: 300; display: none; max-width: 380px;
+  background: var(--panel-solid); color: var(--fg); border: 1px solid var(--line2);
+  border-radius: 9px; padding: 8px 11px; font-size: 12px; line-height: 1.5;
+  box-shadow: 0 10px 30px rgba(0,0,0,.42); white-space: pre-wrap; word-break: break-all; pointer-events: none; }

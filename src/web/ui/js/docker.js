@@ -73,12 +73,12 @@ function dkContainers() {
       const uptime = running && c.uptime ? esc(c.uptime.replace(/^Up\s+/i, '')) : '<span class="mut">-</span>';
       const builtin = c.managed ? ` <span class="chip">${tr('dk.builtin')}</span>` : '';
       h += `<tr>
-        <td title="${esc(c.name)}"><div class="clamp1"><b>${esc(c.name)}</b>${builtin}</div><div class="clamp1 mut mono" style="font-size:11px">${esc(c.id)}</div></td>
-        <td title="${esc(c.image)}"><div class="clamp2 mono" style="font-size:12px">${esc(c.image)}</div></td>
+        <td data-tip="${esc(c.name)}"><div class="clamp1"><b>${esc(c.name)}</b>${builtin}</div><div class="clamp1 mut mono" style="font-size:11px">${esc(c.id)}</div></td>
+        <td data-tip="${esc(c.image)}"><div class="clamp2 mono" style="font-size:12px">${esc(c.image)}</div></td>
         <td><span class="statuswrap" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}">${ctnStateChip(c.state)}</span></td>
         <td><div class="clamp2 mono" style="font-size:12px">${c.ip ? esc(c.ip) : '<span class="mut">-</span>'}</div></td>
-        <td title="${esc(c.ports || '')}"><div class="clamp2 portcell">${portCell}</div></td>
-        <td title="${esc(c.description || '')}"><div class="clamp2 mut" style="font-size:12px">${desc}</div></td>
+        <td data-tip="${esc((c.ports || '').replace(/,\s*/g, '\n'))}"><div class="clamp2 portcell">${portCell}</div></td>
+        <td data-tip="${esc(c.description || '')}"><div class="clamp2 mut" style="font-size:12px">${desc}</div></td>
         <td><div class="clamp2 mut" style="font-size:12px">${uptime}</div></td>
         <td class="act"><div class="actions" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-shell="${c.has_shell ? 1 : 0}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}"></div></td>
       </tr>`;
@@ -86,7 +86,43 @@ function dkContainers() {
     $('dkCList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
     document.querySelectorAll('#dkCList .actions').forEach((a) => buildContainerActions(a, dkContainers));
     document.querySelectorAll('#dkCList .statuswrap').forEach((s) => buildStatusControls(s, dkContainers));
+    wireStickyShadows($('dkCList').querySelector('.tablewrap'));
+    wireCellTips($('dkCList'));
   }).catch((e) => { $('dkCList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+}
+
+// Toggle scroll-aware frozen-column shadows on the container table wrapper.
+function wireStickyShadows(wrap) {
+  if (!wrap) return;
+  const upd = () => {
+    wrap.classList.toggle('scl', wrap.scrollLeft > 1);
+    wrap.classList.toggle('scr', wrap.scrollLeft + wrap.clientWidth < wrap.scrollWidth - 1);
+  };
+  wrap.addEventListener('scroll', upd, { passive: true });
+  upd();
+  setTimeout(upd, 60);
+}
+
+// A styled hover tooltip for clamped cells (full content) — nicer than the
+// native title and reliable over clamped/ellipsised text.
+function dkTipBox() {
+  let t = $('dkTipBox');
+  if (!t) { t = el('div', { id: 'dkTipBox', class: 'dk-tip' }); document.body.appendChild(t); }
+  return t;
+}
+function wireCellTips(scope) {
+  scope.querySelectorAll('[data-tip]').forEach((c) => {
+    c.addEventListener('mouseenter', () => {
+      const txt = c.getAttribute('data-tip'); if (!txt || !txt.trim()) return;
+      const t = dkTipBox(); t.textContent = txt; t.style.display = 'block';
+      const r = c.getBoundingClientRect();
+      const tw = t.offsetWidth, th = t.offsetHeight;
+      let left = Math.min(r.left, window.innerWidth - tw - 8); if (left < 8) left = 8;
+      let top = r.bottom + 6; if (top + th > window.innerHeight - 8) top = Math.max(8, r.top - th - 6);
+      t.style.left = left + 'px'; t.style.top = top + 'px';
+    });
+    c.addEventListener('mouseleave', () => { const t = $('dkTipBox'); if (t) t.style.display = 'none'; });
+  });
 }
 
 // A clean state chip (decoupled from the long status text, which now feeds the
