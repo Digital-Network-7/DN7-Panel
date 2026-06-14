@@ -249,7 +249,7 @@ function ngAddSite(reload, site) {
           </div>
           <div id="nsSrcLocal" class="hidden" style="margin-top:12px">
             <label class="lbl">${tr('ng.local_dir')}</label>
-            <div class="row" style="gap:8px"><input id="nsLocalRoot" class="field" placeholder="/var/www/example" style="flex:1" readonly /><button type="button" class="btn sec sm" id="nsBrowse">${tr('ng.browse')}</button></div>
+            <div class="field-suffix"><input id="nsLocalRoot" class="field" placeholder="/var/www/example" readonly /><button type="button" class="suffix-btn" id="nsBrowse">${tr('ng.browse')}</button></div>
             <p class="formnote" style="margin-top:6px">${tr('ng.local_dir_hint')}</p>
           </div>`;
         setStaticSource = (s) => {

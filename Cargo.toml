@@ -56,9 +56,12 @@ hmac = "0.12"
 sha1 = "0.10"
 # QR code rendering for the 2FA enrollment (otpauth:// URI → SVG). Pure Rust.
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
-# Strong, salted password hashing for nginx Access List HTTP Basic Auth
-# (bcrypt $2b$ — GPU-resistant; verified by the host nginx via crypt()). Pure Rust.
-bcrypt = "0.15"
+# Salted password hashing for nginx Access List HTTP Basic Auth. We emit the
+# Apache apr1 ($apr1$ salted-MD5) format because nginx verifies it internally
+# (ngx_crypt_apr1) — it never calls the host libc crypt(), so it works on every
+# distro. bcrypt $2b$ depends on libxcrypt and returns 500 where the host's
+# crypt() can't parse it. md-5 is pure Rust (RustCrypto), musl-safe.
+md-5 = "0.10"
 # Optional HTTPS for the panel itself (self-signed). Pin the rustls `ring`
 # provider (already in the tree via reqwest) so the musl-static build stays
 # C-toolchain-free (avoids aws-lc-rs).

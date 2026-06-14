@@ -23,13 +23,13 @@ function renderSettings(v) {
         <input id="setPort" class="field" type="number" value="${esc(String(s.port || ''))}" style="max-width:160px" />
         <p class="formnote" style="margin-top:6px">${tr('set.port_restart_d')}</p>
         <label class="lbl" style="margin-top:16px">${tr('set.entry')}</label>
-        <div class="row" style="gap:8px"><input id="setEntry" class="field" placeholder="/ab12cd" value="${esc(s.entry_path === '/' ? '' : (s.entry_path || ''))}" style="flex:1" /><button type="button" class="btn sec sm" id="setEntryGen">${tr('set.generate')}</button></div>
+        <div class="field-suffix"><input id="setEntry" class="field" placeholder="/ab12cd" value="${esc(s.entry_path === '/' ? '' : (s.entry_path || ''))}" /><button type="button" class="suffix-btn" id="setEntryGen">${tr('set.generate')}</button></div>
         <p class="formnote" style="margin-top:6px">${tr('set.entry_hint')}</p>
         <label class="lbl" style="margin-top:16px">${tr('set.timeout')}</label>
         <input id="setTimeout" class="field" type="number" min="1" value="${esc(String(s.session_timeout || 1440))}" style="max-width:160px" />
         <p class="formnote" style="margin-top:6px">${tr('set.timeout_hint')}</p>
         <label class="lbl" style="margin-top:16px">${tr('set.allow_ip')}</label>
-        <div class="row" style="gap:8px"><input id="setAllowIp" class="field" readonly style="flex:1" /><button type="button" class="btn sec sm" id="setAllowIpBtn">${tr('set.allow_ip_set')}</button></div>
+        <div class="field-suffix"><input id="setAllowIp" class="field" readonly /><button type="button" class="suffix-btn" id="setAllowIpBtn">${tr('set.allow_ip_set')}</button></div>
         <p class="formnote" style="margin-top:6px">${tr('set.allow_ip_hint')}</p>
         <label class="switch" style="padding:0;margin-top:16px"><input type="checkbox" id="setHttps" ${s.https ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('set.https')}</b><span>${tr('set.https_hint')}</span></span></label>
       </div>

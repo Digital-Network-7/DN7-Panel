@@ -623,11 +623,112 @@ fn new_access_id() -> String {
 
 // Access-list validators live in the `validate` submodule.
 
-/// Compute a strong, salted password hash for nginx HTTP Basic Auth: bcrypt
-/// (`$2b$…`), which the host nginx verifies via `crypt()`. Salted and
-/// GPU-resistant — far stronger than the legacy unsalted `{SHA}` scheme.
+/// Compute a salted password hash for nginx HTTP Basic Auth in the Apache
+/// `$apr1$` (salted MD5) format. nginx implements this scheme internally
+/// (`ngx_crypt_apr1`) and never delegates to the host's libc `crypt()`, so it
+/// verifies reliably on every distro. (bcrypt `$2b$` depends on libxcrypt and
+/// makes nginx return 500 wherever the host `crypt()` can't parse it — for both
+/// correct and incorrect passwords.)
 fn htpasswd_hash(password: &str) -> String {
-    bcrypt::hash(password, bcrypt::DEFAULT_COST).unwrap_or_default()
+    apr1_with_salt(password, &apr1_salt())
+}
+
+/// The 64-char alphabet used by crypt-style base64 (`to64`).
+const APR1_ITOA64: &[u8] = b"./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+/// A fresh random 8-character apr1 salt.
+fn apr1_salt() -> String {
+    (0..8)
+        .map(|_| APR1_ITOA64[(rand::random::<u8>() & 0x3f) as usize] as char)
+        .collect()
+}
+
+/// Encode the low `n` six-bit groups of `v` (LSB first) with the crypt base64
+/// alphabet — the apr1 output encoding.
+fn apr1_to64(mut v: u32, n: usize) -> String {
+    let mut s = String::with_capacity(n);
+    for _ in 0..n {
+        s.push(APR1_ITOA64[(v & 0x3f) as usize] as char);
+        v >>= 6;
+    }
+    s
+}
+
+/// Apache apr1 (salted MD5, 1000 rounds) password hash for the given salt.
+/// Mirrors `ngx_crypt_apr1` / Apache's `apr_md5_encode`.
+fn apr1_with_salt(password: &str, salt: &str) -> String {
+    use md5::{Digest, Md5};
+    let pw = password.as_bytes();
+    let salt = salt.as_bytes();
+
+    // Primary digest: password + magic + salt.
+    let mut ctx = Md5::new();
+    ctx.update(pw);
+    ctx.update(b"$apr1$");
+    ctx.update(salt);
+
+    // Alternate digest of password+salt+password, folded into the primary one
+    // `password.len()` bytes at a time.
+    let mut alt = Md5::new();
+    alt.update(pw);
+    alt.update(salt);
+    alt.update(pw);
+    let alt = alt.finalize();
+    let mut pl = pw.len() as i64;
+    while pl > 0 {
+        let take = if pl > 16 { 16 } else { pl as usize };
+        ctx.update(&alt[..take]);
+        pl -= 16;
+    }
+
+    // Mix in 0-bytes / first password byte based on the bits of the length.
+    let mut i = pw.len();
+    while i != 0 {
+        if i & 1 != 0 {
+            ctx.update([0u8]);
+        } else {
+            ctx.update(&pw[..1]);
+        }
+        i >>= 1;
+    }
+    let mut digest = ctx.finalize();
+
+    // 1000 stretching rounds.
+    for i in 0..1000 {
+        let mut c = Md5::new();
+        if i & 1 != 0 {
+            c.update(pw);
+        } else {
+            c.update(&digest[..]);
+        }
+        if i % 3 != 0 {
+            c.update(salt);
+        }
+        if i % 7 != 0 {
+            c.update(pw);
+        }
+        if i & 1 != 0 {
+            c.update(&digest[..]);
+        } else {
+            c.update(pw);
+        }
+        digest = c.finalize();
+    }
+
+    // Final base64 encoding with apr1's byte interleaving.
+    let f = &digest;
+    let g =
+        |a: usize, b: usize, c: usize| ((f[a] as u32) << 16) | ((f[b] as u32) << 8) | f[c] as u32;
+    let mut out = String::from("$apr1$");
+    out.push_str(std::str::from_utf8(salt).unwrap_or(""));
+    out.push('$');
+    out.push_str(&apr1_to64(g(0, 6, 12), 4));
+    out.push_str(&apr1_to64(g(1, 7, 13), 4));
+    out.push_str(&apr1_to64(g(2, 8, 14), 4));
+    out.push_str(&apr1_to64(g(3, 9, 15), 4));
+    out.push_str(&apr1_to64(g(4, 10, 5), 4));
+    out.push_str(&apr1_to64(f[11] as u32, 2));
+    out
 }
 
 /// Write (or remove) an access list's htpasswd file from its stored hashes.
@@ -650,7 +751,7 @@ fn write_htpasswd(list: &AccessList) -> Result<()> {
 /// Tighten an htpasswd file to the minimum the nginx worker still needs:
 /// owned by nginx's run-user at 0640 when that user can be determined, else
 /// fall back to 0644 (world-readable) so auth never silently breaks. The hashes
-/// are bcrypt, so even the 0644 fallback isn't trivially crackable.
+/// are salted apr1, so even the 0644 fallback isn't trivially crackable.
 fn harden_htpasswd_perms(path: &std::path::Path) {
     #[cfg(unix)]
     {
@@ -3615,11 +3716,18 @@ mod tests {
     }
 
     #[test]
-    fn htpasswd_is_bcrypt_and_verifies() {
+    fn htpasswd_is_apr1_and_matches_known_vector() {
+        // Format + salt round-trip: re-hashing with the embedded salt is stable.
         let h = htpasswd_hash("s3cret");
-        assert!(h.starts_with("$2"), "expected a bcrypt hash, got {h}");
-        assert!(bcrypt::verify("s3cret", &h).unwrap());
-        assert!(!bcrypt::verify("wrong", &h).unwrap());
+        assert!(h.starts_with("$apr1$"), "expected an apr1 hash, got {h}");
+        let salt = h.trim_start_matches("$apr1$").split('$').next().unwrap();
+        assert_eq!(apr1_with_salt("s3cret", salt), h);
+        assert_ne!(apr1_with_salt("wrong", salt), h);
+        // Known apr1 vector (matches Apache htpasswd / openssl passwd -apr1).
+        assert_eq!(
+            apr1_with_salt("myPassword", "r31....."),
+            "$apr1$r31.....$HqJZimcKQFAMYayBlzkrA/"
+        );
     }
 
     #[test]

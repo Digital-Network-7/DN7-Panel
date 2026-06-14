@@ -647,7 +647,7 @@ function dkCreateModal(info, networks, opts) {
     </div>
     <div id="ccBasic">
       <div class="formgrid">
-        <div class="full"><label class="lbl">${tr('dk.image')}</label><select id="ccImg" class="field"><option value="">${tr('dk.image_ph')}</option></select></div>
+        <div class="full"><label class="lbl">${tr('dk.image')}</label><select id="ccImg" class="field" data-selx-search><option value="">${tr('dk.image_ph')}</option></select></div>
         <div><label class="lbl">${tr('dk.ctn_name')}</label><input id="ccName" class="field" placeholder="my-app" /></div>
         <div><label class="lbl">${tr('dk.restart_policy')}</label><select id="ccRestart" class="field"><option value="unless-stopped">unless-stopped</option><option value="always">always</option><option value="no">no</option></select></div>
         <div class="full"><label class="lbl">${tr('dk.start_cmd')}</label><input id="ccCmd" class="field" placeholder="${tr('dk.cmd_ph')}" /></div>
@@ -814,6 +814,11 @@ function dkCreateModal(info, networks, opts) {
         if (cfg.image) sel.value = cfg.image;
       };
       applyImg(); setTimeout(applyImg, 80);
+      // Editing can't change the image (recreating with a different image is
+      // what "Upgrade" is for) — lock the select so it's clearly read-only.
+      const img = $('ccImg');
+      img.disabled = true;
+      img.removeAttribute('data-selx-search');
       $('ccName').value = cfg.name || '';
       $('ccRestart').value = cfg.restart || 'unless-stopped';
       $('ccCmd').value = cfg.command || '';
@@ -949,8 +954,7 @@ function dkUpgradeForm(id, name) {
     modal(tr('dk.upgrade') + ' · ' + name, `
       <p class="mut" style="margin:0 0 12px">${tr('dk.upgrade_cur')}: <span class="mono">${esc(cfg.image || '')}</span></p>
       <label class="lbl">${tr('dk.upgrade_target')}</label>
-      <select id="ugImg" class="field" style="margin-bottom:8px"></select>
-      <input id="ugImgText" class="field mono" placeholder="nginx:latest" style="margin-bottom:6px" />
+      <select id="ugImg" class="field" data-selx-search style="margin-bottom:6px"></select>
       <p class="formnote">${tr('dk.upgrade_hint')}</p>
       <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="ugGo">${tr('dk.upgrade')}</button></div>
       <div class="hidden" id="ugJob" style="margin-top:12px"></div>`, (close) => {
@@ -958,9 +962,8 @@ function dkUpgradeForm(id, name) {
         const names = (im.images || []).map((x) => x.name).filter((n) => n && n !== '<none>:<none>');
         $('ugImg').innerHTML = `<option value="">${tr('dk.upgrade_pick')}</option>` + names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
       }).catch(() => {});
-      $('ugImg').onchange = () => { if ($('ugImg').value) $('ugImgText').value = $('ugImg').value; $('ugImgText').dispatchEvent(new Event('input', { bubbles: true })); };
       $('ugGo').onclick = () => {
-        const target = $('ugImgText').value.trim() || $('ugImg').value.trim();
+        const target = $('ugImg').value.trim();
         if (!target) return toast(tr('dk.need_image'), 'err');
         confirmDanger(tr('dk.upgrade_confirm')).then((ok) => {
           if (!ok) return;
