@@ -44,18 +44,7 @@ pub(crate) async fn write_site_conf(
     let extra = render_extra_conf(&site.extra_conf);
     let tuning = render_tuning_block();
     if site.ssl {
-        let (crt, key) = if site.cert_name.is_empty() {
-            (
-                format!("{}/{}.crt", lo.cert_ref, site.id),
-                format!("{}/{}.key", lo.cert_ref, site.id),
-            )
-        } else {
-            // Referenced standalone named cert.
-            (
-                format!("{}/cert-{}.crt", lo.cert_ref, site.cert_name),
-                format!("{}/cert-{}.key", lo.cert_ref, site.cert_name),
-            )
-        };
+        let (crt, key) = cert_paths(lo, site);
         // HTTP block: redirect to HTTPS (Force SSL) or serve the site over HTTP
         // too. The ACME challenge is always answered first.
         if site.force_ssl {
@@ -74,24 +63,7 @@ pub(crate) async fn write_site_conf(
         } else {
             "listen 443 ssl;"
         };
-        let mut sec = String::new();
-        if site.trust_proxy {
-            // Honour a trusted front proxy / CDN's real-client + protocol headers.
-            sec.push_str(
-                "    set_real_ip_from 0.0.0.0/0;\n    set_real_ip_from ::/0;\n\
-                 \x20   real_ip_header X-Forwarded-For;\n    real_ip_recursive on;\n",
-            );
-        }
-        if site.hsts {
-            let sub = if site.hsts_sub {
-                "; includeSubDomains"
-            } else {
-                ""
-            };
-            sec.push_str(&format!(
-                "    add_header Strict-Transport-Security \"max-age=63072000{sub}\" always;\n"
-            ));
-        }
+        let sec = render_ssl_security(site);
         conf.push_str(&format!(
             "server {{\n    {listen443}\n    server_name {server_name};\n\
              \n    ssl_certificate {crt};\n    ssl_certificate_key {key};\n{sec}\
@@ -106,6 +78,45 @@ pub(crate) async fn write_site_conf(
     std::fs::create_dir_all(&lo.confd)?;
     std::fs::write(conf_path(lo, &site.id), conf)?;
     Ok(())
+}
+
+/// The on-disk cert + key paths nginx reads for a site: the per-site pair, or a
+/// referenced standalone named cert.
+fn cert_paths(lo: &Layout, site: &Site) -> (String, String) {
+    if site.cert_name.is_empty() {
+        (
+            format!("{}/{}.crt", lo.cert_ref, site.id),
+            format!("{}/{}.key", lo.cert_ref, site.id),
+        )
+    } else {
+        (
+            format!("{}/cert-{}.crt", lo.cert_ref, site.cert_name),
+            format!("{}/cert-{}.key", lo.cert_ref, site.cert_name),
+        )
+    }
+}
+
+/// HTTPS server security directives: trusted-proxy real-IP headers and HSTS.
+fn render_ssl_security(site: &Site) -> String {
+    let mut sec = String::new();
+    if site.trust_proxy {
+        // Honour a trusted front proxy / CDN's real-client + protocol headers.
+        sec.push_str(
+            "    set_real_ip_from 0.0.0.0/0;\n    set_real_ip_from ::/0;\n\
+             \x20   real_ip_header X-Forwarded-For;\n    real_ip_recursive on;\n",
+        );
+    }
+    if site.hsts {
+        let sub = if site.hsts_sub {
+            "; includeSubDomains"
+        } else {
+            ""
+        };
+        sec.push_str(&format!(
+            "    add_header Strict-Transport-Security \"max-age=63072000{sub}\" always;\n"
+        ));
+    }
+    sec
 }
 
 /// Build the server-level access-control directives for an access list:
@@ -164,7 +175,6 @@ pub(crate) async fn render_location(lo: &Layout, site: &Site, strip_auth: bool) 
         out.push_str(BLOCK_EXPLOITS);
     }
 
-    let is_proxy = matches!(site.kind.as_str(), "proxy_host" | "proxy_container");
     // When trusting an upstream proxy, forward its declared protocol instead of
     // our own connection scheme.
     let fwd = if site.trust_proxy {
@@ -174,50 +184,71 @@ pub(crate) async fn render_location(lo: &Layout, site: &Site, strip_auth: bool) 
     };
     match site.kind.as_str() {
         "proxy_host" | "proxy_container" => {
-            let upstream = resolve_upstream(lo, site).await?;
-            out.push_str(&proxy_location(
-                "/",
-                &site.scheme,
-                &upstream,
-                site.websockets,
-                false,
-                fwd,
-                strip_auth,
-            ));
-            // Optional: long-cache static assets (still proxied upstream).
-            if site.cache {
-                out.push_str(&proxy_location(
-                    &format!("~* \\.({ASSET_EXT})$"),
-                    &site.scheme,
-                    &upstream,
-                    site.websockets,
-                    true,
-                    fwd,
-                    strip_auth,
-                ));
-            }
+            out.push_str(&render_proxy_locations(lo, site, fwd, strip_auth).await?);
         }
-        "static" => {
-            let root = if site.local_root.is_empty() {
-                format!("{}/{}", lo.www_ref, site.root)
-            } else {
-                site.local_root.clone()
-            };
-            out.push_str(&format!(
-                "    root {root};\n    index index.html index.htm;\n\n    location / {{\n        try_files $uri $uri/ =404;\n    }}\n"
-            ));
-            if site.cache {
-                out.push_str(&format!(
-                    "    location ~* \\.({ASSET_EXT})$ {{\n        expires 7d;\n        add_header Cache-Control \"public, max-age=604800\";\n        try_files $uri =404;\n    }}\n"
-                ));
-            }
-        }
+        "static" => out.push_str(&render_static_locations(lo, site)),
         _ => {}
     }
+    out.push_str(&render_custom_locations(site, fwd, strip_auth).await?);
+    Ok(out)
+}
 
-    // Custom path rules (NPM-style custom locations): forward a prefix upstream.
-    // Skip a rule whose path is "/" when the main block already serves "/" as a
-    // proxy (it would duplicate the location and fail `nginx -t`).
+/// Proxy-site location blocks: the main `/` upstream, plus an optional
+/// long-cache block for static assets (still proxied upstream).
+async fn render_proxy_locations(
+    lo: &Layout,
+    site: &Site,
+    fwd: &str,
+    strip_auth: bool,
+) -> Result<String> {
+    let upstream = resolve_upstream(lo, site).await?;
+    let mut out = proxy_location(
+        "/",
+        &site.scheme,
+        &upstream,
+        site.websockets,
+        false,
+        fwd,
+        strip_auth,
+    );
+    if site.cache {
+        out.push_str(&proxy_location(
+            &format!("~* \\.({ASSET_EXT})$"),
+            &site.scheme,
+            &upstream,
+            site.websockets,
+            true,
+            fwd,
+            strip_auth,
+        ));
+    }
+    Ok(out)
+}
+
+/// Static-site location blocks: document root + try_files, plus an optional
+/// asset-cache block.
+fn render_static_locations(lo: &Layout, site: &Site) -> String {
+    let root = if site.local_root.is_empty() {
+        format!("{}/{}", lo.www_ref, site.root)
+    } else {
+        site.local_root.clone()
+    };
+    let mut out = format!(
+        "    root {root};\n    index index.html index.htm;\n\n    location / {{\n        try_files $uri $uri/ =404;\n    }}\n"
+    );
+    if site.cache {
+        out.push_str(&format!(
+            "    location ~* \\.({ASSET_EXT})$ {{\n        expires 7d;\n        add_header Cache-Control \"public, max-age=604800\";\n        try_files $uri =404;\n    }}\n"
+        ));
+    }
+    out
+}
+
+/// NPM-style custom path rules: forward a prefix upstream. Skips a "/" rule when
+/// the main block already proxies "/" (a duplicate location fails `nginx -t`).
+async fn render_custom_locations(site: &Site, fwd: &str, strip_auth: bool) -> Result<String> {
+    let is_proxy = matches!(site.kind.as_str(), "proxy_host" | "proxy_container");
+    let mut out = String::new();
     for l in &site.locations {
         if l.path == "/" && is_proxy {
             continue;
@@ -237,7 +268,6 @@ pub(crate) async fn render_location(lo: &Layout, site: &Site, strip_auth: bool) 
             strip_auth,
         ));
     }
-
     Ok(out)
 }
 
