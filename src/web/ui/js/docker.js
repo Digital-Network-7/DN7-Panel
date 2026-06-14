@@ -352,7 +352,7 @@ function dkImages(info) {
       const tagHtml = tags.map((t) => `<span class="imgtag">${esc(t)}</span>`).join('');
       const acts = `<div class="actions"><button class="btn sm sec" data-dl="${esc(im.name)}">${tr('dk.img_download')}</button><button class="btn sm sec" data-tag="${esc(im.name)}" data-tags="${esc(JSON.stringify(tags))}">${tr('dk.tag_btn')}</button>${delBtn}</div>`;
       h += `<tr><td class="mono mut" style="font-size:11px" data-tip="${esc(im.id)}">${esc(im.id)}</td>`
-        + `<td data-tip="${esc(tags.join('\n'))}"><div class="clamp2">${tagHtml}</div></td>`
+        + `<td data-tip="${esc(tags.join('\n'))}"><div class="clamp1">${tagHtml}</div></td>`
         + `<td>${esc(im.size)}</td><td class="mut">${esc(fmtDateTime(im.created_ts))}</td><td>${ref}</td>`
         + `<td class="act">${acts}</td></tr>`;
     });
@@ -537,16 +537,18 @@ function dkVolumes() {
       + `<tr><th>${tr('dk.vol_name')}</th><th>${tr('dk.vol_mount')}</th><th>${tr('dk.col_created')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
     list.forEach((v) => {
       const fileBtn = `<button class="btn sm sec" data-files="${esc(v.name)}" data-mp="${esc(v.mountpoint || '')}">${tr('dk.files')}</button>`;
+      const builtin = v.managed ? ` <span class="chip">${tr('dk.builtin')}</span>` : '';
       const delBtn = v.managed
-        ? `<span class="chip">${tr('dk.builtin')}</span>`
+        ? `<button class="btn sm danger" data-rmbuiltin="1">${tr('dk.delete')}</button>`
         : `<button class="btn sm danger" data-rm="${esc(v.name)}">${tr('dk.delete')}</button>`;
-      h += `<tr><td data-tip="${esc(v.name)}"><div class="clamp2"><b>${esc(v.name)}</b></div></td>`
+      h += `<tr><td data-tip="${esc(v.name)}"><div class="clamp2"><b>${esc(v.name)}</b>${builtin}</div></td>`
         + `<td data-tip="${esc(v.mountpoint || '')}"><div class="clamp2 mono mut" style="font-size:11px">${esc(v.mountpoint || '-')}</div></td>`
         + `<td class="mut">${esc(fmtDateTime(v.created))}</td>`
         + `<td class="act"><div class="actions">${fileBtn}${delBtn}</div></td></tr>`;
     });
     $('dkVList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
     document.querySelectorAll('#dkVList [data-files]').forEach((b) => b.onclick = () => { const mp = b.dataset.mp; if (!mp) return toast(tr('dk.vol_no_mount'), 'err'); openFileBrowser(tr('dk.vol_files') + b.dataset.files, null, mp, mp); });
+    document.querySelectorAll('#dkVList [data-rmbuiltin]').forEach((b) => b.onclick = () => toast(tr('dk.vol_builtin_block'), 'err'));
     document.querySelectorAll('#dkVList [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('dk.confirm_rm_vol', { name: b.dataset.rm }))) op('docker', { op: 'remove_volume', ref: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); dkVolumes(); }).catch((e) => toast(e.message, 'err')); });
     wireStickyShadows($('dkVList').querySelector('.tablewrap'));
     wireCellTips($('dkVList'));
@@ -1063,11 +1065,77 @@ function dkNetworks() {
     bindDirty('nnGo');
   });
   op('docker', { op: 'list_networks' }).then((d) => {
-    let h = `<table class="optable"><tr><th>${tr('dk.col_name')}</th><th>${tr('dk.col_driver')}</th><th>${tr('dk.col_scope')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
-    (d.networks || []).forEach((n) => { h += `<tr><td>${esc(n.name)}</td><td class="mut">${esc(n.driver)}</td><td class="mut">${esc(n.scope)}</td><td class="act">${['bridge', 'host', 'none'].includes(n.name) ? `<span class="mut" style="font-size:12px">${tr('dk.builtin')}</span>` : `<button class="btn sm danger" data-rm="${esc(n.name)}">${tr('dk.delete')}</button>`}</td></tr>`; });
+    let h = `<table class="optable nettbl"><tr><th>${tr('dk.col_name')}</th><th>${tr('dk.col_driver')}</th><th>${tr('dk.col_scope')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
+    (d.networks || []).forEach((n) => {
+      const predefined = ['bridge', 'host', 'none'].includes(n.name);
+      const builtin = predefined ? ` <span class="chip">${tr('dk.builtin')}</span>` : '';
+      const rnBtn = predefined
+        ? `<button class="btn sm sec" data-rnbuiltin="1">${tr('dk.rename')}</button>`
+        : `<button class="btn sm sec" data-rn="${esc(n.name)}">${tr('dk.rename')}</button>`;
+      const ipBtn = `<button class="btn sm sec" data-ip="${esc(n.name)}">${tr('dk.net_ippool')}</button>`;
+      const rmBtn = predefined
+        ? `<button class="btn sm danger" data-rmbuiltin="1">${tr('dk.delete')}</button>`
+        : `<button class="btn sm danger" data-rm="${esc(n.name)}">${tr('dk.delete')}</button>`;
+      h += `<tr><td data-tip="${esc(n.name)}"><div class="clamp1"><b>${esc(n.name)}</b>${builtin}</div></td><td class="mut">${esc(n.driver)}</td><td class="mut">${esc(n.scope)}</td><td class="act"><div class="actions">${rnBtn}${ipBtn}${rmBtn}</div></td></tr>`;
+    });
     $('dkNList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
+    document.querySelectorAll('#dkNList [data-rnbuiltin]').forEach((b) => b.onclick = () => toast(tr('dk.net_builtin_block'), 'err'));
+    document.querySelectorAll('#dkNList [data-rmbuiltin]').forEach((b) => b.onclick = () => toast(tr('dk.net_builtin_block'), 'err'));
+    document.querySelectorAll('#dkNList [data-rn]').forEach((b) => b.onclick = () => dkNetRename(b.dataset.rn));
+    document.querySelectorAll('#dkNList [data-ip]').forEach((b) => b.onclick = () => dkNetIpPool(b.dataset.ip));
     document.querySelectorAll('#dkNList [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('dk.confirm_rm_net', { name: b.dataset.rm }))) op('docker', { op: 'remove_network', ref: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); dkNetworks(); }).catch((e) => toast(e.message, 'err')); });
+    wireCellTips($('dkNList'));
   }).catch((e) => { $('dkNList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+}
+
+// Rename a network (recreate under the new name; containers are reconnected).
+function dkNetRename(name) {
+  modal(tr('dk.net_rename_title') + name, `
+    <label class="lbl">${tr('dk.net_new_name')}</label>
+    <input id="rnName" class="field" value="${esc(name)}" />
+    <p class="formnote" style="color:var(--warn)">${tr('dk.net_rename_warn')}</p>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="rnGo" disabled>${tr('dk.rename')}</button></div>`, (close) => {
+    bindDirty('rnGo', 'rnName');
+    $('rnGo').onclick = async () => {
+      const nn = $('rnName').value.trim();
+      if (!nn || nn === name) return;
+      if (!await confirmDanger(tr('dk.net_rename_confirm'))) return;
+      op('docker', { op: 'rename_network', ref: name, new_name: nn }).then(() => { toast(tr('dk.net_renamed'), 'ok'); close(); dkNetworks(); }).catch((e) => toast(e.message, 'err'));
+    };
+  });
+}
+
+// IP pool: view (and on user-defined networks, edit) the IPv4 of each attached
+// container, or disconnect a container from the network.
+function dkNetIpPool(name) {
+  modal(tr('dk.net_ippool_title') + name, `<div id="ipBody">${loading()}</div>`, (close) => {
+    const load = () => {
+      op('docker', { op: 'network_ips', ref: name }).then((d) => {
+        const cons = d.containers || [];
+        const head = `<div class="row" style="gap:8px;margin-bottom:12px;flex-wrap:wrap">`
+          + `<span class="chip">${tr('dk.net_subnet')}: ${esc(d.subnet || '-')}</span>`
+          + `<span class="chip">${tr('dk.net_gateway')}: ${esc(d.gateway || '-')}</span></div>`;
+        if (!cons.length) { $('ipBody').innerHTML = head + `<div class="empty">${tr('dk.net_ip_none')}</div>`; return; }
+        let h = head + `<table class="optable"><tr><th>${tr('dk.col_name')}</th><th>IPv4</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
+        cons.forEach((c) => {
+          const ipCell = d.editable
+            ? `<input class="field mono" style="max-width:170px;padding:6px 9px" data-ipin="${esc(c.full_id)}" value="${esc(c.ipv4)}" />`
+            : `<span class="mono">${esc(c.ipv4 || '-')}</span>`;
+          const acts = d.editable
+            ? `<div class="actions"><button class="btn sm sec" data-save="${esc(c.full_id)}">${tr('ng.save')}</button><button class="btn sm danger" data-dc="${esc(c.full_id)}">${tr('dk.disconnect')}</button></div>`
+            : `<div class="actions"><button class="btn sm danger" data-dc="${esc(c.full_id)}">${tr('dk.disconnect')}</button></div>`;
+          h += `<tr><td><b>${esc(c.name)}</b></td><td>${ipCell}</td><td class="act">${acts}</td></tr>`;
+        });
+        $('ipBody').innerHTML = h + '</table>';
+        document.querySelectorAll('#ipBody [data-save]').forEach((b) => b.onclick = () => {
+          const ip = (document.querySelector(`#ipBody [data-ipin="${b.dataset.save}"]`) || {}).value;
+          op('docker', { op: 'set_network_ip', ref: b.dataset.save, network: name, ipv4: (ip || '').trim() }).then(() => { toast(tr('common.saved'), 'ok'); load(); }).catch((e) => toast(e.message, 'err'));
+        });
+        document.querySelectorAll('#ipBody [data-dc]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('dk.net_confirm_dc'))) op('docker', { op: 'disconnect_network', ref: b.dataset.dc, network: name }).then(() => { toast(tr('dk.op_ok'), 'ok'); load(); }).catch((e) => toast(e.message, 'err')); });
+      }).catch((e) => { $('ipBody').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+    };
+    load();
+  });
 }
 
 // ---- Settings tab (mirror/registry lists + daemon.json knobs) ----

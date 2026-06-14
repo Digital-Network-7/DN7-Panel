@@ -600,6 +600,11 @@ table.imgtbl { min-width: 1080px; }
 table.imgtbl th.act, table.imgtbl td.act { width: 210px; }
 table.voltbl { min-width: 980px; }
 table.voltbl th.act, table.voltbl td.act { width: 160px; }
+/* Fixed row heights so lists read as tidy uniform rows. */
+table.ctntbl td, table.voltbl td { height: 65px; }
+table.imgtbl td { height: 55px; }
+table.nettbl td { height: 55px; }
+table.nettbl td .clamp1 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; word-break: break-all; }
 /* Scroll-aware frozen-column shadows: a full-height ::after/::before per sticky
    cell (so the strip is continuous across rows, with no per-cell banding) shown
    only when there is scrolled-away content on that side. */
