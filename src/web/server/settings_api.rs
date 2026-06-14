@@ -65,89 +65,18 @@ pub(crate) async fn put_settings(
     if let Err(r) = require_super(&state, &headers) {
         return r;
     }
-    let mut needs_restart = false;
-    let saved = {
+    let (saved, needs_restart, new_ttl) = {
         let mut s = state.settings.lock().unwrap();
-        let was_default = s.pw_default;
-        let cur_hash = s.pw_hash.clone();
-        if let Some(p) = req.port {
-            if !(1..=65535).contains(&p) {
-                return api_err(StatusCode::BAD_REQUEST, "settings.port_range");
-            }
-            if p != s.port {
-                s.port = p;
-                needs_restart = true;
-            }
+        match apply_settings_update(&mut s, req) {
+            Ok((nr, ttl)) => (s.clone(), nr, ttl),
+            Err(resp) => return resp,
         }
-        // Password change: accept a client-computed salt + hash (plaintext never
-        // crosses the wire). Both must be present and well-formed hex.
-        if req.pw_salt.is_some() || req.pw_hash.is_some() {
-            let salt = req.pw_salt.unwrap_or_default();
-            let hash = req.pw_hash.unwrap_or_default();
-            let salt_ok = salt.len() == 32 && salt.bytes().all(|b| b.is_ascii_hexdigit());
-            let hash_ok = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
-            if !salt_ok || !hash_ok {
-                return api_err(StatusCode::BAD_REQUEST, "settings.pw_format");
-            }
-            // While still on the auto-generated default, require proof that the
-            // new password actually differs from it: pw_check = sha256(current
-            // salt ":" new password) must NOT equal the stored default hash.
-            if was_default {
-                let chk = req.pw_check.clone().unwrap_or_default().to_lowercase();
-                if chk.is_empty() || chk == cur_hash {
-                    return api_err(StatusCode::BAD_REQUEST, "settings.pw_is_default");
-                }
-            }
-            s.set_password_hashed(&salt, &hash.to_lowercase());
-        }
-        if let Some(un) = req.username {
-            let un = un.trim();
-            if un.len() < 2
-                || un.len() > 32
-                || !un
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            {
-                return api_err(StatusCode::BAD_REQUEST, "settings.username_format");
-            }
-            // "admin" is the default account name and is not allowed as a chosen
-            // account (the operator must pick their own).
-            if un.eq_ignore_ascii_case("admin") {
-                return api_err(StatusCode::BAD_REQUEST, "settings.username_reserved");
-            }
-            s.username = un.to_string();
-        }
-        // Safe-entry path — applied live (the gate reads it per request).
-        if let Some(ep) = &req.entry_path {
-            match settings::normalize_entry(ep) {
-                Some(norm) => s.entry_path = norm,
-                None => return api_err(StatusCode::BAD_REQUEST, "settings.bad_entry"),
-            }
-        }
-        // HTTPS toggle — needs a restart to rebind the listener.
-        if let Some(h) = req.https {
-            if h != s.https {
-                s.https = h;
-                needs_restart = true;
-            }
-        }
-        // Session inactivity timeout (minutes) — applied live to the auth layer.
-        if let Some(t) = req.session_timeout {
-            if !(1..=43200).contains(&t) {
-                return api_err(StatusCode::BAD_REQUEST, "settings.timeout_range");
-            }
-            s.session_timeout = t;
-            state.auth.set_ttl_secs((t.max(1) as u64) * 60);
-        }
-        // Authorized IP allow list — validated; empty = allow any address.
-        if let Some(ips) = &req.allow_ips {
-            match settings::normalize_allow_ips(ips) {
-                Some(list) => s.allow_ips = list,
-                None => return api_err(StatusCode::BAD_REQUEST, "settings.bad_allow_ip"),
-            }
-        }
-        s.clone()
     };
+    // Session TTL is applied live to the auth layer (kept out of the settings
+    // lock). Only when the request actually carried a new timeout.
+    if let Some(secs) = new_ttl {
+        state.auth.set_ttl_secs(secs);
+    }
     if let Err(e) = settings::save(&saved) {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
@@ -159,4 +88,108 @@ pub(crate) async fn put_settings(
         "",
     );
     Json(json!({ "ok": true, "needs_restart": needs_restart })).into_response()
+}
+
+/// Apply a validated settings update onto `s` in place. Returns
+/// `(needs_restart, new_session_ttl_secs)` — the TTL is `Some` only when the
+/// request changed the session timeout (the caller applies it to the auth
+/// layer). On any invalid field, returns the error `Response` to send.
+// The `Err` is an axum `Response` (intentionally large); boxing it would only
+// add noise to every early-return site in this internal helper.
+#[allow(clippy::result_large_err)]
+fn apply_settings_update(
+    s: &mut WebSettings,
+    req: SettingsReq,
+) -> Result<(bool, Option<u64>), Response> {
+    let mut needs_restart = false;
+    let mut new_ttl = None;
+    if let Some(p) = req.port {
+        if !(1..=65535).contains(&p) {
+            return Err(api_err(StatusCode::BAD_REQUEST, "settings.port_range"));
+        }
+        if p != s.port {
+            s.port = p;
+            needs_restart = true;
+        }
+    }
+    apply_password_change(s, &req)?;
+    if let Some(un) = req.username {
+        let un = un.trim();
+        if un.len() < 2
+            || un.len() > 32
+            || !un
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(api_err(StatusCode::BAD_REQUEST, "settings.username_format"));
+        }
+        // "admin" is the default account name and is not allowed as a chosen
+        // account (the operator must pick their own).
+        if un.eq_ignore_ascii_case("admin") {
+            return Err(api_err(
+                StatusCode::BAD_REQUEST,
+                "settings.username_reserved",
+            ));
+        }
+        s.username = un.to_string();
+    }
+    // Safe-entry path — applied live (the gate reads it per request).
+    if let Some(ep) = &req.entry_path {
+        match settings::normalize_entry(ep) {
+            Some(norm) => s.entry_path = norm,
+            None => return Err(api_err(StatusCode::BAD_REQUEST, "settings.bad_entry")),
+        }
+    }
+    // HTTPS toggle — needs a restart to rebind the listener.
+    if let Some(h) = req.https {
+        if h != s.https {
+            s.https = h;
+            needs_restart = true;
+        }
+    }
+    // Session inactivity timeout (minutes) — applied live to the auth layer.
+    if let Some(t) = req.session_timeout {
+        if !(1..=43200).contains(&t) {
+            return Err(api_err(StatusCode::BAD_REQUEST, "settings.timeout_range"));
+        }
+        s.session_timeout = t;
+        new_ttl = Some((t.max(1) as u64) * 60);
+    }
+    // Authorized IP allow list — validated; empty = allow any address.
+    if let Some(ips) = &req.allow_ips {
+        match settings::normalize_allow_ips(ips) {
+            Some(list) => s.allow_ips = list,
+            None => return Err(api_err(StatusCode::BAD_REQUEST, "settings.bad_allow_ip")),
+        }
+    }
+    Ok((needs_restart, new_ttl))
+}
+
+/// Apply a password change: a client-computed salt + hash (plaintext never
+/// crosses the wire). While still on the auto-generated default, require proof
+/// the new password actually differs from it. No-op when neither field is set.
+#[allow(clippy::result_large_err)]
+fn apply_password_change(s: &mut WebSettings, req: &SettingsReq) -> Result<(), Response> {
+    if req.pw_salt.is_none() && req.pw_hash.is_none() {
+        return Ok(());
+    }
+    let was_default = s.pw_default;
+    let cur_hash = s.pw_hash.clone();
+    let salt = req.pw_salt.clone().unwrap_or_default();
+    let hash = req.pw_hash.clone().unwrap_or_default();
+    let salt_ok = salt.len() == 32 && salt.bytes().all(|b| b.is_ascii_hexdigit());
+    let hash_ok = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
+    if !salt_ok || !hash_ok {
+        return Err(api_err(StatusCode::BAD_REQUEST, "settings.pw_format"));
+    }
+    // pw_check = sha256(current salt ":" new password) must NOT equal the stored
+    // default hash, proving the new password differs from the default.
+    if was_default {
+        let chk = req.pw_check.clone().unwrap_or_default().to_lowercase();
+        if chk.is_empty() || chk == cur_hash {
+            return Err(api_err(StatusCode::BAD_REQUEST, "settings.pw_is_default"));
+        }
+    }
+    s.set_password_hashed(&salt, &hash.to_lowercase());
+    Ok(())
 }
