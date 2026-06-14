@@ -206,22 +206,23 @@ function dkContainerNetworks(id, name) {
 
 function dkImages(info) {
   const body = $('dkBody');
-  body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_images')}</h3><span class="sp"></span><button class="btn sm" id="dkPull">${tr('dk.pull_image')}</button><button class="btn sec sm" id="dkRefI">${tr('dk.refresh')}</button></div><div id="dkIList">` + loading() + '</div>';
+  body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_images')}</h3><span class="sp"></span><button class="btn sm" id="dkPull">${tr('dk.pull_image')}</button><button class="btn sm" id="dkImport">${tr('dk.img_import')}</button><button class="btn sec sm" id="dkRefI">${tr('dk.refresh')}</button></div><div id="dkIList">` + loading() + '</div>';
   $('dkRefI').onclick = () => dkImages(info);
   $('dkPull').onclick = dkPullForm;
+  $('dkImport').onclick = () => dkImportForm(info);
   op('docker', { op: 'list_images' }).then((d) => {
     const list = d.images || [];
     if (!list.length) { $('dkIList').innerHTML = `<div class="empty">${tr('dk.no_images')}</div>`; return; }
-    let h = `<table class="optable"><tr><th>${tr('dk.col_image')}</th><th>${tr('dk.col_size')}</th><th>${tr('dk.col_created')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
+    let h = `<table class="optable"><tr><th>${tr('dk.col_image')}</th><th>${tr('dk.col_size')}</th><th>${tr('dk.col_created')}</th><th>${tr('dk.img_referenced')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
     list.forEach((im) => {
-      const status = im.in_use
-        ? `<span class="chip on" style="margin-left:8px">${tr('dk.img_inuse')}</span>`
-        : `<span class="chip" style="margin-left:8px">${tr('dk.img_idle')}</span>`;
+      const ref = im.in_use
+        ? `<span class="chip on"><span class="dot-s on"></span>${tr('ng.yes')}</span>`
+        : `<span class="chip">${tr('ng.no')}</span>`;
       const delBtn = im.managed
         ? `<button class="btn sm danger" data-rmbuiltin="1">${tr('dk.delete')}</button>`
         : `<button class="btn sm danger" data-rm="${esc(im.name)}">${tr('dk.delete')}</button>`;
       const acts = `<div class="actions"><button class="btn sm sec" data-dl="${esc(im.name)}">${tr('dk.img_download')}</button>${delBtn}</div>`;
-      h += `<tr><td class="mono" style="font-size:12px">${esc(im.name)}${status}</td><td>${esc(im.size)}</td><td class="mut">${esc(im.created)}</td>
+      h += `<tr><td class="mono" style="font-size:12px">${esc(im.name)}</td><td>${esc(im.size)}</td><td class="mut">${esc(im.created)}</td><td>${ref}</td>
         <td class="act">${acts}</td></tr>`;
     });
     $('dkIList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
@@ -237,6 +238,30 @@ function dkImageDownload(name) {
     const qs = `ticket=${encodeURIComponent(t)}&kind=image&ref=${encodeURIComponent(name)}`;
     const a = el('a', { href: '/api/docker/download?' + qs }); document.body.appendChild(a); a.click(); a.remove();
   }).catch((e) => toast(e.message, 'err'));
+}
+
+// Import a local image archive (the output of `docker save`, optionally gzipped)
+// by uploading it straight into the daemon's load API.
+function dkImportForm(info) {
+  modal(tr('dk.img_import'), `
+    <label class="lbl">${tr('dk.img_import_label')}</label>
+    <input id="iiFile" type="file" accept=".tar,.tar.gz,.tgz,.gz" class="field" />
+    <p class="formnote" style="margin-top:6px">${tr('dk.img_import_hint')}</p>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="iiGo">${tr('dk.img_import_btn')}</button></div>
+    <div class="hidden" id="iiJob" style="margin-top:12px"></div>`, (close) => {
+    $('iiGo').onclick = async () => {
+      const f = $('iiFile').files[0]; if (!f) return toast(tr('dk.img_need_file'), 'err');
+      $('iiGo').disabled = true; $('iiJob').classList.remove('hidden'); $('iiJob').innerHTML = `<div class="mut">${tr('dk.img_importing')}</div>`;
+      try {
+        const headers = S.token ? { Authorization: 'Bearer ' + S.token } : {};
+        const r = await fetch('/api/docker/image-upload', { method: 'POST', headers, body: f });
+        const b = await r.json().catch(() => ({}));
+        if (!r.ok || (b && b.ok === false)) throw new Error(srvMsg(b) || ('HTTP ' + r.status));
+        toast(tr('dk.img_imported'), 'ok'); close(); dkImages(info);
+      } catch (e) { toast(e.message, 'err'); $('iiGo').disabled = false; $('iiJob').innerHTML = ''; }
+    };
+    bindDirty('iiGo');
+  });
 }
 
 function dkPullForm() {

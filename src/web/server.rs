@@ -109,6 +109,7 @@ async fn serve(state: Shared, port: u16, https: bool) -> anyhow::Result<()> {
         .route("/api/files/download", get(files_download))
         .route("/api/files/upload", post(files_upload))
         .route("/api/docker/download", get(docker_download))
+        .route("/api/docker/image-upload", post(docker_image_upload))
         .route("/api/nginx/static-upload", post(nginx_static_upload))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -1889,6 +1890,26 @@ async fn docker_download(
                 .into_response()
         }
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+/// POST /api/docker/image-upload — load a local image archive (docker load).
+/// Streams the request body (a `docker save` tar, optionally gzipped) into the
+/// daemon's image-load API. Admin only.
+async fn docker_image_upload(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    body: axum::body::Body,
+) -> Response {
+    use futures::StreamExt;
+    if let Err(r) = require_admin(&state, &headers) {
+        return r;
+    }
+    let _permit = transfer_sem().acquire_owned().await.ok();
+    let stream = body.into_data_stream().map(|r| r.unwrap_or_default());
+    match crate::docker::import_image_upload(stream).await {
+        Ok(v) => Json(json!({ "ok": true, "data": v })).into_response(),
+        Err(e) => Json(op_err_body(e)).into_response(),
     }
 }
 

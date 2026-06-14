@@ -2752,6 +2752,34 @@ pub async fn backup_read_stream(
     Ok((format!("{name}-{file}"), Box::pin(stream)))
 }
 
+/// Load a local image archive (`docker load`) from an uploaded byte stream. The
+/// archive is the output of `docker save` (a tar, optionally gzipped). Returns
+/// the loaded image ref(s).
+pub async fn import_image_upload<S>(body: S) -> Result<Value>
+where
+    S: futures_util::Stream<Item = bytes::Bytes> + Send + 'static,
+{
+    let dkr = dkr()?;
+    let mut loaded: Vec<String> = Vec::new();
+    let mut stream =
+        dkr.import_image_stream(bollard::image::ImportImageOptions::default(), body, None);
+    while let Some(item) = stream.next().await {
+        let info = item.map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+        if let Some(s) = info.stream {
+            // "Loaded image: repo:tag\n" / "Loaded image ID: sha256:...\n"
+            for marker in ["Loaded image: ", "Loaded image ID: "] {
+                if let Some(idx) = s.find(marker) {
+                    loaded.push(s[idx + marker.len()..].trim().to_string());
+                }
+            }
+        }
+    }
+    if loaded.is_empty() {
+        return Err(anyhow!("ERR_CODE:docker.import_no_image"));
+    }
+    Ok(json!({ "loaded": loaded }))
+}
+
 /// Open a docker image export (`docker save`) for streaming download as a tar.
 pub async fn image_export_stream(image: &str) -> Result<(String, crate::file::ByteStream)> {
     use futures::StreamExt;
