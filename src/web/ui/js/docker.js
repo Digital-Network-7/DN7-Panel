@@ -313,16 +313,17 @@ function dkLogs(id, name) {
 
 function dkImages(info) {
   const body = $('dkBody');
-  body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_images')}</h3><span class="sp"></span><button class="btn sm" id="dkPull">${tr('dk.pull_image')}</button><button class="btn sm" id="dkImport">${tr('dk.img_import')}</button><button class="btn sec sm" id="dkRefI">${tr('dk.refresh')}</button></div><div id="dkIList">` + loading() + '</div>';
+  body.innerHTML = `<div class="sechead"><h3>${tr('dk.tab_images')}</h3><span class="sp"></span><button class="btn sm" id="dkPull">${tr('dk.pull_image')}</button><button class="btn sm" id="dkImport">${tr('dk.img_import')}</button><button class="btn sec sm" id="dkTasks">${tr('dk.pull_tasks')}</button><button class="btn sec sm" id="dkRefI">${tr('dk.refresh')}</button></div><div id="dkIList">` + loading() + '</div>';
   $('dkRefI').onclick = () => dkImages(info);
   $('dkPull').onclick = dkPullForm;
+  $('dkTasks').onclick = dkPullTasks;
   $('dkImport').onclick = () => dkImportForm(info);
   op('docker', { op: 'list_images' }).then((d) => {
     const list = d.images || [];
     if (!list.length) { $('dkIList').innerHTML = `<div class="empty">${tr('dk.no_images')}</div>`; return; }
     let h = `<table class="optable frztbl imgtbl">`
       + `<colgroup><col style="width:130px"><col style="width:300px"><col style="width:120px"><col style="width:160px"><col style="width:130px"><col style="width:210px"></colgroup>`
-      + `<tr><th>${tr('dk.col_id')}</th><th>${tr('dk.col_image')}</th><th>${tr('dk.col_size')}</th><th>${tr('dk.col_created')}</th><th>${tr('dk.col_status')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
+      + `<tr><th>${tr('dk.col_id')}</th><th>${tr('dk.col_tags')}</th><th>${tr('dk.col_size')}</th><th>${tr('dk.col_created')}</th><th>${tr('dk.col_status')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
     list.forEach((im) => {
       const ref = im.in_use
         ? `<span class="chip on"><span class="dot-s on"></span>${tr('dk.img_inuse')}</span>`
@@ -333,8 +334,10 @@ function dkImages(info) {
           ? `<button class="btn sm danger" data-rmused="1">${tr('dk.delete')}</button>`
           : `<button class="btn sm danger" data-rm="${esc(im.name)}">${tr('dk.delete')}</button>`;
       const acts = `<div class="actions"><button class="btn sm sec" data-dl="${esc(im.name)}">${tr('dk.img_download')}</button><button class="btn sm sec" data-tag="${esc(im.name)}">${tr('dk.tag_btn')}</button>${delBtn}</div>`;
+      const tags = (im.tags && im.tags.length) ? im.tags : [im.name];
+      const tagHtml = tags.map((t) => `<span class="imgtag">${esc(t)}</span>`).join('');
       h += `<tr><td class="mono mut" style="font-size:11px" data-tip="${esc(im.id)}">${esc(im.id)}</td>`
-        + `<td data-tip="${esc(im.name)}"><div class="clamp2"><span class="imgtag">${esc(im.name)}</span></div></td>`
+        + `<td data-tip="${esc(tags.join('\n'))}"><div class="clamp2">${tagHtml}</div></td>`
         + `<td>${esc(im.size)}</td><td class="mut">${esc(im.created)}</td><td>${ref}</td>`
         + `<td class="act">${acts}</td></tr>`;
     });
@@ -421,6 +424,52 @@ function dkPullForm() {
       op('docker', { op: 'pull_image', image, mirror, registry }).then((r) => renderJob($('plJob'), 'docker', r.op_id, '', { onDone: () => { toast(tr('dk.pull_done'), 'ok'); close(); if (S.tab === 'docker') renderDocker($('view')); }, onError: () => { $('plGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('plGo').disabled = false; });
     };
     bindDirty('plGo');
+  });
+}
+
+// Pull tasks: a live history of every image pull (running + finished) read from
+// the detached-op registry. Records persist for the session so the user can
+// review progress and outcomes after a pull modal is closed.
+function dkPullTasks() {
+  modal(tr('dk.pull_tasks'), `
+    <div class="row" style="align-items:center;margin-bottom:12px"><span class="formnote" style="margin:0">${tr('dk.pull_tasks_d')}</span><span class="sp" style="flex:1"></span><button class="btn sm" id="ptNew">${tr('dk.pull_image')}</button></div>
+    <div id="ptList">${loading()}</div>`, (close, root) => {
+    $('ptNew').onclick = () => { close(); dkPullForm(); };
+    let stop = false;
+    const num = (id) => parseInt(String(id).replace(/\D/g, ''), 10) || 0;
+    const line = (s) => (s && s.charCodeAt(0) === 0x1e) ? '' : (s || '');
+    const render = (ops) => {
+      const pulls = (ops || []).filter((o) => o.kind === 'pull').sort((a, b) => num(a.op_id) - num(b.op_id));
+      if (!pulls.length) { $('ptList').innerHTML = `<div class="empty">${tr('dk.pull_tasks_none')}</div>`; return; }
+      $('ptList').innerHTML = pulls.map((o) => {
+        const name = esc(o.result_image || o.target || '');
+        let st, body = '';
+        if (o.status === 'running') {
+          st = `<span class="chip on"><span class="dot-s on"></span>${tr('dk.pt_running')}</span>`;
+          body = o.pct >= 0
+            ? `<div class="bar" style="margin-top:8px"><i style="width:${o.pct}%"></i></div>`
+            : (line(o.last_line) ? `<div class="formnote pt-line">${esc(line(o.last_line))}</div>` : '');
+        } else if (o.status === 'done') {
+          st = `<span class="chip" style="color:var(--ok);border-color:var(--ok)">${tr('dk.pt_done')}</span>`;
+        } else {
+          st = `<span class="chip" style="color:var(--err);border-color:var(--err)">${tr('dk.pt_error')}</span>`;
+          if (o.error) body = `<div class="formnote pt-line" style="color:var(--err)">${esc(o.error)}</div>`;
+        }
+        const x = o.status === 'running' ? '' : `<button class="pt-x" data-x="${esc(o.op_id)}" title="${tr('dk.delete')}">×</button>`;
+        return `<div class="pt-row"><div class="pt-top"><b class="mono">${name}</b>${st}<span class="sp" style="flex:1"></span>${x}</div>${body}</div>`;
+      }).join('');
+      document.querySelectorAll('#ptList [data-x]').forEach((b) => b.onclick = () => op('docker', { op: 'dismiss_op', op_id: b.dataset.x }).then(tick).catch(() => {}));
+    };
+    const tick = () => {
+      if (stop || !document.body.contains(root)) { stop = true; return; }
+      op('docker', { op: 'list_ops' }).then((d) => {
+        if (stop || !document.body.contains(root)) return;
+        render(d.ops || []);
+        const anyRun = (d.ops || []).some((o) => o.kind === 'pull' && o.status === 'running');
+        setTimeout(tick, anyRun ? 1200 : 4000);
+      }).catch(() => { if (!stop) setTimeout(tick, 4000); });
+    };
+    tick();
   });
 }
 

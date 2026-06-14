@@ -949,6 +949,7 @@ async fn list_images() -> Result<Value> {
         items.push(json!({
             "id": short_id,
             "name": name,
+            "tags": tags,
             "repo": repo,
             "tag": tag,
             "size": human_size(img.size.max(0) as u64),

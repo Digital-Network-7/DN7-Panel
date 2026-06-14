@@ -606,6 +606,11 @@ table.imgtbl th.act, table.imgtbl td.act { width: 210px; }
 .tablewrap.scr .frztbl th.act::before, .tablewrap.scr .frztbl td.act::before {
   content: ''; position: absolute; top: 0; bottom: -1px; left: 0; width: 14px; transform: translateX(-100%);
   background: linear-gradient(to left, rgba(0,0,0,.16), transparent); pointer-events: none; }
+/* Frozen columns must stay opaque on row hover — a translucent hover tint would
+   let the horizontally-scrolled middle content bleed through. Layer the hover
+   colour over the solid base so the highlight shows without any see-through. */
+.frztbl tr:hover td:first-child, .frztbl tr:hover td.act {
+  background: linear-gradient(var(--hov), var(--hov)), var(--bg); }
 /* Clamp any cell content to 1 or 2 lines (ellipsis); full text on hover (title). */
 .clamp1, .clamp2 { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
 .clamp1 { -webkit-line-clamp: 1; }
@@ -613,8 +618,16 @@ table.imgtbl th.act, table.imgtbl td.act { width: 210px; }
 .portlbl { display: inline-block; font-size: 11px; color: var(--mut); border: 1px solid var(--line2);
   border-radius: 6px; padding: 1px 7px; margin: 1px 4px 1px 0; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 /* Image name shown as a label/chip (clamped to 2 lines by its wrapping cell). */
-.imgtag { display: inline; font-size: 11.5px; color: var(--fg); background: var(--hov); border: 1px solid var(--line2);
-  border-radius: 6px; padding: 2px 8px; white-space: normal; word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.imgtag { display: inline-block; max-width: 100%; font-size: 11.5px; color: var(--fg); background: var(--hov); border: 1px solid var(--line2);
+  border-radius: 6px; padding: 2px 8px; margin: 0 5px 4px 0; white-space: normal; word-break: break-all; vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* Pull-tasks modal: a list of running/finished image pulls. */
+.pt-row { padding: 11px 2px; border-bottom: 1px solid var(--line); }
+.pt-row:last-child { border-bottom: none; }
+.pt-top { display: flex; align-items: center; gap: 10px; }
+.pt-top b { font-size: 12.5px; word-break: break-all; }
+.pt-line { margin-top: 6px; word-break: break-all; }
+.pt-x { width: 24px; height: 24px; flex: 0 0 auto; border: 1px solid var(--line); background: var(--hov); color: var(--mut); border-radius: 7px; cursor: pointer; font-size: 15px; line-height: 1; }
+.pt-x:hover { color: var(--err); border-color: var(--err); }
 
 /* ---- Container monitor modal: a clean 2×2 stat-card grid. ---- */
 .mongrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
