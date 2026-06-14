@@ -78,7 +78,26 @@ pub(crate) async fn container_stats(req: &Req) -> Result<Value> {
         None => return Err(anyhow!("ERR_CODE:docker.no_stats")),
     };
 
-    // CPU %: delta(container) / delta(system) * online_cpus * 100 (docker formula).
+    let (cpu_pct, online) = stats_cpu(&s);
+    let (mem_used, mem_limit) = stats_mem(&s);
+    let (rx, tx) = stats_net(&s);
+    let (blk_r, blk_w) = stats_blkio(&s);
+
+    Ok(json!({
+        "cpu_pct": (cpu_pct * 100.0).round() / 100.0,
+        "cpu_online": online,
+        "mem_used": mem_used,
+        "mem_limit": mem_limit,
+        "net_rx": rx,
+        "net_tx": tx,
+        "blk_read": blk_r,
+        "blk_write": blk_w,
+    }))
+}
+
+/// CPU usage percent + online-CPU count from a single stats sample, using
+/// docker's formula: delta(container) / delta(system) * online_cpus * 100.
+fn stats_cpu(s: &bollard::container::Stats) -> (f64, u64) {
     let cpu_delta =
         s.cpu_stats.cpu_usage.total_usage as f64 - s.precpu_stats.cpu_usage.total_usage as f64;
     let sys_delta = s.cpu_stats.system_cpu_usage.unwrap_or(0) as f64
@@ -96,18 +115,26 @@ pub(crate) async fn container_stats(req: &Req) -> Result<Value> {
     } else {
         0.0
     };
+    (cpu_pct, online)
+}
 
-    // Memory: usage minus page cache (matches `docker stats`), against the limit.
+/// (used, limit) memory bytes. "Used" subtracts the page cache to match
+/// `docker stats` (cgroup v1 `cache` / v2 `inactive_file`).
+fn stats_mem(s: &bollard::container::Stats) -> (u64, u64) {
     let mem_usage = s.memory_stats.usage.unwrap_or(0);
     let cache = match &s.memory_stats.stats {
         Some(bollard::container::MemoryStatsStats::V1(v1)) => v1.cache,
         Some(bollard::container::MemoryStatsStats::V2(v2)) => v2.inactive_file,
         None => 0,
     };
-    let mem_used = mem_usage.saturating_sub(cache);
-    let mem_limit = s.memory_stats.limit.unwrap_or(0);
+    (
+        mem_usage.saturating_sub(cache),
+        s.memory_stats.limit.unwrap_or(0),
+    )
+}
 
-    // Network: sum across interfaces.
+/// (rx, tx) network bytes, summed across all interfaces.
+fn stats_net(s: &bollard::container::Stats) -> (u64, u64) {
     let (mut rx, mut tx) = (0u64, 0u64);
     if let Some(nets) = &s.networks {
         for n in nets.values() {
@@ -115,8 +142,11 @@ pub(crate) async fn container_stats(req: &Req) -> Result<Value> {
             tx += n.tx_bytes;
         }
     }
+    (rx, tx)
+}
 
-    // Block IO: sum read/write byte counters.
+/// (read, write) block-IO bytes, summed from the recursive byte counters.
+fn stats_blkio(s: &bollard::container::Stats) -> (u64, u64) {
     let (mut blk_r, mut blk_w) = (0u64, 0u64);
     if let Some(entries) = &s.blkio_stats.io_service_bytes_recursive {
         for e in entries {
@@ -127,17 +157,7 @@ pub(crate) async fn container_stats(req: &Req) -> Result<Value> {
             }
         }
     }
-
-    Ok(json!({
-        "cpu_pct": (cpu_pct * 100.0).round() / 100.0,
-        "cpu_online": online,
-        "mem_used": mem_used,
-        "mem_limit": mem_limit,
-        "net_rx": rx,
-        "net_tx": tx,
-        "blk_read": blk_r,
-        "blk_write": blk_w,
-    }))
+    (blk_r, blk_w)
 }
 
 /// Return a create-request-shaped JSON body describing an existing container,
