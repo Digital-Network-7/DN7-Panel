@@ -566,11 +566,11 @@ table.ctntbl tr:first-child th:first-child, table.ctntbl tr:first-child th.act {
    cell (so the strip is continuous across rows, with no per-cell banding) shown
    only when there is scrolled-away content on that side. */
 .tablewrap.scl table.ctntbl th:first-child::after, .tablewrap.scl table.ctntbl td:first-child::after {
-  content: ''; position: absolute; top: 0; bottom: 0; right: 0; width: 16px; transform: translateX(100%);
-  background: linear-gradient(to right, rgba(0,0,0,.30), transparent); pointer-events: none; }
+  content: ''; position: absolute; top: 0; bottom: -1px; right: 0; width: 14px; transform: translateX(100%);
+  background: linear-gradient(to right, rgba(0,0,0,.16), transparent); pointer-events: none; }
 .tablewrap.scr table.ctntbl th.act::before, .tablewrap.scr table.ctntbl td.act::before {
-  content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 16px; transform: translateX(-100%);
-  background: linear-gradient(to left, rgba(0,0,0,.30), transparent); pointer-events: none; }
+  content: ''; position: absolute; top: 0; bottom: -1px; left: 0; width: 14px; transform: translateX(-100%);
+  background: linear-gradient(to left, rgba(0,0,0,.16), transparent); pointer-events: none; }
 /* Clamp any cell content to 1 or 2 lines (ellipsis); full text on hover (title). */
 .clamp1, .clamp2 { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
 .clamp1 { -webkit-line-clamp: 1; }
