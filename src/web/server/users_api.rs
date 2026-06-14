@@ -1,0 +1,254 @@
+//! User management API (admin only) (split from web/server.rs).
+use super::*;
+
+// ---------------------------------------------------------------------------
+// User management (admin only): panel users backed by system accounts
+// ---------------------------------------------------------------------------
+
+pub(crate) async fn users_list(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+) -> Response {
+    if let Err(r) = require_admin(&state, &headers) {
+        return r;
+    }
+    let mut list = Vec::new();
+    {
+        let s = state.settings.lock().unwrap();
+        list.push(json!({
+            "username": s.username, "role": "admin", "is_super": true,
+            "full_name": s.full_name, "nickname": s.nickname, "uid": s.owner_uid, "totp_enabled": s.totp_enabled,
+        }));
+    }
+    for u in crate::web::users::load() {
+        list.push(json!({
+            "username": u.username, "role": u.role, "is_super": false,
+            "full_name": u.full_name, "nickname": u.nickname, "uid": u.uid, "totp_enabled": u.totp_enabled,
+        }));
+    }
+    Json(json!({ "ok": true, "data": { "users": list } })).into_response()
+}
+
+/// Privilege level: super-admin (owner) 2, admin (sudo) 1, plain user 0.
+pub(crate) fn account_level(a: &Account) -> u8 {
+    if a.is_super {
+        2
+    } else if a.is_admin {
+        1
+    } else {
+        0
+    }
+}
+pub(crate) fn role_level(role: &str) -> u8 {
+    if role == "admin" {
+        1
+    } else {
+        0
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct CreateUserReq {
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    role: String,
+    #[serde(default)]
+    full_name: String,
+    #[serde(default)]
+    pw_salt: String,
+    #[serde(default)]
+    pw_hash: String,
+    /// Plaintext (local console) — used to set the matching OS password.
+    #[serde(default)]
+    password: String,
+}
+
+pub(crate) async fn users_create(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<CreateUserReq>,
+) -> Response {
+    let actor = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if !matches!(req.role.as_str(), "admin" | "user") {
+        return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.bad_role"))).into_response();
+    }
+    // May only create an account strictly lower in privilege than oneself
+    // (owner → admin/user; admin → user only).
+    if role_level(&req.role) >= account_level(&actor) {
+        return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+    }
+    // Can't collide with the super-admin's login name.
+    if req.username == state.settings.lock().unwrap().username {
+        return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.exists"))).into_response();
+    }
+    match crate::web::users::create(
+        &req.username,
+        &req.role,
+        req.full_name.trim(),
+        &req.pw_salt,
+        &req.pw_hash,
+        &req.password,
+    )
+    .await
+    {
+        Ok(u) => {
+            audit::record(&actor.username, "user.create", &u.username, true, &req.role);
+            Json(json!({ "ok": true, "data": { "username": u.username } })).into_response()
+        }
+        Err(e) => {
+            audit::record(
+                &actor.username,
+                "user.create",
+                &req.username,
+                false,
+                &e.to_string(),
+            );
+            Json(op_err_body(e)).into_response()
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct UpdateUserReq {
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    full_name: Option<String>,
+    #[serde(default)]
+    nickname: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    pw_salt: Option<String>,
+    #[serde(default)]
+    pw_hash: Option<String>,
+    /// Plaintext (local console) — used to set the matching OS password.
+    #[serde(default)]
+    password: Option<String>,
+}
+
+/// POST /api/users/update — an owner/admin edits a **lower-privilege** panel
+/// user's profile, role and/or password.
+pub(crate) async fn users_update(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<UpdateUserReq>,
+) -> Response {
+    let actor = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let actor_lvl = account_level(&actor);
+    let target = match crate::web::users::find(&req.username) {
+        Some(t) => t,
+        None => {
+            return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.not_found"))).into_response()
+        }
+    };
+    // Only manage accounts strictly below your own privilege.
+    if actor_lvl <= role_level(&target.role) {
+        return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+    }
+    // Optional role change (also adjusts the sudo group). The new role must
+    // also be strictly below the actor.
+    if let Some(role) = &req.role {
+        if !matches!(role.as_str(), "admin" | "user") {
+            return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.bad_role"))).into_response();
+        }
+        if role_level(role) >= actor_lvl {
+            return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+        }
+        if *role != target.role {
+            if let Err(e) = crate::web::users::set_sudo(&req.username, role == "admin").await {
+                return Json(op_err_body(e)).into_response();
+            }
+        }
+    }
+    // Optional password reset (admin-set; no old password needed).
+    let pw = if req.pw_salt.is_some() || req.pw_hash.is_some() {
+        let salt = req.pw_salt.clone().unwrap_or_default();
+        let hash = req.pw_hash.clone().unwrap_or_default();
+        let salt_ok = salt.len() == 32 && salt.bytes().all(|b| b.is_ascii_hexdigit());
+        let hash_ok = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
+        if !salt_ok || !hash_ok {
+            return api_err(StatusCode::BAD_REQUEST, "settings.pw_format");
+        }
+        Some((salt, hash.to_lowercase()))
+    } else {
+        None
+    };
+    let res = crate::web::users::update(&req.username, |u| {
+        if let Some(f) = &req.full_name {
+            u.full_name = f.trim().chars().take(64).collect();
+        }
+        if let Some(n) = &req.nickname {
+            u.nickname = n.trim().chars().take(40).collect();
+        }
+        if let Some(r) = &req.role {
+            u.role = r.clone();
+        }
+        if let Some((salt, hash)) = &pw {
+            u.pw_salt = salt.clone();
+            u.pw_hash = hash.clone();
+        }
+    });
+    if let Err(e) = res {
+        return Json(op_err_body(e)).into_response();
+    }
+    if let Some(f) = &req.full_name {
+        let _ = crate::web::users::set_full_name(&req.username, f.trim()).await;
+    }
+    // Sync the OS password to the new panel password (system user).
+    if pw.is_some() {
+        if let Some(p) = &req.password {
+            if !p.is_empty() {
+                let _ = crate::web::users::set_system_password(&req.username, p).await;
+            }
+        }
+    }
+    audit::record(&actor.username, "user.update", &req.username, true, "");
+    Json(json!({ "ok": true })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct DelUserReq {
+    #[serde(default)]
+    username: String,
+}
+
+pub(crate) async fn users_delete(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<DelUserReq>,
+) -> Response {
+    let actor = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    // Only delete accounts strictly below your own privilege.
+    if let Some(t) = crate::web::users::find(&req.username) {
+        if account_level(&actor) <= role_level(&t.role) {
+            return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+        }
+    }
+    match crate::web::users::delete(&req.username).await {
+        Ok(_) => {
+            audit::record(&actor.username, "user.delete", &req.username, true, "");
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => {
+            audit::record(
+                &actor.username,
+                "user.delete",
+                &req.username,
+                false,
+                &e.to_string(),
+            );
+            Json(op_err_body(e)).into_response()
+        }
+    }
+}
