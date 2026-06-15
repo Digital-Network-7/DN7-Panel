@@ -38,17 +38,6 @@ pub(crate) fn map_domain_err(e: crate::domain::Error) -> Response {
     }
 }
 
-/// Read the caller's pending/active TOTP secret.
-pub(crate) fn read_totp(state: &Shared, a: &Account) -> String {
-    if a.is_super {
-        state.settings.lock().unwrap().totp_secret.clone()
-    } else {
-        crate::web::users::find(&a.username)
-            .map(|u| u.totp_secret)
-            .unwrap_or_default()
-    }
-}
-
 /// Persist the caller's TOTP secret + enabled flag.
 pub(crate) fn write_totp(
     state: &Shared,
@@ -69,20 +58,6 @@ pub(crate) fn write_totp(
             u.totp_enabled = enabled;
         })
     }
-}
-
-/// Run the side effects every self-service credential change shares: revoke the
-/// account's other sessions/tickets (keeping the caller's current session) so a
-/// previously-leaked token dies immediately, then write the audit record.
-/// Bundled here so no credential-changing handler can forget either step.
-pub(crate) fn after_credential_change(
-    state: &Shared,
-    username: &str,
-    keep: Option<&str>,
-    action: &str,
-) {
-    state.auth.revoke_user(username, keep);
-    audit::record(username, action, username, true, "");
 }
 
 /// Assemble the `/api/me` view for a principal: identity + role + 2FA + profile

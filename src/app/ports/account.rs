@@ -25,6 +25,16 @@ pub(crate) trait AccountEnv {
     /// current token) alive.
     fn revoke_other_sessions(&self, username: &str, keep: Option<&str>);
 
+    /// The account's pending/active TOTP secret (empty when none).
+    fn read_totp(&self, who: &Principal) -> String;
+
+    /// Persist the account's TOTP secret + enabled flag.
+    fn write_totp(&self, who: &Principal, secret: &str, enabled: bool) -> Result<(), Error>;
+
+    /// Verify a TOTP `code` against `secret` (pure algorithm behind the port so
+    /// the use-case doesn't depend on the crypto module's location).
+    fn verify_totp(&self, secret: &str, code: &str) -> bool;
+
     /// Append an audit record for an account action (actor == target).
     fn audit(&self, username: &str, action: &str);
 }

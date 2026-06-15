@@ -41,6 +41,40 @@ pub(crate) async fn change_password(
     Ok(())
 }
 
+/// Enable TOTP 2FA after verifying a live code against the pending secret.
+pub(crate) fn enable_2fa(
+    env: &impl AccountEnv,
+    who: &Principal,
+    code: &str,
+    keep_token: Option<&str>,
+) -> Result<(), Error> {
+    let secret = env.read_totp(who);
+    if secret.is_empty() || !env.verify_totp(&secret, code) {
+        return Err(Error::TotpInvalid);
+    }
+    env.write_totp(who, &secret, true)?;
+    env.revoke_other_sessions(&who.username, keep_token);
+    env.audit(&who.username, "account.2fa_enable");
+    Ok(())
+}
+
+/// Disable TOTP 2FA. When a secret is set, a valid current code is required.
+pub(crate) fn disable_2fa(
+    env: &impl AccountEnv,
+    who: &Principal,
+    code: &str,
+    keep_token: Option<&str>,
+) -> Result<(), Error> {
+    let secret = env.read_totp(who);
+    if !secret.is_empty() && !env.verify_totp(&secret, code) {
+        return Err(Error::TotpInvalid);
+    }
+    env.write_totp(who, "", false)?;
+    env.revoke_other_sessions(&who.username, keep_token);
+    env.audit(&who.username, "account.2fa_disable");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,7 +84,10 @@ mod tests {
     #[derive(Default)]
     struct FakeEnv {
         verifier: String,
+        totp_secret: String,
+        totp_code_ok: bool,
         saved: RefCell<Option<(String, String)>>,
+        totp_written: RefCell<Option<(String, bool)>>,
         synced: RefCell<Option<(String, String)>>,
         revoked: RefCell<Option<(String, Option<String>)>>,
         audited: RefCell<Vec<String>>,
@@ -69,6 +106,16 @@ mod tests {
         }
         fn revoke_other_sessions(&self, username: &str, keep: Option<&str>) {
             *self.revoked.borrow_mut() = Some((username.to_string(), keep.map(str::to_string)));
+        }
+        fn read_totp(&self, _who: &Principal) -> String {
+            self.totp_secret.clone()
+        }
+        fn write_totp(&self, _who: &Principal, secret: &str, enabled: bool) -> Result<(), Error> {
+            *self.totp_written.borrow_mut() = Some((secret.to_string(), enabled));
+            Ok(())
+        }
+        fn verify_totp(&self, _secret: &str, _code: &str) -> bool {
+            self.totp_code_ok
         }
         fn audit(&self, username: &str, action: &str) {
             self.audited
@@ -136,6 +183,56 @@ mod tests {
         assert_eq!(
             env.synced.borrow().as_ref().unwrap(),
             &("alice".to_string(), "Secret123".to_string())
+        );
+    }
+
+    #[test]
+    fn enable_2fa_rejects_bad_code() {
+        let env = FakeEnv {
+            totp_secret: "SECRET".into(),
+            totp_code_ok: false,
+            ..Default::default()
+        };
+        let r = enable_2fa(&env, &principal(None), "000000", None);
+        assert!(matches!(r, Err(Error::TotpInvalid)));
+        assert!(env.totp_written.borrow().is_none());
+    }
+
+    #[test]
+    fn enable_2fa_happy_path() {
+        let env = FakeEnv {
+            totp_secret: "SECRET".into(),
+            totp_code_ok: true,
+            ..Default::default()
+        };
+        let r = enable_2fa(&env, &principal(None), "123456", Some("tok"));
+        assert!(r.is_ok());
+        assert_eq!(
+            env.totp_written.borrow().as_ref().unwrap(),
+            &("SECRET".to_string(), true)
+        );
+        assert_eq!(
+            env.audited.borrow().as_slice(),
+            ["alice:account.2fa_enable"]
+        );
+    }
+
+    #[test]
+    fn disable_2fa_clears_secret() {
+        let env = FakeEnv {
+            totp_secret: "SECRET".into(),
+            totp_code_ok: true,
+            ..Default::default()
+        };
+        let r = disable_2fa(&env, &principal(None), "123456", None);
+        assert!(r.is_ok());
+        assert_eq!(
+            env.totp_written.borrow().as_ref().unwrap(),
+            &(String::new(), false)
+        );
+        assert_eq!(
+            env.audited.borrow().as_slice(),
+            ["alice:account.2fa_disable"]
         );
     }
 }

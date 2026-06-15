@@ -177,6 +177,43 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
         self.state.auth.revoke_user(username, keep);
     }
 
+    fn read_totp(&self, who: &crate::domain::identity::Principal) -> String {
+        if who.is_super {
+            self.state.settings.lock().unwrap().totp_secret.clone()
+        } else {
+            crate::web::users::find(&who.username)
+                .map(|u| u.totp_secret)
+                .unwrap_or_default()
+        }
+    }
+
+    fn write_totp(
+        &self,
+        who: &crate::domain::identity::Principal,
+        secret: &str,
+        enabled: bool,
+    ) -> Result<(), crate::domain::Error> {
+        let res = if who.is_super {
+            let saved = {
+                let mut s = self.state.settings.lock().unwrap();
+                s.totp_secret = secret.to_string();
+                s.totp_enabled = enabled;
+                s.clone()
+            };
+            settings::save(&saved)
+        } else {
+            crate::web::users::update(&who.username, |u| {
+                u.totp_secret = secret.to_string();
+                u.totp_enabled = enabled;
+            })
+        };
+        res.map_err(|e| crate::domain::Error::Persist(e.to_string()))
+    }
+
+    fn verify_totp(&self, secret: &str, code: &str) -> bool {
+        crate::web::totp::verify(secret, code)
+    }
+
     fn audit(&self, username: &str, action: &str) {
         audit::record(username, action, username, true, "");
     }
@@ -219,23 +256,12 @@ pub(crate) async fn twofa_enable(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let secret = read_totp(&state, &a);
-    if secret.is_empty() {
-        return map_domain_err(crate::domain::Error::TotpInvalid);
+    let env = WebAccountEnv { state: &state };
+    let keep = bearer(&headers);
+    match crate::app::account::enable_2fa(&env, &a.to_principal(), &req.code, keep.as_deref()) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => map_domain_err(e),
     }
-    if !crate::web::totp::verify(&secret, &req.code) {
-        return map_domain_err(crate::domain::Error::TotpInvalid);
-    }
-    if let Err(e) = write_totp(&state, &a, &secret, true) {
-        return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
-    }
-    after_credential_change(
-        &state,
-        &a.username,
-        bearer(&headers).as_deref(),
-        "account.2fa_enable",
-    );
-    Json(json!({ "ok": true })).into_response()
 }
 
 /// POST /api/2fa/disable — verify a current code, then turn 2FA off.
@@ -248,18 +274,10 @@ pub(crate) async fn twofa_disable(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let secret = read_totp(&state, &a);
-    if !secret.is_empty() && !crate::web::totp::verify(&secret, &req.code) {
-        return map_domain_err(crate::domain::Error::TotpInvalid);
+    let env = WebAccountEnv { state: &state };
+    let keep = bearer(&headers);
+    match crate::app::account::disable_2fa(&env, &a.to_principal(), &req.code, keep.as_deref()) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => map_domain_err(e),
     }
-    if let Err(e) = write_totp(&state, &a, "", false) {
-        return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
-    }
-    after_credential_change(
-        &state,
-        &a.username,
-        bearer(&headers).as_deref(),
-        "account.2fa_disable",
-    );
-    Json(json!({ "ok": true })).into_response()
 }
