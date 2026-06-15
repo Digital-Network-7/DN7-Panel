@@ -305,7 +305,7 @@ fn resolve_account(state: &Shared, username: &str) -> Option<Account> {
             });
         }
     }
-    super::users::find(username).map(|u| Account {
+    crate::app::users::find(username).map(|u| Account {
         is_admin: u.is_admin(),
         is_super: false,
         system_user: Some(u.username.clone()),

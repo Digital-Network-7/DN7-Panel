@@ -1,6 +1,6 @@
 //! Panel-users store: `<data>/users.json` (0600). Pure persistence of the
 //! `PanelUser` domain entity — no validation, no system-account side effects
-//! (those live in `web::users` orchestration / `infra::system`).
+//! (those live in `app::users` orchestration / `infra::system`).
 
 use anyhow::Result;
 

@@ -20,7 +20,7 @@ pub(crate) async fn users_list(
             "full_name": s.full_name, "nickname": s.nickname, "uid": s.owner_uid, "totp_enabled": s.totp_enabled,
         }));
     }
-    for u in crate::web::users::load() {
+    for u in crate::app::users::load() {
         list.push(json!({
             "username": u.username, "role": u.role, "is_super": false,
             "full_name": u.full_name, "nickname": u.nickname, "uid": u.uid, "totp_enabled": u.totp_enabled,
@@ -67,7 +67,7 @@ pub(crate) async fn users_create(
     if req.username == state.settings.lock().unwrap().username {
         return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.exists"))).into_response();
     }
-    match crate::web::users::create(&crate::web::users::NewUser {
+    match crate::app::users::create(&crate::app::users::NewUser {
         username: &req.username,
         role: &req.role,
         full_name: req.full_name.trim(),
@@ -125,7 +125,7 @@ pub(crate) async fn users_update(
         Err(r) => return r,
     };
     let actor_lvl = account_level(&actor);
-    let target = match crate::web::users::find(&req.username) {
+    let target = match crate::app::users::find(&req.username) {
         Some(t) => t,
         None => {
             return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.not_found"))).into_response()
@@ -145,7 +145,7 @@ pub(crate) async fn users_update(
         Ok(p) => p,
         Err(r) => return r,
     };
-    let res = crate::web::users::update(&req.username, |u| {
+    let res = crate::app::users::update(&req.username, |u| {
         if let Some(f) = &req.full_name {
             u.full_name = f.trim().chars().take(64).collect();
         }
@@ -214,7 +214,7 @@ fn parse_pw_update(req: &UpdateUserReq) -> Result<Option<(String, String)>, Resp
     }
     let salt = req.pw_salt.clone().unwrap_or_default();
     let hash = req.pw_hash.clone().unwrap_or_default();
-    if !crate::web::users::valid_pw_format(&salt, &hash) {
+    if !crate::app::users::valid_pw_format(&salt, &hash) {
         return Err(map_domain_err(crate::domain::Error::PasswordMalformed));
     }
     Ok(Some((salt, hash.to_lowercase())))
@@ -236,12 +236,12 @@ pub(crate) async fn users_delete(
         Err(r) => return r,
     };
     // Only delete accounts strictly below your own privilege.
-    if let Some(t) = crate::web::users::find(&req.username) {
+    if let Some(t) = crate::app::users::find(&req.username) {
         if !accounts::can_manage(account_level(&actor), role_level(&t.role)) {
             return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
         }
     }
-    match crate::web::users::delete(&req.username).await {
+    match crate::app::users::delete(&req.username).await {
         Ok(_) => {
             state.auth.revoke_user(&req.username, None);
             audit::record(&actor.username, "user.delete", &req.username, true, "");

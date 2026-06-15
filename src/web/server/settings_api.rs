@@ -193,7 +193,7 @@ fn apply_password_change(s: &mut WebSettings, req: &SettingsReq) -> Result<bool,
     let cur_hash = s.pw_hash.clone();
     let salt = req.pw_salt.clone().unwrap_or_default();
     let hash = req.pw_hash.clone().unwrap_or_default();
-    if !crate::web::users::valid_pw_format(&salt, &hash) {
+    if !crate::app::users::valid_pw_format(&salt, &hash) {
         return Err(map_domain_err(crate::domain::Error::PasswordMalformed));
     }
     // pw_check = sha256(current salt ":" new password) must NOT equal the stored

@@ -16,9 +16,9 @@ use anyhow::{anyhow, Result};
 
 use crate::infra::system;
 
-/// The panel-user entity now lives in the domain layer; re-exported so call
-/// sites (`crate::web::users::PanelUser`) stay stable while this module keeps
-/// the system-account orchestration. Persistence is delegated to infra/store.
+/// The panel-user entity lives in the domain layer; re-exported so call sites
+/// (`crate::app::users::PanelUser`) stay stable while this module keeps the
+/// system-account orchestration. Persistence is delegated to infra/store.
 pub(crate) use crate::domain::identity::PanelUser;
 pub(crate) use crate::infra::store::users::{load, save};
 
@@ -45,8 +45,8 @@ pub fn find(username: &str) -> Option<PanelUser> {
 
 /// A Linux username: lowercase start, then lowercase/digits/_/-; 1..=32 chars.
 /// Conservative (NAME_REGEX-style) so it can't smuggle shell/flag characters.
-/// Validators now live in the domain layer; re-exported so existing call sites
-/// (`crate::web::users::valid_username` / `valid_pw_format`) stay stable.
+/// Validators live in the domain layer; re-exported so existing call sites
+/// (`crate::app::users::valid_username` / `valid_pw_format`) stay stable.
 pub(crate) use crate::domain::identity::{valid_pw_format, valid_username};
 
 /// Create a panel user **and** the backing system account. `role` is "admin"

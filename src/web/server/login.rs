@@ -36,7 +36,7 @@ pub(crate) async fn login_challenge(
         let su = state.settings.lock().unwrap();
         if q.username.is_empty() || q.username == su.username {
             su.pw_salt.clone()
-        } else if let Some(u) = crate::web::users::find(&q.username) {
+        } else if let Some(u) = crate::app::users::find(&q.username) {
             u.pw_salt
         } else {
             // Unknown account: return a deterministic, per-username pseudo-salt
@@ -141,7 +141,7 @@ fn resolve_login_account(state: &Shared, username: &str) -> LoginAccount {
         };
     }
     drop(su);
-    match crate::web::users::find(username) {
+    match crate::app::users::find(username) {
         Some(u) => LoginAccount {
             exp_hash: u.pw_hash,
             totp_secret: u.totp_secret,

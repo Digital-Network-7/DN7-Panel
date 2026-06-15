@@ -54,7 +54,7 @@ pub(crate) fn write_totp(
         drop(s);
         settings::save(&saved)
     } else {
-        crate::web::users::update(&a.username, |u| {
+        crate::app::users::update(&a.username, |u| {
             u.totp_secret = secret.to_string();
             u.totp_enabled = enabled;
         })
@@ -75,7 +75,7 @@ pub(crate) fn me_view(state: &Shared, a: &Account) -> Value {
             s.pw_default || s.username.eq_ignore_ascii_case("admin"),
         )
     } else {
-        match crate::web::users::find(&a.username) {
+        match crate::app::users::find(&a.username) {
             Some(u) => (u.full_name, u.nickname, u.avatar, false),
             None => (String::new(), String::new(), String::new(), false),
         }

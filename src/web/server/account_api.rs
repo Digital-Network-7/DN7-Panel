@@ -63,7 +63,7 @@ pub(crate) async fn put_profile(
             return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
         }
     } else {
-        let res = crate::web::users::update(&a.username, |u| {
+        let res = crate::app::users::update(&a.username, |u| {
             if let Some(f) = &req.full_name {
                 u.full_name = clip(f, 64);
             }
@@ -141,7 +141,7 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
         if who.is_super {
             self.state.settings.lock().unwrap().pw_hash.clone()
         } else {
-            crate::web::users::find(&who.username)
+            crate::app::users::find(&who.username)
                 .map(|u| u.pw_hash)
                 .unwrap_or_default()
         }
@@ -161,7 +161,7 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
             };
             settings::save(&saved).map_err(|e| crate::domain::Error::Persist(e.to_string()))
         } else {
-            crate::web::users::update(&who.username, |u| {
+            crate::app::users::update(&who.username, |u| {
                 u.pw_salt = salt.to_string();
                 u.pw_hash = hash.to_string();
             })
@@ -181,7 +181,7 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
         if who.is_super {
             self.state.settings.lock().unwrap().totp_secret.clone()
         } else {
-            crate::web::users::find(&who.username)
+            crate::app::users::find(&who.username)
                 .map(|u| u.totp_secret)
                 .unwrap_or_default()
         }
@@ -202,7 +202,7 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
             };
             settings::save(&saved)
         } else {
-            crate::web::users::update(&who.username, |u| {
+            crate::app::users::update(&who.username, |u| {
                 u.totp_secret = secret.to_string();
                 u.totp_enabled = enabled;
             })

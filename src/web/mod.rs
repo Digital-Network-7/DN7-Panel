@@ -20,7 +20,6 @@ mod branding;
 mod server;
 mod settings;
 mod totp;
-mod users;
 
 pub use server::spawn;
 
