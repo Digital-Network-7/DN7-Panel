@@ -155,110 +155,13 @@ pub(crate) async fn put_password(
     if let Err(r) = verify_current_password(&state, &a, &req.old_verifier) {
         return r;
     }
-    if let Err(r) = save_new_password(&state, &a, &req).await {
+    if let Err(r) = save_new_password(&state, &a, &req.pw_salt, &req.pw_hash, &req.password).await {
         return r;
     }
     // Invalidate any other (possibly leaked) sessions/tickets for this account,
-    // keeping the caller's current session so they stay logged in.
-    state
-        .auth
-        .revoke_user(&a.username, bearer(&headers).as_deref());
-    audit::record(&a.username, "account.password", &a.username, true, "");
+    // keeping the caller's current session, then audit.
+    after_credential_change(&state, &a.username, bearer(&headers).as_deref(), "account.password");
     Json(json!({ "ok": true })).into_response()
-}
-
-/// Verify the caller's current password before allowing a change: their
-/// `old_verifier` must equal the stored salted hash (super-admin → web.json,
-/// else the panel user's record).
-#[allow(clippy::result_large_err)]
-fn verify_current_password(
-    state: &Shared,
-    a: &Account,
-    old_verifier: &str,
-) -> Result<(), Response> {
-    let cur_hash = if a.is_super {
-        state.settings.lock().unwrap().pw_hash.clone()
-    } else {
-        crate::web::users::find(&a.username)
-            .map(|u| u.pw_hash)
-            .unwrap_or_default()
-    };
-    if cur_hash.is_empty() || old_verifier.to_lowercase() != cur_hash {
-        return Err(api_err(
-            StatusCode::BAD_REQUEST,
-            "settings.bad_old_password",
-        ));
-    }
-    Ok(())
-}
-
-/// Persist the new password verifier (super-admin → web.json, else the panel
-/// user record) and, for system-backed users, sync the OS password.
-#[allow(clippy::result_large_err)]
-async fn save_new_password(state: &Shared, a: &Account, req: &PasswordReq) -> Result<(), Response> {
-    let hash = req.pw_hash.to_lowercase();
-    if a.is_super {
-        let saved = {
-            let mut s = state.settings.lock().unwrap();
-            s.set_password_hashed(&req.pw_salt, &hash);
-            s.clone()
-        };
-        if let Err(e) = settings::save(&saved) {
-            return Err(api_err_detail(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "common.save_failed",
-                e,
-            ));
-        }
-    } else {
-        let res = crate::web::users::update(&a.username, |u| {
-            u.pw_salt = req.pw_salt.clone();
-            u.pw_hash = hash.clone();
-        });
-        if let Err(e) = res {
-            return Err(Json(op_err_body(e)).into_response());
-        }
-        // Sync the OS password to the new panel password.
-        if !req.password.is_empty() {
-            if let Some(u) = &a.system_user {
-                let _ = crate::web::users::set_system_password(u, &req.password).await;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Read the caller's pending/active TOTP secret.
-pub(crate) fn read_totp(state: &Shared, a: &Account) -> String {
-    if a.is_super {
-        state.settings.lock().unwrap().totp_secret.clone()
-    } else {
-        crate::web::users::find(&a.username)
-            .map(|u| u.totp_secret)
-            .unwrap_or_default()
-    }
-}
-
-/// Persist the caller's TOTP secret + enabled flag.
-pub(crate) fn write_totp(
-    state: &Shared,
-    a: &Account,
-    secret: &str,
-    enabled: bool,
-) -> anyhow::Result<()> {
-    if a.is_super {
-        let mut s = state.settings.lock().unwrap();
-        s.totp_secret = secret.to_string();
-        s.totp_enabled = enabled;
-        let saved = s.clone();
-        drop(s);
-        settings::save(&saved)
-    } else {
-        crate::web::users::update(&a.username, |u| {
-            u.totp_secret = secret.to_string();
-            u.totp_enabled = enabled;
-        })
-    }
 }
 
 /// POST /api/2fa/setup — generate a fresh (pending) TOTP secret + QR. 2FA is not
@@ -308,10 +211,12 @@ pub(crate) async fn twofa_enable(
     if let Err(e) = write_totp(&state, &a, &secret, true) {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
-    state
-        .auth
-        .revoke_user(&a.username, bearer(&headers).as_deref());
-    audit::record(&a.username, "account.2fa_enable", &a.username, true, "");
+    after_credential_change(
+        &state,
+        &a.username,
+        bearer(&headers).as_deref(),
+        "account.2fa_enable",
+    );
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -332,9 +237,11 @@ pub(crate) async fn twofa_disable(
     if let Err(e) = write_totp(&state, &a, "", false) {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
-    state
-        .auth
-        .revoke_user(&a.username, bearer(&headers).as_deref());
-    audit::record(&a.username, "account.2fa_disable", &a.username, true, "");
+    after_credential_change(
+        &state,
+        &a.username,
+        bearer(&headers).as_deref(),
+        "account.2fa_disable",
+    );
     Json(json!({ "ok": true })).into_response()
 }
