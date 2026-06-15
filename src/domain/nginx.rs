@@ -243,3 +243,130 @@ pub(crate) struct Location {
     #[serde(default)]
     pub(crate) container_port: i64,
 }
+
+// ---------------------------------------------------------------------------
+// Persisted nginx domain entities (access lists, default-site, http tuning).
+//
+// NOTE: persisted **domain entities** — the `serde` derives are reviewed
+// exceptions (see steering §2/§4). Fields are `pub(crate)` so the nginx
+// submodules (access/store/confgen/htpasswd/…) read/build them across modules.
+// Transport input (AccessUserInput) stays in the nginx module, not here.
+// ---------------------------------------------------------------------------
+
+/// A stored access list. Passwords are kept only as nginx-htpasswd hashes
+/// (`{SHA}…`), never in plaintext.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AccessList {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    /// "any" | "all" — how auth and IP rules combine (nginx `satisfy`).
+    #[serde(default)]
+    pub(crate) satisfy: String,
+    /// Forward the client's Authorization header to the upstream (else strip).
+    #[serde(default)]
+    pub(crate) pass_auth: bool,
+    #[serde(default)]
+    pub(crate) users: Vec<AccessUser>,
+    #[serde(default)]
+    pub(crate) clients: Vec<AccessClient>,
+}
+
+/// A basic-auth credential: the username and its precomputed htpasswd hash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AccessUser {
+    pub(crate) username: String,
+    /// nginx-compatible hash, e.g. `{SHA}base64(sha1(password))`.
+    #[serde(default)]
+    pub(crate) hash: String,
+}
+
+/// An allow/deny rule against a client address (IP, CIDR, or "all").
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub(crate) struct AccessClient {
+    /// "allow" | "deny".
+    pub(crate) directive: String,
+    /// IP / CIDR / "all".
+    pub(crate) address: String,
+}
+
+/// Default-site behaviour for requests matching no managed server_name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct DefaultSite {
+    /// "404" | "welcome" | "444" | "redirect".
+    pub(crate) mode: String,
+    #[serde(default)]
+    pub(crate) redirect_url: String,
+}
+
+impl Default for DefaultSite {
+    fn default() -> Self {
+        DefaultSite {
+            mode: "404".to_string(),
+            redirect_url: String::new(),
+        }
+    }
+}
+
+/// Global website settings (persisted in `websettings.json`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub(crate) struct WebGlobal {
+    #[serde(default)]
+    pub(crate) default_site: DefaultSite,
+}
+
+/// nginx http/server tuning knobs (persisted in `webtuning.json`). Values
+/// mirror nginx's own defaults. The server-context ones are injected into each
+/// managed site's server block (so they override per-site without clashing with
+/// the distro nginx.conf's http-level directives); `server_names_hash_bucket_size`
+/// is http-only and written to a guarded http include.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct HttpTuning {
+    #[serde(default = "d_snhbs")]
+    pub(crate) server_names_hash_bucket_size: u32,
+    #[serde(default = "d_gzip_on")]
+    pub(crate) gzip: bool,
+    #[serde(default = "d_ghdr")]
+    pub(crate) client_header_buffer_size: String,
+    #[serde(default = "d_gmin")]
+    pub(crate) gzip_min_length: u32,
+    #[serde(default = "d_cmbs")]
+    pub(crate) client_max_body_size: String,
+    #[serde(default = "d_gcl")]
+    pub(crate) gzip_comp_level: u8,
+    #[serde(default = "d_kat")]
+    pub(crate) keepalive_timeout: u32,
+}
+fn d_snhbs() -> u32 {
+    64
+}
+fn d_ghdr() -> String {
+    "32k".to_string()
+}
+fn d_gmin() -> u32 {
+    20
+}
+fn d_cmbs() -> String {
+    "50m".to_string()
+}
+fn d_gcl() -> u8 {
+    1
+}
+fn d_kat() -> u32 {
+    60
+}
+fn d_gzip_on() -> bool {
+    true
+}
+impl Default for HttpTuning {
+    fn default() -> Self {
+        HttpTuning {
+            server_names_hash_bucket_size: d_snhbs(),
+            gzip: true,
+            client_header_buffer_size: d_ghdr(),
+            gzip_min_length: d_gmin(),
+            client_max_body_size: d_cmbs(),
+            gzip_comp_level: d_gcl(),
+            keepalive_timeout: d_kat(),
+        }
+    }
+}

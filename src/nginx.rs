@@ -140,41 +140,10 @@ pub(crate) use crate::domain::nginx::{Location, Site};
 // header upstream. Assigned to proxy hosts by id.
 // ---------------------------------------------------------------------------
 
-/// A stored access list. Passwords are kept only as nginx-htpasswd hashes
-/// (`{SHA}…`), never in plaintext.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct AccessList {
-    id: String,
-    name: String,
-    /// "any" | "all" — how auth and IP rules combine (nginx `satisfy`).
-    #[serde(default)]
-    satisfy: String,
-    /// Forward the client's Authorization header to the upstream (else strip).
-    #[serde(default)]
-    pass_auth: bool,
-    #[serde(default)]
-    users: Vec<AccessUser>,
-    #[serde(default)]
-    clients: Vec<AccessClient>,
-}
-
-/// A basic-auth credential: the username and its precomputed htpasswd hash.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct AccessUser {
-    username: String,
-    /// nginx-compatible hash, e.g. `{SHA}base64(sha1(password))`.
-    #[serde(default)]
-    hash: String,
-}
-
-/// An allow/deny rule against a client address (IP, CIDR, or "all").
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub(crate) struct AccessClient {
-    /// "allow" | "deny".
-    directive: String,
-    /// IP / CIDR / "all".
-    address: String,
-}
+/// Access-list domain entities (`AccessList`/`AccessUser`/`AccessClient`),
+/// re-exported from `domain::nginx` so the nginx submodules reference them
+/// unchanged. `AccessUserInput` (below) is transport input and stays here.
+pub(crate) use crate::domain::nginx::{AccessClient, AccessList, AccessUser};
 
 /// New/changed user input from the client (password is plaintext, optional on
 /// edit — empty keeps the existing hash).
@@ -186,87 +155,9 @@ pub(crate) struct AccessUserInput {
     password: String,
 }
 
-/// Default-site behaviour for requests matching no managed server_name.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct DefaultSite {
-    /// "404" | "welcome" | "444" | "redirect".
-    mode: String,
-    #[serde(default)]
-    redirect_url: String,
-}
-
-impl Default for DefaultSite {
-    fn default() -> Self {
-        DefaultSite {
-            mode: "404".to_string(),
-            redirect_url: String::new(),
-        }
-    }
-}
-
-/// Global website settings (persisted in `websettings.json`).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub(crate) struct WebGlobal {
-    #[serde(default)]
-    default_site: DefaultSite,
-}
-
-/// nginx http/server tuning knobs (persisted in `webtuning.json`). Values
-/// mirror nginx's own defaults. The server-context ones are injected into each
-/// managed site's server block (so they override per-site without clashing with
-/// the distro nginx.conf's http-level directives); `server_names_hash_bucket_size`
-/// is http-only and written to a guarded http include.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct HttpTuning {
-    #[serde(default = "d_snhbs")]
-    server_names_hash_bucket_size: u32,
-    #[serde(default = "d_gzip_on")]
-    gzip: bool,
-    #[serde(default = "d_ghdr")]
-    client_header_buffer_size: String,
-    #[serde(default = "d_gmin")]
-    gzip_min_length: u32,
-    #[serde(default = "d_cmbs")]
-    client_max_body_size: String,
-    #[serde(default = "d_gcl")]
-    gzip_comp_level: u8,
-    #[serde(default = "d_kat")]
-    keepalive_timeout: u32,
-}
-fn d_snhbs() -> u32 {
-    64
-}
-fn d_ghdr() -> String {
-    "32k".to_string()
-}
-fn d_gmin() -> u32 {
-    20
-}
-fn d_cmbs() -> String {
-    "50m".to_string()
-}
-fn d_gcl() -> u8 {
-    1
-}
-fn d_kat() -> u32 {
-    60
-}
-fn d_gzip_on() -> bool {
-    true
-}
-impl Default for HttpTuning {
-    fn default() -> Self {
-        HttpTuning {
-            server_names_hash_bucket_size: d_snhbs(),
-            gzip: true,
-            client_header_buffer_size: d_ghdr(),
-            gzip_min_length: d_gmin(),
-            client_max_body_size: d_cmbs(),
-            gzip_comp_level: d_gcl(),
-            keepalive_timeout: d_kat(),
-        }
-    }
-}
+/// Default-site / global-settings / http-tuning domain entities, re-exported
+/// from `domain::nginx` so the nginx submodules reference them unchanged.
+pub(crate) use crate::domain::nginx::{DefaultSite, HttpTuning, WebGlobal};
 
 /// A custom path rule (NPM-style "custom location"): forward a path prefix to a
 // ---------------------------------------------------------------------------
