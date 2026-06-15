@@ -18,20 +18,9 @@ use super::system_account;
 
 /// The panel-user entity now lives in the domain layer; re-exported so call
 /// sites (`crate::web::users::PanelUser`) stay stable while this module keeps
-/// the store + system-account orchestration.
+/// the system-account orchestration. Persistence is delegated to infra/store.
 pub(crate) use crate::domain::identity::PanelUser;
-
-fn users_path() -> std::path::PathBuf {
-    crate::paths::data_dir().join("users.json")
-}
-
-pub fn load() -> Vec<PanelUser> {
-    crate::json_store::load_or_default(&users_path())
-}
-
-pub fn save(users: &[PanelUser]) -> Result<()> {
-    crate::json_store::save_private(&users_path(), users)
-}
+pub(crate) use crate::infra::store::users::{load, save};
 
 /// Serializes read-modify-write access to users.json so concurrent admin
 /// requests can't lose updates: each `load -> modify -> save` runs under this

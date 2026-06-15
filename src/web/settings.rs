@@ -10,14 +10,15 @@
 //! launch banner, at generation time. If it's forgotten, `dn7 panel reset`
 //! (runnable only by the install owner / root) generates a new one.
 
-use anyhow::Result;
 use rand::Rng;
 use sha2::{Digest, Sha256};
 
 /// The console settings entity now lives in the domain layer; re-exported so
 /// call sites (`crate::web::settings::WebSettings`) stay stable while this
-/// module keeps the credential/reset behaviour, validation and persistence.
+/// module keeps the credential/reset behaviour and validation. Persistence is
+/// delegated to infra/store.
 pub(crate) use crate::domain::settings::{default_timeout, default_username, WebSettings};
+pub(crate) use crate::infra::store::settings::{load, save};
 
 /// A random 6-char lowercase-alnum safe-entry path ("/xxxxxx").
 pub fn gen_entry() -> String {
@@ -138,10 +139,6 @@ impl WebSettings {
     }
 }
 
-fn settings_path() -> std::path::PathBuf {
-    crate::paths::data_dir().join("web.json")
-}
-
 /// Generate a strong, URL-safe random password (no shell/quote specials).
 fn gen_password() -> String {
     const CHARSET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
@@ -157,11 +154,9 @@ fn gen_password() -> String {
 /// never stored in plaintext or logged. Returns `None` for the plaintext when
 /// an existing file was loaded.
 pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
-    if let Ok(raw) = std::fs::read_to_string(settings_path()) {
-        if let Ok(s) = serde_json::from_str::<WebSettings>(&raw) {
-            if !s.pw_hash.is_empty() {
-                return (s, None);
-            }
+    if let Some(s) = load() {
+        if !s.pw_hash.is_empty() {
+            return (s, None);
         }
     }
     let pw = gen_password();
@@ -195,18 +190,6 @@ pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
         "web console initialized (password shown once in the launch banner)"
     );
     (s, Some(pw))
-}
-
-/// Read persisted settings without seeding. None when not initialized.
-pub fn load() -> Option<WebSettings> {
-    let raw = std::fs::read_to_string(settings_path()).ok()?;
-    serde_json::from_str::<WebSettings>(&raw).ok()
-}
-
-/// Persist settings to `<data>/web.json` with 0600 perms (atomic, no
-/// create-then-chmod window).
-pub fn save(s: &WebSettings) -> Result<()> {
-    crate::json_store::save_private(&settings_path(), s)
 }
 
 #[cfg(test)]
