@@ -45,7 +45,7 @@ use anyhow::{anyhow, Result};
 use bollard::Docker;
 use futures::StreamExt;
 use rand::Rng;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 /// Label marking a DN7 Panel-managed MySQL/MariaDB container.
@@ -150,28 +150,15 @@ struct Req {
     prefix: Option<bool>,
 }
 
-/// Persisted per-instance manifest (`<data>/mysql/<id>.json`, 0600).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Manifest {
-    id: String,
-    engine: String,    // "mysql" | "mariadb"
-    version: String,   // image tag, e.g. "8.0"
-    container: String, // container name (dn7-mysql-<id>)
-    volume: String,    // named data volume (dn7-mysql-<id>-data)
-    /// host port if exposed, else None.
-    port: Option<i64>,
-    /// at-rest-encrypted root password (nonce:cipher), via crate::crypto.
-    root_enc: String,
-    created_at: i64,
-    /// The primary admin account name shown to the user (default "root"). When
-    /// non-root, an additional full-privilege account is created at install.
-    #[serde(default)]
-    admin_user: String,
-}
+/// Persisted per-instance manifest entity (`<data>/mysql/<id>.json`), now in
+/// the domain layer; re-exported so the mysql submodules reference `Manifest`
+/// unchanged.
+pub(crate) use crate::domain::mysql::Manifest;
 
 // ---------------------------------------------------------------------------
-// Submodules (see .kiro/steering/code-structure.md). Req/Manifest stay here so
-// descendant modules can read their private fields.
+// Submodules (see .kiro/steering/code-structure.md). Req stays here so
+// descendant modules can read its private fields; the Manifest entity lives in
+// domain::mysql.
 // ---------------------------------------------------------------------------
 mod accounts;
 mod catalog;

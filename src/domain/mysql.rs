@@ -43,3 +43,28 @@ mod tests {
         assert_eq!(image_ref("mariadb", "11.4"), "mariadb:11.4");
     }
 }
+
+use serde::{Deserialize, Serialize};
+
+/// Persisted per-instance manifest (`<data>/mysql/<id>.json`, 0600).
+///
+/// NOTE: a persisted **domain entity** — the `serde` derive is a reviewed
+/// exception (see steering §2/§4). Fields are `pub(crate)` so the mysql
+/// submodules (store/provision/query) read/build them across modules.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Manifest {
+    pub(crate) id: String,
+    pub(crate) engine: String,    // "mysql" | "mariadb"
+    pub(crate) version: String,   // image tag, e.g. "8.0"
+    pub(crate) container: String, // container name (dn7-mysql-<id>)
+    pub(crate) volume: String,    // named data volume (dn7-mysql-<id>-data)
+    /// host port if exposed, else None.
+    pub(crate) port: Option<i64>,
+    /// at-rest-encrypted root password (nonce:cipher), via crate::crypto.
+    pub(crate) root_enc: String,
+    pub(crate) created_at: i64,
+    /// The primary admin account name shown to the user (default "root"). When
+    /// non-root, an additional full-privilege account is created at install.
+    #[serde(default)]
+    pub(crate) admin_user: String,
+}
