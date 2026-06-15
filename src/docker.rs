@@ -223,6 +223,7 @@ mod pull;
 mod settings;
 mod validate;
 mod volumes;
+use crate::domain::docker::{net_driver_allowed, restart_allowed};
 pub use backups::*;
 use containers::*;
 use create::*;
@@ -236,7 +237,6 @@ use pull::*;
 use settings::*;
 use validate::*;
 use volumes::*;
-
 #[cfg(test)]
 mod tests;
 

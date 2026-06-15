@@ -5,25 +5,12 @@ use super::*;
 // Detached create container
 // ---------------------------------------------------------------------------
 
-/// Whitelisted restart policies.
-pub(crate) fn restart_allowed(p: &str) -> bool {
-    matches!(p, "no" | "unless-stopped" | "always")
-}
-
 /// Trim an optional string and drop it when empty.
 pub(crate) fn opt_trim(s: &Option<String>) -> Option<String> {
     s.as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-}
-
-/// Whitelisted network drivers offered in the create-network dialog.
-pub(crate) fn net_driver_allowed(d: &str) -> bool {
-    matches!(
-        d,
-        "bridge" | "macvlan" | "ipvlan" | "overlay" | "host" | "none"
-    )
 }
 
 /// Validate an IPv4 dotted-quad address (no port, no CIDR suffix).

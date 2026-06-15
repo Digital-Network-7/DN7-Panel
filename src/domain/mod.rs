@@ -6,6 +6,7 @@
 //! without any runtime.
 
 pub(crate) mod authz;
+pub(crate) mod docker;
 pub(crate) mod error;
 pub(crate) mod identity;
 pub(crate) mod mysql;
