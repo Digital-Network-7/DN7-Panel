@@ -40,6 +40,16 @@ impl PanelUser {
     }
 }
 
+/// The authenticated actor of a use-case (resolved once from the session). A
+/// pure value object — no transport, no storage.
+#[derive(Debug, Clone)]
+pub(crate) struct Principal {
+    pub(crate) username: String,
+    pub(crate) is_super: bool,
+    /// System account to act as for OS-side effects (None for the super-admin).
+    pub(crate) system_user: Option<String>,
+}
+
 /// A Linux username: lowercase start, then lowercase/digits/_/-; 1..=32 chars.
 /// Conservative (NAME_REGEX-style) so it can't smuggle shell/flag characters.
 pub(crate) fn valid_username(s: &str) -> bool {

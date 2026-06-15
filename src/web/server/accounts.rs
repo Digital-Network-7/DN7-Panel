@@ -20,27 +20,6 @@ pub(crate) use crate::domain::authz::{can_manage, role_level};
 // entry point can forget the session/audit policy after a credential change.
 // ---------------------------------------------------------------------------
 
-/// Verify the caller's current password before allowing a change: their
-/// `old_verifier` must equal the stored salted hash (super-admin → web.json,
-/// else the panel user's record). Returns a domain error (no transport types).
-pub(crate) fn verify_current_password(
-    state: &Shared,
-    a: &Account,
-    old_verifier: &str,
-) -> Result<(), crate::domain::Error> {
-    let cur_hash = if a.is_super {
-        state.settings.lock().unwrap().pw_hash.clone()
-    } else {
-        crate::web::users::find(&a.username)
-            .map(|u| u.pw_hash)
-            .unwrap_or_default()
-    };
-    if cur_hash.is_empty() || old_verifier.to_lowercase() != cur_hash {
-        return Err(crate::domain::Error::OldPasswordWrong);
-    }
-    Ok(())
-}
-
 /// Map an account domain error to its HTTP response. This is the single
 /// domain→transport mapping point for the account/credential flows; it lives in
 /// the web layer because it owns the wire codes (aligned with the frontend
@@ -51,50 +30,12 @@ pub(crate) fn map_domain_err(e: crate::domain::Error) -> Response {
         PasswordMalformed => api_err(StatusCode::BAD_REQUEST, "settings.pw_format"),
         OldPasswordWrong => api_err(StatusCode::BAD_REQUEST, "settings.bad_old_password"),
         TotpInvalid => api_err(StatusCode::BAD_REQUEST, "auth.bad_totp"),
+        Persist(detail) => api_err_detail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "common.save_failed",
+            detail,
+        ),
     }
-}
-
-/// Persist a new password verifier (super-admin → web.json, else the panel user
-/// record) and, for system-backed users, sync the OS password. `plaintext` is
-/// the cleartext new password (system users only); empty to skip the OS sync.
-#[allow(clippy::result_large_err)]
-pub(crate) async fn save_new_password(
-    state: &Shared,
-    a: &Account,
-    salt: &str,
-    hash_input: &str,
-    plaintext: &str,
-) -> Result<(), Response> {
-    let hash = hash_input.to_lowercase();
-    if a.is_super {
-        let saved = {
-            let mut s = state.settings.lock().unwrap();
-            s.set_password_hashed(salt, &hash);
-            s.clone()
-        };
-        if let Err(e) = settings::save(&saved) {
-            return Err(api_err_detail(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "common.save_failed",
-                e,
-            ));
-        }
-    } else {
-        let res = crate::web::users::update(&a.username, |u| {
-            u.pw_salt = salt.to_string();
-            u.pw_hash = hash.clone();
-        });
-        if let Err(e) = res {
-            return Err(Json(op_err_body(e)).into_response());
-        }
-        // Sync the OS password to the new panel password.
-        if !plaintext.is_empty() {
-            if let Some(u) = &a.system_user {
-                let _ = crate::web::system_account::set_system_password(u, plaintext).await;
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Read the caller's pending/active TOTP secret.

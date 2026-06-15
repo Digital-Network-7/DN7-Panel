@@ -280,6 +280,15 @@ impl Account {
             "user"
         }
     }
+
+    /// The domain `Principal` for this account (use-case actor).
+    fn to_principal(&self) -> crate::domain::identity::Principal {
+        crate::domain::identity::Principal {
+            username: self.username.clone(),
+            is_super: self.is_super,
+            system_user: self.system_user.clone(),
+        }
+    }
 }
 
 /// Resolve an account name to a super-admin or panel-user view.

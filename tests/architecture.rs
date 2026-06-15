@@ -32,6 +32,11 @@ const RULES: &[(&str, &[&str])] = &[
         "src/infra",
         &["axum", "crate::web"],
     ),
+    (
+        // app 编排用例,只依赖 domain + ports;不碰交付层/外部系统。
+        "src/app",
+        &["axum", "bollard", "reqwest", "crate::web"],
+    ),
 ];
 
 fn scan(dir: &Path, forbidden: &[&str], violations: &mut Vec<String>) {

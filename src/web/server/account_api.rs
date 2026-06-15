@@ -111,24 +111,75 @@ pub(crate) async fn put_password(
         Ok(a) => a,
         Err(r) => return r,
     };
-    if !crate::web::users::valid_pw_format(&req.pw_salt, &req.pw_hash) {
-        return map_domain_err(crate::domain::Error::PasswordMalformed);
+    let who = a.to_principal();
+    let env = WebAccountEnv { state: &state };
+    let keep = bearer(&headers);
+    match crate::app::account::change_password(
+        &env,
+        &who,
+        &req.pw_salt,
+        &req.pw_hash,
+        &req.old_verifier,
+        &req.password,
+        keep.as_deref(),
+    )
+    .await
+    {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => map_domain_err(e),
     }
-    if let Err(e) = verify_current_password(&state, &a, &req.old_verifier) {
-        return map_domain_err(e);
+}
+
+/// Web adapter implementing the account use-case environment over live console
+/// state (settings/users store + session guard + audit + system accounts).
+struct WebAccountEnv<'a> {
+    state: &'a Shared,
+}
+
+impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
+    fn current_verifier(&self, who: &crate::domain::identity::Principal) -> String {
+        if who.is_super {
+            self.state.settings.lock().unwrap().pw_hash.clone()
+        } else {
+            crate::web::users::find(&who.username)
+                .map(|u| u.pw_hash)
+                .unwrap_or_default()
+        }
     }
-    if let Err(r) = save_new_password(&state, &a, &req.pw_salt, &req.pw_hash, &req.password).await {
-        return r;
+
+    fn save_password(
+        &self,
+        who: &crate::domain::identity::Principal,
+        salt: &str,
+        hash: &str,
+    ) -> Result<(), crate::domain::Error> {
+        if who.is_super {
+            let saved = {
+                let mut s = self.state.settings.lock().unwrap();
+                s.set_password_hashed(salt, hash);
+                s.clone()
+            };
+            settings::save(&saved).map_err(|e| crate::domain::Error::Persist(e.to_string()))
+        } else {
+            crate::web::users::update(&who.username, |u| {
+                u.pw_salt = salt.to_string();
+                u.pw_hash = hash.to_string();
+            })
+            .map_err(|e| crate::domain::Error::Persist(e.to_string()))
+        }
     }
-    // Invalidate any other (possibly leaked) sessions/tickets for this account,
-    // keeping the caller's current session, then audit.
-    after_credential_change(
-        &state,
-        &a.username,
-        bearer(&headers).as_deref(),
-        "account.password",
-    );
-    Json(json!({ "ok": true })).into_response()
+
+    async fn sync_system_password(&self, system_user: &str, plaintext: &str) {
+        let _ = crate::web::system_account::set_system_password(system_user, plaintext).await;
+    }
+
+    fn revoke_other_sessions(&self, username: &str, keep: Option<&str>) {
+        self.state.auth.revoke_user(username, keep);
+    }
+
+    fn audit(&self, username: &str, action: &str) {
+        audit::record(username, action, username, true, "");
+    }
 }
 
 /// POST /api/2fa/setup — generate a fresh (pending) TOTP secret + QR. 2FA is not

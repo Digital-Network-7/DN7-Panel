@@ -1,3 +1,4 @@
+mod app;
 mod autostart;
 mod banner;
 mod config;

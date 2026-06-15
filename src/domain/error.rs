@@ -15,4 +15,6 @@ pub(crate) enum Error {
     OldPasswordWrong,
     /// The supplied TOTP code was missing or did not verify.
     TotpInvalid,
+    /// Persisting the change failed (detail carries the underlying error).
+    Persist(String),
 }
