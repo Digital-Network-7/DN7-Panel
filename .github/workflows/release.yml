@@ -45,8 +45,48 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "next version: $version"
 
+  # Gate: formatting, lints (warnings = errors), and the test suite must pass
+  # before anything is built/signed/released — so regressions and lint failures
+  # can't reach a published release. Runs on the host (gnu) target; the final
+  # static musl binaries are produced by the `build` job.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (+ rustfmt, clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: check
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test
+
+      # Dependency vulnerability scan. Advisory-only (continue-on-error) so a new
+      # advisory in a transitive dep with no available fix surfaces in the run
+      # log without permanently blocking every release.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Dependency audit
+        continue-on-error: true
+        run: cargo audit
+
   build:
-    needs: version
+    needs: [version, check]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

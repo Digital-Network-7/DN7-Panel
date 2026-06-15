@@ -124,7 +124,44 @@ fn build_router(state: Shared) -> Router {
             state.clone(),
             entry_gate,
         ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            security_headers,
+        ))
         .with_state(state)
+}
+
+/// Attach defensive security headers to every response. A Content-Security-
+/// Policy locks `default-src`/`connect-src`/`img-src` to same-origin, which
+/// blocks an injected script from exfiltrating the session token to an external
+/// origin (the main XSS risk for a token-in-JS app); `script-src`/`style-src`
+/// keep `'unsafe-inline'` because the bundled UI uses inline handlers/styles (a
+/// nonce-based strict policy is a future improvement). HSTS is sent only over
+/// HTTPS (browsers ignore it over HTTP, and sending it could strand an
+/// HTTP-only deployment).
+async fn security_headers(State(state): State<Shared>, req: Request, next: Next) -> Response {
+    let https = state.settings.lock().map(|s| s.https).unwrap_or(false);
+    let mut resp = next.run(req).await;
+    let h = resp.headers_mut();
+    const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; \
+        style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; \
+        object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'";
+    let mut set = |name: header::HeaderName, val: &str| {
+        if let Ok(v) = header::HeaderValue::from_str(val) {
+            h.insert(name, v);
+        }
+    };
+    set(header::CONTENT_SECURITY_POLICY, CSP);
+    set(header::X_CONTENT_TYPE_OPTIONS, "nosniff");
+    set(header::X_FRAME_OPTIONS, "DENY");
+    set(header::REFERRER_POLICY, "same-origin");
+    if https {
+        set(
+            header::STRICT_TRANSPORT_SECURITY,
+            "max-age=31536000; includeSubDomains",
+        );
+    }
+    resp
 }
 
 /// Bind and serve the app on `addr`, over self-signed HTTPS (rustls ring
@@ -190,7 +227,14 @@ async fn entry_gate_inner(state: Shared, req: Request, next: Next) -> Response {
             .map(|ci| ci.0.ip());
         let ok = match peer {
             Some(ip) => ip_in_allowlist(&allow, ip),
-            None => true, // can't determine peer (shouldn't happen) — fail open
+            // Fail closed: an allow-list is configured but we can't determine
+            // the source IP (shouldn't happen — the router is mounted with
+            // ConnectInfo). Denying is the safe choice; allowing would silently
+            // disable the allow-list.
+            None => {
+                tracing::warn!("allow-list active but peer IP unavailable; denying request");
+                false
+            }
         };
         if !ok {
             return (StatusCode::FORBIDDEN, "Forbidden").into_response();

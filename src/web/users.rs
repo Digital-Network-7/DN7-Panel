@@ -66,6 +66,23 @@ pub fn save(users: &[PanelUser]) -> Result<()> {
     Ok(())
 }
 
+/// Serializes read-modify-write access to users.json so concurrent admin
+/// requests can't lose updates: each `load -> modify -> save` runs under this
+/// lock. Reads (`load`/`find`) are intentionally unlocked — a write is a single
+/// atomic rename, so a concurrent reader sees either the old or new file, never
+/// a partial one. Poison is recovered (the data is reloaded from disk each
+/// time, so there's no in-memory invariant a panic could corrupt).
+static USERS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Run an atomic read-modify-write against users.json under `USERS_LOCK`.
+fn mutate<T>(f: impl FnOnce(&mut Vec<PanelUser>) -> Result<T>) -> Result<T> {
+    let _guard = USERS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut users = load();
+    let out = f(&mut users)?;
+    save(&users)?;
+    Ok(out)
+}
+
 pub fn find(username: &str) -> Option<PanelUser> {
     load().into_iter().find(|u| u.username == username)
 }
@@ -186,8 +203,9 @@ pub struct NewUser<'a> {
 
 pub async fn create(req: &NewUser<'_>) -> Result<PanelUser> {
     validate_new_user(req)?;
-    let mut users = load();
-    if users.iter().any(|u| u.username == req.username) {
+    // Fast-fail before any system-account side effects; re-checked under the
+    // mutation lock below to close the create-vs-create race.
+    if find(req.username).is_some() {
         return Err(anyhow!("ERR_CODE:users.exists"));
     }
     provision_system_account(req).await?;
@@ -204,8 +222,14 @@ pub async fn create(req: &NewUser<'_>) -> Result<PanelUser> {
         totp_enabled: false,
         uid,
     };
-    users.push(user.clone());
-    save(&users)?;
+    let u = user.clone();
+    mutate(move |users| {
+        if users.iter().any(|x| x.username == u.username) {
+            return Err(anyhow!("ERR_CODE:users.exists"));
+        }
+        users.push(u);
+        Ok(())
+    })?;
     Ok(user)
 }
 
@@ -253,28 +277,29 @@ async fn provision_system_account(req: &NewUser<'_>) -> Result<()> {
 
 /// Delete a panel user and remove the backing system account (with its home).
 pub async fn delete(username: &str) -> Result<()> {
-    let mut users = load();
-    if !users.iter().any(|u| u.username == username) {
+    if find(username).is_none() {
         return Err(anyhow!("ERR_CODE:users.not_found"));
     }
     // Remove the OS account + home (best-effort: keep going if already gone).
     if getpwnam(username).is_some() {
         run("userdel", &["-r", username]).await?;
     }
-    users.retain(|u| u.username != username);
-    save(&users)?;
-    Ok(())
+    mutate(|users| {
+        users.retain(|u| u.username != username);
+        Ok(())
+    })
 }
 
-/// Update mutable profile/credential fields, persisting the change.
+/// Update mutable profile/credential fields, persisting the change atomically.
 pub fn update<F: FnOnce(&mut PanelUser)>(username: &str, f: F) -> Result<()> {
-    let mut users = load();
-    let u = users
-        .iter_mut()
-        .find(|u| u.username == username)
-        .ok_or_else(|| anyhow!("ERR_CODE:users.not_found"))?;
-    f(u);
-    save(&users)
+    mutate(|users| {
+        let u = users
+            .iter_mut()
+            .find(|u| u.username == username)
+            .ok_or_else(|| anyhow!("ERR_CODE:users.not_found"))?;
+        f(u);
+        Ok(())
+    })
 }
 
 /// Grant or revoke the system admin group (sudo/wheel) for a user — used when
