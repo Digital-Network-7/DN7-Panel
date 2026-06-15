@@ -65,29 +65,40 @@ pub(crate) async fn put_settings(
     if let Err(r) = require_super(&state, &headers) {
         return r;
     }
-    let (saved, needs_restart, new_ttl) = {
+    let actor = actor_name(&state, &headers);
+    let (saved, outcome) = {
         let mut s = state.settings.lock().unwrap();
         match apply_settings_update(&mut s, req) {
-            Ok((nr, ttl)) => (s.clone(), nr, ttl),
+            Ok(o) => (s.clone(), o),
             Err(resp) => return resp,
         }
     };
     // Session TTL is applied live to the auth layer (kept out of the settings
     // lock). Only when the request actually carried a new timeout.
-    if let Some(secs) = new_ttl {
+    if let Some(secs) = outcome.new_ttl {
         state.auth.set_ttl_secs(secs);
     }
     if let Err(e) = settings::save(&saved) {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
-    audit::record(
-        &actor_name(&state, &headers),
-        "settings.update",
-        "",
-        true,
-        "",
-    );
-    Json(json!({ "ok": true, "needs_restart": needs_restart })).into_response()
+    // A password change must invalidate the account's other (possibly leaked)
+    // sessions/tickets — the same policy the account password flow applies —
+    // keeping the caller's current session alive.
+    if outcome.password_changed {
+        state.auth.revoke_user(&actor, bearer(&headers).as_deref());
+    }
+    audit::record(&actor, "settings.update", "", true, "");
+    Json(json!({ "ok": true, "needs_restart": outcome.needs_restart })).into_response()
+}
+
+/// What the caller must still do after a settings update is applied in place.
+struct SettingsOutcome {
+    /// A field that needs a listener rebind (port / https) changed.
+    needs_restart: bool,
+    /// New session-timeout in seconds, when the request changed it.
+    new_ttl: Option<u64>,
+    /// The console password was (re)set in this request.
+    password_changed: bool,
 }
 
 /// Apply a validated settings update onto `s` in place. Returns
@@ -100,7 +111,7 @@ pub(crate) async fn put_settings(
 fn apply_settings_update(
     s: &mut WebSettings,
     req: SettingsReq,
-) -> Result<(bool, Option<u64>), Response> {
+) -> Result<SettingsOutcome, Response> {
     let mut needs_restart = false;
     let mut new_ttl = None;
     if let Some(p) = req.port {
@@ -112,7 +123,7 @@ fn apply_settings_update(
             needs_restart = true;
         }
     }
-    apply_password_change(s, &req)?;
+    let password_changed = apply_password_change(s, &req)?;
     if let Some(un) = req.username {
         let un = un.trim();
         if un.len() < 2
@@ -162,16 +173,21 @@ fn apply_settings_update(
             None => return Err(api_err(StatusCode::BAD_REQUEST, "settings.bad_allow_ip")),
         }
     }
-    Ok((needs_restart, new_ttl))
+    Ok(SettingsOutcome {
+        needs_restart,
+        new_ttl,
+        password_changed,
+    })
 }
 
 /// Apply a password change: a client-computed salt + hash (plaintext never
 /// crosses the wire). While still on the auto-generated default, require proof
-/// the new password actually differs from it. No-op when neither field is set.
+/// the new password actually differs from it. Returns whether the password was
+/// changed; no-op (false) when neither field is set.
 #[allow(clippy::result_large_err)]
-fn apply_password_change(s: &mut WebSettings, req: &SettingsReq) -> Result<(), Response> {
+fn apply_password_change(s: &mut WebSettings, req: &SettingsReq) -> Result<bool, Response> {
     if req.pw_salt.is_none() && req.pw_hash.is_none() {
-        return Ok(());
+        return Ok(false);
     }
     let was_default = s.pw_default;
     let cur_hash = s.pw_hash.clone();
@@ -189,5 +205,5 @@ fn apply_password_change(s: &mut WebSettings, req: &SettingsReq) -> Result<(), R
         }
     }
     s.set_password_hashed(&salt, &hash.to_lowercase());
-    Ok(())
+    Ok(true)
 }
