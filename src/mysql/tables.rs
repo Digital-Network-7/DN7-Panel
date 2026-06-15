@@ -142,13 +142,7 @@ pub(crate) async fn table_rows(req: &Req) -> Result<Value> {
         sql_escape(db),
         sql_escape(tbl)
     );
-    let (cc, cout) = mysql_exec_query(&m.container, &password, &col_sql).await?;
-    if cc != 0 {
-        return Err(anyhow!(
-            "查询失败：{}",
-            cout.trim().chars().take(200).collect::<String>()
-        ));
-    }
+    let cout = query_or_err(&m.container, &password, &col_sql).await?;
     let cols: Vec<String> = cout
         .lines()
         .map(|l| l.trim_end().to_string())
@@ -161,13 +155,28 @@ pub(crate) async fn table_rows(req: &Req) -> Result<Value> {
         ident_quote(tbl),
         limit
     );
-    let (code, out) = mysql_exec_query(&m.container, &password, &sql).await?;
+    let out = query_or_err(&m.container, &password, &sql).await?;
+    let rows = parse_tsv_rows(&out);
+    Ok(json!({ "columns": cols, "rows": rows, "limit": limit }))
+}
+
+/// Run a query in the instance container and return its stdout, mapping a
+/// non-zero exit into a truncated "查询失败" error.
+async fn query_or_err(container: &str, password: &str, sql: &str) -> Result<String> {
+    let (code, out) = mysql_exec_query(container, password, sql).await?;
     if code != 0 {
         return Err(anyhow!(
             "查询失败：{}",
             out.trim().chars().take(200).collect::<String>()
         ));
     }
+    Ok(out)
+}
+
+/// Parse mysql `-B` batch output (tab-separated, one row per line) into JSON
+/// row arrays. A literal `NULL` field becomes JSON null; everything else is
+/// unescaped and kept as a string.
+fn parse_tsv_rows(out: &str) -> Vec<Value> {
     let mut rows = Vec::new();
     for line in out.lines() {
         if line.is_empty() {
@@ -185,7 +194,7 @@ pub(crate) async fn table_rows(req: &Req) -> Result<Value> {
             .collect();
         rows.push(Value::Array(row));
     }
-    Ok(json!({ "columns": cols, "rows": rows, "limit": limit }))
+    rows
 }
 
 /// Parse a column type into a safe, canonical form, or `None` if it isn't a
