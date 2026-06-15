@@ -160,6 +160,11 @@ pub(crate) async fn put_password(
     if let Err(r) = save_new_password(&state, &a, &req).await {
         return r;
     }
+    // Invalidate any other (possibly leaked) sessions/tickets for this account,
+    // keeping the caller's current session so they stay logged in.
+    state
+        .auth
+        .revoke_user(&a.username, bearer(&headers).as_deref());
     audit::record(&a.username, "account.password", &a.username, true, "");
     Json(json!({ "ok": true })).into_response()
 }
@@ -305,6 +310,9 @@ pub(crate) async fn twofa_enable(
     if let Err(e) = write_totp(&state, &a, &secret, true) {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
+    state
+        .auth
+        .revoke_user(&a.username, bearer(&headers).as_deref());
     audit::record(&a.username, "account.2fa_enable", &a.username, true, "");
     Json(json!({ "ok": true })).into_response()
 }
@@ -326,6 +334,9 @@ pub(crate) async fn twofa_disable(
     if let Err(e) = write_totp(&state, &a, "", false) {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
+    state
+        .auth
+        .revoke_user(&a.username, bearer(&headers).as_deref());
     audit::record(&a.username, "account.2fa_disable", &a.username, true, "");
     Json(json!({ "ok": true })).into_response()
 }

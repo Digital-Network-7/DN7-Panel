@@ -184,6 +184,19 @@ impl AuthState {
         self.save_sessions();
     }
 
+    /// Revoke every session and pending ticket belonging to `user`, optionally
+    /// keeping one token alive (the caller's current session). Called after a
+    /// password or 2FA change so any previously-leaked token is immediately
+    /// invalidated instead of surviving until its TTL expires.
+    pub fn revoke_user(&self, user: &str, keep: Option<&str>) {
+        {
+            let mut m = self.sessions.lock().unwrap();
+            m.retain(|tok, rec| rec.user != user || keep == Some(tok.as_str()));
+        }
+        self.tickets.lock().unwrap().retain(|_, r| r.user != user);
+        self.save_sessions();
+    }
+
     /// Mint a one-time login challenge nonce (hex). The client proves knowledge
     /// of the password by returning `sha256(nonce:password)` so the cleartext
     /// password never crosses the (plaintext-HTTP) wire.

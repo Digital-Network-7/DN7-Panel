@@ -191,6 +191,9 @@ pub(crate) async fn users_update(
                 let _ = crate::web::users::set_system_password(&req.username, p).await;
             }
         }
+        // An admin password reset must immediately cut off the target's existing
+        // sessions/tickets (a takeover survives a reset otherwise).
+        state.auth.revoke_user(&req.username, None);
     }
     audit::record(&actor.username, "user.update", &req.username, true, "");
     Json(json!({ "ok": true })).into_response()
@@ -260,6 +263,7 @@ pub(crate) async fn users_delete(
     }
     match crate::web::users::delete(&req.username).await {
         Ok(_) => {
+            state.auth.revoke_user(&req.username, None);
             audit::record(&actor.username, "user.delete", &req.username, true, "");
             Json(json!({ "ok": true })).into_response()
         }
