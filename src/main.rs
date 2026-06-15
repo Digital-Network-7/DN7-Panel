@@ -4,6 +4,7 @@ mod config;
 mod crypto;
 mod daemon;
 mod docker;
+mod domain;
 mod fetch;
 mod file;
 mod guardian;

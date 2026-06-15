@@ -84,15 +84,9 @@ pub fn find(username: &str) -> Option<PanelUser> {
 
 /// A Linux username: lowercase start, then lowercase/digits/_/-; 1..=32 chars.
 /// Conservative (NAME_REGEX-style) so it can't smuggle shell/flag characters.
-pub fn valid_username(s: &str) -> bool {
-    let b = s.as_bytes();
-    !b.is_empty()
-        && b.len() <= 32
-        && (b[0].is_ascii_lowercase() || b[0] == b'_')
-        && b.iter()
-            .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-')
-        && s != "root"
-}
+/// Validators now live in the domain layer; re-exported so existing call sites
+/// (`crate::web::users::valid_username` / `valid_pw_format`) stay stable.
+pub(crate) use crate::domain::identity::{valid_pw_format, valid_username};
 
 /// Create a panel user **and** the backing system account. `role` is "admin"
 /// (sudo) or "user". The OS password is left locked; the panel password is
@@ -140,17 +134,6 @@ pub async fn create(req: &NewUser<'_>) -> Result<PanelUser> {
         Ok(())
     })?;
     Ok(user)
-}
-
-/// Whether a client-computed credential pair is well-formed: a 32-hex salt and
-/// a 64-hex (sha256) verifier. The cleartext password never reaches the server,
-/// so this format is the only server-side credential check. Shared by every
-/// password entry point (create / self-change / admin reset / settings).
-pub(crate) fn valid_pw_format(salt: &str, hash: &str) -> bool {
-    salt.len() == 32
-        && salt.bytes().all(|b| b.is_ascii_hexdigit())
-        && hash.len() == 64
-        && hash.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Validate a new-user request (username chars, role, and well-formed hex
@@ -203,22 +186,4 @@ pub fn update<F: FnOnce(&mut PanelUser)>(username: &str, f: F) -> Result<()> {
         f(u);
         Ok(())
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn username_rules() {
-        assert!(valid_username("alice"));
-        assert!(valid_username("bob_2"));
-        assert!(valid_username("_svc"));
-        assert!(!valid_username("Alice")); // uppercase
-        assert!(!valid_username("1abc")); // leading digit
-        assert!(!valid_username("a b")); // space
-        assert!(!valid_username("root")); // reserved
-        assert!(!valid_username("")); // empty
-        assert!(!valid_username("-x")); // leading dash
-    }
 }

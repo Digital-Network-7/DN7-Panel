@@ -5,30 +5,12 @@ use super::*;
 
 /// Privilege level: super-admin (owner) 2, admin (sudo) 1, plain user 0.
 pub(crate) fn account_level(a: &Account) -> u8 {
-    if a.is_super {
-        2
-    } else if a.is_admin {
-        1
-    } else {
-        0
-    }
+    crate::domain::authz::level(a.is_super, a.is_admin)
 }
 
-/// Privilege level implied by a stored role string ("admin" = 1, else 0).
-pub(crate) fn role_level(role: &str) -> u8 {
-    if role == "admin" {
-        1
-    } else {
-        0
-    }
-}
-
-/// Whether an actor may create / modify / delete / assign an account at
-/// `target_lvl`: only targets strictly lower in privilege than the actor.
-/// Centralizes the rule the create/update/delete handlers each used to inline.
-pub(crate) fn can_manage(actor_lvl: u8, target_lvl: u8) -> bool {
-    actor_lvl > target_lvl
-}
+/// Privilege model lives in the domain layer; re-exported so the user handlers
+/// can keep calling `role_level` / `accounts::can_manage` unchanged.
+pub(crate) use crate::domain::authz::{can_manage, role_level};
 
 // ---------------------------------------------------------------------------
 // Account use-case services
