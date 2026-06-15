@@ -116,9 +116,9 @@ platform 独立;跨层装配仅限"受控组合根集合"
 
 解析 `use` 行(跳过注释/字符串/`#[cfg(test)]`/组合根),不要做脆弱的裸 grep。
 
-1. **目录级 deny(第 0 步先落地,最稳)**:如 `web/**` 禁 `bollard`/`tokio::process`/`std::process`/nginx 低层模块。
+1. **目录级 deny(已落地)**:`domain` 禁 `axum`/`bollard`/`reqwest`/`tokio::process`/`std::process` + 上层依赖 `crate::{app,infra,web}`;`infra` 禁 `axum`/`crate::web`;`app` 禁 `axum`/`bollard`/`reqwest`/`crate::web`。
 2. **模块级 allowlist(随迁移补)**:如只有 `infra/docker/**` 可 `bollard`,只有 `web/**` 可 `axum`。比全局 deny 更可靠。
-3. **语义级(最后补)**:如 `domain/**` 禁 `serde::{Serialize,Deserialize}`、`axum`、`reqwest`、`tokio::process`。不要第 0 步就全开红。
+3. **语义级(已部分落地)**:`domain_serde_is_whitelisted` 强制 `domain` 默认禁 serde,仅评审过的持久化实体文件(`identity`/`settings`/`mysql`/`nginx`)可 derive;其余 `domain` 文件出现 serde 即测试失败。后续可继续补 `axum`/`reqwest` 等语义级断言。不要第 0 步就全开红。
 
 每一层都从"宽松起步、逐步收紧",新增违规即测试失败。迁移期允许对尚未迁移的目录加显式例外标记,但例外**不是永久豁免池**,必须遵守三条硬规则:
 
@@ -141,7 +141,7 @@ platform 独立;跨层装配仅限"受控组合根集合"
 ## 10. 迁移现状(随推进更新)
 
 **已完成**
-- 分层骨架与依赖规则:`domain` / `app` / `infra` / `web` / `platform` 目录 + `tests/architecture.rs` tier-1 治理 `domain`/`infra`/`app`。
+- 分层骨架与依赖规则:`domain` / `app` / `infra` / `web` / `platform` 目录 + `tests/architecture.rs`:tier-1 目录级 deny(含 `domain` 无上层依赖)+ tier-3 语义级 `domain` serde 白名单,治理 `domain`/`infra`/`app`。
 - `domain`:`authz`、`identity`(校验器 + `PanelUser` + `Principal`)、`settings`(`WebSettings`)、`error`(`domain::Error` + 唯一 web 边界映射 `map_domain_err`)。
 - `domain`:`authz`、`identity`(校验器 + `PanelUser` + `Principal`)、`settings`(`WebSettings`)、`error`;并已扩展到各能力的规则/实体——`nginx`(校验器 + 持久化实体 `Site`/`Location`/`AccessList`/`AccessUser`/`AccessClient`/`DefaultSite`/`WebGlobal`/`HttpTuning`)、`mysql`(引擎目录规则 + 持久化实体 `Manifest`)、`docker`(创建策略白名单)。持久化实体的 `serde` derive 属 §2/§4 评审例外,字段 `pub(crate)` 经 re-export 供各能力子模块原样引用。
 - `infra`:`audit`、`auth`(会话/challenge/ticket/限流)、`store`(users/settings 持久化)、`system`(OS 适配)。
