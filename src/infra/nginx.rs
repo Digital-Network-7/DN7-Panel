@@ -230,11 +230,16 @@ pub(crate) fn web_settings_state() -> (
     )
 }
 
+/// Read-only managed-site list for the `list_sites` use-case (owned by
+/// `app::nginx`). Pure read — manifests only, no nginx contact.
+pub(crate) fn sites_snapshot() -> Vec<crate::domain::nginx::Site> {
+    load_sites()
+}
+
 async fn handle(req: &Req) -> Result<Value> {
     match req.op.as_str() {
         "info" => nginx_info().await,
         "setup" => start_setup(req),
-        "list_sites" => Ok(json!({ "sites": load_sites() })),
         "add_site" => add_site(req).await,
         "update_site" => update_site(req).await,
         "remove_site" => remove_site(req).await,

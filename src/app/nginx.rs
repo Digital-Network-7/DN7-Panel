@@ -25,6 +25,8 @@ pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
         // Read-only website settings (default-site + http tuning). Pure read,
         // no nginx reload — first op migrated to the application layer.
         Some("get_settings") => get_settings(),
+        // Read-only managed-site list (manifests only).
+        Some("list_sites") => Ok(json!({ "sites": crate::infra::nginx::sites_snapshot() })),
         _ => crate::infra::nginx::web_dispatch(body).await,
     }
 }
