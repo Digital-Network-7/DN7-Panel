@@ -12,45 +12,7 @@ pub(crate) async fn me(State(state): State<Shared>, headers: header::HeaderMap) 
         Ok(a) => a,
         Err(r) => return r,
     };
-    let (full_name, nickname, avatar, totp_enabled, must_setup) = if a.is_super {
-        let s = state.settings.lock().unwrap();
-        (
-            s.full_name.clone(),
-            s.nickname.clone(),
-            s.avatar.clone(),
-            s.totp_enabled,
-            s.pw_default || s.username.eq_ignore_ascii_case("admin"),
-        )
-    } else {
-        match crate::web::users::find(&a.username) {
-            Some(u) => (u.full_name, u.nickname, u.avatar, u.totp_enabled, false),
-            None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
-        }
-    };
-    // Home directory to open the file manager at: the user's system home, or
-    // the panel owner's home (root) for the super-admin.
-    let home = match &a.system_user {
-        Some(u) => crate::web::users::getpwnam(u)
-            .map(|(_, h)| h)
-            .unwrap_or_else(|| "/".to_string()),
-        None => std::env::var("HOME")
-            .ok()
-            .filter(|h| !h.is_empty())
-            .unwrap_or_else(|| "/root".to_string()),
-    };
-    Json(json!({ "ok": true, "data": {
-        "username": a.username,
-        "is_admin": a.is_admin,
-        "is_super": a.is_super,
-        "role": if a.is_admin { "admin" } else { "user" },
-        "full_name": full_name,
-        "nickname": nickname,
-        "avatar": avatar,
-        "totp_enabled": totp_enabled,
-        "must_setup": must_setup,
-        "home": home,
-    }}))
-    .into_response()
+    Json(json!({ "ok": true, "data": me_view(&state, &a) })).into_response()
 }
 
 #[derive(serde::Deserialize)]

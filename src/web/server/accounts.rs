@@ -153,6 +153,50 @@ pub(crate) fn after_credential_change(
     audit::record(username, action, username, true, "");
 }
 
+/// Assemble the `/api/me` view for a principal: identity + role + 2FA + profile
+/// (full name / nickname / avatar) + first-run setup flag + the home directory
+/// to open the file manager at. Owns the super-admin vs panel-user branch so
+/// the handler stays a thin adapter.
+pub(crate) fn me_view(state: &Shared, a: &Account) -> Value {
+    let (full_name, nickname, avatar, must_setup) = if a.is_super {
+        let s = state.settings.lock().unwrap();
+        (
+            s.full_name.clone(),
+            s.nickname.clone(),
+            s.avatar.clone(),
+            s.pw_default || s.username.eq_ignore_ascii_case("admin"),
+        )
+    } else {
+        match crate::web::users::find(&a.username) {
+            Some(u) => (u.full_name, u.nickname, u.avatar, false),
+            None => (String::new(), String::new(), String::new(), false),
+        }
+    };
+    // Home directory to open the file manager at: the user's system home, or
+    // the panel owner's home (root) for the super-admin.
+    let home = match &a.system_user {
+        Some(u) => crate::web::users::getpwnam(u)
+            .map(|(_, h)| h)
+            .unwrap_or_else(|| "/".to_string()),
+        None => std::env::var("HOME")
+            .ok()
+            .filter(|h| !h.is_empty())
+            .unwrap_or_else(|| "/root".to_string()),
+    };
+    json!({
+        "username": a.username,
+        "is_admin": a.is_admin,
+        "is_super": a.is_super,
+        "role": a.role(),
+        "full_name": full_name,
+        "nickname": nickname,
+        "avatar": avatar,
+        "totp_enabled": a.totp_enabled,
+        "must_setup": must_setup,
+        "home": home,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +207,7 @@ mod tests {
             is_admin,
             is_super,
             system_user: None,
+            totp_enabled: false,
         }
     }
 

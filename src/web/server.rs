@@ -252,8 +252,10 @@ fn require_auth(state: &Shared, headers: &header::HeaderMap) -> Option<Response>
     }
 }
 
-/// A resolved, authenticated account: the super-admin (web.json) or a
-/// system-backed panel user (users.json).
+/// A resolved, authenticated account — the request's **principal**. Built once
+/// per request by `resolve_account` from the bearer token, it carries the
+/// identity facts handlers/services need (role, system user, 2FA state) so they
+/// never re-derive "who is this / what may they do" from settings/users.
 struct Account {
     username: String,
     is_admin: bool,
@@ -261,6 +263,19 @@ struct Account {
     /// System user to drop privileges to for terminal/file ops. `None` for the
     /// super-admin (operates as the panel's own uid, i.e. root).
     system_user: Option<String>,
+    /// Whether this account has TOTP two-factor enabled.
+    totp_enabled: bool,
+}
+
+impl Account {
+    /// The account's role label ("admin" for sudo/owner, else "user").
+    fn role(&self) -> &'static str {
+        if self.is_admin {
+            "admin"
+        } else {
+            "user"
+        }
+    }
 }
 
 /// Resolve an account name to a super-admin or panel-user view.
@@ -273,6 +288,7 @@ fn resolve_account(state: &Shared, username: &str) -> Option<Account> {
                 is_admin: true,
                 is_super: true,
                 system_user: None,
+                totp_enabled: su.totp_enabled,
             });
         }
     }
@@ -280,6 +296,7 @@ fn resolve_account(state: &Shared, username: &str) -> Option<Account> {
         is_admin: u.is_admin(),
         is_super: false,
         system_user: Some(u.username.clone()),
+        totp_enabled: u.totp_enabled,
         username: u.username,
     })
 }
