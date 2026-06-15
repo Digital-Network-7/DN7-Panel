@@ -10,8 +10,10 @@ They apply to all Rust code under `src/` and to new JS modules under
 
 ## Hard limits
 
-- **File length: ≤ 800 lines.** A file that approaches the limit must be split
+- **File length: ≤ 500 lines.** A file that approaches the limit must be split
   into a module directory (`foo.rs` → `foo/` with cohesive submodules).
+  Generated/data tables (the i18n string table, a full CSS theme) are the only
+  exception — they have no logic to split and live in one canonical file.
 - **Function length: ≤ 40 lines** (body, excluding the signature and the
   closing brace). Extract helpers when a function grows past this.
 - **Parameter count: ≤ 4.** A function that needs more parameters takes a
