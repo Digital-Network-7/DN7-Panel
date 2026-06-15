@@ -65,7 +65,16 @@ pub fn spawn(cfg: PanelConfig) {
 }
 
 async fn serve(state: Shared, port: u16, https: bool) -> anyhow::Result<()> {
-    let app = Router::new()
+    let app = build_router(state);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    bind_and_serve(app, addr, https).await
+}
+
+/// Build the web console's full route table with the auth/entry-gate middleware
+/// and shared state applied. Routes above the gate layer are public (login);
+/// everything else requires an authenticated session.
+fn build_router(state: Shared) -> Router {
+    Router::new()
         // Public (no auth): the login page + login endpoint.
         .route("/", get(index_page))
         .route("/ui/*path", get(ui_asset))
@@ -115,11 +124,13 @@ async fn serve(state: Shared, port: u16, https: bool) -> anyhow::Result<()> {
             state.clone(),
             entry_gate,
         ))
-        .with_state(state);
+        .with_state(state)
+}
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+/// Bind and serve the app on `addr`, over self-signed HTTPS (rustls ring
+/// provider — musl-static friendly) or plain HTTP. Runs until the process exits.
+async fn bind_and_serve(app: Router, addr: SocketAddr, https: bool) -> anyhow::Result<()> {
     if https {
-        // Self-signed HTTPS via rustls (ring provider — musl-static friendly).
         let _ = rustls::crypto::ring::default_provider().install_default();
         let (cert_pem, key_pem) = ensure_panel_cert()?;
         let tls = axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem, key_pem).await?;
