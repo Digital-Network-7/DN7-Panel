@@ -10,7 +10,9 @@
 #[derive(Debug)]
 pub(crate) enum Error {
     /// Client-supplied password salt/hash is malformed.
-    BadPasswordFormat,
+    PasswordMalformed,
     /// The current-password proof did not match the stored verifier.
-    BadOldPassword,
+    OldPasswordWrong,
+    /// The supplied TOTP code was missing or did not verify.
+    TotpInvalid,
 }

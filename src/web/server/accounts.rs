@@ -36,7 +36,7 @@ pub(crate) fn verify_current_password(
             .unwrap_or_default()
     };
     if cur_hash.is_empty() || old_verifier.to_lowercase() != cur_hash {
-        return Err(crate::domain::Error::BadOldPassword);
+        return Err(crate::domain::Error::OldPasswordWrong);
     }
     Ok(())
 }
@@ -47,8 +47,9 @@ pub(crate) fn verify_current_password(
 pub(crate) fn account_err(e: crate::domain::Error) -> Response {
     use crate::domain::Error::*;
     match e {
-        BadPasswordFormat => api_err(StatusCode::BAD_REQUEST, "settings.pw_format"),
-        BadOldPassword => api_err(StatusCode::BAD_REQUEST, "settings.bad_old_password"),
+        PasswordMalformed => api_err(StatusCode::BAD_REQUEST, "settings.pw_format"),
+        OldPasswordWrong => api_err(StatusCode::BAD_REQUEST, "settings.bad_old_password"),
+        TotpInvalid => api_err(StatusCode::BAD_REQUEST, "auth.bad_totp"),
     }
 }
 
