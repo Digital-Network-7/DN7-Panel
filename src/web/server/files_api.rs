@@ -106,18 +106,9 @@ pub(crate) async fn files_list(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let res = match ctn_ref(&req) {
-        Some(c) => {
-            if !acct.is_admin {
-                return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
-            }
-            crate::file::web_ctn_list(c, &req.path).await
-        }
-        None => crate::file::web_host_list(&req.path, acct.system_user.as_deref()).await,
-    };
-    match res {
+    match files_service::list(&acct, &req.path, ctn_ref(&req)).await {
         Ok(data) => Json(json!({ "ok": true, "data": data })).into_response(),
-        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })).into_response(),
+        Err(e) => files_service::fs_err_response(e),
     }
 }
 
@@ -130,18 +121,9 @@ pub(crate) async fn files_mkdir(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let res = match ctn_ref(&req) {
-        Some(c) => {
-            if !acct.is_admin {
-                return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
-            }
-            crate::file::web_ctn_mkdir(c, &req.path).await
-        }
-        None => crate::file::web_host_mkdir(&req.path, acct.system_user.as_deref()).await,
-    };
-    match res {
-        Ok(_) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })).into_response(),
+    match files_service::mkdir(&acct, &req.path, ctn_ref(&req)).await {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => files_service::fs_err_response(e),
     }
 }
 
@@ -154,18 +136,9 @@ pub(crate) async fn files_delete(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let res = match ctn_ref(&req) {
-        Some(c) => {
-            if !acct.is_admin {
-                return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
-            }
-            crate::file::web_ctn_delete(c, &req.path).await
-        }
-        None => crate::file::web_host_delete(&req.path, acct.system_user.as_deref()).await,
-    };
-    match res {
-        Ok(_) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })).into_response(),
+    match files_service::delete(&acct, &req.path, ctn_ref(&req)).await {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => files_service::fs_err_response(e),
     }
 }
 
@@ -360,14 +333,11 @@ pub(crate) async fn files_upload(
         Ok(t) => t,
         Err(r) => return r,
     };
-    let res = match ctn {
-        Some(c) => crate::file::web_ctn_write_file(c, &q.path, &tmp).await,
-        None => crate::file::web_host_write_file(&q.path, &tmp, acct.system_user.as_deref()).await,
-    };
+    let res = files_service::write_file(&acct, &q.path, ctn, &tmp).await;
     let _ = tokio::fs::remove_file(&tmp).await;
     match res {
-        Ok(_) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })).into_response(),
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => files_service::fs_err_response(e),
     }
 }
 
