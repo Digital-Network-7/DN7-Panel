@@ -72,8 +72,14 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
     }
     if req.uri().path() == entry {
         let mut resp = index_page().await.into_response();
-        if let Ok(v) =
-            format!("dn7_entry={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000").parse()
+        // Add `Secure` when serving over HTTPS so the entry token never rides a
+        // plaintext request if the user later hits the same host over HTTP.
+        let https = state.settings.lock().map(|s| s.https).unwrap_or(false);
+        let secure = if https { "; Secure" } else { "" };
+        if let Ok(v) = format!(
+            "dn7_entry={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000{secure}"
+        )
+        .parse()
         {
             resp.headers_mut().append(header::SET_COOKIE, v);
         }
