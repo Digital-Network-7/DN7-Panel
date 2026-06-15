@@ -227,6 +227,18 @@ pub(crate) async fn get_web_settings() -> Result<Value> {
 pub(crate) async fn set_tuning(req: &Req) -> Result<Value> {
     let lo = layout()?;
     let cur = load_tuning_opt().unwrap_or_default();
+    let t = parse_tuning(req, &cur)?;
+    save_tuning(&t)?;
+    write_tuning_conf();
+    // Tuning is injected per-server, so rewrite every managed site conf.
+    rewrite_managed_site_confs(&lo).await;
+    validate_and_reload(&lo).await?;
+    Ok(json!({ "ok": true }))
+}
+
+/// Validate the tuning request against fixed bounds, falling back to the current
+/// value for any field the request omits. Returns the merged `HttpTuning`.
+fn parse_tuning(req: &Req, cur: &HttpTuning) -> Result<HttpTuning> {
     let snhbs = req
         .server_names_hash_bucket_size
         .unwrap_or(cur.server_names_hash_bucket_size);
@@ -262,7 +274,7 @@ pub(crate) async fn set_tuning(req: &Req) -> Result<Value> {
     if !valid_size_value(&chdr) || !valid_size_value(&cmbs) {
         return Err(anyhow!("ERR_CODE:nginx.bad_size_value"));
     }
-    let t = HttpTuning {
+    Ok(HttpTuning {
         server_names_hash_bucket_size: snhbs,
         gzip: req.gzip.unwrap_or(cur.gzip),
         client_header_buffer_size: chdr,
@@ -270,26 +282,27 @@ pub(crate) async fn set_tuning(req: &Req) -> Result<Value> {
         client_max_body_size: cmbs,
         gzip_comp_level: gcl,
         keepalive_timeout: kat,
-    };
-    save_tuning(&t)?;
-    write_tuning_conf();
-    // Tuning is injected per-server, so rewrite every managed site conf.
+    })
+}
+
+/// Rewrite every managed site's conf (e.g. after a tuning change, which is
+/// injected per-server). An SSL site whose cert file is missing is degraded to
+/// plain HTTP so one broken site can't fail the whole reload.
+async fn rewrite_managed_site_confs(lo: &Layout) {
     for site in load_sites() {
         let mut s = site.clone();
         if s.ssl {
             let have = if s.cert_name.is_empty() {
                 lo.cert_store.join(format!("{}.crt", s.id)).exists()
             } else {
-                named_crt_file(&lo, &s.cert_name).exists()
+                named_crt_file(lo, &s.cert_name).exists()
             };
             if !have {
                 s.ssl = false;
             }
         }
-        let _ = write_site_conf(&lo, &s, &[]).await;
+        let _ = write_site_conf(lo, &s, &[]).await;
     }
-    validate_and_reload(&lo).await?;
-    Ok(json!({ "ok": true }))
 }
 
 /// Save the default-site behaviour and (re)write the catch-all conf.
