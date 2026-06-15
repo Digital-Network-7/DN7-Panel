@@ -2,44 +2,68 @@
 //!
 //! The web layer dispatches here (never straight into `infra::nginx`), so the
 //! application service layer is the single seam for the nginx capability:
-//! authn/audit live in the web boundary, this entry owns the use-case, and the
-//! side-effecting work is delegated to the `infra::nginx` adapter (confgen /
+//! authn/audit live in the web boundary, this entry owns op routing, and the
+//! side-effecting work is delegated to the `infra::nginx` adapters (confgen /
 //! filesystem / `nginx -t` + reload).
 //!
-//! Today this forwards to the capability's internal JSON dispatcher; the
-//! op-level orchestration (validate → render conf → write → reload/rollback)
-//! migrates into this module incrementally, each step verified against a live
-//! nginx (see .kiro/steering/architecture.md §10).
+//! `set_tuning` / `set_default_site` have their pure validation in
+//! `domain::nginx`; the other write ops still carry their (infra-state-
+//! interleaved) validation inside the infra use-case body, called here with the
+//! parsed capability `Req` (see .kiro/steering/architecture.md §10).
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
+
+/// Parse the capability request DTO (opaque to the app — only passed through to
+/// the infra use-case). Mirrors the previous `infra::nginx::web_dispatch` parse.
+fn parse_req(body: &Value) -> Result<crate::infra::nginx::Req> {
+    serde_json::from_value(body.clone()).map_err(|e| anyhow!("bad nginx request: {e}"))
+}
 
 /// Run one nginx capability request. `body` is the capability JSON command
 /// already authenticated/authorized by the web boundary.
-///
-/// Ops are migrated off the infra dispatcher into explicit use-cases here one at
-/// a time (each verified against a live nginx); the rest still forward to the
-/// capability's internal JSON dispatcher.
 pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
-    match body.get("op").and_then(|v| v.as_str()) {
+    let op = body.get("op").and_then(|v| v.as_str()).unwrap_or("");
+    match op {
         // Read-only ops — owned by the application layer (no nginx reload).
-        Some("get_settings") => get_settings(),
-        Some("info") => crate::infra::nginx::nginx_info().await,
-        Some("list_sites") => Ok(json!({ "sites": crate::infra::nginx::sites_snapshot() })),
-        Some("list_named_certs") => crate::infra::nginx::list_named_certs().await,
-        Some("list_access") => crate::infra::nginx::list_access().await,
-        Some("list_containers") => crate::infra::nginx::list_running_containers().await,
-        Some("list_dirs") => {
+        "get_settings" => get_settings(),
+        "info" => crate::infra::nginx::nginx_info().await,
+        "list_sites" => Ok(json!({ "sites": crate::infra::nginx::sites_snapshot() })),
+        "list_named_certs" => crate::infra::nginx::list_named_certs().await,
+        "list_access" => crate::infra::nginx::list_access().await,
+        "list_containers" => crate::infra::nginx::list_running_containers().await,
+        "list_dirs" => {
             crate::infra::nginx::list_dirs(body.get("path").and_then(|v| v.as_str())).await
         }
-        Some("list_ops") => Ok(crate::infra::nginx::ops_snapshot_value()),
-        Some("op_log") => Ok(crate::infra::nginx::op_log_value(
+        "list_ops" => Ok(crate::infra::nginx::ops_snapshot_value()),
+        "op_log" => Ok(crate::infra::nginx::op_log_value(
             body.get("op_id").and_then(|v| v.as_str()).unwrap_or(""),
         )),
-        // Write op — validate/merge in domain, side effects in infra.
-        Some("set_tuning") => set_tuning(body).await,
-        Some("set_default_site") => set_default_site(body).await,
-        _ => crate::infra::nginx::web_dispatch(body).await,
+        "dismiss_op" => {
+            if let Some(id) = body.get("op_id").and_then(|v| v.as_str()) {
+                crate::infra::nginx::op_dismiss_registry(id);
+            }
+            Ok(json!({ "dismissed": true }))
+        }
+        // Write ops with their pure validation/merge in domain.
+        "set_tuning" => set_tuning(body).await,
+        "set_default_site" => set_default_site(body).await,
+        // Reload + remaining write ops: orchestrate via the parsed request and
+        // the infra use-case adapters.
+        "reload" => {
+            crate::infra::nginx::op_reload().await?;
+            Ok(json!({ "reloaded": true }))
+        }
+        "setup" => crate::infra::nginx::op_setup(&parse_req(body)?),
+        "add_site" => crate::infra::nginx::op_add_site(&parse_req(body)?).await,
+        "update_site" => crate::infra::nginx::op_update_site(&parse_req(body)?).await,
+        "remove_site" => crate::infra::nginx::op_remove_site(&parse_req(body)?).await,
+        "create_cert" => crate::infra::nginx::op_create_cert(&parse_req(body)?).await,
+        "renew_cert" => crate::infra::nginx::op_renew_cert(&parse_req(body)?).await,
+        "delete_cert" => crate::infra::nginx::op_delete_cert(&parse_req(body)?).await,
+        "save_access" => crate::infra::nginx::op_save_access(&parse_req(body)?).await,
+        "delete_access" => crate::infra::nginx::op_delete_access(&parse_req(body)?).await,
+        other => Err(anyhow!("unsupported op: {other}")),
     }
 }
 

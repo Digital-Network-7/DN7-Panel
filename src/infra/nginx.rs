@@ -37,8 +37,12 @@ pub(crate) struct Req {
     #[serde(default)]
     #[allow(dead_code)]
     id: i64,
+    // `op` / `op_id` are routed at the app boundary (app::nginx); kept here so
+    // the rest of the request still deserializes into one struct.
+    #[allow(dead_code)]
     op: String,
     #[serde(default)]
+    #[allow(dead_code)]
     op_id: Option<String>,
     #[serde(default)]
     site_id: Option<String>,
@@ -223,15 +227,12 @@ pub use upload::*;
 #[cfg(test)]
 mod tests;
 
-// Channel runner + dispatch.
 // ---------------------------------------------------------------------------
-
-/// Public entrypoint for the local web console: parse a JSON request and run it.
-pub async fn web_dispatch(req: &Value) -> Result<Value> {
-    let r: Req =
-        serde_json::from_value(req.clone()).map_err(|e| anyhow!("bad nginx request: {e}"))?;
-    handle(&r).await
-}
+// App-facing per-op adapters. The application layer (`app::nginx`) owns op
+// routing and parses the capability `Req`; these expose the infra use-case
+// bodies it delegates each (side-effecting) write op to. Read ops use the
+// dedicated read accessors above.
+// ---------------------------------------------------------------------------
 
 /// Read-only website-settings snapshot for the `get_settings` use-case (owned by
 /// `app::nginx`): persisted default-site + http tuning, plus whether each has
@@ -265,29 +266,38 @@ pub(crate) fn op_log_value(op_id: &str) -> Value {
     op_log(op_id)
 }
 
-async fn handle(req: &Req) -> Result<Value> {
-    match req.op.as_str() {
-        "setup" => start_setup(req),
-        "add_site" => add_site(req).await,
-        "update_site" => update_site(req).await,
-        "remove_site" => remove_site(req).await,
-        "create_cert" => create_cert(req).await,
-        "renew_cert" => renew_cert(req).await,
-        "delete_cert" => delete_cert(req).await,
-        "save_access" => save_access_op(req).await,
-        "delete_access" => delete_access_op(req).await,
-        "reload" => {
-            reload().await?;
-            Ok(json!({ "reloaded": true }))
-        }
-        "dismiss_op" => {
-            if let Some(op_id) = req.op_id.as_deref() {
-                op_dismiss(op_id);
-            }
-            Ok(json!({ "dismissed": true }))
-        }
-        other => Err(anyhow!("unsupported op: {other}")),
-    }
+pub(crate) fn op_setup(req: &Req) -> Result<Value> {
+    start_setup(req)
+}
+pub(crate) async fn op_add_site(req: &Req) -> Result<Value> {
+    add_site(req).await
+}
+pub(crate) async fn op_update_site(req: &Req) -> Result<Value> {
+    update_site(req).await
+}
+pub(crate) async fn op_remove_site(req: &Req) -> Result<Value> {
+    remove_site(req).await
+}
+pub(crate) async fn op_create_cert(req: &Req) -> Result<Value> {
+    create_cert(req).await
+}
+pub(crate) async fn op_renew_cert(req: &Req) -> Result<Value> {
+    renew_cert(req).await
+}
+pub(crate) async fn op_delete_cert(req: &Req) -> Result<Value> {
+    delete_cert(req).await
+}
+pub(crate) async fn op_save_access(req: &Req) -> Result<Value> {
+    save_access_op(req).await
+}
+pub(crate) async fn op_delete_access(req: &Req) -> Result<Value> {
+    delete_access_op(req).await
+}
+pub(crate) async fn op_reload() -> Result<()> {
+    reload().await
+}
+pub(crate) fn op_dismiss_registry(op_id: &str) {
+    op_dismiss(op_id);
 }
 
 // ---------------------------------------------------------------------------
