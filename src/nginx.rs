@@ -130,77 +130,9 @@ pub(crate) struct Req {
     redirect_url: Option<String>,
 }
 
-/// A managed site, persisted in the manifest and regenerated into one conf file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct Site {
-    id: String,
-    server_name: String,
-    kind: String,
-    #[serde(default)]
-    target_url: String,
-    #[serde(default)]
-    container: String,
-    #[serde(default)]
-    container_port: i64,
-    #[serde(default)]
-    root: String,
-    /// Static site served from an existing absolute host directory (instead of
-    /// the panel-managed `<www>/<root>` upload dir). Empty == upload mode.
-    #[serde(default)]
-    local_root: String,
-    #[serde(default)]
-    ssl: bool,
-    #[serde(default)]
-    cert_mode: String,
-    /// When set, this site uses a standalone named cert from the cert manifest
-    /// instead of a per-site `<id>.crt/.key`. Empty means per-site (legacy).
-    #[serde(default)]
-    cert_name: String,
-    /// Upstream scheme for proxy kinds ("http" | "https"). Empty == http.
-    #[serde(default)]
-    scheme: String,
-    /// Behaviour toggles (NPM-style): long-cache static assets, block common
-    /// exploit patterns, and enable WebSocket upgrade headers on proxies.
-    #[serde(default)]
-    cache: bool,
-    #[serde(default)]
-    block_attacks: bool,
-    #[serde(default)]
-    websockets: bool,
-    /// HTTPS feature toggles. `force_ssl` (HTTP→HTTPS redirect) and `http2`
-    /// default on for backward compatibility; the rest default off.
-    #[serde(default = "default_true")]
-    force_ssl: bool,
-    #[serde(default = "default_true")]
-    http2: bool,
-    #[serde(default)]
-    hsts: bool,
-    #[serde(default)]
-    hsts_sub: bool,
-    #[serde(default)]
-    trust_proxy: bool,
-    /// Trusted front-proxy sources for `real_ip` (comma/space/newline-separated
-    /// IPs or CIDRs). Only honoured when `trust_proxy` is set. Empty means trust
-    /// private/loopback ranges only — never the entire internet.
-    #[serde(default)]
-    trust_proxy_cidrs: String,
-    /// Extra path rules layered on top of the main location (NPM "custom
-    /// locations"): each forwards a path prefix to a host[:port].
-    #[serde(default)]
-    locations: Vec<Location>,
-    /// Raw nginx directives, injected verbatim into the serving server block(s).
-    /// Validated by `nginx -t` on save (invalid input rolls back).
-    #[serde(default)]
-    extra_conf: String,
-    /// Access list id controlling this site (HTTP Basic Auth + IP allow/deny).
-    /// Empty == publicly accessible.
-    #[serde(default)]
-    access_id: String,
-}
-
-fn default_true() -> bool {
-    true
-}
+/// A managed site (domain entity), re-exported from `domain::nginx` so the
+/// nginx submodules keep referring to `Site`/`Location` unchanged.
+pub(crate) use crate::domain::nginx::{Location, Site};
 
 // ---------------------------------------------------------------------------
 // Access lists (NPM-style): HTTP Basic Auth users + IP allow/deny rules, with
@@ -337,32 +269,6 @@ impl Default for HttpTuning {
 }
 
 /// A custom path rule (NPM-style "custom location"): forward a path prefix to a
-/// host[:port] over http/https. Form-driven (no raw nginx config).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub(crate) struct Location {
-    /// The location prefix, e.g. "/api". Must start with '/'.
-    path: String,
-    /// Upstream scheme: "http" | "https". Empty == http.
-    #[serde(default)]
-    scheme: String,
-    /// Upstream host[:port].
-    #[serde(default)]
-    target: String,
-    /// Enable WebSocket upgrade headers for this path.
-    #[serde(default)]
-    websockets: bool,
-    /// Upstream kind: "host" (target host:port) | "container" (docker
-    /// container). Empty == host (backward compatible).
-    #[serde(default)]
-    kind: String,
-    /// Docker container name (when `kind == "container"`).
-    #[serde(default)]
-    container: String,
-    /// Container port to proxy to (when `kind == "container"`).
-    #[serde(default)]
-    container_port: i64,
-}
-
 // ---------------------------------------------------------------------------
 // Detached operation registry (setup + cert issuance) — see `opreg` submodule.
 // ---------------------------------------------------------------------------
