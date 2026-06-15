@@ -60,30 +60,10 @@ pub(crate) async fn login(
     if !state.auth.login_allowed(&source) {
         return api_err(StatusCode::TOO_MANY_REQUESTS, "auth.rate_limited");
     }
-    // Resolve the account: the super-admin (web.json) or a panel user.
-    let (exp_hash, totp_secret, totp_enabled, must_setup) = {
-        let su = state.settings.lock().unwrap();
-        if req.username == su.username {
-            (
-                su.verifier().to_string(),
-                su.totp_secret.clone(),
-                su.totp_enabled,
-                su.pw_default || su.username.eq_ignore_ascii_case("admin"),
-            )
-        } else if let Some(u) = crate::web::users::find(&req.username) {
-            (
-                u.pw_hash.clone(),
-                u.totp_secret.clone(),
-                u.totp_enabled,
-                false,
-            )
-        } else {
-            (String::new(), String::new(), false, false)
-        }
-    };
-    let pw_ok = !exp_hash.is_empty()
+    let acct = resolve_login_account(&state, &req.username);
+    let pw_ok = !acct.exp_hash.is_empty()
         && state.auth.consume_challenge(&req.nonce)
-        && proof_matches(&req.nonce, &exp_hash, &req.proof);
+        && proof_matches(&req.nonce, &acct.exp_hash, &req.proof);
     if !pw_ok {
         state.auth.record_failure(&source);
         audit::record_ip(
@@ -97,12 +77,12 @@ pub(crate) async fn login(
         return api_err(StatusCode::UNAUTHORIZED, "auth.bad_credentials");
     }
     // Second factor (TOTP) when enabled for this account.
-    if totp_enabled {
+    if acct.totp_enabled {
         if req.code.trim().is_empty() {
             // Password verified, but a code is required — tell the client to ask.
             return Json(json!({ "ok": false, "need_totp": true })).into_response();
         }
-        if !crate::web::totp::verify(&totp_secret, &req.code) {
+        if !crate::web::totp::verify(&acct.totp_secret, &req.code) {
             state.auth.record_failure(&source);
             audit::record_ip(&req.username, "auth.login", "", false, "bad_totp", &source);
             return api_err(StatusCode::UNAUTHORIZED, "auth.bad_totp");
@@ -111,7 +91,48 @@ pub(crate) async fn login(
     state.auth.clear_failures(&source);
     let token = state.auth.issue(&req.username);
     audit::record_ip(&req.username, "auth.login", "", true, "", &source);
-    Json(json!({ "ok": true, "token": token, "must_setup": must_setup })).into_response()
+    Json(json!({ "ok": true, "token": token, "must_setup": acct.must_setup })).into_response()
+}
+
+/// The login-relevant facts for an account (super-admin or panel user).
+struct LoginAccount {
+    /// Stored password verifier (hash); empty when the account doesn't exist.
+    exp_hash: String,
+    totp_secret: String,
+    totp_enabled: bool,
+    /// True when the client should be forced through first-time setup (still on
+    /// the default password / the reserved `admin` name).
+    must_setup: bool,
+}
+
+/// Resolve the login account: the super-admin (web.json) or a panel user. A
+/// missing account yields an empty `exp_hash` so the password check fails
+/// uniformly (no account-enumeration signal).
+fn resolve_login_account(state: &Shared, username: &str) -> LoginAccount {
+    let su = state.settings.lock().unwrap();
+    if username == su.username {
+        return LoginAccount {
+            exp_hash: su.verifier().to_string(),
+            totp_secret: su.totp_secret.clone(),
+            totp_enabled: su.totp_enabled,
+            must_setup: su.pw_default || su.username.eq_ignore_ascii_case("admin"),
+        };
+    }
+    drop(su);
+    match crate::web::users::find(username) {
+        Some(u) => LoginAccount {
+            exp_hash: u.pw_hash,
+            totp_secret: u.totp_secret,
+            totp_enabled: u.totp_enabled,
+            must_setup: false,
+        },
+        None => LoginAccount {
+            exp_hash: String::new(),
+            totp_secret: String::new(),
+            totp_enabled: false,
+            must_setup: false,
+        },
+    }
 }
 
 pub(crate) async fn logout(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
