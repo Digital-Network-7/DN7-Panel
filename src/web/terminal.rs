@@ -185,7 +185,7 @@ pub async fn run_web_container_exec(
     container: &str,
 ) -> Result<()> {
     use axum::extract::ws::Message as AxumMsg;
-    use bollard::exec::{CreateExecOptions, ResizeExecOptions, StartExecOptions, StartExecResults};
+    use bollard::exec::{CreateExecOptions, ResizeExecOptions, StartExecOptions, StartExecResults}; // arch-allow(arch-migration: ws-pty-bridge): 容器终端是 axum WS↔docker exec 的单一流式桥接,拆出 infra 适配器会切断 PTY 流且无法在本地运行期验证;待引入 typed 终端适配器时再迁
 
     if !valid_container_ref(container) {
         return Err(anyhow!("invalid container reference"));

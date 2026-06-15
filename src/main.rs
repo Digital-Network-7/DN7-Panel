@@ -1,26 +1,21 @@
 mod app;
-mod docker;
 mod domain;
-mod fetch;
-mod file;
 mod infra;
-mod metrics;
-mod mysql;
-mod nginx;
 mod platform;
-mod procs;
-mod terminal;
 mod web;
 
 // Compatibility re-exports for modules relocated into the layered dirs
 // (infra/platform). Canonical paths are `crate::infra::*` / `crate::platform::*`;
 // these aliases keep existing call sites stable during the migration and can be
 // removed in a later mechanical pass. See .kiro/steering/architecture.md §10.
-pub(crate) use infra::{crypto, json_store, op_registry};
+pub(crate) use infra::{
+    crypto, docker, fetch, file, json_store, metrics, mysql, nginx, op_registry, procs,
+};
 pub(crate) use platform::{
     autostart, banner, config, daemon, guardian, logrotate, panel, paths, procfile, signing,
     supervisor, update,
 };
+pub(crate) use web::terminal;
 
 use anyhow::Result;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};

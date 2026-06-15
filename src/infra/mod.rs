@@ -8,7 +8,14 @@
 pub(crate) mod audit;
 pub(crate) mod auth;
 pub(crate) mod crypto;
+pub(crate) mod docker;
+pub(crate) mod fetch;
+pub(crate) mod file;
 pub(crate) mod json_store;
+pub(crate) mod metrics;
+pub(crate) mod mysql;
+pub(crate) mod nginx;
 pub(crate) mod op_registry;
+pub(crate) mod procs;
 pub(crate) mod store;
 pub(crate) mod system;
