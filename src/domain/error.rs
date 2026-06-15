@@ -17,4 +17,6 @@ pub(crate) enum Error {
     TotpInvalid,
     /// Persisting the change failed (detail carries the underlying error).
     Persist(String),
+    /// A new password must differ from the auto-generated default.
+    PasswordIsDefault,
 }

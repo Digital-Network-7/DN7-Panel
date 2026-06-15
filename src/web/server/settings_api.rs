@@ -201,7 +201,7 @@ fn apply_password_change(s: &mut WebSettings, req: &SettingsReq) -> Result<bool,
     if was_default {
         let chk = req.pw_check.clone().unwrap_or_default().to_lowercase();
         if chk.is_empty() || chk == cur_hash {
-            return Err(api_err(StatusCode::BAD_REQUEST, "settings.pw_is_default"));
+            return Err(map_domain_err(crate::domain::Error::PasswordIsDefault));
         }
     }
     s.set_password_hashed(&salt, &hash.to_lowercase());

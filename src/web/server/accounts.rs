@@ -30,6 +30,7 @@ pub(crate) fn map_domain_err(e: crate::domain::Error) -> Response {
         PasswordMalformed => api_err(StatusCode::BAD_REQUEST, "settings.pw_format"),
         OldPasswordWrong => api_err(StatusCode::BAD_REQUEST, "settings.bad_old_password"),
         TotpInvalid => api_err(StatusCode::BAD_REQUEST, "auth.bad_totp"),
+        PasswordIsDefault => api_err(StatusCode::BAD_REQUEST, "settings.pw_is_default"),
         Persist(detail) => api_err_detail(
             StatusCode::INTERNAL_SERVER_ERROR,
             "common.save_failed",
