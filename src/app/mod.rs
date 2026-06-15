@@ -8,6 +8,7 @@
 //! that we also want to mock in tests (see §5).
 
 pub(crate) mod account;
+pub(crate) mod auth;
 pub(crate) mod docker;
 pub(crate) mod mysql;
 pub(crate) mod nginx;

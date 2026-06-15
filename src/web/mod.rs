@@ -20,7 +20,6 @@ mod branding;
 mod server;
 mod settings;
 pub(crate) mod terminal;
-mod totp;
 
 pub use server::spawn;
 

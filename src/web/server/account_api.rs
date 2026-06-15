@@ -229,7 +229,7 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
     }
 
     fn verify_totp(&self, secret: &str, code: &str) -> bool {
-        crate::web::totp::verify(secret, code)
+        crate::infra::totp::verify(secret, code)
     }
 
     fn audit(&self, username: &str, action: &str) {
@@ -247,10 +247,10 @@ pub(crate) async fn twofa_setup(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let secret = crate::web::totp::gen_secret();
+    let secret = crate::infra::totp::gen_secret();
     let issuer = branding::load().panel_name;
-    let uri = crate::web::totp::provisioning_uri(&issuer, &a.username, &secret);
-    let qr = crate::web::totp::qr_svg(&uri);
+    let uri = crate::infra::totp::provisioning_uri(&issuer, &a.username, &secret);
+    let qr = crate::infra::totp::qr_svg(&uri);
     if let Err(e) = write_totp(&state, &a, &secret, false) {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }

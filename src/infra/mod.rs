@@ -19,3 +19,4 @@ pub(crate) mod op_registry;
 pub(crate) mod procs;
 pub(crate) mod store;
 pub(crate) mod system;
+pub(crate) mod totp;

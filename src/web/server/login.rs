@@ -83,41 +83,48 @@ pub(crate) async fn login(
         let s = state.settings_guard();
         client_ip(peer.ip(), &headers, &SecurityPolicy::new(&s)).to_string()
     };
-    if !state.auth.login_allowed(&source) {
-        return api_err(StatusCode::TOO_MANY_REQUESTS, "auth.rate_limited");
-    }
     let acct = resolve_login_account(&state, &req.username);
-    let pw_ok = !acct.exp_hash.is_empty()
-        && state.auth.consume_challenge(&req.nonce)
-        && proof_matches(&req.nonce, &acct.exp_hash, &req.proof);
-    if !pw_ok {
-        state.auth.record_failure(&source);
-        audit::record_ip(
-            &req.username,
-            "auth.login",
-            "",
-            false,
-            "bad_credentials",
-            &source,
-        );
-        return api_err(StatusCode::UNAUTHORIZED, "auth.bad_credentials");
-    }
-    // Second factor (TOTP) when enabled for this account.
-    if acct.totp_enabled {
-        if req.code.trim().is_empty() {
+    let creds = crate::app::auth::LoginCreds {
+        exp_hash: acct.exp_hash,
+        totp_secret: acct.totp_secret,
+        totp_enabled: acct.totp_enabled,
+        must_setup: acct.must_setup,
+    };
+    use crate::app::auth::LoginOutcome;
+    match crate::app::auth::verify_login(
+        &state.auth,
+        &req.username,
+        &source,
+        &creds,
+        &req.nonce,
+        &req.proof,
+        &req.code,
+    ) {
+        LoginOutcome::RateLimited => api_err(StatusCode::TOO_MANY_REQUESTS, "auth.rate_limited"),
+        LoginOutcome::BadCredentials => {
+            audit::record_ip(
+                &req.username,
+                "auth.login",
+                "",
+                false,
+                "bad_credentials",
+                &source,
+            );
+            api_err(StatusCode::UNAUTHORIZED, "auth.bad_credentials")
+        }
+        LoginOutcome::NeedTotp => {
             // Password verified, but a code is required — tell the client to ask.
-            return Json(json!({ "ok": false, "need_totp": true })).into_response();
+            Json(json!({ "ok": false, "need_totp": true })).into_response()
         }
-        if !crate::web::totp::verify(&acct.totp_secret, &req.code) {
-            state.auth.record_failure(&source);
+        LoginOutcome::BadTotp => {
             audit::record_ip(&req.username, "auth.login", "", false, "bad_totp", &source);
-            return api_err(StatusCode::UNAUTHORIZED, "auth.bad_totp");
+            api_err(StatusCode::UNAUTHORIZED, "auth.bad_totp")
+        }
+        LoginOutcome::Ok { token, must_setup } => {
+            audit::record_ip(&req.username, "auth.login", "", true, "", &source);
+            Json(json!({ "ok": true, "token": token, "must_setup": must_setup })).into_response()
         }
     }
-    state.auth.clear_failures(&source);
-    let token = state.auth.issue(&req.username);
-    audit::record_ip(&req.username, "auth.login", "", true, "", &source);
-    Json(json!({ "ok": true, "token": token, "must_setup": acct.must_setup })).into_response()
 }
 
 /// The login-relevant facts for an account (super-admin or panel user).

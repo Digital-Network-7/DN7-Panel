@@ -20,7 +20,7 @@ use tokio::sync::Mutex;
 use super::branding;
 use super::settings::{self, WebSettings};
 use crate::infra::audit;
-use crate::infra::auth::{proof_matches, AuthState};
+use crate::infra::auth::AuthState;
 use crate::infra::metrics::Collector;
 use crate::platform::config::PanelConfig;
 use include_dir::{include_dir, Dir};
