@@ -33,11 +33,17 @@ pub(crate) fn fs_err_response(e: FsError) -> Response {
 }
 
 /// List a directory (host as the caller's user, or a container — admin only).
-pub(crate) async fn list(acct: &Account, path: &str, container: Option<&str>) -> Result<Value, FsError> {
+pub(crate) async fn list(
+    acct: &Account,
+    path: &str,
+    container: Option<&str>,
+) -> Result<Value, FsError> {
     match container {
         Some(c) => {
             guard_container(acct)?;
-            crate::file::web_ctn_list(c, path).await.map_err(FsError::Op)
+            crate::file::web_ctn_list(c, path)
+                .await
+                .map_err(FsError::Op)
         }
         None => crate::file::web_host_list(path, acct.system_user.as_deref())
             .await
@@ -46,11 +52,17 @@ pub(crate) async fn list(acct: &Account, path: &str, container: Option<&str>) ->
 }
 
 /// Create a directory.
-pub(crate) async fn mkdir(acct: &Account, path: &str, container: Option<&str>) -> Result<(), FsError> {
+pub(crate) async fn mkdir(
+    acct: &Account,
+    path: &str,
+    container: Option<&str>,
+) -> Result<(), FsError> {
     match container {
         Some(c) => {
             guard_container(acct)?;
-            crate::file::web_ctn_mkdir(c, path).await.map_err(FsError::Op)
+            crate::file::web_ctn_mkdir(c, path)
+                .await
+                .map_err(FsError::Op)
         }
         None => crate::file::web_host_mkdir(path, acct.system_user.as_deref())
             .await
@@ -59,11 +71,17 @@ pub(crate) async fn mkdir(acct: &Account, path: &str, container: Option<&str>) -
 }
 
 /// Delete a path.
-pub(crate) async fn delete(acct: &Account, path: &str, container: Option<&str>) -> Result<(), FsError> {
+pub(crate) async fn delete(
+    acct: &Account,
+    path: &str,
+    container: Option<&str>,
+) -> Result<(), FsError> {
     match container {
         Some(c) => {
             guard_container(acct)?;
-            crate::file::web_ctn_delete(c, path).await.map_err(FsError::Op)
+            crate::file::web_ctn_delete(c, path)
+                .await
+                .map_err(FsError::Op)
         }
         None => crate::file::web_host_delete(path, acct.system_user.as_deref())
             .await

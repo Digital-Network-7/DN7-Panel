@@ -363,7 +363,10 @@ impl TicketStore {
         let now = Instant::now();
         m.retain(|_, r| now.duration_since(r.issued) <= TICKET_TTL);
         while m.len() >= MAX_TICKETS {
-            let Some(oldest) = m.iter().min_by_key(|(_, r)| r.issued).map(|(k, _)| k.clone())
+            let Some(oldest) = m
+                .iter()
+                .min_by_key(|(_, r)| r.issued)
+                .map(|(k, _)| k.clone())
             else {
                 break;
             };

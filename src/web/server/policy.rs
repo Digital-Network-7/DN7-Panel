@@ -155,8 +155,14 @@ mod tests {
 
     #[test]
     fn cookie_secure_follows_https() {
-        assert_eq!(pol(&settings_with(&[], true, "/")).cookie_secure_attr(), "; Secure");
-        assert_eq!(pol(&settings_with(&[], false, "/")).cookie_secure_attr(), "");
+        assert_eq!(
+            pol(&settings_with(&[], true, "/")).cookie_secure_attr(),
+            "; Secure"
+        );
+        assert_eq!(
+            pol(&settings_with(&[], false, "/")).cookie_secure_attr(),
+            ""
+        );
     }
 
     #[test]

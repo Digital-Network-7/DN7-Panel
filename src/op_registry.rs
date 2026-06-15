@@ -66,7 +66,11 @@ impl OpRegistry {
 
     /// Mint a fresh, monotonic op id (`<prefix><n>`).
     pub(crate) fn new_id(&self) -> String {
-        format!("{}{}", self.prefix, self.counter.fetch_add(1, Ordering::Relaxed))
+        format!(
+            "{}{}",
+            self.prefix,
+            self.counter.fetch_add(1, Ordering::Relaxed)
+        )
     }
 
     pub(crate) fn create(&self, id: &str, kind: &str, target: &str) {
@@ -141,7 +145,10 @@ impl OpRegistry {
             Ok(m) => m,
             Err(_) => return json!({ "ops": [] }),
         };
-        let list: Vec<Value> = m.iter().map(|(id, o)| self.row(Some(id), o, false)).collect();
+        let list: Vec<Value> = m
+            .iter()
+            .map(|(id, o)| self.row(Some(id), o, false))
+            .collect();
         json!({ "ops": list })
     }
 

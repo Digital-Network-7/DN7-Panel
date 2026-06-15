@@ -134,7 +134,9 @@ mod tests {
     #[test]
     fn read_ops_are_not_audited() {
         // A representative sample of read/poll ops that must NOT be logged.
-        for op in ["", "info", "list", "list_ops", "op_log", "status", "stats", "logs"] {
+        for op in [
+            "", "info", "list", "list_ops", "op_log", "status", "stats", "logs",
+        ] {
             assert!(is_read_op(op), "{op} should be a read op");
         }
     }

@@ -226,7 +226,7 @@ mod tests {
         let owner = account_level(&acct(true, true)); // 2
         let admin = account_level(&acct(false, true)); // 1
         let user = account_level(&acct(false, false)); // 0
-        // Owner manages admins + users, but not another owner.
+                                                       // Owner manages admins + users, but not another owner.
         assert!(can_manage(owner, role_level("admin")));
         assert!(can_manage(owner, role_level("user")));
         assert!(!can_manage(owner, owner));

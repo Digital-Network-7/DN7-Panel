@@ -99,9 +99,7 @@ pub(crate) fn site_from_req(req: &Req) -> Result<Site> {
         hsts: req.hsts.unwrap_or(false),
         hsts_sub: req.hsts_sub.unwrap_or(false),
         trust_proxy: req.trust_proxy.unwrap_or(false),
-        trust_proxy_cidrs: sanitize_trusted_cidrs(
-            req.trust_proxy_cidrs.as_deref().unwrap_or(""),
-        )?,
+        trust_proxy_cidrs: sanitize_trusted_cidrs(req.trust_proxy_cidrs.as_deref().unwrap_or(""))?,
         locations: Vec::new(),
         extra_conf: String::new(),
         access_id: String::new(),

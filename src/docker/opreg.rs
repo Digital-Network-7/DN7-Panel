@@ -26,7 +26,12 @@ pub(crate) fn op_push(op_id: &str, line: &str) {
 }
 
 pub(crate) fn op_finish(op_id: &str, status: &str, error: &str, result_image: &str) {
-    reg().finish(op_id, status, error, json!({ "result_image": result_image }));
+    reg().finish(
+        op_id,
+        status,
+        error,
+        json!({ "result_image": result_image }),
+    );
 }
 
 pub(crate) fn ops_snapshot() -> Value {

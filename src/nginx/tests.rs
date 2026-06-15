@@ -204,7 +204,10 @@ fn trusted_cidrs_sanitize() {
         sanitize_trusted_cidrs("10.0.0.0/8, 203.0.113.5").unwrap(),
         "10.0.0.0/8 203.0.113.5"
     );
-    assert_eq!(sanitize_trusted_cidrs("2001:db8::/32").unwrap(), "2001:db8::/32");
+    assert_eq!(
+        sanitize_trusted_cidrs("2001:db8::/32").unwrap(),
+        "2001:db8::/32"
+    );
     // Empty stays empty (caller falls back to the safe private-range default).
     assert_eq!(sanitize_trusted_cidrs("   ").unwrap(), "");
     // Malformed address / prefix / injection attempts are rejected.
@@ -225,5 +228,8 @@ fn trusted_proxy_sources_never_trusts_whole_internet() {
     // Explicit list is honoured verbatim.
     let mut site2 = mk_site("proxy_host", true);
     site2.trust_proxy_cidrs = "203.0.113.5 10.0.0.0/8".into();
-    assert_eq!(trusted_proxy_sources(&site2), vec!["203.0.113.5", "10.0.0.0/8"]);
+    assert_eq!(
+        trusted_proxy_sources(&site2),
+        vec!["203.0.113.5", "10.0.0.0/8"]
+    );
 }

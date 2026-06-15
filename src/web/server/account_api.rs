@@ -122,7 +122,12 @@ pub(crate) async fn put_password(
     }
     // Invalidate any other (possibly leaked) sessions/tickets for this account,
     // keeping the caller's current session, then audit.
-    after_credential_change(&state, &a.username, bearer(&headers).as_deref(), "account.password");
+    after_credential_change(
+        &state,
+        &a.username,
+        bearer(&headers).as_deref(),
+        "account.password",
+    );
     Json(json!({ "ok": true })).into_response()
 }
 
