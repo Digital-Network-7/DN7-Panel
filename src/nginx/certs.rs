@@ -155,26 +155,9 @@ pub(crate) async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()
 
     // Persist the issued chain + key into the certificate library (a named
     // cert), so the cert shows up under SSL certificate management and is
-    // covered by the named-cert auto-renewal loop. Reuse an existing same-domain
-    // entry's name when present; otherwise derive a unique name from the host.
+    // covered by the named-cert auto-renewal loop.
     let mut certs = load_named_certs();
-    let cert_name = match certs.iter().find(|c| c.domain.eq_ignore_ascii_case(&host)) {
-        Some(c) => c.name.clone(),
-        None => {
-            let base = if valid_cert_name(&host) {
-                host.clone()
-            } else {
-                format!("le-{}", site.id)
-            };
-            let mut name = base.clone();
-            let mut i = 1;
-            while certs.iter().any(|c| c.name == name) {
-                name = format!("{base}-{i}");
-                i += 1;
-            }
-            name
-        }
-    };
+    let cert_name = unique_le_cert_name(&certs, &host, &site.id);
     std::fs::create_dir_all(&lo.cert_store)?;
     std::fs::write(named_crt_file(lo, &cert_name), cert_chain_pem)?;
     write_key_file(&named_key_file(lo, &cert_name), &key_pem)?;
@@ -187,10 +170,37 @@ pub(crate) async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()
     save_named_certs(&certs)?;
 
     // Point the site at the library cert and rewrite with SSL + reload.
+    op_push(op_id, &pmsg("ng.enable_https", &[]));
+    attach_named_cert_to_site(lo, site, cert_name).await
+}
+
+/// The name to store an LE cert for `host` under: reuse an existing same-domain
+/// entry's name, else derive a unique one from the host (falling back to
+/// `le-<site_id>` when the host isn't a valid cert-name token).
+fn unique_le_cert_name(certs: &[NamedCert], host: &str, site_id: &str) -> String {
+    if let Some(c) = certs.iter().find(|c| c.domain.eq_ignore_ascii_case(host)) {
+        return c.name.clone();
+    }
+    let base = if valid_cert_name(host) {
+        host.to_string()
+    } else {
+        format!("le-{site_id}")
+    };
+    let mut name = base.clone();
+    let mut i = 1;
+    while certs.iter().any(|c| c.name == name) {
+        name = format!("{base}-{i}");
+        i += 1;
+    }
+    name
+}
+
+/// Point `site` at a named cert, then rewrite its conf with SSL on, reload, and
+/// persist the updated site.
+async fn attach_named_cert_to_site(lo: &Layout, site: &Site, cert_name: String) -> Result<()> {
     let mut site = site.clone();
     site.cert_mode = "named".to_string();
     site.cert_name = cert_name;
-    op_push(op_id, &pmsg("ng.enable_https", &[]));
     write_site_conf(lo, &site, &[]).await?;
     validate_and_reload(lo).await?;
     let mut sites = load_sites();
