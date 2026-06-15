@@ -215,7 +215,7 @@ fn parse_pw_update(req: &UpdateUserReq) -> Result<Option<(String, String)>, Resp
     let salt = req.pw_salt.clone().unwrap_or_default();
     let hash = req.pw_hash.clone().unwrap_or_default();
     if !crate::web::users::valid_pw_format(&salt, &hash) {
-        return Err(api_err(StatusCode::BAD_REQUEST, "settings.pw_format"));
+        return Err(map_domain_err(crate::domain::Error::PasswordMalformed));
     }
     Ok(Some((salt, hash.to_lowercase())))
 }

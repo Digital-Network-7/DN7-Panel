@@ -112,10 +112,10 @@ pub(crate) async fn put_password(
         Err(r) => return r,
     };
     if !crate::web::users::valid_pw_format(&req.pw_salt, &req.pw_hash) {
-        return account_err(crate::domain::Error::PasswordMalformed);
+        return map_domain_err(crate::domain::Error::PasswordMalformed);
     }
     if let Err(e) = verify_current_password(&state, &a, &req.old_verifier) {
-        return account_err(e);
+        return map_domain_err(e);
     }
     if let Err(r) = save_new_password(&state, &a, &req.pw_salt, &req.pw_hash, &req.password).await {
         return r;
@@ -170,10 +170,10 @@ pub(crate) async fn twofa_enable(
     };
     let secret = read_totp(&state, &a);
     if secret.is_empty() {
-        return account_err(crate::domain::Error::TotpInvalid);
+        return map_domain_err(crate::domain::Error::TotpInvalid);
     }
     if !crate::web::totp::verify(&secret, &req.code) {
-        return account_err(crate::domain::Error::TotpInvalid);
+        return map_domain_err(crate::domain::Error::TotpInvalid);
     }
     if let Err(e) = write_totp(&state, &a, &secret, true) {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
@@ -199,7 +199,7 @@ pub(crate) async fn twofa_disable(
     };
     let secret = read_totp(&state, &a);
     if !secret.is_empty() && !crate::web::totp::verify(&secret, &req.code) {
-        return account_err(crate::domain::Error::TotpInvalid);
+        return map_domain_err(crate::domain::Error::TotpInvalid);
     }
     if let Err(e) = write_totp(&state, &a, "", false) {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);

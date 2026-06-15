@@ -42,9 +42,10 @@ pub(crate) fn verify_current_password(
 }
 
 /// Map an account domain error to its HTTP response. This is the single
-/// domain→transport mapping point for the account flow; it lives in the web
-/// layer because it owns the wire codes (aligned with the frontend `err.*`).
-pub(crate) fn account_err(e: crate::domain::Error) -> Response {
+/// domain→transport mapping point for the account/credential flows; it lives in
+/// the web layer because it owns the wire codes (aligned with the frontend
+/// `err.*`). Shared by the account, settings and user-management handlers.
+pub(crate) fn map_domain_err(e: crate::domain::Error) -> Response {
     use crate::domain::Error::*;
     match e {
         PasswordMalformed => api_err(StatusCode::BAD_REQUEST, "settings.pw_format"),
