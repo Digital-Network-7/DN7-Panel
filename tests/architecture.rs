@@ -1,12 +1,11 @@
 //! Architecture test — enforces the layer dependency rules from
 //! `.kiro/steering/architecture.md` (§4 禁止项 / §8 测试策略).
 //!
-//! Tier 1 (directory-level deny) governs `domain`/`infra`/`app`. Tier 3
-//! (semantic) is partially in place: `domain_serde_is_whitelisted` enforces that
-//! only reviewed persisted-entity files in `domain` may derive serde (§2/§4).
-//! Tier 2 (module allowlist, e.g. only `infra/docker/**` may use `bollard`)
-//! comes later. Rules are added as modules migrate — start loose, tighten over
-//! time.
+//! Tier 1 (directory-level deny) governs `domain`/`infra`/`app`/`web`. Tier 2
+//! (module allowlist) is in place via `capability_tokens_stay_in_their_layer`
+//! (`bollard` only under `infra/`, `axum` only under `web/`). Tier 3 (semantic):
+//! `domain_serde_is_whitelisted` restricts serde to reviewed `domain` entities.
+//! Rules are added as modules migrate — start loose, tighten over time.
 //!
 //! Robustness: we scan `use`/code lines, skip comment lines (incl. `///`/`//!`
 //! doc comments, which legitimately mention forbidden names), and honour a
@@ -150,6 +149,66 @@ fn domain_serde_is_whitelisted() {
     assert!(
         violations.is_empty(),
         "domain serde must be a reviewed exception (see .kiro/steering/architecture.md §2/§4):\n{}",
+        violations.join("\n")
+    );
+}
+
+/// Tier-2 module allowlist (steering §8): a capability/transport token may
+/// appear ONLY under its owning subtree. This makes the "who may touch what"
+/// boundary explicit and stops, e.g., a bollard call or an axum import drifting
+/// out of `infra`/`web`. `arch-allow` (with reason+ticket) is the temporary
+/// escape hatch for the few legitimate cross-cuts (e.g. the WS↔exec terminal).
+///
+/// (token, the only path fragment allowed to contain it).
+const ALLOWLIST: &[(&str, &str)] = &[
+    // The Docker daemon client lives only in the infra adapters.
+    ("bollard", "src/infra/"),
+    // axum (the HTTP framework) is the delivery layer's alone.
+    ("axum", "src/web/"),
+];
+
+fn scan_allowlist(dir: &Path, violations: &mut Vec<String>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for ent in entries.flatten() {
+        let p = ent.path();
+        if p.is_dir() {
+            scan_allowlist(&p, violations);
+            continue;
+        }
+        if p.extension().and_then(|s| s.to_str()) != Some("rs") {
+            continue;
+        }
+        let path_str = p.to_string_lossy().replace('\\', "/");
+        let src = fs::read_to_string(&p).unwrap_or_default();
+        for (i, raw) in src.lines().enumerate() {
+            let line = raw.trim_start();
+            if line.starts_with("//") || raw.contains("arch-allow") {
+                continue;
+            }
+            for (tok, allowed) in ALLOWLIST {
+                if line.contains(tok) && !path_str.contains(allowed) {
+                    violations.push(format!(
+                        "{}:{}: `{tok}` is only allowed under {allowed} (tier-2 allowlist)",
+                        p.display(),
+                        i + 1
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn capability_tokens_stay_in_their_layer() {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let mut violations = Vec::new();
+    scan_allowlist(&Path::new(root).join("src"), &mut violations);
+    assert!(
+        violations.is_empty(),
+        "tier-2 module-allowlist violations (see .kiro/steering/architecture.md §8):\n{}",
         violations.join("\n")
     );
 }
