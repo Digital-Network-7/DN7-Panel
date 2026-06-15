@@ -7,7 +7,16 @@ version = 2
 # id to `ignore` (with a comment + tracking link) only when there is no fixed
 # upstream version available.
 yanked = "deny"
-ignore = []
+ignore = [
+    # daemonize: unmaintained, no safe upgrade available. Used for the
+    # supervisor's background daemonization. Revisit / replace upstream.
+    # https://rustsec.org/advisories/RUSTSEC-2025-0069
+    "RUSTSEC-2025-0069",
+    # rustls-pemfile: unmaintained (transitive via axum-server). Resolves when
+    # axum-server moves to rustls-pki-types PEM parsing; no action on our side.
+    # https://rustsec.org/advisories/RUSTSEC-2025-0134
+    "RUSTSEC-2025-0134",
+]
 
 [bans]
 # Duplicate versions of the same crate are a warning (common with transitive
@@ -29,12 +38,11 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Zlib",
-    "Unicode-DFS-2016",
     "Unicode-3.0",
-    "MPL-2.0",
-    "CC0-1.0",
     "Unlicense",
-    "OpenSSL",
+    # CDLA-Permissive-2.0: webpki-roots (Mozilla CA bundle) — a permissive data
+    # license; the crate ships only the trusted-roots list, no code restriction.
+    "CDLA-Permissive-2.0",
 ]
 
 [sources]
