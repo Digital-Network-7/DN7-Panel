@@ -1,0 +1,319 @@
+// Docker: create-container form/modal + helpers (split from docker.js).
+function dkCreateForm() {
+  // Fetch host capacity (CPU/mem caps), networks and volumes up front so the
+  // Resources / Network / Volumes tabs can be populated.
+  Promise.all([
+    op('docker', { op: 'info' }).catch(() => ({})),
+    op('docker', { op: 'list_networks' }).catch(() => ({ networks: [] })),
+    op('docker', { op: 'list_volumes' }).catch(() => ({ volumes: [] })),
+  ]).then(([info, nd, vd]) => dkCreateModal(info || {}, (nd && nd.networks) || [], { volumes: (vd && vd.volumes) || [] }));
+}
+
+function dkCreateModal(info, networks, opts) {
+  opts = opts || {};
+  const prefill = opts.prefill || null;
+  const hostCpus = Number(info.host_cpus) || 0;
+  const hostMem = Number(info.host_mem_bytes) || 0;
+  const cpuMax = hostCpus > 0 ? hostCpus : 2;
+  const memMaxMb = hostMem > 0 ? (hostMem / 1048576) : 0;
+  const memMaxTxt = memMaxMb > 0 ? memMaxMb.toFixed(2) + 'MB' : '';
+  const vols = opts.volumes || [];
+  // Eligible networks (bridge included once; host/none excluded). A container
+  // can join several, but never the same network twice — selects only offer
+  // networks not already chosen by another row.
+  const netList = networks.filter((n) => n.name !== 'host' && n.name !== 'none')
+    .map((n) => ({ name: n.name, subnet: n.subnet || '' }));
+  const volOpts = `<option value="">${tr('dk.vol_pick')}</option>` + vols.map((v) => `<option value="${esc(v.name)}">${esc(v.name)}</option>`).join('');
+  modal(opts.title || tr('dk.create_container'), `
+    <div class="subtabs" id="ccTabs">
+      <button data-s="basic" class="on">${tr('dk.tab_basic')}</button>
+      <button data-s="net">${tr('dk.tab_networks')}</button>
+      <button data-s="ports">${tr('dk.tab_ports')}</button>
+      <button data-s="vol">${tr('dk.tab_volumes')}</button>
+      <button data-s="res">${tr('dk.tab_resources')}</button>
+      <button data-s="env">${tr('dk.tab_env')}</button>
+    </div>
+    <div id="ccBasic">
+      <div class="formgrid">
+        <div class="full"><label class="lbl">${tr('dk.image')}</label><select id="ccImg" class="field" data-selx-search><option value="">${tr('dk.image_ph')}</option></select></div>
+        <div><label class="lbl">${tr('dk.ctn_name')}</label><input id="ccName" class="field" placeholder="my-app" /></div>
+        <div><label class="lbl">${tr('dk.restart_policy')}</label><select id="ccRestart" class="field"><option value="unless-stopped">unless-stopped</option><option value="always">always</option><option value="no">no</option></select></div>
+        <div class="full"><label class="lbl">${tr('dk.start_cmd')}</label><input id="ccCmd" class="field" placeholder="${tr('dk.cmd_ph')}" /></div>
+      </div>
+      <div class="switchrow" style="margin-top:10px">
+        <label class="switch"><input type="checkbox" id="ccStdin" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.alloc_stdin')}</b><span>${tr('dk.alloc_stdin_d')}</span></span></label>
+        <label class="switch"><input type="checkbox" id="ccTty" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.alloc_tty')}</b><span>${tr('dk.alloc_tty_d')}</span></span></label>
+        <label class="switch"><input type="checkbox" id="ccStart" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.start_after')}</b><span>${tr('dk.start_after_d')}</span></span></label>
+      </div>
+      <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="ccGo">${opts.submitLabel || tr('dk.create')}</button></div>
+      <div class="hidden" id="ccJob" style="margin-top:14px"></div>
+    </div>
+    <div id="ccNet" class="hidden">
+      <label class="lbl">${tr('dk.net_join')}</label>
+      <div class="kvlist" id="ccNets"></div>
+      <button type="button" class="kvadd" id="ccNetAdd">${tr('dk.net_add')}</button>
+      <p class="formnote" style="margin-top:8px">${tr('dk.net_static_hint')}</p>
+      <div class="formgrid" style="margin-top:16px">
+        <div><label class="lbl">${tr('dk.hostname')}</label><input id="ccHost" class="field" placeholder="web-01" /></div>
+        <div><label class="lbl">${tr('dk.domainname')}</label><input id="ccDomain" class="field" placeholder="example.com" /></div>
+        <div class="full"><label class="lbl">${tr('dk.dns')}</label><input id="ccDns" class="field mono" placeholder="1.1.1.1 8.8.8.8" /><p class="formnote" style="margin-top:5px">${tr('dk.dns_hint')}</p></div>
+      </div>
+    </div>
+    <div id="ccPortsT" class="hidden">
+      <label class="lbl">${tr('dk.port_map')}</label><div class="kvlist" id="ccPorts"></div><button type="button" class="kvadd" id="ccPortsAdd">${tr('dk.add_port')}</button>
+    </div>
+    <div id="ccVolT" class="hidden">
+      <label class="lbl">${tr('dk.volumes')}</label><div class="kvlist" id="ccVol"></div><button type="button" class="kvadd" id="ccVolAdd">${tr('dk.add_vol')}</button>
+    </div>
+    <div id="ccRes" class="hidden">
+      <div class="formgrid res3">
+        <div><label class="lbl">${tr('dk.cpu_weight')}</label><input id="ccCpuShares" class="field" type="number" min="0" value="1024" /><p class="formnote" style="margin-top:5px">${tr('dk.cpu_weight_hint')}</p></div>
+        <div><label class="lbl">${tr('dk.cpu_limit')}</label><div class="field-suffix"><input id="ccCpus" class="field" type="number" min="0" max="${cpuMax}" step="0.1" value="0" /><span class="suffix-tag">${tr('dk.unit_core')}</span></div><p class="formnote" style="margin-top:5px">${tr('dk.cpu_limit_hint', { n: cpuMax })}</p></div>
+        <div><label class="lbl">${tr('dk.mem_limit')}</label><div class="field-suffix"><input id="ccMem" class="field" type="number" min="0" value="0" /><button type="button" class="suffix-btn" id="ccMemUnit">MB</button></div><p class="formnote" style="margin-top:5px" id="ccMemHint"></p></div>
+      </div>
+      <label class="switch" style="margin-top:12px"><input type="checkbox" id="ccPriv" /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.privileged')}</b><span>${tr('dk.privileged_d')}</span></span></label>
+    </div>
+    <div id="ccEnvT" class="hidden">
+      <label class="lbl">${tr('dk.env')}</label><div class="kvlist" id="ccEnv"></div><button type="button" class="kvadd" id="ccEnvAdd">${tr('dk.add_env')}</button>
+    </div>`, (close, root) => {
+    loadImageOptions(prefill ? prefill.image : undefined);    // Tab switching.
+    const panes = { basic: 'ccBasic', net: 'ccNet', ports: 'ccPortsT', vol: 'ccVolT', res: 'ccRes', env: 'ccEnvT' };
+    const tabs = root.querySelector('#ccTabs');
+    tabs.querySelectorAll('button').forEach((btn) => btn.onclick = () => {
+      tabs.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === btn));
+      Object.keys(panes).forEach((s) => root.querySelector('#' + panes[s]).classList.toggle('hidden', btn.dataset.s !== s));
+    });
+    // Dynamic row helpers.
+    const portRow = (v) => kvRow('ccPorts', [
+      { ph: tr('dk.host_port'), val: v && v.h }, { sep: '→' }, { ph: tr('dk.container_port'), val: v && v.c },
+    ], { proto: true, protoVal: v && v.proto, ipv6: true, ipv6Val: v && v.ipv6 });
+    const envRow = (v) => kvRow('ccEnv', [
+      { ph: 'KEY', val: v && v.k, flex: '0 0 34%' }, { sep: '=' }, { ph: 'VALUE', val: v && v.v, flex: '1 1 auto' },
+    ]);
+    // Volume row: source is a host path or a docker named volume (toggle), then
+    // the container path.
+    const volRow = (v) => {
+      const row = el('div', { class: 'kvrow volrow' });
+      row.innerHTML = `<select class="vr-type field"><option value="host">${tr('dk.vol_src_host')}</option><option value="vol">${tr('dk.vol_src_vol')}</option></select>`
+        + `<input class="vr-host field" placeholder="/data/app" />`
+        + `<select class="vr-vol field hidden">${volOpts}</select>`
+        + `<span class="sep">→</span>`
+        + `<input class="vr-ctn field" placeholder="/app" />`
+        + `<label class="tgl"><input type="checkbox" class="vr-ro" /><span class="tglbox"></span><span class="tgltxt">${tr('dk.readonly')}</span></label>`
+        + `<button type="button" class="rm">×</button>`;
+      const type = row.querySelector('.vr-type'), host = row.querySelector('.vr-host'), vsel = row.querySelector('.vr-vol');
+      const syncType = () => { const isVol = type.value === 'vol'; host.classList.toggle('hidden', isVol); vsel.classList.toggle('hidden', !isVol); };
+      type.onchange = syncType;
+      if (v) {
+        const isVol = v.host && !v.host.startsWith('/');
+        type.value = isVol ? 'vol' : 'host';
+        if (isVol) vsel.value = v.host; else host.value = v.host || '';
+        row.querySelector('.vr-ctn').value = v.container || '';
+        if (v.readonly) row.querySelector('.vr-ro').checked = true;
+      }
+      syncType();
+      attachPathSuggest(host);
+      row.querySelector('.rm').onclick = () => row.remove();
+      $('ccVol').appendChild(row);
+    };
+    const readVolumes = () => Array.from($('ccVol').querySelectorAll('.volrow')).map((r) => {
+      const isVol = r.querySelector('.vr-type').value === 'vol';
+      const src = isVol ? r.querySelector('.vr-vol').value : r.querySelector('.vr-host').value.trim();
+      return { host: src, container: r.querySelector('.vr-ctn').value.trim(), readonly: r.querySelector('.vr-ro').checked };
+    }).filter((vv) => vv.host && vv.container);
+    $('ccPortsAdd').onclick = () => portRow();
+    $('ccEnvAdd').onclick = () => envRow();
+    $('ccVolAdd').onclick = () => volRow();
+    // Network tab: a container can join several networks (never the same one
+    // twice). Each row is a network pick + optional MAC (auto-random) + optional
+    // static IPv4 (auto from the chosen network's subnet). The random generators
+    // sit inside the inputs.
+    const usedNets = () => Array.from($('ccNets').querySelectorAll('.nr-net')).map((s) => s.value);
+    // Re-prune every select so it only offers networks not chosen elsewhere, and
+    // hide the add button once every eligible network is taken.
+    const refreshNetUI = () => {
+      const used = usedNets();
+      Array.from($('ccNets').querySelectorAll('.netrow')).forEach((row) => {
+        const sel = row.querySelector('.nr-net');
+        const cur = sel.value;
+        sel.innerHTML = netList.filter((n) => n.name === cur || !used.includes(n.name))
+          .map((n) => `<option value="${esc(n.name)}" data-subnet="${esc(n.subnet)}">${esc(n.name)}</option>`).join('');
+        sel.value = cur;
+      });
+      const remaining = netList.filter((n) => !used.includes(n.name));
+      $('ccNetAdd').style.display = remaining.length ? '' : 'none';
+    };
+    const netRow = (v) => {
+      const used = usedNets();
+      const def = (v && v.network) || ((netList.find((n) => !used.includes(n.name)) || netList[0] || {}).name) || '';
+      const row = el('div', { class: 'netrow' });
+      const allOpts = netList.map((n) => `<option value="${esc(n.name)}" data-subnet="${esc(n.subnet)}">${esc(n.name)}</option>`).join('');
+      row.innerHTML = `<select class="nr-net field">${allOpts}</select>`
+        + `<div class="ifield"><input class="nr-mac field mono" placeholder="${tr('dk.mac_addr')}" /><button type="button" class="ifield-btn nr-macgen" title="${tr('dk.gen_random')}">${MY_DICE}</button></div>`
+        + `<div class="ifield"><input class="nr-ip field mono" placeholder="${tr('dk.ipv4_addr')}" /><button type="button" class="ifield-btn nr-ipgen" title="${tr('dk.gen_random')}">${MY_DICE}</button></div>`
+        + `<button type="button" class="rm">×</button>`;
+      const sel = row.querySelector('.nr-net'), mac = row.querySelector('.nr-mac'), ip = row.querySelector('.nr-ip');
+      const ipgenBtn = row.querySelector('.nr-ipgen');
+      if (def) sel.value = def;
+      mac.value = (v && v.mac) || randMac();
+      const subnet = () => { const o = sel.options[sel.selectedIndex]; return o ? (o.dataset.subnet || '') : ''; };
+      // The default `bridge` (and any subnet-less network) can't take a static
+      // IPv4 — disable the field there so the form matches what Docker allows.
+      const supportsIp = () => sel.value !== 'bridge' && !!subnet();
+      const syncIp = () => {
+        const ok = supportsIp();
+        ip.disabled = !ok;
+        ipgenBtn.style.display = ok ? '' : 'none';
+        if (!ok) { ip.value = ''; ip.placeholder = tr('dk.net_no_static'); }
+        else ip.placeholder = tr('dk.ipv4_addr');
+      };
+      if (v && v.ipv4) ip.value = v.ipv4;
+      else if (v && v.genip && supportsIp()) { const g = randIpFromSubnet(subnet()); if (g) ip.value = g; }
+      syncIp();
+      sel.onchange = () => { syncIp(); if (supportsIp() && !ip.value) { const g = randIpFromSubnet(subnet()); if (g) ip.value = g; } refreshNetUI(); };
+      row.querySelector('.nr-macgen').onclick = () => { mac.value = randMac(); mac.dispatchEvent(new Event('input', { bubbles: true })); };
+      ipgenBtn.onclick = () => { if (!supportsIp()) return; const g = randIpFromSubnet(subnet()); if (g) { ip.value = g; ip.dispatchEvent(new Event('input', { bubbles: true })); } else toast(tr('dk.ipv4_need_subnet'), 'err'); };
+      row.querySelector('.rm').onclick = () => { row.remove(); refreshNetUI(); };
+      $('ccNets').appendChild(row);
+      refreshNetUI();
+    };
+    $('ccNetAdd').onclick = () => netRow({ genip: true });
+    const readNetworks = () => Array.from($('ccNets').querySelectorAll('.netrow')).map((r) => ({
+      network: r.querySelector('.nr-net').value,
+      mac: r.querySelector('.nr-mac').value.trim() || undefined,
+      ipv4: r.querySelector('.nr-ip').value.trim() || undefined,
+    })).filter((n) => n.network);
+    // Memory unit (MB/GB) toggle.
+    let memUnit = 'MB';
+    const updMemHint = () => {
+      const max = memMaxMb > 0 ? (memUnit === 'GB' ? (memMaxMb / 1024).toFixed(2) + 'GB' : memMaxMb.toFixed(0) + 'MB') : '';
+      $('ccMemHint').textContent = max ? tr('dk.mem_limit_hint', { n: max }) : tr('dk.mem_limit_off');
+    };
+    $('ccMemUnit').onclick = () => { memUnit = memUnit === 'MB' ? 'GB' : 'MB'; $('ccMemUnit').textContent = memUnit; updMemHint(); $('ccMem').dispatchEvent(new Event('input', { bubbles: true })); };
+    updMemHint();
+    // Pre-fill from an existing container (edit / upgrade).
+    if (prefill) {
+      const cfg = prefill;
+      const applyImg = () => {
+        const sel = $('ccImg');
+        if (cfg.image && !Array.from(sel.options).some((o) => o.value === cfg.image)) {
+          const o = document.createElement('option'); o.value = cfg.image; o.textContent = cfg.image; sel.appendChild(o);
+        }
+        if (cfg.image) sel.value = cfg.image;
+      };
+      applyImg(); setTimeout(applyImg, 80);
+      // Editing can't change the image (recreating with a different image is
+      // what "Upgrade" is for) — lock the select so it's clearly read-only.
+      const img = $('ccImg');
+      img.disabled = true;
+      img.removeAttribute('data-selx-search');
+      $('ccName').value = cfg.name || '';
+      $('ccRestart').value = cfg.restart || 'unless-stopped';
+      $('ccCmd').value = cfg.command || '';
+      $('ccTty').checked = !!cfg.tty;
+      $('ccStdin').checked = !!cfg.interactive;
+      $('ccStart').checked = true;
+      (cfg.ports || []).forEach((p) => portRow({ h: p.host, c: p.container, proto: p.proto, ipv6: p.ipv6 }));
+      (cfg.env || []).forEach((e) => { const i = e.indexOf('='); envRow({ k: i >= 0 ? e.slice(0, i) : e, v: i >= 0 ? e.slice(i + 1) : '' }); });
+      (cfg.volumes || []).forEach((v) => volRow({ host: v.host, container: v.container, readonly: v.readonly }));
+      (cfg.networks || []).forEach((n) => netRow(n));
+      $('ccHost').value = cfg.hostname || '';
+      $('ccDomain').value = cfg.domainname || '';
+      $('ccDns').value = (cfg.dns || []).join(' ');
+      $('ccCpuShares').value = cfg.cpu_shares ? cfg.cpu_shares : 1024;
+      $('ccCpus').value = cfg.cpus ? Number(cfg.cpus) : 0;
+      $('ccMem').value = cfg.memory ? Math.round(Number(cfg.memory) / 1048576) : 0;
+      $('ccPriv').checked = !!cfg.privileged;
+    } else {
+      // New container: pre-add the default bridge network (random MAC). The
+      // default bridge can't take a static IPv4, so none is generated for it.
+      netRow({ network: 'bridge' });
+    }
+    const doSubmit = () => {
+      const image = $('ccImg').value.trim(); if (!image) return toast(tr('dk.need_image'), 'err');
+      const ports = readKv('ccPorts').map((r) => ({ host: Number(r[0]), container: Number(r[1]), proto: r.proto || 'tcp', ipv6: r.ipv6 || undefined })).filter((p) => p.host && p.container);
+      const env = readKv('ccEnv').map((r) => (r[0] ? r[0] + '=' + (r[1] || '') : '')).filter(Boolean);
+      const volumes = readVolumes();
+      const networks = readNetworks();
+      // Validate any static IPv4 against its network's declared subnet so a bad
+      // address fails here with a clear message instead of a cryptic docker error.
+      for (const n of networks) {
+        if (!n.ipv4) continue;
+        const sub = (netList.find((x) => x.name === n.network) || {}).subnet;
+        if (sub && !ipInSubnet(n.ipv4, sub)) return toast(tr('dk.net_ip_outside', { ip: n.ipv4, net: n.network, subnet: sub }), 'err');
+      }
+      const dns = $('ccDns').value.trim().split(/[\s,]+/).filter(Boolean);
+      const cpuShares = Number($('ccCpuShares').value) || 0;
+      const cpusV = Number($('ccCpus').value) || 0;
+      const memV = Number($('ccMem').value) || 0;
+      const body = {
+        op: 'create_container', image, name: $('ccName').value.trim() || undefined, restart: $('ccRestart').value,
+        ports, env, volumes, command: $('ccCmd').value.trim() || undefined, tty: $('ccTty').checked, interactive: $('ccStdin').checked, start: $('ccStart').checked,
+        networks,
+        hostname: $('ccHost').value.trim() || undefined, domainname: $('ccDomain').value.trim() || undefined,
+        dns: dns.length ? dns : undefined, cpu_shares: cpuShares || undefined,
+        cpus: cpusV > 0 ? String(cpusV) : undefined, memory: memV > 0 ? memV + (memUnit === 'GB' ? 'g' : 'm') : undefined,
+        privileged: $('ccPriv').checked || undefined,
+      };
+      if (opts.replaceName) body.replace = opts.replaceName;
+      $('ccGo').disabled = true; $('ccJob').classList.remove('hidden');
+      op('docker', body).then((r) => renderJob($('ccJob'), 'docker', r.op_id, '', { onDone: () => { toast(opts.doneMsg || tr('dk.ctn_created'), 'ok'); close(); switchTab('docker'); }, onError: () => { $('ccGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ccGo').disabled = false; });
+    };
+    $('ccGo').onclick = () => {
+      if (opts.confirmMsg) { confirmDanger(opts.confirmMsg).then((ok) => { if (ok) doSubmit(); }); } else doSubmit();
+    };
+    bindDirty('ccGo', root);
+  }, true);
+}
+
+// Generate a locally-administered random unicast MAC (02:xx:xx:xx:xx:xx).
+function randMac() {
+  const h = () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0');
+  return ['02', h(), h(), h(), h(), h()].join(':');
+}
+
+// Suggest a random host address inside an IPv4 subnet (last octet 2–251).
+// Editable by the user; only a convenience for user-defined networks.
+function randIpFromSubnet(subnet) {
+  if (!subnet || subnet.indexOf('/') < 0) return '';
+  const base = subnet.split('/')[0].split('.');
+  if (base.length !== 4) return '';
+  base[3] = String(2 + Math.floor(Math.random() * 250));
+  return base.join('.');
+}
+
+// True if an IPv4 address falls within a CIDR subnet (e.g. 172.20.0.5 in
+// 172.20.0.0/16). Returns true when the subnet is unparseable (skip check).
+function ipInSubnet(ip, cidr) {
+  const toInt = (s) => {
+    const p = s.split('.');
+    if (p.length !== 4) return null;
+    let n = 0;
+    for (const o of p) { const v = Number(o); if (!Number.isInteger(v) || v < 0 || v > 255) return null; n = (n * 256) + v; }
+    return n >>> 0;
+  };
+  const parts = (cidr || '').split('/');
+  if (parts.length !== 2) return true;
+  const net = toInt(parts[0]), bits = Number(parts[1]), addr = toInt(ip);
+  if (net == null || addr == null || !Number.isInteger(bits) || bits < 0 || bits > 32) return true;
+  if (bits === 0) return true;
+  const mask = (0xFFFFFFFF << (32 - bits)) >>> 0;
+  return (net & mask) === (addr & mask);
+}
+
+// Human-readable byte size + epoch-second timestamp helpers (monitor/backups).
+function dkHuman(n) {
+  n = Number(n) || 0;
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(2)) + u[i];
+}
+function dkFmtTime(secs) { return secs ? new Date(secs * 1000).toLocaleString() : '-'; }
+// Absolute YYYY-MM-DD HH:MM:SS from epoch seconds (number) or an ISO string.
+function fmtDateTime(v) {
+  if (v == null || v === '' || v === 0) return '-';
+  const d = (typeof v === 'number') ? new Date(v * 1000) : new Date(v);
+  if (isNaN(d.getTime())) return (typeof v === 'string' ? v : '-');
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
