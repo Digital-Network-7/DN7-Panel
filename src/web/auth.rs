@@ -25,6 +25,12 @@ const CHALLENGE_TTL: Duration = Duration::from_secs(120);
 /// and would otherwise leak into the URL (history, proxy logs, screenshots).
 const TICKET_TTL: Duration = Duration::from_secs(30);
 
+/// Hard caps on outstanding challenges/tickets. The challenge endpoint is
+/// public (pre-auth), so without a ceiling a flood could exhaust memory; at the
+/// cap the oldest entries are evicted to make room.
+const MAX_CHALLENGES: usize = 4096;
+const MAX_TICKETS: usize = 4096;
+
 #[derive(Default)]
 pub struct AuthState {
     sessions: Mutex<HashMap<String, SessionRec>>, // token -> {user, last access}
@@ -205,6 +211,15 @@ impl AuthState {
         let mut m = self.challenges.lock().unwrap();
         let now = Instant::now();
         m.retain(|_, t| now.duration_since(*t) <= CHALLENGE_TTL);
+        // Bound memory: if still at the cap after pruning expired nonces, evict
+        // the oldest ones so a flood of the public endpoint can't grow the map
+        // without limit.
+        while m.len() >= MAX_CHALLENGES {
+            let Some(oldest) = m.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) else {
+                break;
+            };
+            m.remove(&oldest);
+        }
         m.insert(nonce.clone(), now);
         nonce
     }
@@ -232,6 +247,13 @@ impl AuthState {
         let mut m = self.tickets.lock().unwrap();
         let now = Instant::now();
         m.retain(|_, r| now.duration_since(r.issued) <= TICKET_TTL);
+        while m.len() >= MAX_TICKETS {
+            let Some(oldest) = m.iter().min_by_key(|(_, r)| r.issued).map(|(k, _)| k.clone())
+            else {
+                break;
+            };
+            m.remove(&oldest);
+        }
         m.insert(
             ticket.clone(),
             TicketRec {
