@@ -171,57 +171,33 @@ pub async fn set_system_password(username: &str, password: &str) -> Result<()> {
 /// Create a panel user **and** the backing system account. `role` is "admin"
 /// (sudo) or "user". The OS password is left locked; the panel password is
 /// stored as salt + hash (plaintext never reaches the server).
-pub async fn create(
-    username: &str,
-    role: &str,
-    full_name: &str,
-    pw_salt: &str,
-    pw_hash: &str,
-    password: &str,
-) -> Result<PanelUser> {
-    if !valid_username(username) {
-        return Err(anyhow!("ERR_CODE:users.bad_username"));
-    }
-    if !matches!(role, "admin" | "user") {
-        return Err(anyhow!("ERR_CODE:users.bad_role"));
-    }
-    let salt_ok = pw_salt.len() == 32 && pw_salt.bytes().all(|b| b.is_ascii_hexdigit());
-    let hash_ok = pw_hash.len() == 64 && pw_hash.bytes().all(|b| b.is_ascii_hexdigit());
-    if !salt_ok || !hash_ok {
-        return Err(anyhow!("ERR_CODE:settings.pw_format"));
-    }
+/// Fields for creating a panel user (bundled to keep the argument count sane).
+/// Borrows live only for the `create` call. `pw_salt`/`pw_hash` are the
+/// client-computed verifier; `password` is the plaintext used (local console
+/// only) to set the matching OS password.
+pub struct NewUser<'a> {
+    pub username: &'a str,
+    pub role: &'a str,
+    pub full_name: &'a str,
+    pub pw_salt: &'a str,
+    pub pw_hash: &'a str,
+    pub password: &'a str,
+}
+
+pub async fn create(req: &NewUser<'_>) -> Result<PanelUser> {
+    validate_new_user(req)?;
     let mut users = load();
-    if users.iter().any(|u| u.username == username) {
+    if users.iter().any(|u| u.username == req.username) {
         return Err(anyhow!("ERR_CODE:users.exists"));
     }
-    // Create the system account (idempotent-ish: if it already exists as a
-    // system user we adopt it rather than failing the whole op).
-    if getpwnam(username).is_none() {
-        let mut args = vec!["-m", "-s", "/bin/bash"];
-        if !full_name.is_empty() {
-            args.push("-c");
-            args.push(full_name);
-        }
-        args.push(username);
-        run("useradd", &args).await?;
-    } else if !full_name.is_empty() {
-        let _ = run("usermod", &["-c", full_name, username]).await;
-    }
-    if role == "admin" {
-        grant_sudo(username).await?;
-    }
-    // Sync the OS account password to the panel password so the user can log in
-    // at the system level (SSH/console) with the same credentials.
-    if !password.is_empty() {
-        set_system_password(username, password).await?;
-    }
-    let (uid, _home) = getpwnam(username).unwrap_or((0, String::new()));
+    provision_system_account(req).await?;
+    let (uid, _home) = getpwnam(req.username).unwrap_or((0, String::new()));
     let user = PanelUser {
-        username: username.to_string(),
-        pw_salt: pw_salt.to_string(),
-        pw_hash: pw_hash.to_lowercase(),
-        role: role.to_string(),
-        full_name: full_name.to_string(),
+        username: req.username.to_string(),
+        pw_salt: req.pw_salt.to_string(),
+        pw_hash: req.pw_hash.to_lowercase(),
+        role: req.role.to_string(),
+        full_name: req.full_name.to_string(),
         nickname: String::new(),
         avatar: String::new(),
         totp_secret: String::new(),
@@ -231,6 +207,48 @@ pub async fn create(
     users.push(user.clone());
     save(&users)?;
     Ok(user)
+}
+
+/// Validate a new-user request (username chars, role, and well-formed hex
+/// salt/hash) before any system-account side effects.
+fn validate_new_user(req: &NewUser<'_>) -> Result<()> {
+    if !valid_username(req.username) {
+        return Err(anyhow!("ERR_CODE:users.bad_username"));
+    }
+    if !matches!(req.role, "admin" | "user") {
+        return Err(anyhow!("ERR_CODE:users.bad_role"));
+    }
+    let salt_ok = req.pw_salt.len() == 32 && req.pw_salt.bytes().all(|b| b.is_ascii_hexdigit());
+    let hash_ok = req.pw_hash.len() == 64 && req.pw_hash.bytes().all(|b| b.is_ascii_hexdigit());
+    if !salt_ok || !hash_ok {
+        return Err(anyhow!("ERR_CODE:settings.pw_format"));
+    }
+    Ok(())
+}
+
+/// Create (or adopt) the backing system account: `useradd -m` with the GECOS
+/// name, grant the admin group for admins, and sync the OS password to the
+/// panel password (so the user can log in over SSH/console). Adopting a
+/// pre-existing system user rather than failing keeps the op idempotent-ish.
+async fn provision_system_account(req: &NewUser<'_>) -> Result<()> {
+    if getpwnam(req.username).is_none() {
+        let mut args = vec!["-m", "-s", "/bin/bash"];
+        if !req.full_name.is_empty() {
+            args.push("-c");
+            args.push(req.full_name);
+        }
+        args.push(req.username);
+        run("useradd", &args).await?;
+    } else if !req.full_name.is_empty() {
+        let _ = run("usermod", &["-c", req.full_name, req.username]).await;
+    }
+    if req.role == "admin" {
+        grant_sudo(req.username).await?;
+    }
+    if !req.password.is_empty() {
+        set_system_password(req.username, req.password).await?;
+    }
+    Ok(())
 }
 
 /// Delete a panel user and remove the backing system account (with its home).

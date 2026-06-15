@@ -85,14 +85,14 @@ pub(crate) async fn users_create(
     if req.username == state.settings.lock().unwrap().username {
         return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.exists"))).into_response();
     }
-    match crate::web::users::create(
-        &req.username,
-        &req.role,
-        req.full_name.trim(),
-        &req.pw_salt,
-        &req.pw_hash,
-        &req.password,
-    )
+    match crate::web::users::create(&crate::web::users::NewUser {
+        username: &req.username,
+        role: &req.role,
+        full_name: req.full_name.trim(),
+        pw_salt: &req.pw_salt,
+        pw_hash: &req.pw_hash,
+        password: &req.password,
+    })
     .await
     {
         Ok(u) => {
