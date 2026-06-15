@@ -8,5 +8,6 @@
 pub(crate) mod authz;
 pub(crate) mod error;
 pub(crate) mod identity;
+pub(crate) mod settings;
 
 pub(crate) use error::Error;
