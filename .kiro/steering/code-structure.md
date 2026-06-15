@@ -129,3 +129,42 @@ splitting would hurt readability, not help it. They are accepted exceptions:
 When adding to one of these, prefer extracting any *new* logically-distinct step
 rather than growing the function further. New functions outside these categories
 must still meet the 40-line limit.
+
+## Security-sensitive configuration (capability guardrails)
+
+This is a remote management console: product-level config (a site toggle, an
+allow-list entry, raw nginx directives) can directly move an infrastructure
+security boundary. Any knob that does so must be **wrapped in policy**, never
+passed straight through to the underlying system. Every such knob requires all
+four of:
+
+1. **Validation** — a pure validator rejects malformed/over-broad input before
+   it reaches a config file or command. Keep these in a `validate` module
+   (e.g. `nginx/validate.rs`) so the rules are auditable in one place.
+2. **Safe default** — when the input is empty/unset, fall back to the *closed*
+   choice, never the open one. (A blank trusted-proxy list trusts private +
+   loopback ranges, not `0.0.0.0/0`; an allow-list that can't resolve the peer
+   IP fails closed.)
+3. **Audit** — the state-changing op is recorded (capability ops flow through
+   `web::server::capability::dispatch`, which calls `audit::record_op` with a
+   redacted request/response).
+4. **Authorization** — the op sits behind the right gate
+   (`require_admin` / `require_super`); never expose a capability wider than its
+   blast radius warrants.
+
+Current sensitive knobs and their guardrails (keep this list current when
+adding new ones):
+
+| Knob | Validator | Safe default |
+|------|-----------|--------------|
+| `trust_proxy_cidrs` | `nginx/sites::sanitize_trusted_cidrs` | private + loopback only |
+| nginx `extra_conf` | `validate_extra_conf` + `nginx -t` + rollback | empty (no directives) |
+| static `local_root` | `valid_local_root` (absolute, exists, deny-list) | upload-managed dir |
+| `allow_ips` | `settings::normalize_allow_ips` | empty = allow any, gate fails closed on unknown peer |
+| `redirect_url` | `valid_redirect_url` (http/https only) | n/a |
+| proxy target / `server_name` / location path | `nginx/validate.rs` token checks | n/a |
+
+When adding a knob that touches nginx/system/network config, add its row here
+and confirm it satisfies all four points above. Prefer **not** exposing a raw
+infrastructure primitive at all unless there's a real need; a narrow, validated
+product setting is safer than a passthrough.
