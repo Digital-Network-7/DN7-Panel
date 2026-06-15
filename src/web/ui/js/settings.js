@@ -3,7 +3,7 @@
 // =========================================================================
 function renderSettings(v) {
   v.innerHTML = '<div style="padding:8px">' + loading() + '</div>';
-  api('/api/settings').then((sb) => {
+  SettingsApi.get().then((sb) => {
     const s = sb.data;
     let allowIps = (s.allow_ips || []).slice();
     const ipDisplay = () => {
@@ -108,7 +108,7 @@ function renderSettings(v) {
         allow_ips: allowIps,
         https: $('setHttps').checked,
       };
-      api('/api/settings', { method: 'POST', body: JSON.stringify(body) })
+      SettingsApi.save(body)
         .then((b) => { m.className = 'err ok'; m.textContent = tr('common.saved') + (b.needs_restart ? tr('common.restart_hint') : ''); if ($('setSave')._dirtyReset) $('setSave')._dirtyReset(); })
         .catch((e) => { m.className = 'err'; m.textContent = e.message; });
     };
@@ -148,7 +148,7 @@ function renderSettings(v) {
     $('brAccentClear').onclick = () => { brState.accent = ''; brRenderPrev(); $('brName').dispatchEvent(new Event('input', { bubbles: true })); };
     $('brSave').onclick = () => {
       const body = { panel_name: $('brName').value, theme_default: $('brTheme').value, accent: brState.accent, logo: brState.logo };
-      api('/api/branding', { method: 'POST', body: JSON.stringify(body) })
+      SettingsApi.saveBranding(body)
         .then(() => { const m = $('brMsg'); m.className = 'err ok'; m.textContent = tr('set.saving_refresh'); setTimeout(() => location.reload(), 600); })
         .catch((e) => { const m = $('brMsg'); m.className = 'err'; m.textContent = e.message; });
     };

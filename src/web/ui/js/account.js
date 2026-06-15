@@ -65,7 +65,7 @@ function editProfile() {
     };
     $('pfSave').onclick = () => {
       const body = { full_name: $('pfFull').value, nickname: $('pfNick').value, avatar: state.avatar };
-      api('/api/profile', { method: 'POST', body: JSON.stringify(body) })
+      AccountApi.updateProfile(body)
         .then(() => {
           Auth.me.full_name = body.full_name.trim();
           Auth.me.nickname = body.nickname.trim();
@@ -107,7 +107,7 @@ function changePassword() {
           const body = { pw_salt: salt, pw_hash: sha256Hex(salt + ':' + pw), old_verifier: sha256Hex(cur + ':' + oldPw) };
           // Non-owner accounts sync their OS password to the panel password.
           if (!(Auth.me && Auth.me.is_super)) body.password = pw;
-          return api('/api/password', { method: 'POST', body: JSON.stringify(body) });
+          return AccountApi.changePassword(body);
         })
         .then(() => { toast(tr('common.saved'), 'ok'); $('modalRoot').innerHTML = ''; })
         .catch((e) => { err.textContent = e.message; });
@@ -132,7 +132,7 @@ function twoFactor() {
         <div class="err" id="tfErr" style="margin-top:10px"></div>`;
       $('tfDisable').onclick = () => {
         $('tfErr').textContent = '';
-        api('/api/2fa/disable', { method: 'POST', body: JSON.stringify({ code: $('tfCode').value }) })
+        AccountApi.twofaDisable($('tfCode').value)
           .then(() => { Auth.me.totp_enabled = false; toast(tr('tfa.disabled'), 'ok'); $('modalRoot').innerHTML = ''; })
           .catch((e) => { $('tfErr').textContent = e.message; });
       };
@@ -140,7 +140,7 @@ function twoFactor() {
       return;
     }
     // Not enabled → fetch a fresh secret + QR, require a live code to bind.
-    api('/api/2fa/setup', { method: 'POST' }).then((b) => {
+    AccountApi.twofaSetup().then((b) => {
       const d = b.data || {};
       body.innerHTML = `
         <p class="mut" style="font-size:13px;margin:0 0 12px">${tr('tfa.setup_intro')}</p>
@@ -153,7 +153,7 @@ function twoFactor() {
         <div class="err" id="tfErr" style="margin-top:10px"></div>`;
       const submit = () => {
         $('tfErr').textContent = '';
-        api('/api/2fa/enable', { method: 'POST', body: JSON.stringify({ code: $('tfCode').value }) })
+        AccountApi.twofaEnable($('tfCode').value)
           .then(() => { Auth.me.totp_enabled = true; toast(tr('tfa.enabled'), 'ok'); $('modalRoot').innerHTML = ''; })
           .catch((e) => { $('tfErr').textContent = e.message; });
       };
@@ -178,7 +178,7 @@ function roleOptions(current) {
 function renderUsers(v) {
   v.innerHTML = `<div class="row" style="margin-bottom:14px"><h3 style="margin:0;font-size:15px">${tr('um.title')}</h3><span class="sp" style="flex:1"></span><button class="btn sm" id="umAdd">${tr('um.add')}</button></div><div id="umBody">${loading()}</div>`;
   $('umAdd').onclick = () => umCreate(() => renderUsers(v));
-  api('/api/users').then((b) => {
+  AccountApi.listUsers().then((b) => {
     const users = (b.data && b.data.users) || [];
     const mine = myLevel();
     let h = `<table class="optable"><tr><th>${tr('um.account')}</th><th>${tr('acct.full_name')}</th><th>${tr('um.role')}</th><th>UID</th><th>${tr('acct.twofa')}</th><th class="act">${tr('ng.col_actions')}</th></tr>`;
@@ -199,7 +199,7 @@ function renderUsers(v) {
     document.querySelectorAll('#umBody [data-edit]').forEach((b) => b.onclick = () => umEdit(usersByName[b.dataset.edit], () => renderUsers(v)));
     document.querySelectorAll('#umBody [data-del]').forEach((b) => b.onclick = async () => {
       if (await confirmDanger(tr('um.confirm_del', { name: b.dataset.del }))) {
-        api('/api/users/delete', { method: 'POST', body: JSON.stringify({ username: b.dataset.del }) })
+        AccountApi.deleteUser(b.dataset.del)
           .then(() => { toast(tr('common.deleted'), 'ok'); renderUsers(v); })
           .catch((e) => toast(e.message, 'err'));
       }
@@ -230,7 +230,7 @@ function umCreate(reload) {
       const salt = randHex(16);
       const body = { username: un, full_name: $('umFull').value, role: $('umRole').value, pw_salt: salt, pw_hash: sha256Hex(salt + ':' + pw), password: pw };
       $('umGo').disabled = true; $('umJob').classList.remove('hidden'); $('umJob').innerHTML = `<div class="mut">${tr('um.creating')}</div>`;
-      api('/api/users', { method: 'POST', body: JSON.stringify(body) })
+      AccountApi.createUser(body)
         .then(() => { toast(tr('um.created'), 'ok'); close(); reload(); })
         .catch((e) => { err.textContent = e.message; $('umGo').disabled = false; $('umJob').classList.add('hidden'); });
     };
@@ -261,7 +261,7 @@ function umEdit(u, reload) {
         body.pw_hash = sha256Hex(salt + ':' + pw);
         body.password = pw; // sync the OS password to the new panel password
       }
-      api('/api/users/update', { method: 'POST', body: JSON.stringify(body) })
+      AccountApi.updateUser(body)
         .then(() => { toast(tr('common.saved'), 'ok'); close(); reload(); })
         .catch((e) => { err.textContent = e.message; });
     };
