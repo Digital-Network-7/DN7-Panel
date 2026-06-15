@@ -207,26 +207,6 @@ pub(crate) async fn rewrite_sites_using_access(access_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Current website settings (default-site behaviour + http/server tuning).
-pub(crate) async fn get_web_settings() -> Result<Value> {
-    let g = load_webglobal();
-    let t = load_tuning_opt().unwrap_or_default();
-    Ok(json!({
-        "default_site": { "mode": g.default_site.mode, "redirect_url": g.default_site.redirect_url },
-        "configured": websettings_file().exists(),
-        "tuning": {
-            "server_names_hash_bucket_size": t.server_names_hash_bucket_size,
-            "gzip": t.gzip,
-            "client_header_buffer_size": t.client_header_buffer_size,
-            "gzip_min_length": t.gzip_min_length,
-            "client_max_body_size": t.client_max_body_size,
-            "gzip_comp_level": t.gzip_comp_level,
-            "keepalive_timeout": t.keepalive_timeout,
-        },
-        "tuning_configured": webtuning_file().exists(),
-    }))
-}
-
 /// Save http/server tuning and re-apply it (rewrite all managed site confs +
 /// the http include), then reload.
 pub(crate) async fn set_tuning(req: &Req) -> Result<Value> {

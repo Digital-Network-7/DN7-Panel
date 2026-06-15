@@ -12,10 +12,41 @@
 //! nginx (see .kiro/steering/architecture.md §10).
 
 use anyhow::Result;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// Run one nginx capability request. `body` is the capability JSON command
 /// already authenticated/authorized by the web boundary.
+///
+/// Ops are migrated off the infra dispatcher into explicit use-cases here one at
+/// a time (each verified against a live nginx); the rest still forward to the
+/// capability's internal JSON dispatcher.
 pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
-    crate::infra::nginx::web_dispatch(body).await
+    match body.get("op").and_then(|v| v.as_str()) {
+        // Read-only website settings (default-site + http tuning). Pure read,
+        // no nginx reload — first op migrated to the application layer.
+        Some("get_settings") => get_settings(),
+        _ => crate::infra::nginx::web_dispatch(body).await,
+    }
+}
+
+/// `get_settings` use-case: project the persisted website-settings state
+/// (default-site behaviour + http/server tuning + configured flags) into the
+/// console response. Orchestration lives here; the raw read is delegated to the
+/// `infra::nginx` adapter.
+fn get_settings() -> Result<Value> {
+    let (g, t, configured, tuning_configured) = crate::infra::nginx::web_settings_state();
+    Ok(json!({
+        "default_site": { "mode": g.default_site.mode, "redirect_url": g.default_site.redirect_url },
+        "configured": configured,
+        "tuning": {
+            "server_names_hash_bucket_size": t.server_names_hash_bucket_size,
+            "gzip": t.gzip,
+            "client_header_buffer_size": t.client_header_buffer_size,
+            "gzip_min_length": t.gzip_min_length,
+            "client_max_body_size": t.client_max_body_size,
+            "gzip_comp_level": t.gzip_comp_level,
+            "keepalive_timeout": t.keepalive_timeout,
+        },
+        "tuning_configured": tuning_configured,
+    }))
 }

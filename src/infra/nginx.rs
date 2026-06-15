@@ -213,6 +213,23 @@ pub async fn web_dispatch(req: &Value) -> Result<Value> {
     handle(&r).await
 }
 
+/// Read-only website-settings snapshot for the `get_settings` use-case (owned by
+/// `app::nginx`): persisted default-site + http tuning, plus whether each has
+/// been configured. Pure read — no nginx reload.
+pub(crate) fn web_settings_state() -> (
+    crate::domain::nginx::WebGlobal,
+    crate::domain::nginx::HttpTuning,
+    bool,
+    bool,
+) {
+    (
+        load_webglobal(),
+        load_tuning_opt().unwrap_or_default(),
+        websettings_file().exists(),
+        webtuning_file().exists(),
+    )
+}
+
 async fn handle(req: &Req) -> Result<Value> {
     match req.op.as_str() {
         "info" => nginx_info().await,
@@ -228,7 +245,6 @@ async fn handle(req: &Req) -> Result<Value> {
         "list_access" => list_access().await,
         "save_access" => save_access_op(req).await,
         "delete_access" => delete_access_op(req).await,
-        "get_settings" => get_web_settings().await,
         "set_default_site" => set_default_site(req).await,
         "set_tuning" => set_tuning(req).await,
         "reload" => {
