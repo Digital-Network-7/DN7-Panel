@@ -30,8 +30,8 @@ pub(crate) async fn login_challenge(
 ) -> Response {
     let nonce = state.auth.issue_challenge();
     // Return the salt for the requested account so the client can compute the
-    // verifier. Falls back to the super-admin salt (so probing a name doesn't
-    // reveal whether it exists — a random-looking salt is always returned).
+    // verifier. Unknown accounts get a stable per-username decoy salt (below)
+    // so probing a name never reveals whether it exists.
     let salt = {
         let su = state.settings.lock().unwrap();
         if q.username.is_empty() || q.username == su.username {
@@ -39,10 +39,32 @@ pub(crate) async fn login_challenge(
         } else if let Some(u) = crate::web::users::find(&q.username) {
             u.pw_salt
         } else {
-            su.pw_salt.clone()
+            // Unknown account: return a deterministic, per-username pseudo-salt
+            // derived from the install salt. A probe can't tell an existing
+            // account (its real salt) from a missing one (this stable decoy),
+            // so the endpoint no longer leaks account existence.
+            decoy_salt(&su.pw_salt, &q.username)
         }
     };
     Json(json!({ "nonce": nonce, "salt": salt })).into_response()
+}
+
+/// A stable, per-username decoy salt for non-existent accounts, derived from
+/// the per-install salt. It looks exactly like a real 32-hex per-user salt and
+/// is identical across requests, so it reveals nothing about whether the
+/// account exists.
+fn decoy_salt(install_salt: &str, username: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(install_salt.as_bytes());
+    h.update(b":decoy:");
+    h.update(username.to_ascii_lowercase().as_bytes());
+    let digest = h.finalize();
+    let mut s = String::with_capacity(32);
+    for b in &digest[..16] {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
 }
 
 #[derive(serde::Deserialize)]
