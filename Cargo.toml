@@ -5,7 +5,7 @@ edition = "2021"
 description = "DN7 Panel - on-box server management console (Docker, Nginx, MySQL, files, terminal, monitoring)"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "process", "sync", "fs", "signal"] }
 futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots", "stream"] }
 serde = { version = "1", features = ["derive"] }
