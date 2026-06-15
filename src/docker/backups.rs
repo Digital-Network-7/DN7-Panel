@@ -240,7 +240,6 @@ pub(crate) fn start_restore_backup(req: &Req) -> Result<Value> {
 }
 
 pub(crate) async fn restore_backup(op_id: &str, name: &str, file: &str) -> Result<()> {
-    use tokio_util::codec::{BytesCodec, FramedRead};
     let dkr = dkr()?;
     let dir = backups_root().join(name);
     let tar_gz = dir.join(file);
@@ -248,10 +247,20 @@ pub(crate) async fn restore_backup(op_id: &str, name: &str, file: &str) -> Resul
         return Err(anyhow!("ERR_CODE:docker.backup_missing"));
     }
 
-    // Load the saved image (`docker load`). The tarball records its own
-    // repo:tag (dn7-backup:<name>-<ts>); capture it from the load output.
+    // Load the saved image (`docker load`); it records its own repo:tag.
     op_push(op_id, &pmsg("dk.bk_loading", &[]));
-    let f = tokio::fs::File::open(&tar_gz)
+    let loaded_image = load_backup_image(&dkr, &tar_gz).await?;
+
+    // Read the config snapshot and recreate the container from the loaded image.
+    op_push(op_id, &pmsg("dk.bk_recreating", &[]));
+    recreate_from_snapshot(&dir, file, name, &loaded_image).await
+}
+
+/// `docker load` a backup tarball and return the repo:tag it recorded
+/// (dn7-backup:<name>-<ts>), parsed from the load progress stream.
+async fn load_backup_image(dkr: &Docker, tar_gz: &std::path::Path) -> Result<String> {
+    use tokio_util::codec::{BytesCodec, FramedRead};
+    let f = tokio::fs::File::open(tar_gz)
         .await
         .map_err(|e| anyhow!("无法打开备份：{e}"))?;
     let byte_stream = FramedRead::new(f, BytesCodec::new()).map(|r| r.unwrap_or_default().freeze());
@@ -270,9 +279,18 @@ pub(crate) async fn restore_backup(op_id: &str, name: &str, file: &str) -> Resul
             }
         }
     }
+    Ok(loaded_image)
+}
 
-    // Read the config snapshot and recreate from the loaded image.
-    op_push(op_id, &pmsg("dk.bk_recreating", &[]));
+/// Read the JSON create-snapshot beside the tarball, point it at the freshly
+/// loaded image, and recreate the container under `name` (replacing any
+/// existing one with that name).
+async fn recreate_from_snapshot(
+    dir: &std::path::Path,
+    file: &str,
+    name: &str,
+    loaded_image: &str,
+) -> Result<()> {
     let json_path = dir.join(file.replace(".tar.gz", ".json"));
     let mut body: Value = match std::fs::read(&json_path) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({})),
