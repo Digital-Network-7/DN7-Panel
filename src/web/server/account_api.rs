@@ -154,7 +154,25 @@ pub(crate) async fn put_password(
     if !salt_ok || !hash_ok {
         return api_err(StatusCode::BAD_REQUEST, "settings.pw_format");
     }
-    let hash = req.pw_hash.to_lowercase();
+    if let Err(r) = verify_current_password(&state, &a, &req.old_verifier) {
+        return r;
+    }
+    if let Err(r) = save_new_password(&state, &a, &req).await {
+        return r;
+    }
+    audit::record(&a.username, "account.password", &a.username, true, "");
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// Verify the caller's current password before allowing a change: their
+/// `old_verifier` must equal the stored salted hash (super-admin → web.json,
+/// else the panel user's record).
+#[allow(clippy::result_large_err)]
+fn verify_current_password(
+    state: &Shared,
+    a: &Account,
+    old_verifier: &str,
+) -> Result<(), Response> {
     let cur_hash = if a.is_super {
         state.settings.lock().unwrap().pw_hash.clone()
     } else {
@@ -162,10 +180,20 @@ pub(crate) async fn put_password(
             .map(|u| u.pw_hash)
             .unwrap_or_default()
     };
-    // Verify the current password (its salted hash) before allowing a change.
-    if cur_hash.is_empty() || req.old_verifier.to_lowercase() != cur_hash {
-        return api_err(StatusCode::BAD_REQUEST, "settings.bad_old_password");
+    if cur_hash.is_empty() || old_verifier.to_lowercase() != cur_hash {
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "settings.bad_old_password",
+        ));
     }
+    Ok(())
+}
+
+/// Persist the new password verifier (super-admin → web.json, else the panel
+/// user record) and, for system-backed users, sync the OS password.
+#[allow(clippy::result_large_err)]
+async fn save_new_password(state: &Shared, a: &Account, req: &PasswordReq) -> Result<(), Response> {
+    let hash = req.pw_hash.to_lowercase();
     if a.is_super {
         let saved = {
             let mut s = state.settings.lock().unwrap();
@@ -173,7 +201,11 @@ pub(crate) async fn put_password(
             s.clone()
         };
         if let Err(e) = settings::save(&saved) {
-            return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
+            return Err(api_err_detail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "common.save_failed",
+                e,
+            ));
         }
     } else {
         let res = crate::web::users::update(&a.username, |u| {
@@ -181,7 +213,7 @@ pub(crate) async fn put_password(
             u.pw_hash = hash.clone();
         });
         if let Err(e) = res {
-            return Json(op_err_body(e)).into_response();
+            return Err(Json(op_err_body(e)).into_response());
         }
         // Sync the OS password to the new panel password.
         if !req.password.is_empty() {
@@ -190,8 +222,7 @@ pub(crate) async fn put_password(
             }
         }
     }
-    audit::record(&a.username, "account.password", &a.username, true, "");
-    Json(json!({ "ok": true })).into_response()
+    Ok(())
 }
 
 /// Read the caller's pending/active TOTP secret.
