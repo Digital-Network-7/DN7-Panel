@@ -148,7 +148,7 @@ platform 独立;跨层装配仅限"受控组合根集合"
 - `app`:`account` 用例(改密/2FA,经 `AccountEnv` 端口 + mock 单测)、`users`(面板用户编排);账户自助凭据域 + settings 改密的错误全部走 `domain::Error`。
 
 **待办(建议按能力分阶段做,勿一次性强塞)**
-- 管理员用户管理 handler(`users_create/update/delete`)目前仍在 web 层做「鉴权→authz→调 app::users 编排→审计」;编排本身已在 `app::users`,handler 进一步薄化属可选优化(字段多、需保持原子写与 `op_err_body` 语义)。
-- nginx/docker/mysql 能力的**适配器物理下沉**(`confgen/store/htpasswd/exec/...` → `infra::*`)与**编排上移**(`sites/access/certs/provision/...` → `app::*`):这些子模块经 `use super::*` 与父模块共享结构(`Layout`/`Req`/`AccessList` 等)深耦合,物理迁移会牵动大量 `super::*` 链,属高改动面、需逐文件谨慎,**不要一次性翻动**。
+- 管理员用户管理 handler(`users_create/update/delete`,`web/server/users_api.rs`)经评估**已处于合理薄度**:只做鉴权(`require_admin`)、authz(`domain::authz::can_manage`)、DTO 解析、审计、`op_err_body`/`api_err` 映射、会话撤销;编排在 `app::users`。其中对 `infra::system`(set_full_name/set_system_password/set_sudo)的直接调用与 `account_api` 的 `AccountEnv` adapter 同属 web 作为组合根装配 infra 的既定模式,进一步下沉收益低且会引入不一致,**暂不再薄化**。
+- nginx/docker/mysql 能力的**适配器物理下沉**(`confgen/store/htpasswd/exec/...` → `infra::*`)与**编排上移**(`sites/access/certs/provision/...` → `app::*`):这些子模块经 `use super::*` 与父模块共享结构(`Req`)与路径常量(`HOST_ACCESS_DIR`/`access_dir()`/`Layout`)深耦合(已核实 `nginx/htpasswd.rs` 即依赖父级路径常量),物理迁移会牵动大量 `super::*` 链,属高改动面、需逐文件谨慎,**不要一次性翻动**。
 - 能力的 `ERR_CODE:` 字符串校验器(docker/nginx/mysql format validators)→ 待这些能力采用 typed 命令模型时,一并迁到 `domain::Error`;在此之前保留 `ERR_CODE:`/`op_err_body` 过渡通道(steering §6)。
 - 能力竖切 `nginx` / `docker` / `mysql` / `files`:这些模块已有 `validate/store/exec` 内部分层 + `web_dispatch` 薄缝;**命令模型(大 Req→按操作命令枚举)属高改动面、低收益(见 §5 取向),且涉及 bollard/nginx/系统调用、本地无法运行期验证**,务必逐能力小步推进、各自验证,不要在单次改动中全量重写。
