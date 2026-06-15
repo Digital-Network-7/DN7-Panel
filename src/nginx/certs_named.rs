@@ -54,7 +54,38 @@ pub(crate) async fn create_cert(req: &Req) -> Result<Value> {
     if !matches!(mode, "self" | "le" | "manual") {
         return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
     }
-    // Certs are identified by their (unique) domain — no separate name.
+    let mut certs = load_named_certs();
+    let (domain, name) = derive_cert_name(req, &certs)?;
+
+    match mode {
+        "self" => {
+            let host = primary_host(&domain);
+            gen_self_signed_to(
+                &named_crt_file(&lo, &name),
+                &named_key_file(&lo, &name),
+                &host,
+            )
+            .await?;
+        }
+        "manual" => write_manual_cert(&lo, req, &name)?,
+        // Let's Encrypt issuance runs detached and records the manifest itself.
+        "le" => return start_named_cert_issue(lo, name, domain),
+        _ => {}
+    }
+
+    certs.push(NamedCert {
+        name: name.clone(),
+        domain,
+        cert_mode: mode.to_string(),
+    });
+    save_named_certs(&certs)?;
+    Ok(json!({ "name": name }))
+}
+
+/// Validate the requested cert domain and derive its (unique) storage name.
+/// Certs are identified by their domain — there's no separate name — so this
+/// also enforces one certificate per domain. Returns `(domain, name)`.
+fn derive_cert_name(req: &Req, certs: &[NamedCert]) -> Result<(String, String)> {
     let domain = req
         .server_name
         .as_deref()
@@ -71,48 +102,26 @@ pub(crate) async fn create_cert(req: &Req) -> Result<Value> {
     if !valid_cert_name(&name) {
         return Err(anyhow!("ERR_CODE:nginx.bad_cert_name_chars"));
     }
-    let mut certs = load_named_certs();
-    // One certificate per domain.
     if certs
         .iter()
         .any(|c| c.name == name || (!c.domain.is_empty() && c.domain.eq_ignore_ascii_case(&domain)))
     {
         return Err(anyhow!("ERR_CODE:nginx.cert_domain_exists"));
     }
+    Ok((domain, name))
+}
 
-    match mode {
-        "self" => {
-            let host = primary_host(&domain);
-            gen_self_signed_to(
-                &named_crt_file(&lo, &name),
-                &named_key_file(&lo, &name),
-                &host,
-            )
-            .await?;
-        }
-        "manual" => {
-            let cert = req.cert_pem.as_deref().unwrap_or("");
-            let key = req.key_pem.as_deref().unwrap_or("");
-            if cert.trim().is_empty() || key.trim().is_empty() {
-                return Err(anyhow!("ERR_CODE:nginx.need_cert_key"));
-            }
-            std::fs::create_dir_all(&lo.cert_store)?;
-            std::fs::write(named_crt_file(&lo, &name), cert)?;
-            write_key_file(&named_key_file(&lo, &name), key)?;
-        }
-        "le" => {
-            return start_named_cert_issue(lo, name, domain);
-        }
-        _ => {}
+/// Write a user-supplied (manual) cert + key pair into the named cert store.
+fn write_manual_cert(lo: &Layout, req: &Req, name: &str) -> Result<()> {
+    let cert = req.cert_pem.as_deref().unwrap_or("");
+    let key = req.key_pem.as_deref().unwrap_or("");
+    if cert.trim().is_empty() || key.trim().is_empty() {
+        return Err(anyhow!("ERR_CODE:nginx.need_cert_key"));
     }
-
-    certs.push(NamedCert {
-        name: name.clone(),
-        domain,
-        cert_mode: mode.to_string(),
-    });
-    save_named_certs(&certs)?;
-    Ok(json!({ "name": name }))
+    std::fs::create_dir_all(&lo.cert_store)?;
+    std::fs::write(named_crt_file(lo, name), cert)?;
+    write_key_file(&named_key_file(lo, name), key)?;
+    Ok(())
 }
 
 /// Renew a named cert in place: re-issue (LE) or regenerate (self-signed).
