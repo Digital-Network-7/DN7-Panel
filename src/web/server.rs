@@ -144,9 +144,10 @@ fn build_router(state: Shared) -> Router {
 /// Attach defensive security headers to every response. A Content-Security-
 /// Policy locks `default-src`/`connect-src`/`img-src` to same-origin, which
 /// blocks an injected script from exfiltrating the session token to an external
-/// origin (the main XSS risk for a token-in-JS app); `script-src`/`style-src`
-/// keep `'unsafe-inline'` because the bundled UI uses inline handlers/styles (a
-/// nonce-based strict policy is a future improvement). HSTS is sent only over
+/// origin. `script-src 'self'` (no `'unsafe-inline'`) — the UI ships zero inline
+/// scripts/handlers (the pre-paint logic is `/ui/js/prepaint.js` and controls
+/// are wired via `addEventListener` in `boot.js`). `style-src` keeps
+/// `'unsafe-inline'` for the bundled inline styles. HSTS is sent only over
 /// HTTPS (browsers ignore it over HTTP, and sending it could strand an
 /// HTTP-only deployment).
 async fn security_headers(State(state): State<Shared>, req: Request, next: Next) -> Response {
@@ -157,7 +158,7 @@ async fn security_headers(State(state): State<Shared>, req: Request, next: Next)
         .unwrap_or(false);
     let mut resp = next.run(req).await;
     let h = resp.headers_mut();
-    const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; \
+    const CSP: &str = "default-src 'self'; script-src 'self'; \
         style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; \
         object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'";
     let mut set = |name: header::HeaderName, val: &str| {

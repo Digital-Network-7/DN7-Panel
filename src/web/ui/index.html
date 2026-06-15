@@ -5,44 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>DN7 Panel</title>
 <!--__DN7_HEAD__-->
-<script>
-  // Resolve theme + language + auth view synchronously (before first paint) so
-  // there's no flash of the wrong theme/language/login-page before the app JS
-  // runs. The body stays hidden (see app.css) until i18n has populated the
-  // static text, so the user only ever sees the correct language.
-  (function () {
-    try {
-      var m = localStorage.getItem('dn7_theme') || (window.__BRAND__ && window.__BRAND__.theme) || 'auto';
-      var eff = m;
-      if (m === 'auto') eff = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
-      document.documentElement.setAttribute('data-theme', eff);
-      document.documentElement.setAttribute('data-mode', m);
-      // Decide auth view before first paint so a logged-in refresh never flashes
-      // the login page (CSS below hides the opposite view based on this attr).
-      document.documentElement.setAttribute('data-auth', localStorage.getItem('dn7_web_token') ? 'in' : 'out');
-      // Language: a manual choice wins; otherwise follow the browser, falling
-      // back to English. Resolved here so the page renders once, in the right
-      // language, with no flicker.
-      var SUP = ['en', 'zh-CN', 'zh-TW', 'ja'];
-      var saved = localStorage.getItem('dn7_lang');
-      var lang;
-      if (SUP.indexOf(saved) >= 0) {
-        lang = saved;
-      } else {
-        var ls = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || ''];
-        lang = 'en';
-        for (var i = 0; i < ls.length; i++) {
-          var l = (ls[i] || '').toLowerCase();
-          if (l.indexOf('zh') === 0) { lang = (l.indexOf('tw') >= 0 || l.indexOf('hk') >= 0 || l.indexOf('mo') >= 0 || l.indexOf('hant') >= 0) ? 'zh-TW' : 'zh-CN'; break; }
-          if (l.indexOf('ja') === 0) { lang = 'ja'; break; }
-          if (l.indexOf('en') === 0) { lang = 'en'; break; }
-        }
-      }
-      window.__LANG__ = lang;
-      document.documentElement.lang = lang;
-    } catch (e) { window.__LANG__ = 'en'; }
-  })();
-</script>
+<script src="/ui/js/prepaint.js"></script>
 <link rel="stylesheet" href="/ui/app.css" />
 </head>
 <body>
@@ -66,7 +29,7 @@
           <label class="lbl" data-i18n="tfa.code">2FA code</label>
           <input id="loginCode" class="field" inputmode="numeric" autocomplete="one-time-code" placeholder="000000" />
         </div>
-        <button class="btn" style="width:100%" data-i18n="login.submit" onclick="doLogin()">登 录</button>
+        <button class="btn" style="width:100%" id="loginBtn" data-i18n="login.submit">登 录</button>
         <div class="err" id="loginErr" style="margin-top:10px"></div>
       </div>
     </div>
@@ -79,7 +42,7 @@
     <div class="logo"><span class="cup"><!--__DN7_BRAND_MARK__--></span><h1 class="brand-name">__DN7_BRAND_NAME__</h1></div>
     <nav id="nav"></nav>
     <div class="foot">
-      <div class="ver" id="verLine" data-i18n-title="shell.update_hint" title="点击查看更新" onclick="openUpdate()" style="cursor:pointer">Panel <b id="panelVer">…</b><span id="verDot" class="updot hidden"></span></div>
+      <div class="ver" id="verLine" data-i18n-title="shell.update_hint" title="点击查看更新" style="cursor:pointer">Panel <b id="panelVer">…</b><span id="verDot" class="updot hidden"></span></div>
     </div>
   </aside>
   <div class="content">
@@ -87,8 +50,8 @@
       <h2 id="title">监控</h2>
       <span class="sp"></span>
       <button class="iconbtn" id="langBtn" title="Language"></button>
-      <button class="iconbtn" id="themeBtn" title="主题：跟随系统" onclick="cycleTheme()">◑</button>
-      <div class="userbox" id="userBox" onclick="toggleAccountMenu(event)">
+      <button class="iconbtn" id="themeBtn" title="主题：跟随系统">◑</button>
+      <div class="userbox" id="userBox">
         <span class="av" id="userAv">A</span>
         <b id="whoName">admin</b>
         <span class="caret" aria-hidden="true">▾</span>
