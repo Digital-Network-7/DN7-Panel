@@ -33,7 +33,7 @@ pub(crate) async fn login_challenge(
     // verifier. Unknown accounts get a stable per-username decoy salt (below)
     // so probing a name never reveals whether it exists.
     let salt = {
-        let su = state.settings.lock().unwrap_or_else(|p| p.into_inner());
+        let su = state.settings_guard();
         if q.username.is_empty() || q.username == su.username {
             su.pw_salt.clone()
         } else if let Some(u) = crate::app::users::find(&q.username) {
@@ -80,7 +80,7 @@ pub(crate) async fn login(
     Json(req): Json<LoginReq>,
 ) -> Response {
     let source = {
-        let s = state.settings.lock().unwrap_or_else(|p| p.into_inner());
+        let s = state.settings_guard();
         client_ip(peer.ip(), &headers, &SecurityPolicy::new(&s)).to_string()
     };
     if !state.auth.login_allowed(&source) {
@@ -135,7 +135,7 @@ struct LoginAccount {
 /// missing account yields an empty `exp_hash` so the password check fails
 /// uniformly (no account-enumeration signal).
 fn resolve_login_account(state: &Shared, username: &str) -> LoginAccount {
-    let su = state.settings.lock().unwrap_or_else(|p| p.into_inner());
+    let su = state.settings_guard();
     if username == su.username {
         return LoginAccount {
             exp_hash: su.verifier().to_string(),

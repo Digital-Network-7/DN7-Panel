@@ -14,7 +14,7 @@ pub(crate) async fn users_list(
     }
     let mut list = Vec::new();
     {
-        let s = state.settings.lock().unwrap_or_else(|p| p.into_inner());
+        let s = state.settings_guard();
         list.push(json!({
             "username": s.username, "role": "admin", "is_super": true,
             "full_name": s.full_name, "nickname": s.nickname, "uid": s.owner_uid, "totp_enabled": s.totp_enabled,

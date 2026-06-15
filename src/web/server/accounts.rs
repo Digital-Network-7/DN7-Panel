@@ -47,7 +47,7 @@ pub(crate) fn write_totp(
     enabled: bool,
 ) -> anyhow::Result<()> {
     if a.is_super {
-        let mut s = state.settings.lock().unwrap_or_else(|p| p.into_inner());
+        let mut s = state.settings_guard();
         s.totp_secret = secret.to_string();
         s.totp_enabled = enabled;
         let saved = s.clone();
@@ -67,7 +67,7 @@ pub(crate) fn write_totp(
 /// the handler stays a thin adapter.
 pub(crate) fn me_view(state: &Shared, a: &Account) -> Value {
     let (full_name, nickname, avatar, must_setup) = if a.is_super {
-        let s = state.settings.lock().unwrap_or_else(|p| p.into_inner());
+        let s = state.settings_guard();
         (
             s.full_name.clone(),
             s.nickname.clone(),

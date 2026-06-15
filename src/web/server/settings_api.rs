@@ -12,11 +12,7 @@ pub(crate) async fn get_settings(
     if let Err(r) = require_super(&state, &headers) {
         return r;
     }
-    let s = state
-        .settings
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone();
+    let s = state.settings_snapshot();
     // The password is intentionally NOT returned: a session should never be able
     // to read back the reusable console password. The form sends a new password
     // only when the operator chooses to change it.
@@ -75,7 +71,7 @@ pub(crate) async fn put_settings(
     }
     let actor = actor_name(&state, &headers);
     let (saved, outcome) = {
-        let mut s = state.settings.lock().unwrap_or_else(|p| p.into_inner());
+        let mut s = state.settings_guard();
         match apply_settings_update(&mut s, req) {
             Ok(o) => (s.clone(), o),
             Err(resp) => return resp,

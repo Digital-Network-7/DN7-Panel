@@ -47,7 +47,7 @@ pub(crate) async fn put_profile(
     }
     if a.is_super {
         let saved = {
-            let mut s = state.settings.lock().unwrap_or_else(|p| p.into_inner());
+            let mut s = state.settings_guard();
             if let Some(f) = &req.full_name {
                 s.full_name = clip(f, 64);
             }

@@ -42,6 +42,20 @@ pub struct WebState {
 
 type Shared = Arc<WebState>;
 
+impl WebState {
+    /// Poison-safe guard over the console settings — the single typed accessor
+    /// handlers use instead of reaching into the `Mutex` directly (facade so
+    /// `WebState` doesn't leak its lock/representation across the web layer).
+    fn settings_guard(&self) -> std::sync::MutexGuard<'_, WebSettings> {
+        self.settings.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// A cloned settings snapshot (caller holds no lock).
+    fn settings_snapshot(&self) -> WebSettings {
+        self.settings_guard().clone()
+    }
+}
+
 /// Start the web console in a background task (no-op when disabled). Returns
 /// immediately; the server runs for the process lifetime.
 pub fn spawn(cfg: PanelConfig) {
@@ -295,7 +309,7 @@ impl Account {
 /// Resolve an account name to a super-admin or panel-user view.
 fn resolve_account(state: &Shared, username: &str) -> Option<Account> {
     {
-        let su = state.settings.lock().unwrap_or_else(|p| p.into_inner());
+        let su = state.settings_guard();
         if username == su.username {
             return Some(Account {
                 username: su.username.clone(),
