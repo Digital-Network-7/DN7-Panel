@@ -100,11 +100,15 @@ fn cert_paths(lo: &Layout, site: &Site) -> (String, String) {
 fn render_ssl_security(site: &Site) -> String {
     let mut sec = String::new();
     if site.trust_proxy {
-        // Honour a trusted front proxy / CDN's real-client + protocol headers.
-        sec.push_str(
-            "    set_real_ip_from 0.0.0.0/0;\n    set_real_ip_from ::/0;\n\
-             \x20   real_ip_header X-Forwarded-For;\n    real_ip_recursive on;\n",
-        );
+        // Honour a trusted front proxy / CDN's real-client + protocol headers,
+        // but only from the configured trusted sources. Trusting every source
+        // (0.0.0.0/0) would let any client spoof X-Forwarded-For and bypass
+        // IP-based access rules, so an empty list falls back to private/loopback
+        // ranges rather than the whole internet.
+        for cidr in trusted_proxy_sources(site) {
+            sec.push_str(&format!("    set_real_ip_from {cidr};\n"));
+        }
+        sec.push_str("    real_ip_header X-Forwarded-For;\n    real_ip_recursive on;\n");
     }
     if site.hsts {
         let sub = if site.hsts_sub {
@@ -117,6 +121,35 @@ fn render_ssl_security(site: &Site) -> String {
         ));
     }
     sec
+}
+
+/// The `set_real_ip_from` sources for a site: the operator's explicit trusted
+/// IP/CIDR list (already validated on save), or — when none are configured —
+/// the private + loopback ranges only. This never trusts the public internet,
+/// so a client can't forge `X-Forwarded-For` to spoof its source IP.
+fn trusted_proxy_sources(site: &Site) -> Vec<String> {
+    let explicit: Vec<String> = site
+        .trust_proxy_cidrs
+        .split_whitespace()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if !explicit.is_empty() {
+        return explicit;
+    }
+    [
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.0.0/16",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 /// Build the server-level access-control directives for an access list:

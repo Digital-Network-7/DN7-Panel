@@ -104,6 +104,8 @@ pub(crate) struct Req {
     #[serde(default)]
     trust_proxy: Option<bool>,
     #[serde(default)]
+    trust_proxy_cidrs: Option<String>, // explicit trusted front-proxy IP/CIDR list
+    #[serde(default)]
     locations: Option<Vec<Location>>, // custom path rules
     #[serde(default)]
     extra_conf: Option<String>, // raw nginx directives injected into the server block
@@ -177,6 +179,11 @@ pub(crate) struct Site {
     hsts_sub: bool,
     #[serde(default)]
     trust_proxy: bool,
+    /// Trusted front-proxy sources for `real_ip` (comma/space/newline-separated
+    /// IPs or CIDRs). Only honoured when `trust_proxy` is set. Empty means trust
+    /// private/loopback ranges only — never the entire internet.
+    #[serde(default)]
+    trust_proxy_cidrs: String,
     /// Extra path rules layered on top of the main location (NPM "custom
     /// locations"): each forwards a path prefix to a host[:port].
     #[serde(default)]

@@ -80,6 +80,7 @@ fn mk_site(kind: &str, ssl: bool) -> Site {
         hsts: false,
         hsts_sub: false,
         trust_proxy: false,
+        trust_proxy_cidrs: String::new(),
         locations: Vec::new(),
         extra_conf: String::new(),
         access_id: String::new(),

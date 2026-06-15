@@ -6,6 +6,35 @@ mod renew;
 pub(crate) use crud::*;
 pub(crate) use renew::*;
 
+/// Validate + normalize a trusted front-proxy IP/CIDR list (comma / space /
+/// newline separated). Each token must be a bare IP or `IP/prefix` CIDR; this
+/// both prevents nginx-config injection and stops operators from accidentally
+/// trusting an over-broad range. Returns the cleaned, space-separated list.
+pub(crate) fn sanitize_trusted_cidrs(input: &str) -> Result<String> {
+    let mut out = Vec::new();
+    for tok in input.split([',', ' ', '\t', '\n', '\r']) {
+        let t = tok.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let valid = if let Some((addr, prefix)) = t.split_once('/') {
+            addr.parse::<std::net::IpAddr>().is_ok()
+                && prefix.parse::<u8>().is_ok_and(|p| match addr.parse() {
+                    Ok(std::net::IpAddr::V4(_)) => p <= 32,
+                    Ok(std::net::IpAddr::V6(_)) => p <= 128,
+                    Err(_) => false,
+                })
+        } else {
+            t.parse::<std::net::IpAddr>().is_ok()
+        };
+        if !valid {
+            return Err(anyhow!("ERR_CODE:nginx.bad_trust_cidr"));
+        }
+        out.push(t.to_string());
+    }
+    Ok(out.join(" "))
+}
+
 pub(crate) fn valid_local_root(p: &str) -> Result<String> {
     let path = std::path::Path::new(p);
     if !path.is_absolute() {
@@ -70,6 +99,9 @@ pub(crate) fn site_from_req(req: &Req) -> Result<Site> {
         hsts: req.hsts.unwrap_or(false),
         hsts_sub: req.hsts_sub.unwrap_or(false),
         trust_proxy: req.trust_proxy.unwrap_or(false),
+        trust_proxy_cidrs: sanitize_trusted_cidrs(
+            req.trust_proxy_cidrs.as_deref().unwrap_or(""),
+        )?,
         locations: Vec::new(),
         extra_conf: String::new(),
         access_id: String::new(),

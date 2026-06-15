@@ -137,6 +137,11 @@ function ngAddSite(reload, site) {
           <label class="switch"><input type="checkbox" id="nsHsts" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.hsts')}</b><span>${tr('ng.hsts_d')}</span></span></label>
           <label class="switch"><input type="checkbox" id="nsHstsSub" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.hsts_sub')}</b><span>${tr('ng.hsts_sub_d')}</span></span></label>
           <label class="switch"><input type="checkbox" id="nsTrustProxy" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.trust_proxy')}</b><span>${tr('ng.trust_proxy_d')}</span></span></label>
+          <div id="nsTrustProxyCidrsRow" style="display:none;margin-top:8px">
+            <label class="lbl" style="font-size:12.5px">${tr('ng.trust_proxy_cidrs')}</label>
+            <input type="text" id="nsTrustProxyCidrs" placeholder="${tr('ng.trust_proxy_cidrs_ph')}" />
+            <p class="formnote" style="margin-top:4px">${tr('ng.trust_proxy_cidrs_d')}</p>
+          </div>
         </div>
         <p class="formnote">${tr('ng.autorenew_note')}</p>
       </div>
@@ -359,8 +364,11 @@ function ngAddSite(reload, site) {
       $('nsHsts').checked = !!site.hsts;
       $('nsHstsSub').checked = !!site.hsts_sub;
       $('nsTrustProxy').checked = !!site.trust_proxy;
+      $('nsTrustProxyCidrs').value = site.trust_proxy_cidrs || '';
+      $('nsTrustProxyCidrsRow').style.display = site.trust_proxy ? '' : 'none';
       if (certMethod === 'auto') loadCertList();
     }
+    $('nsTrustProxy').onchange = () => { $('nsTrustProxyCidrsRow').style.display = $('nsTrustProxy').checked ? '' : 'none'; };
 
     const collectLocs = () => Array.from($('nsLocs').querySelectorAll('.locrule')).map((w) => {
       const kind = w.querySelector('.lr-kind').value;
@@ -391,6 +399,7 @@ function ngAddSite(reload, site) {
         body.hsts = $('nsHsts').checked;
         body.hsts_sub = $('nsHstsSub').checked;
         body.trust_proxy = $('nsTrustProxy').checked;
+        if (body.trust_proxy) body.trust_proxy_cidrs = $('nsTrustProxyCidrs').value.trim();
       }
       const okMsg = editing ? tr('ng.site_updated') : tr('ng.site_created');
       $('nsGo').disabled = true; $('nsJob').classList.remove('hidden'); $('nsJob').innerHTML = `<div class="mut">${tr('ng.submitting')}</div>`;
