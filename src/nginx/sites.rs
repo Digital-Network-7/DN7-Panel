@@ -170,63 +170,65 @@ fn resolve_access_ref(req: &Req) -> Result<String> {
 pub(crate) fn validate_locations(locs: &[Location]) -> Result<Vec<Location>> {
     let mut out = Vec::new();
     for l in locs {
-        let path = l.path.trim();
-        let kind = if l.kind.trim() == "container" {
-            "container"
-        } else {
-            "host"
-        };
-        if kind == "container" {
-            let container = l.container.trim();
-            // Skip fully-empty rows.
-            if path.is_empty() && container.is_empty() {
-                continue;
-            }
-            if !valid_location_path(path) {
-                return Err(anyhow!("路径规则需以 / 开头且不含空格等特殊字符：{path}"));
-            }
-            if !valid_container_name(container) {
-                return Err(anyhow!("ERR_CODE:nginx.bad_container"));
-            }
-            if !valid_port(l.container_port) {
-                return Err(anyhow!("ERR_CODE:nginx.bad_container_port"));
-            }
-            out.push(Location {
-                path: path.to_string(),
-                scheme: norm_scheme(Some(&l.scheme)),
-                target: String::new(),
-                websockets: l.websockets,
-                kind: "container".to_string(),
-                container: container.to_string(),
-                container_port: l.container_port,
-            });
-        } else {
-            let target = l.target.trim();
-            // Skip fully-empty rows (UI may submit blank trailing rows).
-            if path.is_empty() && target.is_empty() {
-                continue;
-            }
-            if !valid_location_path(path) {
-                return Err(anyhow!("路径规则需以 / 开头且不含空格等特殊字符：{path}"));
-            }
-            if !valid_host_token(target) {
-                return Err(anyhow!("路径规则目标格式不正确（host[:port]）：{target}"));
-            }
-            out.push(Location {
-                path: path.to_string(),
-                scheme: norm_scheme(Some(&l.scheme)),
-                target: target.to_string(),
-                websockets: l.websockets,
-                kind: "host".to_string(),
-                container: String::new(),
-                container_port: 0,
-            });
+        if let Some(loc) = validate_one_location(l)? {
+            out.push(loc);
         }
     }
     if out.len() > 50 {
         return Err(anyhow!("ERR_CODE:nginx.too_many_rules"));
     }
     Ok(out)
+}
+
+/// Validate + normalize a single custom path rule. Returns `Ok(None)` for a
+/// fully-empty row (the UI may submit blank trailing rows), `Ok(Some(loc))` for
+/// a valid rule, or an error describing the first invalid field.
+fn validate_one_location(l: &Location) -> Result<Option<Location>> {
+    let path = l.path.trim();
+    if l.kind.trim() == "container" {
+        let container = l.container.trim();
+        if path.is_empty() && container.is_empty() {
+            return Ok(None);
+        }
+        if !valid_location_path(path) {
+            return Err(anyhow!("路径规则需以 / 开头且不含空格等特殊字符：{path}"));
+        }
+        if !valid_container_name(container) {
+            return Err(anyhow!("ERR_CODE:nginx.bad_container"));
+        }
+        if !valid_port(l.container_port) {
+            return Err(anyhow!("ERR_CODE:nginx.bad_container_port"));
+        }
+        Ok(Some(Location {
+            path: path.to_string(),
+            scheme: norm_scheme(Some(&l.scheme)),
+            target: String::new(),
+            websockets: l.websockets,
+            kind: "container".to_string(),
+            container: container.to_string(),
+            container_port: l.container_port,
+        }))
+    } else {
+        let target = l.target.trim();
+        if path.is_empty() && target.is_empty() {
+            return Ok(None);
+        }
+        if !valid_location_path(path) {
+            return Err(anyhow!("路径规则需以 / 开头且不含空格等特殊字符：{path}"));
+        }
+        if !valid_host_token(target) {
+            return Err(anyhow!("路径规则目标格式不正确（host[:port]）：{target}"));
+        }
+        Ok(Some(Location {
+            path: path.to_string(),
+            scheme: norm_scheme(Some(&l.scheme)),
+            target: target.to_string(),
+            websockets: l.websockets,
+            kind: "host".to_string(),
+            container: String::new(),
+            container_port: 0,
+        }))
+    }
 }
 
 /// Structural validation of raw custom nginx directives. The authoritative
