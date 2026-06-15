@@ -35,9 +35,10 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
     let (allow_active, ip_ok, entry_token, entry_path, secure) = match state.settings.lock() {
         Ok(s) => {
             let pol = SecurityPolicy::new(&s);
+            let eff = peer.map(|p| client_ip(p, req.headers(), &pol));
             (
                 pol.allow_list_active(),
-                peer.map(|ip| pol.ip_allowed(ip)),
+                eff.map(|ip| pol.ip_allowed(ip)),
                 pol.entry_token(),
                 pol.entry_path(),
                 pol.cookie_secure_attr(),

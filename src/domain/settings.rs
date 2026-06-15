@@ -58,6 +58,12 @@ pub(crate) struct WebSettings {
     /// any address. Loopback is always allowed (avoids a self-lockout).
     #[serde(default)]
     pub(crate) allow_ips: Vec<String>,
+    /// Trusted front-proxy IPs / CIDRs. When the TCP peer matches one of these,
+    /// the rightmost `X-Forwarded-For` entry is taken as the real client IP for
+    /// rate-limiting and the allow-list. Empty = trust nothing (only the direct
+    /// TCP peer, never a forwardable header) — the safe default.
+    #[serde(default)]
+    pub(crate) trusted_proxies: Vec<String>,
 }
 
 pub(crate) fn default_username() -> String {

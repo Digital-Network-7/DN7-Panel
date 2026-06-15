@@ -179,6 +179,7 @@ pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
         https: false,
         session_timeout: default_timeout(),
         allow_ips: Vec::new(),
+        trusted_proxies: Vec::new(),
     };
     let _ = default_port;
     if let Err(e) = save(&s) {
@@ -214,6 +215,7 @@ mod tests {
             https: false,
             session_timeout: 1440,
             allow_ips: Vec::new(),
+            trusted_proxies: Vec::new(),
         };
         let salt = "0123456789abcdef0123456789abcdef";
         s.set_password_hashed(salt, &hash_password(salt, "mySecret!42"));
@@ -245,6 +247,7 @@ mod tests {
             https: false,
             session_timeout: 1440,
             allow_ips: Vec::new(),
+            trusted_proxies: Vec::new(),
         };
         let pw = s.reset();
         assert_eq!(s.username, "admin"); // account reset

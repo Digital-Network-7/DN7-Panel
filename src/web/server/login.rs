@@ -76,9 +76,13 @@ pub(crate) struct LoginChallengeQuery {
 pub(crate) async fn login(
     State(state): State<Shared>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: header::HeaderMap,
     Json(req): Json<LoginReq>,
 ) -> Response {
-    let source = peer.ip().to_string();
+    let source = {
+        let s = state.settings.lock().unwrap_or_else(|p| p.into_inner());
+        client_ip(peer.ip(), &headers, &SecurityPolicy::new(&s)).to_string()
+    };
     if !state.auth.login_allowed(&source) {
         return api_err(StatusCode::TOO_MANY_REQUESTS, "auth.rate_limited");
     }

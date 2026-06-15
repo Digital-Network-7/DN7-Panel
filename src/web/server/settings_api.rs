@@ -25,6 +25,7 @@ pub(crate) async fn get_settings(
         "data": { "port": s.port, "username": s.username, "pw_default": s.pw_default,
                   "entry_path": s.entry_path, "https": s.https,
                   "session_timeout": s.session_timeout, "allow_ips": s.allow_ips,
+                  "trusted_proxies": s.trusted_proxies,
                   "must_setup": s.pw_default || s.username.eq_ignore_ascii_case("admin") }
     }))
     .into_response()
@@ -59,6 +60,9 @@ pub(crate) struct SettingsReq {
     /// Authorized client IPs / CIDRs (one per entry). Empty = allow any.
     #[serde(default)]
     allow_ips: Option<Vec<String>>,
+    /// Trusted front-proxy IPs / CIDRs. Empty = trust only the direct peer.
+    #[serde(default)]
+    trusted_proxies: Option<Vec<String>>,
 }
 
 pub(crate) async fn put_settings(
@@ -174,6 +178,13 @@ fn apply_settings_update(
     if let Some(ips) = &req.allow_ips {
         match settings::normalize_allow_ips(ips) {
             Some(list) => s.allow_ips = list,
+            None => return Err(api_err(StatusCode::BAD_REQUEST, "settings.bad_allow_ip")),
+        }
+    }
+    // Trusted front-proxy list — same IP/CIDR validation; empty = trust none.
+    if let Some(px) = &req.trusted_proxies {
+        match settings::normalize_allow_ips(px) {
+            Some(list) => s.trusted_proxies = list,
             None => return Err(api_err(StatusCode::BAD_REQUEST, "settings.bad_allow_ip")),
         }
     }

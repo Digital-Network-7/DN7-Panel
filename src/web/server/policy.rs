@@ -64,6 +64,38 @@ impl<'a> SecurityPolicy<'a> {
         }
         ip_in_allowlist(&self.s.allow_ips, ip)
     }
+
+    /// Whether `peer` is a configured trusted front-proxy. Unlike the allow
+    /// list, loopback is **not** auto-trusted: forwarding must be opted into
+    /// explicitly so a direct local request can't spoof `X-Forwarded-For`.
+    pub(crate) fn trusts_proxy(&self, peer: IpAddr) -> bool {
+        !self.s.trusted_proxies.is_empty() && ip_in_cidrs(&self.s.trusted_proxies, peer)
+    }
+}
+
+/// Resolve the effective client IP for rate-limiting / allow-list decisions.
+/// When the direct TCP `peer` is a configured trusted proxy, take the rightmost
+/// `X-Forwarded-For` entry (the address the trusted proxy observed); otherwise
+/// use `peer` itself. `X-Forwarded-For` is never trusted from an untrusted peer
+/// (it's client-spoofable), so this can't be used to bypass the allow-list.
+pub(crate) fn client_ip(
+    peer: IpAddr,
+    headers: &header::HeaderMap,
+    policy: &SecurityPolicy,
+) -> IpAddr {
+    if policy.trusts_proxy(peer) {
+        if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            if let Some(ip) = xff
+                .split(',')
+                .map(str::trim)
+                .rfind(|s| !s.is_empty())
+                .and_then(|s| s.parse::<IpAddr>().ok())
+            {
+                return ip;
+            }
+        }
+    }
+    peer
 }
 
 /// Whether `ip` is permitted by the authorized-IP allow list. Loopback is
@@ -73,7 +105,13 @@ pub(crate) fn ip_in_allowlist(allow: &[String], ip: IpAddr) -> bool {
     if ip.is_loopback() {
         return true;
     }
-    for entry in allow {
+    ip_in_cidrs(allow, ip)
+}
+
+/// Whether `ip` matches any exact IP or CIDR block in `list`. No loopback
+/// special-case (callers that want it, like the allow-list, add it themselves).
+pub(crate) fn ip_in_cidrs(list: &[String], ip: IpAddr) -> bool {
+    for entry in list {
         if let Some((a, p)) = entry.split_once('/') {
             if let (Ok(net), Ok(prefix)) = (a.parse::<IpAddr>(), p.parse::<u8>()) {
                 if cidr_contains(net, prefix, ip) {
@@ -173,5 +211,35 @@ mod tests {
             pol(&settings_with(&[], false, "/s3cr3t")).entry_token(),
             Some("s3cr3t".to_string())
         );
+    }
+
+    #[test]
+    fn client_ip_only_trusts_xff_from_configured_proxy() {
+        use std::net::IpAddr;
+        let mut s = settings_with(&[], false, "/");
+        s.trusted_proxies = vec!["10.0.0.1".to_string()];
+        let p = pol(&s);
+        let mut h = header::HeaderMap::new();
+        h.insert("x-forwarded-for", "203.0.113.9, 10.0.0.1".parse().unwrap());
+        let trusted: IpAddr = "10.0.0.1".parse().unwrap();
+        let untrusted: IpAddr = "198.51.100.7".parse().unwrap();
+        // From the trusted proxy: take the rightmost XFF entry.
+        assert_eq!(
+            client_ip(trusted, &h, &p),
+            "10.0.0.1".parse::<IpAddr>().unwrap()
+        );
+        // From an untrusted peer: ignore XFF entirely (no spoofing).
+        assert_eq!(client_ip(untrusted, &h, &p), untrusted);
+    }
+
+    #[test]
+    fn no_trusted_proxies_never_reads_xff() {
+        use std::net::IpAddr;
+        let s = settings_with(&[], false, "/"); // trusted_proxies empty
+        let p = pol(&s);
+        let mut h = header::HeaderMap::new();
+        h.insert("x-forwarded-for", "203.0.113.9".parse().unwrap());
+        let peer: IpAddr = "10.0.0.1".parse().unwrap();
+        assert_eq!(client_ip(peer, &h, &p), peer);
     }
 }
