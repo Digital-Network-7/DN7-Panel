@@ -95,3 +95,35 @@ planning the whole thing in your head first.
   fields `pub(crate)`. This avoids a cascade of field-visibility edits.
 - Use mechanical tools (sed/awk) to move line ranges rather than retyping —
   it's faster and avoids transcription errors.
+
+## Accepted exceptions (deliberate, reviewed)
+
+A pass over the codebase split out every function whose logic was genuinely
+*separable* (validation, building, parsing, per-item handling, etc.). The
+functions that still exceed 40 lines are cohesive single responsibilities where
+splitting would hurt readability, not help it. They are accepted exceptions:
+
+- **Bidirectional I/O loops** — PTY / exec / tar / stream bridges that own one
+  `select!`/`while` loop with intertwined read/write state:
+  `terminal::run_web_pty`, `terminal::run_web_container_exec`,
+  `file/ctn::upload_tar_stream`, `file::web_ctn_read_stream`,
+  `supervisor::supervise_loop`.
+- **Self-contained algorithms** — e.g. `nginx/store::apr1_with_salt` (the
+  Apache apr1 MD5-crypt algorithm); splitting its rounds would obscure it.
+- **Config / DTO assembly** — functions that are mostly one big struct/JSON
+  literal after their inputs are computed: `docker/create::build_create_spec`
+  (8 sub-builders already extracted), `mysql/provision::create_mysql_container`,
+  `docker/containers::{container_row, inspect_container}`,
+  `nginx/sites::site_from_req`.
+- **Op dispatch tables** — flat `match` over an op string, each arm a one-line
+  call: `docker::handle`, `mysql::handle`, `docker/containers::container_action`.
+- **Orchestration pipelines** — a linear sequence of clearly-labelled await
+  steps with progress reporting: `nginx/certs::acme_http01`,
+  `mysql/provision::run_install_detached`,
+  `web/server/settings_api::apply_settings_update`.
+- **Single-pass parsers** — one stateful loop over external output:
+  `metrics::detect_mem_model` (dmidecode).
+
+When adding to one of these, prefer extracting any *new* logically-distinct step
+rather than growing the function further. New functions outside these categories
+must still meet the 40-line limit.
