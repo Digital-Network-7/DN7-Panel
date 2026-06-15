@@ -116,7 +116,7 @@ function dkImportForm(info) {
       const f = $('iiFile').files[0]; if (!f) return toast(tr('dk.img_need_file'), 'err');
       $('iiGo').disabled = true; $('iiJob').classList.remove('hidden'); $('iiJob').innerHTML = `<div class="mut">${tr('dk.img_importing')}</div>`;
       try {
-        const headers = S.token ? { Authorization: 'Bearer ' + S.token } : {};
+        const headers = authHeaders();
         const r = await fetch('/api/docker/image-upload', { method: 'POST', headers, body: f });
         const b = await r.json().catch(() => ({}));
         if (!r.ok || (b && b.ok === false)) throw new Error(srvMsg(b) || ('HTTP ' + r.status));
@@ -172,7 +172,7 @@ function dkPullForm() {
       const registry = $('plReg').value || undefined;
       const mirror = registry ? undefined : ($('plMirror').value || undefined);
       $('plGo').disabled = true; $('plJob').classList.remove('hidden');
-      op('docker', { op: 'pull_image', image, mirror, registry }).then((r) => renderJob($('plJob'), 'docker', r.op_id, '', { onDone: () => { toast(tr('dk.pull_done'), 'ok'); close(); if (S.tab === 'docker') renderDocker($('view')); }, onError: () => { $('plGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('plGo').disabled = false; });
+      op('docker', { op: 'pull_image', image, mirror, registry }).then((r) => renderJob($('plJob'), 'docker', r.op_id, '', { onDone: () => { toast(tr('dk.pull_done'), 'ok'); close(); if (UI.tab === 'docker') renderDocker($('view')); }, onError: () => { $('plGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('plGo').disabled = false; });
     };
     bindDirty('plGo');
   });

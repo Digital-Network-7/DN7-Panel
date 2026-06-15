@@ -3,4 +3,4 @@
 // =========================================================================
 $('pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
 
-if (S.token) showApp();
+if (Auth.token) showApp();

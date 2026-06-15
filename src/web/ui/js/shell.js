@@ -32,7 +32,7 @@ const TABS = [
 ];
 // Whether the current account may see/use a tab.
 function tabAllowed(t) {
-  const me = S.me || {};
+  const me = Auth.me || {};
   if (t.sup) return !!me.is_super;
   if (t.admin) return !!me.is_admin;
   return true;
@@ -45,27 +45,27 @@ function showApp() {
   $('login').classList.add('hidden');
   $('app').classList.remove('hidden');
   api('/api/me').then((b) => {
-    S.me = b.data || {};
+    Auth.me = b.data || {};
     renderNav();
-    setUser(S.me.nickname || S.me.username || 'admin', S.me.avatar);
-    if (S.me.must_setup) forceAccountSetup(S.me.username, () => { logout(); });
+    setUser(Auth.me.nickname || Auth.me.username || 'admin', Auth.me.avatar);
+    if (Auth.me.must_setup) forceAccountSetup(Auth.me.username, () => { logout(); });
     // If the saved tab isn't allowed for this account, fall back to dashboard.
-    const t = TABS.find((x) => x.key === S.tab);
-    if (!t || !tabAllowed(t)) S.tab = 'dash';
-    switchTab(S.tab);
+    const t = TABS.find((x) => x.key === UI.tab);
+    if (!t || !tabAllowed(t)) UI.setTab('dash');
+    switchTab(UI.tab);
   }).catch(() => {});
   api('/api/info').then((b) => {
     $('panelVer').textContent = 'v' + (b.data.version || '?');
     if (b.data.hostname) $('panelVer').title = b.data.hostname;
   }).catch(() => {});
-  if (window.updateBadge && (S.me ? S.me.is_admin : true)) updateBadge();
+  if (window.updateBadge && (Auth.me ? Auth.me.is_admin : true)) updateBadge();
 }
 // Build the sidebar nav from the tabs the current account may access.
 function renderNav() {
   const nav = $('nav'); nav.innerHTML = '';
   TABS.filter(tabAllowed).forEach((t) => {
     const b = el('button', { 'data-k': t.key });
-    b.className = S.tab === t.key ? 'active' : '';
+    b.className = UI.tab === t.key ? 'active' : '';
     b.innerHTML = `<span class="ic">${t.ic}</span><span class="t">${tabLabel(t)}</span>`;
     b.onclick = () => switchTab(t.key);
     nav.appendChild(b);
@@ -90,8 +90,7 @@ function stopTab() {
 function switchTab(k) {
   const t = TABS.find((x) => x.key === k);
   if (t && !tabAllowed(t)) k = 'dash'; // guard: deny tabs above the account's role
-  S.tab = k;
-  try { localStorage.setItem('dn7_tab', k); } catch (e) {}
+  UI.setTab(k);
   stopTab();
   document.querySelectorAll('#nav button').forEach((b) => b.className = b.dataset.k === k ? 'active' : '');
   $('title').textContent = tabLabel(TABS.find((t) => t.key === k) || {});

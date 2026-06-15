@@ -26,14 +26,14 @@ function doLogin() {
         $('loginErr').textContent = tr('tfa.login_prompt');
         return;
       }
-      S.token = b.token; localStorage.setItem('dn7_web_token', S.token); showApp();
+      Auth.setToken(b.token); showApp();
     })
     .catch((e) => { $('loginErr').textContent = e.message === 'challenge' ? tr('login.err_conn') : e.message; });
 }
 
 function logout() {
-  if (S.token) api('/api/logout', { method: 'POST' }).catch(() => {});
-  S.token = ''; localStorage.removeItem('dn7_web_token');
+  if (Auth.token) api('/api/logout', { method: 'POST' }).catch(() => {});
+  Auth.clear();
   document.documentElement.setAttribute('data-auth', 'out');
   stopTab();
   $('app').classList.add('hidden');

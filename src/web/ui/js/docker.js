@@ -330,7 +330,7 @@ function doCAction(o, id, reload) { op('docker', { op: o, ref: id }).then(() => 
 function doStopAction(id, reload) {
   toast(tr('dk.stop_sent'));
   op('docker', { op: 'stop_container', ref: id }).then(() => {
-    if (S.tab === 'docker') { toast(tr('dk.stop_done'), 'ok'); reload && reload(); }
+    if (UI.tab === 'docker') { toast(tr('dk.stop_done'), 'ok'); reload && reload(); }
   }).catch((e) => toast(e.message, 'err'));
 }
 

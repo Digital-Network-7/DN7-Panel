@@ -1,7 +1,11 @@
 // =========================================================================
-// Core state + helpers
+// Core helpers + runtime handles
 // =========================================================================
-const S = { token: localStorage.getItem('dn7_web_token') || '', tab: localStorage.getItem('dn7_tab') || 'dash', timer: null, ws: null };
+// `S` now holds only transient runtime handles (the active polling timer and
+// websocket). Persistent app state lives in dedicated stores: Auth (token +
+// current user, auth-state.js), UI (active tab, ui-state.js), and the jobs
+// store (jobs.js). The network layer is in api-client.js.
+const S = { timer: null, ws: null };
 
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function $(id) { return document.getElementById(id); }
@@ -95,24 +99,6 @@ function sha256Hex(ascii) {
   const toHex = (n) => ('00000000' + (n >>> 0).toString(16)).slice(-8);
   return toHex(h0) + toHex(h1) + toHex(h2) + toHex(h3) + toHex(h4) + toHex(h5) + toHex(h6) + toHex(h7);
 }
-
-function api(path, opts = {}) {
-  opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
-  if (S.token) opts.headers['Authorization'] = 'Bearer ' + S.token;
-  return fetch(path, opts).then(async (r) => {
-    if (r.status === 401) { logout(); throw new Error(tr('common.unauthorized')); }
-    const txt = await r.text();
-    let body; try { body = JSON.parse(txt); } catch (e) { body = txt; }
-    if (!r.ok || (body && body.ok === false)) throw new Error(srvMsg(body) || ('HTTP ' + r.status));
-    return body;
-  });
-}
-// Capability op (docker/nginx/mysql): POST {op,...} → data.
-function op(kind, obj) { return api('/api/' + kind, { method: 'POST', body: JSON.stringify(obj) }).then((b) => b.data); }
-
-// Mint a one-time, short-lived ticket for a WebSocket upgrade or a download
-// link — the session token must never travel in a URL (history/proxy logs).
-function ticket() { return api('/api/ticket', { method: 'POST' }).then((b) => b.data.ticket); }
 
 // Random hex string of `n` bytes (uses the CSPRNG; getRandomValues works on
 // insecure origins too). Used to salt a client-side password hash.

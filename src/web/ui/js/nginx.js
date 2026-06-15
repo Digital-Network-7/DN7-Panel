@@ -420,7 +420,7 @@ function ngAddSite(reload, site) {
 async function uploadStatic(root, su) {
   if (su.mode === 'zip' && su.zip) {
     const qs = `root=${encodeURIComponent(root)}&mode=zip&clear=1`;
-    const r = await fetch('/api/nginx/static-upload?' + qs, { method: 'POST', headers: { 'Authorization': 'Bearer ' + S.token }, body: su.zip });
+    const r = await fetch('/api/nginx/static-upload?' + qs, { method: 'POST', headers: authHeaders(), body: su.zip });
     const b = await r.json().catch(() => ({}));
     if (!r.ok || b.ok === false) throw new Error(b.error || tr('ng.upload_failed'));
     return;
@@ -432,7 +432,7 @@ async function uploadStatic(root, su) {
       const slash = rel.indexOf('/');
       if (slash > 0) rel = rel.slice(slash + 1);
       const qs = `root=${encodeURIComponent(root)}&mode=file&rel=${encodeURIComponent(rel)}` + (i === 0 ? '&clear=1' : '');
-      const r = await fetch('/api/nginx/static-upload?' + qs, { method: 'POST', headers: { 'Authorization': 'Bearer ' + S.token }, body: f });
+      const r = await fetch('/api/nginx/static-upload?' + qs, { method: 'POST', headers: authHeaders(), body: f });
       const b = await r.json().catch(() => ({}));
       if (!r.ok || b.ok === false) throw new Error(b.error || (tr('ng.upload_failed') + '：' + rel));
     }

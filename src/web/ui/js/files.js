@@ -4,7 +4,7 @@
 function renderFiles(v) {
   v.innerHTML = '<div class="files-page" id="fbCard"></div>';
   // Open at the account's home directory (root's home for the super-admin).
-  const home = (S.me && S.me.home) || '/';
+  const home = (Auth.me && Auth.me.home) || '/';
   fileBrowser($('fbCard'), null, home);
 }
 function openFileBrowser(title, container, startPath, rootPath) {
@@ -60,7 +60,7 @@ function fileBrowser(mount, container, startPath, rootPath) {
     const full = (path === '/' ? '' : path) + '/' + f.name;
     const qs = `path=${encodeURIComponent(full)}` + (container ? `&container=${encodeURIComponent(container)}` : '');
     toast(tr('files.uploading'));
-    fetch('/api/files/upload?' + qs, { method: 'POST', headers: { 'Authorization': 'Bearer ' + S.token }, body: f })
+    fetch('/api/files/upload?' + qs, { method: 'POST', headers: authHeaders(), body: f })
       .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok || b.ok === false) throw new Error(b.error || tr('files.upload_failed')); })
       .then(() => { toast(tr('files.uploaded'), 'ok'); load(); }).catch((e) => toast(e.message, 'err'));
     ev.target.value = '';

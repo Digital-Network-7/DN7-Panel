@@ -30,7 +30,7 @@ function toggleAccountMenu(ev) {
 
 // ---- Edit profile (avatar + full name + nickname) ----
 function editProfile() {
-  const me = S.me || {};
+  const me = Auth.me || {};
   const state = { avatar: me.avatar || '' };
   modal(tr('acct.profile'), `
     <div class="formgrid">
@@ -67,10 +67,10 @@ function editProfile() {
       const body = { full_name: $('pfFull').value, nickname: $('pfNick').value, avatar: state.avatar };
       api('/api/profile', { method: 'POST', body: JSON.stringify(body) })
         .then(() => {
-          S.me.full_name = body.full_name.trim();
-          S.me.nickname = body.nickname.trim();
-          S.me.avatar = state.avatar;
-          setUser(S.me.nickname || S.me.username, S.me.avatar);
+          Auth.me.full_name = body.full_name.trim();
+          Auth.me.nickname = body.nickname.trim();
+          Auth.me.avatar = state.avatar;
+          setUser(Auth.me.nickname || Auth.me.username, Auth.me.avatar);
           toast(tr('common.saved'), 'ok');
           $('modalRoot').innerHTML = '';
         })
@@ -106,7 +106,7 @@ function changePassword() {
           const salt = randHex(16);
           const body = { pw_salt: salt, pw_hash: sha256Hex(salt + ':' + pw), old_verifier: sha256Hex(cur + ':' + oldPw) };
           // Non-owner accounts sync their OS password to the panel password.
-          if (!(S.me && S.me.is_super)) body.password = pw;
+          if (!(Auth.me && Auth.me.is_super)) body.password = pw;
           return api('/api/password', { method: 'POST', body: JSON.stringify(body) });
         })
         .then(() => { toast(tr('common.saved'), 'ok'); $('modalRoot').innerHTML = ''; })
@@ -120,7 +120,7 @@ function changePassword() {
 
 // ---- Two-factor (TOTP) ----
 function twoFactor() {
-  const enabled = !!(S.me && S.me.totp_enabled);
+  const enabled = !!(Auth.me && Auth.me.totp_enabled);
   modal(tr('acct.twofa'), `<div id="tfBody">${loading()}</div>`, () => {
     const body = $('tfBody');
     if (enabled) {
@@ -133,7 +133,7 @@ function twoFactor() {
       $('tfDisable').onclick = () => {
         $('tfErr').textContent = '';
         api('/api/2fa/disable', { method: 'POST', body: JSON.stringify({ code: $('tfCode').value }) })
-          .then(() => { S.me.totp_enabled = false; toast(tr('tfa.disabled'), 'ok'); $('modalRoot').innerHTML = ''; })
+          .then(() => { Auth.me.totp_enabled = false; toast(tr('tfa.disabled'), 'ok'); $('modalRoot').innerHTML = ''; })
           .catch((e) => { $('tfErr').textContent = e.message; });
       };
       bindDirty('tfDisable');
@@ -154,7 +154,7 @@ function twoFactor() {
       const submit = () => {
         $('tfErr').textContent = '';
         api('/api/2fa/enable', { method: 'POST', body: JSON.stringify({ code: $('tfCode').value }) })
-          .then(() => { S.me.totp_enabled = true; toast(tr('tfa.enabled'), 'ok'); $('modalRoot').innerHTML = ''; })
+          .then(() => { Auth.me.totp_enabled = true; toast(tr('tfa.enabled'), 'ok'); $('modalRoot').innerHTML = ''; })
           .catch((e) => { $('tfErr').textContent = e.message; });
       };
       $('tfEnable').onclick = submit;
@@ -167,7 +167,7 @@ function twoFactor() {
 // ---- User management (admin only) ----
 // Privilege level: owner(super)=2, admin=1, user=0.
 function userLevel(u) { return u.is_super ? 2 : (u.role === 'admin' ? 1 : 0); }
-function myLevel() { const me = S.me || {}; return me.is_super ? 2 : (me.is_admin ? 1 : 0); }
+function myLevel() { return Auth.level(); }
 // Role <option>s the current account may assign (strictly below itself).
 function roleOptions(current) {
   let h = `<option value="user">${tr('um.user')}</option>`;
