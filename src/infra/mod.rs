@@ -6,3 +6,4 @@
 //! axum or the `web` layer.
 
 pub(crate) mod audit;
+pub(crate) mod auth;
