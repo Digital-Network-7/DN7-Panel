@@ -180,6 +180,7 @@ mod provision;
 mod query;
 mod store;
 mod tables;
+use crate::domain::mysql::{image_ref, supported_versions, valid_engine, valid_version};
 use accounts::*;
 use catalog::*;
 use exec::*;

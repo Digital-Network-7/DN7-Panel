@@ -8,6 +8,7 @@
 pub(crate) mod authz;
 pub(crate) mod error;
 pub(crate) mod identity;
+pub(crate) mod mysql;
 pub(crate) mod nginx;
 pub(crate) mod settings;
 
