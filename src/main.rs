@@ -36,34 +36,14 @@ use crate::procfile::RolePaths;
 ///   with inherited stdio; never daemonizes itself.
 fn main() -> Result<()> {
     let role = std::env::args().nth(1);
+
+    // CLI subcommands (version/reset/port/access/entry) short-circuit before any
+    // install side effects.
+    if let Some(result) = dispatch_subcommand(role.as_deref()) {
+        return result;
+    }
+
     let is_panel = role.as_deref() == Some("panel");
-
-    // `version` subcommand: print the compiled version and exit. Used by the
-    // running supervisor to read the on-disk binary's version, so it can notice
-    // a self-update replaced the binary with a newer build and re-exec itself.
-    if role.as_deref() == Some("version") {
-        println!("{}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
-
-    // `reset` subcommand: reset the console account + password to a freshly-
-    // generated default and print it once. Restricted to the OS user that first
-    // initialized the console (or root). Short-circuits before install side
-    // effects. (Exposed globally as `dn7 panel reset`.)
-    if role.as_deref() == Some("reset") {
-        return run_reset();
-    }
-
-    // `port` subcommand: change the console port (random when no value given).
-    if role.as_deref() == Some("port") {
-        return run_set_port(std::env::args().nth(2));
-    }
-
-    // `access` / `entry` subcommand: change the secret safe-entry path (random
-    // when no value given). `dn7 panel access [/path]`.
-    if matches!(role.as_deref(), Some("access") | Some("entry")) {
-        return run_set_entry(std::env::args().nth(2));
-    }
 
     // Install to the canonical location (/var/dn7/panel/dn7-panel) on the
     // top-level (supervisor) launch, so the operator never has to create dirs
@@ -84,40 +64,16 @@ fn main() -> Result<()> {
 
     // Ensure the grouped data/run/log subdirs exist under the install dir.
     paths::ensure_dirs();
-
     // Install the global `dn7` CLI dispatcher (best-effort; needs root).
     paths::install_global_cli();
-
     // Install redundant boot autostart (systemd + cron@reboot + rc.local) so the
     // panel comes back after a reboot. Best-effort + idempotent.
     autostart::install_all();
 
-    // ---- Supervisor role: single-instance guard + background detach ----
-
-    let me = RolePaths::new(&cfg.runtime_dir, "supervisor");
-    let already_running = match procfile::try_lock(&me.lock)? {
-        Some(_guard) => false, // we got the lock => none running (guard drops here)
-        None => true,
-    };
-
-    if already_running {
-        // Take over only if we're a strictly newer build; otherwise just report
-        // that it's already running and exit.
-        let current = env!("CARGO_PKG_VERSION");
-        let running = procfile::read_version(&cfg.data_dir);
-        if is_newer(current, running.as_deref()) {
-            println!(
-                "检测到正在运行的 DN7 Panel 版本 {} 低于当前版本 {current}，正在替换为新版本……",
-                running.as_deref().unwrap_or("未知")
-            );
-            supervisor::stop_running_instance(&cfg);
-            paths::ensure_installed();
-            // Fall through to a normal launch (old supervisor released its lock).
-        } else {
-            banner::print(&cfg);
-            println!("  DN7 Panel 已在后台运行。修改端口或账号密码请在控制台「设置」中调整。");
-            return Ok(());
-        }
+    // Single-instance guard (with newer-build takeover). Exit early if another
+    // instance is already running and we're not replacing it.
+    if !ensure_single_instance(&cfg)? {
+        return Ok(());
     }
 
     // Show the console address + credentials to the operator's terminal before
@@ -134,6 +90,57 @@ fn main() -> Result<()> {
     }
 
     run_async(cfg, run_supervisor)
+}
+
+/// Handle the one-shot CLI subcommands. Returns `Some(result)` when `role` was a
+/// subcommand (the caller should return it), or `None` to proceed with a normal
+/// panel/supervisor launch.
+///
+/// - `version`: print the compiled version (the running supervisor reads this
+///   off the on-disk binary to detect a self-update and re-exec itself).
+/// - `reset`: reset the console account + password to a fresh default (root /
+///   the initializing OS user only).
+/// - `port` / `access`|`entry`: change the console port / secret entry path.
+fn dispatch_subcommand(role: Option<&str>) -> Option<Result<()>> {
+    match role {
+        Some("version") => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            Some(Ok(()))
+        }
+        Some("reset") => Some(run_reset()),
+        Some("port") => Some(run_set_port(std::env::args().nth(2))),
+        Some("access") | Some("entry") => Some(run_set_entry(std::env::args().nth(2))),
+        _ => None,
+    }
+}
+
+/// Acquire the supervisor single-instance lock. Returns `Ok(true)` to proceed
+/// with launch. When another instance already holds the lock, take over only if
+/// we're a strictly newer build (replacing it, returns `Ok(true)`); otherwise
+/// print the running banner and return `Ok(false)` so the caller exits.
+fn ensure_single_instance(cfg: &PanelConfig) -> Result<bool> {
+    let me = RolePaths::new(&cfg.runtime_dir, "supervisor");
+    // We got the lock => none running (the guard drops here, freeing it for the
+    // real supervisor launch below).
+    let already_running = procfile::try_lock(&me.lock)?.is_none();
+    if !already_running {
+        return Ok(true);
+    }
+    let current = env!("CARGO_PKG_VERSION");
+    let running = procfile::read_version(&cfg.data_dir);
+    if is_newer(current, running.as_deref()) {
+        println!(
+            "检测到正在运行的 DN7 Panel 版本 {} 低于当前版本 {current}，正在替换为新版本……",
+            running.as_deref().unwrap_or("未知")
+        );
+        supervisor::stop_running_instance(cfg);
+        paths::ensure_installed();
+        Ok(true)
+    } else {
+        banner::print(cfg);
+        println!("  DN7 Panel 已在后台运行。修改端口或账号密码请在控制台「设置」中调整。");
+        Ok(false)
+    }
 }
 
 /// True if `current` is a strictly newer semver than `running`. An unknown /
