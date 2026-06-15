@@ -1,4 +1,44 @@
-//! Identity rules: username + credential-format validation. Pure (no I/O).
+//! Identity rules: username + credential-format validation, and the panel-user
+//! entity. Pure (no I/O).
+
+use serde::{Deserialize, Serialize};
+
+/// A panel user, persisted in `users.json` and backed 1:1 by a Linux account.
+///
+/// NOTE: a persisted **domain entity** — the `serde` derive is a reviewed
+/// exception to the "domain default-forbids serde" rule (see steering §2/§4),
+/// not a transport DTO.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct PanelUser {
+    /// Login name — identical to the system username.
+    pub(crate) username: String,
+    #[serde(default)]
+    pub(crate) pw_salt: String,
+    #[serde(default)]
+    pub(crate) pw_hash: String,
+    /// "admin" (sudo) | "user".
+    #[serde(default)]
+    pub(crate) role: String,
+    #[serde(default)]
+    pub(crate) full_name: String,
+    #[serde(default)]
+    pub(crate) nickname: String,
+    /// Avatar as a base64 data URL (size-limited by the API).
+    #[serde(default)]
+    pub(crate) avatar: String,
+    #[serde(default)]
+    pub(crate) totp_secret: String,
+    #[serde(default)]
+    pub(crate) totp_enabled: bool,
+    #[serde(default)]
+    pub(crate) uid: u32,
+}
+
+impl PanelUser {
+    pub(crate) fn is_admin(&self) -> bool {
+        self.role == "admin"
+    }
+}
 
 /// A Linux username: lowercase start, then lowercase/digits/_/-; 1..=32 chars.
 /// Conservative (NAME_REGEX-style) so it can't smuggle shell/flag characters.

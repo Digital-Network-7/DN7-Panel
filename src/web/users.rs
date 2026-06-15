@@ -13,41 +13,13 @@
 //! branding/user-management) is denied for them server-side.
 
 use anyhow::{anyhow, Result};
-use serde::{Deserialize, Serialize};
 
 use super::system_account;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PanelUser {
-    /// Login name — identical to the system username.
-    pub username: String,
-    #[serde(default)]
-    pub pw_salt: String,
-    #[serde(default)]
-    pub pw_hash: String,
-    /// "admin" (sudo) | "user".
-    #[serde(default)]
-    pub role: String,
-    #[serde(default)]
-    pub full_name: String,
-    #[serde(default)]
-    pub nickname: String,
-    /// Avatar as a base64 data URL (size-limited by the API).
-    #[serde(default)]
-    pub avatar: String,
-    #[serde(default)]
-    pub totp_secret: String,
-    #[serde(default)]
-    pub totp_enabled: bool,
-    #[serde(default)]
-    pub uid: u32,
-}
-
-impl PanelUser {
-    pub fn is_admin(&self) -> bool {
-        self.role == "admin"
-    }
-}
+/// The panel-user entity now lives in the domain layer; re-exported so call
+/// sites (`crate::web::users::PanelUser`) stay stable while this module keeps
+/// the store + system-account orchestration.
+pub(crate) use crate::domain::identity::PanelUser;
 
 fn users_path() -> std::path::PathBuf {
     crate::paths::data_dir().join("users.json")
