@@ -4,14 +4,8 @@ use super::*;
 pub(crate) fn start_install(req: &Req) -> Result<Value> {
     const INSTALL_OP: &str = "install";
     // If an install is already running, just hand back its op id.
-    if let Ok(m) = ops().lock() {
-        if let Some(o) = m.get(INSTALL_OP) {
-            if o.status == "running" {
-                return Ok(
-                    json!({ "op_id": INSTALL_OP, "target": "docker", "already_running": true }),
-                );
-            }
-        }
+    if op_running(INSTALL_OP) {
+        return Ok(json!({ "op_id": INSTALL_OP, "target": "docker", "already_running": true }));
     }
 
     if !is_root() {

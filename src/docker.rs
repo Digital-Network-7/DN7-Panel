@@ -37,8 +37,6 @@
 //! Responses (panel -> client): {"id","ok":true,"data":<json>} / {"id","ok":false,"error":".."}
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
 use bollard::Docker;
@@ -233,7 +231,6 @@ use info::*;
 use install::*;
 use lifecycle::*;
 use networks::*;
-pub(crate) use opreg::pull_pct;
 use opreg::*;
 use pull::*;
 use settings::*;

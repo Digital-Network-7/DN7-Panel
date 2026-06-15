@@ -11,6 +11,7 @@ mod logrotate;
 mod metrics;
 mod mysql;
 mod nginx;
+mod op_registry;
 mod panel;
 mod paths;
 mod procfile;
