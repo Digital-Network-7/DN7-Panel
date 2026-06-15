@@ -7,5 +7,8 @@
 
 pub(crate) mod audit;
 pub(crate) mod auth;
+pub(crate) mod crypto;
+pub(crate) mod json_store;
+pub(crate) mod op_registry;
 pub(crate) mod store;
 pub(crate) mod system;
