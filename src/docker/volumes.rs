@@ -33,12 +33,7 @@ pub(crate) async fn list_volumes() -> Result<Value> {
             "managed": managed,
         }));
     }
-    out.sort_by(|a, b| {
-        a["name"]
-            .as_str()
-            .unwrap_or("")
-            .cmp(b["name"].as_str().unwrap_or(""))
-    });
+    out.sort_by_key(|a| a["name"].as_str().unwrap_or("").to_string());
     Ok(json!({ "volumes": out }))
 }
 

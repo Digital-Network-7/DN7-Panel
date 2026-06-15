@@ -176,10 +176,8 @@ pub(crate) async fn prepare_site_cert(
                 return Ok(CertPrep::ReissueLe);
             }
         }
-        "self" => {
-            if !have || old.cert_mode != "self" || !old.cert_name.is_empty() {
-                gen_self_signed(lo, site).await?;
-            }
+        "self" if !have || old.cert_mode != "self" || !old.cert_name.is_empty() => {
+            gen_self_signed(lo, site).await?;
         }
         _ => {}
     }

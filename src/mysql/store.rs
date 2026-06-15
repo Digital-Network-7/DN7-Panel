@@ -40,6 +40,6 @@ pub(crate) fn all_manifests() -> Vec<Manifest> {
             }
         }
     }
-    out.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    out.sort_by_key(|m| m.created_at);
     out
 }

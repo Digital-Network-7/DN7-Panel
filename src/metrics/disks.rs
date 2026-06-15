@@ -37,7 +37,7 @@ pub(crate) fn aggregate_disks(
         });
     }
     // Largest filesystems first so the UI shows the most relevant mounts on top.
-    mounts.sort_by(|a, b| b.total.cmp(&a.total));
+    mounts.sort_by_key(|m| std::cmp::Reverse(m.total));
     (total, used, mounts)
 }
 

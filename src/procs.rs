@@ -143,7 +143,7 @@ fn compute(sys: &System, limit: usize) -> Cached {
     });
     let by_cpu: Vec<ProcRow> = rows.iter().take(limit).cloned().collect();
 
-    rows.sort_by(|a, b| b.mem.cmp(&a.mem));
+    rows.sort_by_key(|r| std::cmp::Reverse(r.mem));
     let by_mem: Vec<ProcRow> = rows.iter().take(limit).cloned().collect();
 
     Cached {

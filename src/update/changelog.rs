@@ -69,11 +69,7 @@ pub async fn changelog(cfg: &PanelConfig) -> ChangelogResult {
         let c = changelog_cache().lock().unwrap();
         c.by_version.values().cloned().collect()
     };
-    entries.sort_by(|a, b| {
-        parse_semver(&b.version)
-            .unwrap_or((0, 0, 0))
-            .cmp(&parse_semver(&a.version).unwrap_or((0, 0, 0)))
-    });
+    entries.sort_by_key(|e| std::cmp::Reverse(parse_semver(&e.version).unwrap_or((0, 0, 0))));
     ChangelogResult { current, entries }
 }
 

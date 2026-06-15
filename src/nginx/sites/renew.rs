@@ -76,11 +76,9 @@ pub(crate) async fn renew_due_site_certs(lo: &Layout, within: i64) {
                     }
                 }
             }
-            "self" => {
-                if gen_self_signed(lo, &site).await.is_ok() {
-                    let _ = write_site_conf(lo, &site, &[]).await;
-                    let _ = validate_and_reload(lo).await;
-                }
+            "self" if gen_self_signed(lo, &site).await.is_ok() => {
+                let _ = write_site_conf(lo, &site, &[]).await;
+                let _ = validate_and_reload(lo).await;
             }
             _ => {}
         }

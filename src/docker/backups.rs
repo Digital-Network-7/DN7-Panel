@@ -177,11 +177,7 @@ pub(crate) async fn list_backups(req: &Req) -> Result<Value> {
         }
     }
     // Newest first.
-    items.sort_by(|a, b| {
-        b.get("created")
-            .and_then(Value::as_u64)
-            .cmp(&a.get("created").and_then(Value::as_u64))
-    });
+    items.sort_by_key(|a| std::cmp::Reverse(a.get("created").and_then(Value::as_u64)));
     Ok(json!({ "backups": items }))
 }
 

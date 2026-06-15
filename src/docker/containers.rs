@@ -74,7 +74,7 @@ fn container_row(c: bollard::models::ContainerSummary, has_shell: bool) -> Value
                     .map(|ip| (nname.clone(), ip))
             })
             .collect();
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries.sort_by_key(|e| e.0.clone());
         ip_list = entries
             .into_iter()
             .map(|(nname, ip)| format!("{ip} ({nname})"))

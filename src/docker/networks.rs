@@ -80,12 +80,7 @@ pub(crate) async fn network_ips(req: &Req) -> Result<Value> {
             }));
         }
     }
-    cons.sort_by(|a, b| {
-        a["name"]
-            .as_str()
-            .unwrap_or("")
-            .cmp(b["name"].as_str().unwrap_or(""))
-    });
+    cons.sort_by_key(|c| c["name"].as_str().unwrap_or("").to_string());
     let editable = !net_predefined(&net) && !subnet.is_empty();
     Ok(
         json!({ "name": net, "subnet": subnet, "gateway": gateway, "editable": editable, "containers": cons }),
