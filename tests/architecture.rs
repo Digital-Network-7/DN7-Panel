@@ -33,14 +33,20 @@ const RULES: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        // infra 实现规则,不决定规则;不得依赖交付层或 axum。
+        // infra 实现规则,不决定规则;不得依赖交付层或上层用例(web/app),也不引 axum。
         "src/infra",
-        &["axum", "crate::web"],
+        &["axum", "crate::web", "crate::app"],
     ),
     (
         // app 编排用例,不碰交付层/外部系统;可直接用 infra 适配器(§5:仅在需 mock/swap 时才抽 port)。
         "src/app",
         &["axum", "bollard", "reqwest", "crate::web"],
+    ),
+    (
+        // web 只做交付(鉴权入口/DTO/响应映射),不直接碰容器/进程;能力经各模块
+        // web_dispatch 薄缝或 infra 适配器代理。
+        "src/web",
+        &["bollard", "tokio::process", "std::process"],
     ),
 ];
 

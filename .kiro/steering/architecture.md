@@ -116,7 +116,7 @@ platform 独立;跨层装配仅限"受控组合根集合"
 
 解析 `use` 行(跳过注释/字符串/`#[cfg(test)]`/组合根),不要做脆弱的裸 grep。
 
-1. **目录级 deny(已落地)**:`domain` 禁 `axum`/`bollard`/`reqwest`/`tokio::process`/`std::process` + 上层依赖 `crate::{app,infra,web}`;`infra` 禁 `axum`/`crate::web`;`app` 禁 `axum`/`bollard`/`reqwest`/`crate::web`。
+1. **目录级 deny(已落地)**:`domain` 禁 `axum`/`bollard`/`reqwest`/`tokio::process`/`std::process` + 上层依赖 `crate::{app,infra,web}`;`infra` 禁 `axum`/`crate::{web,app}`;`app` 禁 `axum`/`bollard`/`reqwest`/`crate::web`;`web` 禁 `bollard`/`tokio::process`/`std::process`(交付层不直接碰容器/进程,经各能力 `web_dispatch` 薄缝或 infra 适配器代理)。
 2. **模块级 allowlist(随迁移补)**:如只有 `infra/docker/**` 可 `bollard`,只有 `web/**` 可 `axum`。比全局 deny 更可靠。
 3. **语义级(已部分落地)**:`domain_serde_is_whitelisted` 强制 `domain` 默认禁 serde,仅评审过的持久化实体文件(`identity`/`settings`/`mysql`/`nginx`)可 derive;其余 `domain` 文件出现 serde 即测试失败。后续可继续补 `axum`/`reqwest` 等语义级断言。不要第 0 步就全开红。
 
