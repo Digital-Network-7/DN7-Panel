@@ -369,8 +369,7 @@ pub(crate) struct Location {
 mod opreg;
 use opreg::{new_op_id, op_create, op_dismiss, op_finish, op_log, op_push, ops_snapshot, pmsg};
 mod certparse;
-mod validate;
-use validate::{
+use crate::domain::nginx::{
     norm_scheme, primary_host, valid_access_name, valid_auth_username, valid_cert_name,
     valid_client_address, valid_container_name, valid_host_token, valid_location_path, valid_port,
     valid_redirect_url, valid_root_segment, valid_server_name, valid_size_value,

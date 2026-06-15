@@ -1,9 +1,9 @@
-//! Pure input validators for the Nginx module. No I/O, no parent types — just
+//! Pure input validators for the Nginx domain (moved from nginx::validate). No I/O, no parent types — just
 //! string/number checks that gate user input before it reaches a config file
 //! or a shell-free command. Kept together so the rules are easy to audit.
 
 /// A cert name: a single filesystem-safe token (letters/digits/_-.), 1..=64.
-pub(super) fn valid_cert_name(s: &str) -> bool {
+pub(crate) fn valid_cert_name(s: &str) -> bool {
     let s = s.trim();
     !s.is_empty()
         && s.len() <= 64
@@ -14,7 +14,7 @@ pub(super) fn valid_cert_name(s: &str) -> bool {
 }
 
 /// Validate an access-list display name (1..=64, no control chars / quotes).
-pub(super) fn valid_access_name(s: &str) -> bool {
+pub(crate) fn valid_access_name(s: &str) -> bool {
     let s = s.trim();
     !s.is_empty()
         && s.chars().count() <= 64
@@ -22,7 +22,7 @@ pub(super) fn valid_access_name(s: &str) -> bool {
 }
 
 /// Validate a basic-auth username (no ':' — the htpasswd field separator).
-pub(super) fn valid_auth_username(s: &str) -> bool {
+pub(crate) fn valid_auth_username(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
         && s.chars()
@@ -30,7 +30,7 @@ pub(super) fn valid_auth_username(s: &str) -> bool {
 }
 
 /// Validate a client address for allow/deny: "all", or an IPv4/IPv6/CIDR token.
-pub(super) fn valid_client_address(s: &str) -> bool {
+pub(crate) fn valid_client_address(s: &str) -> bool {
     let s = s.trim();
     if s.eq_ignore_ascii_case("all") {
         return true;
@@ -43,7 +43,7 @@ pub(super) fn valid_client_address(s: &str) -> bool {
 
 /// A server_name: one or more space-free hostnames (letters/digits/.-/* and _).
 /// Wildcards (`*.example.com`) and `_` (catch-all) are allowed.
-pub(super) fn valid_server_name(s: &str) -> bool {
+pub(crate) fn valid_server_name(s: &str) -> bool {
     let s = s.trim();
     if s.is_empty() || s.len() > 255 {
         return false;
@@ -57,7 +57,7 @@ pub(super) fn valid_server_name(s: &str) -> bool {
 }
 
 /// The first hostname of a server_name (used for cert CN / acme domain).
-pub(super) fn primary_host(server_name: &str) -> String {
+pub(crate) fn primary_host(server_name: &str) -> String {
     server_name
         .split_whitespace()
         .next()
@@ -67,7 +67,7 @@ pub(super) fn primary_host(server_name: &str) -> String {
 
 /// A proxy target host[:port] or container name — no scheme, no path, no shell
 /// metacharacters. We build the final `http://host:port` ourselves.
-pub(super) fn valid_host_token(s: &str) -> bool {
+pub(crate) fn valid_host_token(s: &str) -> bool {
     let s = s.trim();
     !s.is_empty()
         && s.len() <= 255
@@ -76,7 +76,7 @@ pub(super) fn valid_host_token(s: &str) -> bool {
 }
 
 /// A container name (docker's own charset).
-pub(super) fn valid_container_name(s: &str) -> bool {
+pub(crate) fn valid_container_name(s: &str) -> bool {
     let s = s.trim();
     !s.is_empty()
         && s.len() <= 128
@@ -86,7 +86,7 @@ pub(super) fn valid_container_name(s: &str) -> bool {
 }
 
 /// A static webroot subdirectory name (single path segment, no separators).
-pub(super) fn valid_root_segment(s: &str) -> bool {
+pub(crate) fn valid_root_segment(s: &str) -> bool {
     let s = s.trim();
     !s.is_empty()
         && s.len() <= 64
@@ -96,12 +96,12 @@ pub(super) fn valid_root_segment(s: &str) -> bool {
         && s != ".."
 }
 
-pub(super) fn valid_port(p: i64) -> bool {
+pub(crate) fn valid_port(p: i64) -> bool {
     (1..=65535).contains(&p)
 }
 
 /// Normalize an upstream scheme to "http" or "https" (default http).
-pub(super) fn norm_scheme(s: Option<&str>) -> String {
+pub(crate) fn norm_scheme(s: Option<&str>) -> String {
     match s.map(str::trim) {
         Some("https") => "https".to_string(),
         _ => "http".to_string(),
@@ -110,7 +110,7 @@ pub(super) fn norm_scheme(s: Option<&str>) -> String {
 
 /// A location prefix: starts with '/', no spaces or shell metacharacters, and
 /// stays within a sane length. We embed it literally into a `location` block.
-pub(super) fn valid_location_path(s: &str) -> bool {
+pub(crate) fn valid_location_path(s: &str) -> bool {
     let s = s.trim();
     s.starts_with('/')
         && s.len() <= 200
@@ -120,7 +120,7 @@ pub(super) fn valid_location_path(s: &str) -> bool {
 }
 
 /// Validate a redirect target URL (http/https, no quotes/whitespace/newlines).
-pub(super) fn valid_redirect_url(s: &str) -> bool {
+pub(crate) fn valid_redirect_url(s: &str) -> bool {
     (s.starts_with("http://") || s.starts_with("https://"))
         && s.len() <= 2048
         && !s
@@ -129,7 +129,7 @@ pub(super) fn valid_redirect_url(s: &str) -> bool {
 }
 
 /// Validate a size value like "1m", "512k", "0" (bytes default). Bounded.
-pub(super) fn valid_size_value(s: &str) -> bool {
+pub(crate) fn valid_size_value(s: &str) -> bool {
     let s = s.trim();
     !s.is_empty() && s.len() <= 12 && {
         let (num, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
