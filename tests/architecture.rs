@@ -43,10 +43,10 @@ const RULES: &[(&str, &[&str])] = &[
         &["axum", "bollard", "reqwest", "crate::web"],
     ),
     (
-        // web 只做交付(鉴权入口/DTO/响应映射),不直接碰容器/进程;能力经各模块
-        // web_dispatch 薄缝或 infra 适配器代理。
+        // web 只做交付(鉴权入口/DTO/响应映射),不直接碰容器/进程,也不直接调用各能力的内部
+        // web_dispatch——能力一律经 app::<cap> 用例入口(web→app→infra)。
         "src/web",
-        &["bollard", "tokio::process", "std::process"],
+        &["bollard", "tokio::process", "std::process", "web_dispatch"],
     ),
 ];
 

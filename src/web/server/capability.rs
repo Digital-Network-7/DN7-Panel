@@ -105,7 +105,7 @@ pub(crate) async fn docker_op(
     headers: header::HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    let fut = crate::infra::docker::web_dispatch(&body);
+    let fut = crate::app::docker::dispatch(&body);
     dispatch(&state, &headers, "docker", body.clone(), fut).await
 }
 
@@ -114,7 +114,7 @@ pub(crate) async fn nginx_op(
     headers: header::HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    let fut = crate::infra::nginx::web_dispatch(&body);
+    let fut = crate::app::nginx::dispatch(&body);
     dispatch(&state, &headers, "nginx", body.clone(), fut).await
 }
 
@@ -123,7 +123,7 @@ pub(crate) async fn mysql_op(
     headers: header::HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    let fut = crate::infra::mysql::web_dispatch(&body);
+    let fut = crate::app::mysql::dispatch(&body);
     dispatch(&state, &headers, "mysql", body.clone(), fut).await
 }
 

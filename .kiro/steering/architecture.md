@@ -150,9 +150,10 @@ platform 独立;跨层装配仅限"受控组合根集合"
 - `domain`:`authz`、`identity`(校验器 + `PanelUser` + `Principal`)、`settings`(`WebSettings`)、`error`(`domain::Error` + 唯一 web 边界映射 `map_domain_err`);并扩展到各能力规则/实体——`nginx`(校验器 + 持久化实体 `Site`/`Location`/`AccessList`/`AccessUser`/`AccessClient`/`DefaultSite`/`WebGlobal`/`HttpTuning`)、`mysql`(引擎目录规则 + `Manifest`)、`docker`(创建策略白名单)。持久化实体的 `serde` derive 属 §2/§4 评审例外,字段 `pub(crate)` 经 re-export 供子模块原样引用。
 - `infra`:`audit`、`auth`(会话/challenge/ticket/限流)、`store`(users/settings 持久化)、`system`(OS 适配)。
 - `app`:`account` 用例(改密/2FA,经 `AccountEnv` 端口 + mock 单测)、`users`(面板用户编排);账户自助凭据域 + settings 改密的错误全部走 `domain::Error`。
+- `app`:`docker`/`nginx`/`mysql` 能力**用例入口** `dispatch(body)` 已建立——web 能力 handler 一律经 `app::<cap>::dispatch`(web→app→infra),不再直接调 `infra::<cap>::web_dispatch`(架构测试已在 `web` 禁 `web_dispatch` token 锁死)。当前入口为薄缝转发 `infra::<cap>::web_dispatch`,op 级编排将逐步迁入此处。
 
 **待办(建议按能力分阶段做,勿一次性强塞)**
 - 管理员用户管理 handler(`web/server/users_api.rs`)经评估**已处于合理薄度**;其对 `infra::system` 的直接调用与 `account_api` 的 `AccountEnv` adapter 同属 web 作组合根装配 infra 的既定模式,**暂不再薄化**。
-- 能力**内部**竖切(物理目录已在 `infra/<cap>`,但仍是「校验+编排+持久化+系统调用」混在一个模块):把编排上移 `app::<cap>`、纯适配留 `infra::<cap>`。各能力经 `use super::*` 与父模块共享 `Req`/路径常量深耦合,**属高改动面 + 涉及 bollard/nginx/系统调用、本地无法运行期验证**,须逐能力小步推进并在真机验证(nginx 配置生成/reload、docker、mysql),不要在单次改动中全量重写。
+- 能力**内部**竖切(物理目录已在 `infra/<cap>`,用例入口已在 `app/<cap>::dispatch`,但 op 级编排仍在 `infra::<cap>::web_dispatch` 内):把编排逐 op 上移 `app::<cap>`、纯适配留 `infra::<cap>`。各 op 经 `use super::*` 与父模块共享 `Req`/路径常量深耦合,**属高改动面 + 涉及 bollard/nginx/系统调用、本地无法运行期验证**,须逐能力逐 op 小步推进并在真机验证(nginx 配置生成/reload、docker、mysql),不要在单次改动中全量重写。
 - 能力的 `ERR_CODE:` 字符串校验器 → 待 typed 命令模型时一并迁到 `domain::Error`;在此之前保留 `ERR_CODE:`/`op_err_body` 过渡通道(§6)。
 - 大 `Req`→按操作命令枚举:高改动面、低收益(§5),无法运行期验证,逐能力小步推进。
