@@ -150,7 +150,11 @@ fn build_router(state: Shared) -> Router {
 /// HTTPS (browsers ignore it over HTTP, and sending it could strand an
 /// HTTP-only deployment).
 async fn security_headers(State(state): State<Shared>, req: Request, next: Next) -> Response {
-    let https = state.settings.lock().map(|s| s.https).unwrap_or(false);
+    let https = state
+        .settings
+        .lock()
+        .map(|s| SecurityPolicy::new(&s).https())
+        .unwrap_or(false);
     let mut resp = next.run(req).await;
     let h = resp.headers_mut();
     const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; \
@@ -383,6 +387,7 @@ mod capability;
 mod files_api;
 mod gate;
 mod login;
+mod policy;
 mod settings_api;
 mod update_api;
 mod users_api;
@@ -396,6 +401,7 @@ use capability::*;
 use files_api::*;
 use gate::*;
 use login::*;
+use policy::*;
 use settings_api::*;
 use update_api::*;
 use users_api::*;

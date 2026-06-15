@@ -26,42 +26,45 @@ pub(crate) async fn entry_gate(State(state): State<Shared>, req: Request, next: 
 /// The actual gate logic (allow list + safe-entry path), run inside the audit
 /// request-context scope established by `entry_gate`.
 pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) -> Response {
-    // Authorized-IP allow list (when configured). Loopback is always allowed to
-    // avoid a self-lockout from the local CLI / curl.
-    let allow = state
-        .settings
-        .lock()
-        .map(|s| s.allow_ips.clone())
-        .unwrap_or_default();
-    if !allow.is_empty() {
-        let peer = req
-            .extensions()
-            .get::<axum::extract::ConnectInfo<SocketAddr>>()
-            .map(|ci| ci.0.ip());
-        let ok = match peer {
-            Some(ip) => ip_in_allowlist(&allow, ip),
-            // Fail closed: an allow-list is configured but we can't determine
-            // the source IP (shouldn't happen — the router is mounted with
-            // ConnectInfo). Denying is the safe choice; allowing would silently
-            // disable the allow-list.
-            None => {
-                tracing::warn!("allow-list active but peer IP unavailable; denying request");
-                false
-            }
-        };
+    let peer = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip());
+    // Resolve all security decisions under one brief settings lock via the
+    // policy view (allow-list verdict, entry token/path, cookie Secure attr).
+    let (allow_active, ip_ok, entry_token, entry_path, secure) = match state.settings.lock() {
+        Ok(s) => {
+            let pol = SecurityPolicy::new(&s);
+            (
+                pol.allow_list_active(),
+                peer.map(|ip| pol.ip_allowed(ip)),
+                pol.entry_token(),
+                pol.entry_path(),
+                pol.cookie_secure_attr(),
+            )
+        }
+        // Poisoned lock: behave as the permissive default (no allow-list, gate
+        // disabled) rather than locking everyone out.
+        Err(_) => (false, None, None, "/".to_string(), ""),
+    };
+    // Authorized-IP allow list (when configured). Loopback is always allowed.
+    if allow_active {
+        let ok = ip_ok.unwrap_or_else(|| {
+            // An allow-list is active but we can't determine the source IP
+            // (shouldn't happen — the router is mounted with ConnectInfo).
+            // Fail closed: allowing would silently disable the allow-list.
+            tracing::warn!("allow-list active but peer IP unavailable; denying request");
+            false
+        });
         if !ok {
             return (StatusCode::FORBIDDEN, "Forbidden").into_response();
         }
     }
-    let entry = state
-        .settings
-        .lock()
-        .map(|s| s.entry_path.clone())
-        .unwrap_or_else(|_| "/".to_string());
-    if entry == "/" || entry.is_empty() {
-        return next.run(req).await;
-    }
-    let token = entry.trim_start_matches('/').to_string();
+    // Safe-entry gate. Disabled (token None) → serve everything.
+    let token = match entry_token {
+        Some(t) => t,
+        None => return next.run(req).await,
+    };
     let headers = req.headers();
     let authed = bearer(headers)
         .map(|t| state.auth.valid(&t))
@@ -70,16 +73,13 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
     if authed || cookie_ok {
         return next.run(req).await;
     }
-    if req.uri().path() == entry {
+    if req.uri().path() == entry_path {
         let mut resp = index_page().await.into_response();
         // Add `Secure` when serving over HTTPS so the entry token never rides a
         // plaintext request if the user later hits the same host over HTTP.
-        let https = state.settings.lock().map(|s| s.https).unwrap_or(false);
-        let secure = if https { "; Secure" } else { "" };
-        if let Ok(v) = format!(
-            "dn7_entry={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000{secure}"
-        )
-        .parse()
+        if let Ok(v) =
+            format!("dn7_entry={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000{secure}")
+                .parse()
         {
             resp.headers_mut().append(header::SET_COOKIE, v);
         }
@@ -168,55 +168,5 @@ pub(crate) fn redact_json(v: &mut Value) {
             }
         }
         _ => {}
-    }
-}
-
-/// Whether `ip` is permitted by the authorized-IP allow list. Loopback is
-/// always allowed (avoids locking the local operator out). Entries are exact
-/// IPs or CIDR blocks (validated on save).
-pub(crate) fn ip_in_allowlist(allow: &[String], ip: std::net::IpAddr) -> bool {
-    if ip.is_loopback() {
-        return true;
-    }
-    for entry in allow {
-        if let Some((a, p)) = entry.split_once('/') {
-            if let (Ok(net), Ok(prefix)) = (a.parse::<std::net::IpAddr>(), p.parse::<u8>()) {
-                if cidr_contains(net, prefix, ip) {
-                    return true;
-                }
-            }
-        } else if let Ok(a) = entry.parse::<std::net::IpAddr>() {
-            if a == ip {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Whether `ip` falls within the `net`/`prefix` CIDR block (v4 or v6).
-pub(crate) fn cidr_contains(net: std::net::IpAddr, prefix: u8, ip: std::net::IpAddr) -> bool {
-    match (net, ip) {
-        (std::net::IpAddr::V4(n), std::net::IpAddr::V4(i)) => {
-            if prefix == 0 {
-                return true;
-            }
-            if prefix > 32 {
-                return false;
-            }
-            let mask = u32::MAX << (32 - prefix);
-            (u32::from(n) & mask) == (u32::from(i) & mask)
-        }
-        (std::net::IpAddr::V6(n), std::net::IpAddr::V6(i)) => {
-            if prefix == 0 {
-                return true;
-            }
-            if prefix > 128 {
-                return false;
-            }
-            let mask = u128::MAX << (128 - prefix);
-            (u128::from(n) & mask) == (u128::from(i) & mask)
-        }
-        _ => false,
     }
 }
