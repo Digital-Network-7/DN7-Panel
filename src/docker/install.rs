@@ -41,23 +41,9 @@ pub(crate) fn start_install(req: &Req) -> Result<Value> {
     Ok(json!({ "op_id": INSTALL_OP, "target": "docker" }))
 }
 
-pub(crate) async fn run_install_detached(
-    op_id: &str,
-    channel: &str,
-    region_pref: &str,
-) -> Result<()> {
-    if docker_is_installed().await {
-        op_push(op_id, &pmsg("dk.already_installed", &[]));
-        return Ok(());
-    }
-
-    let os = detect_os();
-    op_push(
-        op_id,
-        &pmsg("dk.detected_os", &[os.pretty.as_str(), os.family.as_str()]),
-    );
-
-    let region = resolve_region(region_pref).await;
+/// Push the localized "install method" progress line: which channel (distro
+/// package vs Docker CE) and which region (China mirror vs global) will be used.
+fn push_install_method(op_id: &str, channel: &str, region: &str) {
     op_push(
         op_id,
         &pmsg(
@@ -76,6 +62,26 @@ pub(crate) async fn run_install_detached(
             ],
         ),
     );
+}
+
+pub(crate) async fn run_install_detached(
+    op_id: &str,
+    channel: &str,
+    region_pref: &str,
+) -> Result<()> {
+    if docker_is_installed().await {
+        op_push(op_id, &pmsg("dk.already_installed", &[]));
+        return Ok(());
+    }
+
+    let os = detect_os();
+    op_push(
+        op_id,
+        &pmsg("dk.detected_os", &[os.pretty.as_str(), os.family.as_str()]),
+    );
+
+    let region = resolve_region(region_pref).await;
+    push_install_method(op_id, channel, region);
 
     // Primary attempt: native distro package (friendliest, uses the system's
     // existing mirrors — no external Docker repo), or the official convenience
