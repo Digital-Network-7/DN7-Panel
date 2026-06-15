@@ -174,12 +174,14 @@ struct Manifest {
 // descendant modules can read their private fields.
 // ---------------------------------------------------------------------------
 mod accounts;
+mod catalog;
 mod exec;
 mod provision;
 mod query;
 mod store;
 mod tables;
 use accounts::*;
+use catalog::*;
 use exec::*;
 use provision::*;
 use query::*;

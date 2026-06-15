@@ -127,3 +127,14 @@ pub(super) fn valid_redirect_url(s: &str) -> bool {
             .chars()
             .any(|c| c.is_whitespace() || c == '"' || c == '\\')
 }
+
+/// Validate a size value like "1m", "512k", "0" (bytes default). Bounded.
+pub(super) fn valid_size_value(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty() && s.len() <= 12 && {
+        let (num, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
+        !num.is_empty()
+            && num.chars().all(|c| c.is_ascii_digit())
+            && matches!(unit, "" | "k" | "K" | "m" | "M" | "g" | "G")
+    }
+}

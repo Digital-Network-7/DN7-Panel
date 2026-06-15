@@ -373,7 +373,7 @@ mod validate;
 use validate::{
     norm_scheme, primary_host, valid_access_name, valid_auth_username, valid_cert_name,
     valid_client_address, valid_container_name, valid_host_token, valid_location_path, valid_port,
-    valid_redirect_url, valid_root_segment, valid_server_name,
+    valid_redirect_url, valid_root_segment, valid_server_name, valid_size_value,
 };
 
 // ---------------------------------------------------------------------------
@@ -386,6 +386,7 @@ mod certs;
 mod certs_named;
 mod confgen;
 mod detect;
+mod htpasswd;
 mod setup;
 mod sites;
 mod state;
@@ -396,6 +397,7 @@ use certs::*;
 use certs_named::*;
 use confgen::*;
 use detect::*;
+use htpasswd::*;
 use setup::*;
 pub use sites::*;
 use state::*;
