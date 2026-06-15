@@ -153,6 +153,7 @@ impl AuthState {
 // ---------------------------------------------------------------------------
 
 /// A persisted session: the owning account + last-access (unix secs, sliding).
+/// The map/file key is `sha256(token)` (see `token_key`), never the raw token.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct SessionRec {
     #[serde(default)]
@@ -214,13 +215,14 @@ impl SessionStore {
 
     fn issue(&self, user: &str) -> String {
         let token = random_token();
+        let key = token_key(&token);
         let now = now_secs();
         {
             let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
             // Opportunistically prune expired sessions.
             m.retain(|_, r| now.saturating_sub(r.last) <= self.ttl_secs());
             m.insert(
-                token.clone(),
+                key,
                 SessionRec {
                     user: user.to_string(),
                     last: now,
@@ -238,18 +240,19 @@ impl SessionStore {
         if token.is_empty() {
             return None;
         }
+        let key = token_key(token);
         let now = now_secs();
         let mut persist = false;
         let user = {
             let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
-            match m.get(token).cloned() {
+            match m.get(&key).cloned() {
                 Some(rec) if now.saturating_sub(rec.last) <= self.ttl_secs() => {
                     // Debounce disk writes: persist only every few minutes.
                     if now.saturating_sub(rec.last) >= 300 {
                         persist = true;
                     }
                     m.insert(
-                        token.to_string(),
+                        key,
                         SessionRec {
                             user: rec.user.clone(),
                             last: now,
@@ -270,15 +273,16 @@ impl SessionStore {
         self.map
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .remove(token);
+            .remove(&token_key(token));
         self.save();
     }
 
     fn revoke_user(&self, user: &str, keep: Option<&str>) {
+        let keep_key = keep.map(token_key);
         self.map
             .lock()
-            .unwrap()
-            .retain(|tok, rec| rec.user != user || keep == Some(tok.as_str()));
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|tok, rec| rec.user != user || keep_key.as_deref() == Some(tok.as_str()));
         self.save();
     }
 
@@ -339,7 +343,7 @@ impl ChallengeStore {
         let now = Instant::now();
         self.map
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .retain(|_, t| now.duration_since(*t) <= CHALLENGE_TTL);
     }
 }
@@ -407,7 +411,7 @@ impl TicketStore {
         let now = Instant::now();
         self.map
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .retain(|_, r| now.duration_since(r.issued) <= TICKET_TTL);
     }
 }
@@ -464,6 +468,17 @@ fn random_token() -> String {
     const HEX: &[u8] = b"0123456789abcdef";
     let mut rng = rand::thread_rng();
     (0..48).map(|_| HEX[rng.gen_range(0..16)] as char).collect()
+}
+
+/// The at-rest key for a session token: `sha256_hex(token)`. The raw token is
+/// only ever held by the client; the in-memory map and the persisted
+/// `sessions.json` store the hash, so a leaked session file can't be replayed
+/// (an attacker would need to invert SHA-256 to recover a usable bearer token).
+fn token_key(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(token.as_bytes());
+    hex_lower(&h.finalize())
 }
 
 /// Current wall-clock time in unix seconds (0 on the impossible clock error).

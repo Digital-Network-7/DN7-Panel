@@ -114,7 +114,7 @@ pub(crate) fn merge_changelog(list: Vec<fetch::ReleaseNote>) {
 pub(crate) fn changelog_has_blank() -> bool {
     changelog_cache()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|p| p.into_inner())
         .by_version
         .values()
         .any(|n| n.notes.is_empty())
