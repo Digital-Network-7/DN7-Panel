@@ -1,15 +1,15 @@
 //! MySQL/MariaDB capability — application use-case entry.
 //!
 //! The web layer dispatches here (never straight into `infra::mysql`), so the
-//! application service layer is the single seam for the mysql capability:
-//! authn/audit live in the web boundary, this entry owns the use-case, and the
-//! side-effecting work is delegated to the `infra::mysql` adapter (bollard +
+//! application service layer is the single enforced seam for the mysql
+//! capability: authn/audit live in the web boundary, this entry owns the
+//! use-case, and execution is delegated to the `infra::mysql` adapter (bollard +
 //! `mysql` client exec inside the managed container).
 //!
-//! Today this forwards to the capability's internal JSON dispatcher; the
-//! op-level orchestration (validate → container/exec calls → manifest writes)
-//! migrates into this module incrementally, each step verified against a live
-//! instance (see .kiro/steering/architecture.md §10).
+//! MySQL ops carry no cleanly-extractable pure-domain rules (validation is
+//! container/exec-state-interleaved), so the authoritative per-op match stays
+//! in the infra capability dispatcher — re-implementing it here would risk
+//! mis-routing an op. See .kiro/steering/architecture.md §10.
 
 use anyhow::Result;
 use serde_json::Value;
