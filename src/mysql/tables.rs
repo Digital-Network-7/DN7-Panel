@@ -391,51 +391,50 @@ pub(crate) async fn user_grants(req: &Req) -> Result<Value> {
         sql_escape(user),
         sql_escape(host)
     );
-    let (code, out) = mysql_exec_query(&m.container, &password, &sql).await?;
-    if code != 0 {
-        return Err(anyhow!(
-            "查询失败：{}",
-            out.trim().chars().take(200).collect::<String>()
-        ));
-    }
+    let out = query_or_err(&m.container, &password, &sql).await?;
     let mut grants = serde_json::Map::new();
     for line in out.lines() {
-        let l = line.trim();
-        let upper = l.to_uppercase();
-        if !upper.starts_with("GRANT ") {
-            continue;
+        if let Some((key, level)) = parse_grant_line(line) {
+            grants.insert(key, json!(level));
         }
-        let on = match upper.find(" ON ") {
-            Some(i) => i,
-            None => continue,
-        };
-        let privs = &upper[6..on];
-        let rest = &l[on + 4..];
-        let scope_end = rest.to_uppercase().find(" TO ").unwrap_or(rest.len());
-        let scope = rest[..scope_end].trim();
-        let db = scope
-            .split('.')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .trim_matches('`');
-        if db.is_empty() {
-            continue;
-        }
-        let key = if scope.starts_with("*.") {
-            "*".to_string()
-        } else {
-            db.to_string()
-        };
-        let level =
-            if privs.contains("ALL") || (privs.contains("INSERT") && privs.contains("UPDATE")) {
-                "all"
-            } else if privs.contains("SELECT") {
-                "ro"
-            } else {
-                continue; // USAGE / no real privileges
-            };
-        grants.insert(key, json!(level));
     }
     Ok(json!({ "grants": grants }))
+}
+
+/// Parse one `SHOW GRANTS` line into `(scope_key, level)`, where `scope_key` is
+/// "*" for global or the database name, and `level` is "all" / "ro". Returns
+/// None for non-GRANT lines, malformed scopes, or USAGE-only (no real privs).
+fn parse_grant_line(line: &str) -> Option<(String, &'static str)> {
+    let l = line.trim();
+    let upper = l.to_uppercase();
+    if !upper.starts_with("GRANT ") {
+        return None;
+    }
+    let on = upper.find(" ON ")?;
+    let privs = &upper[6..on];
+    let rest = &l[on + 4..];
+    let scope_end = rest.to_uppercase().find(" TO ").unwrap_or(rest.len());
+    let scope = rest[..scope_end].trim();
+    let db = scope
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches('`');
+    if db.is_empty() {
+        return None;
+    }
+    let key = if scope.starts_with("*.") {
+        "*".to_string()
+    } else {
+        db.to_string()
+    };
+    let level = if privs.contains("ALL") || (privs.contains("INSERT") && privs.contains("UPDATE")) {
+        "all"
+    } else if privs.contains("SELECT") {
+        "ro"
+    } else {
+        return None; // USAGE / no real privileges
+    };
+    Some((key, level))
 }
