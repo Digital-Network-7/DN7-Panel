@@ -53,16 +53,11 @@ pub(crate) fn mark_setup() -> Result<()> {
 }
 
 pub(crate) fn load_sites() -> Vec<Site> {
-    std::fs::read_to_string(sites_file())
-        .ok()
-        .and_then(|s| serde_json::from_str::<Vec<Site>>(&s).ok())
-        .unwrap_or_default()
+    crate::json_store::load_or_default(&sites_file())
 }
 
 pub(crate) fn save_sites(sites: &[Site]) -> Result<()> {
-    std::fs::create_dir_all(base_dir())?;
-    std::fs::write(sites_file(), serde_json::to_string_pretty(sites)?)?;
-    Ok(())
+    crate::json_store::save_pretty(&sites_file(), sites)
 }
 
 // ---------------------------------------------------------------------------
@@ -90,16 +85,11 @@ pub(crate) fn certs_manifest_file() -> std::path::PathBuf {
 }
 
 pub(crate) fn load_named_certs() -> Vec<NamedCert> {
-    std::fs::read_to_string(certs_manifest_file())
-        .ok()
-        .and_then(|s| serde_json::from_str::<Vec<NamedCert>>(&s).ok())
-        .unwrap_or_default()
+    crate::json_store::load_or_default(&certs_manifest_file())
 }
 
 pub(crate) fn save_named_certs(certs: &[NamedCert]) -> Result<()> {
-    std::fs::create_dir_all(base_dir())?;
-    std::fs::write(certs_manifest_file(), serde_json::to_string_pretty(certs)?)?;
-    Ok(())
+    crate::json_store::save_pretty(&certs_manifest_file(), certs)
 }
 
 pub(crate) fn named_crt_file(lo: &Layout, name: &str) -> std::path::PathBuf {

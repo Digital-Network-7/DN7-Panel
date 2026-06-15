@@ -58,27 +58,12 @@ fn branding_path() -> std::path::PathBuf {
 
 /// Load persisted branding, falling back to defaults when absent/corrupt.
 pub fn load() -> Branding {
-    if let Ok(raw) = std::fs::read_to_string(branding_path()) {
-        if let Ok(b) = serde_json::from_str::<Branding>(&raw) {
-            return b;
-        }
-    }
-    Branding::default()
+    crate::json_store::load_or_default(&branding_path())
 }
 
-/// Persist branding to `<data>/branding.json` with 0600 perms.
+/// Persist branding to `<data>/branding.json` with 0600 perms (atomic).
 pub fn save(b: &Branding) -> anyhow::Result<()> {
-    let path = branding_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, serde_json::to_string_pretty(b)?)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
-    Ok(())
+    crate::json_store::save_private(&branding_path(), b)
 }
 
 /// Validate + normalise an incoming branding update. Returns the value to

@@ -18,26 +18,16 @@ pub(crate) fn websettings_file() -> std::path::PathBuf {
 }
 
 pub(crate) fn load_access() -> Vec<AccessList> {
-    std::fs::read_to_string(access_file())
-        .ok()
-        .and_then(|s| serde_json::from_str::<Vec<AccessList>>(&s).ok())
-        .unwrap_or_default()
+    crate::json_store::load_or_default(&access_file())
 }
 pub(crate) fn save_access(lists: &[AccessList]) -> Result<()> {
-    std::fs::create_dir_all(base_dir())?;
-    std::fs::write(access_file(), serde_json::to_string_pretty(lists)?)?;
-    Ok(())
+    crate::json_store::save_pretty(&access_file(), lists)
 }
 pub(crate) fn load_webglobal() -> WebGlobal {
-    std::fs::read_to_string(websettings_file())
-        .ok()
-        .and_then(|s| serde_json::from_str::<WebGlobal>(&s).ok())
-        .unwrap_or_default()
+    crate::json_store::load_or_default(&websettings_file())
 }
 pub(crate) fn save_webglobal(g: &WebGlobal) -> Result<()> {
-    std::fs::create_dir_all(base_dir())?;
-    std::fs::write(websettings_file(), serde_json::to_string_pretty(g)?)?;
-    Ok(())
+    crate::json_store::save_pretty(&websettings_file(), g)
 }
 
 pub(crate) fn webtuning_file() -> std::path::PathBuf {
@@ -46,13 +36,10 @@ pub(crate) fn webtuning_file() -> std::path::PathBuf {
 /// Load tuning, or `None` when never configured (so we don't override the
 /// distro's http defaults on managed sites until the operator opts in).
 pub(crate) fn load_tuning_opt() -> Option<HttpTuning> {
-    let raw = std::fs::read_to_string(webtuning_file()).ok()?;
-    serde_json::from_str::<HttpTuning>(&raw).ok()
+    crate::json_store::load_opt(&webtuning_file())
 }
 pub(crate) fn save_tuning(t: &HttpTuning) -> Result<()> {
-    std::fs::create_dir_all(base_dir())?;
-    std::fs::write(webtuning_file(), serde_json::to_string_pretty(t)?)?;
-    Ok(())
+    crate::json_store::save_pretty(&webtuning_file(), t)
 }
 
 /// Validate a size value like "1m", "512k", "0" (bytes default). Bounded.

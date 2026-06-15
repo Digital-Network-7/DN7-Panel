@@ -54,16 +54,11 @@ fn users_path() -> std::path::PathBuf {
 }
 
 pub fn load() -> Vec<PanelUser> {
-    std::fs::read_to_string(users_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    crate::json_store::load_or_default(&users_path())
 }
 
 pub fn save(users: &[PanelUser]) -> Result<()> {
-    let path = users_path();
-    crate::paths::write_private(&path, serde_json::to_string_pretty(users)?.as_bytes())?;
-    Ok(())
+    crate::json_store::save_private(&users_path(), users)
 }
 
 /// Serializes read-modify-write access to users.json so concurrent admin

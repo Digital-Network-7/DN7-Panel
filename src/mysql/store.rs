@@ -44,17 +44,7 @@ pub(crate) fn manifest_path(id: &str) -> std::path::PathBuf {
 }
 
 pub(crate) fn save_manifest(m: &Manifest) -> Result<()> {
-    let dir = mysql_dir();
-    std::fs::create_dir_all(&dir)?;
-    let path = manifest_path(&m.id);
-    let body = serde_json::to_string_pretty(m)?;
-    std::fs::write(&path, body)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
-    Ok(())
+    crate::json_store::save_private(&manifest_path(&m.id), m)
 }
 
 pub(crate) fn load_manifest(id: &str) -> Result<Manifest> {

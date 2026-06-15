@@ -7,6 +7,7 @@ mod docker;
 mod fetch;
 mod file;
 mod guardian;
+mod json_store;
 mod logrotate;
 mod metrics;
 mod mysql;

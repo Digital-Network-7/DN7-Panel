@@ -135,18 +135,11 @@ fn now_secs() -> u64 {
 
 impl UpdateState {
     pub fn load() -> Self {
-        if let Ok(raw) = std::fs::read_to_string(state_path()) {
-            if let Ok(s) = serde_json::from_str::<UpdateState>(&raw) {
-                return s;
-            }
-        }
-        UpdateState::default()
+        crate::json_store::load_or_default(&state_path())
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = state_path();
-        crate::paths::write_private(&path, serde_json::to_string_pretty(self)?.as_bytes())?;
-        Ok(())
+        crate::json_store::save_private(&state_path(), self)
     }
 }
 

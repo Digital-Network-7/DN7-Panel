@@ -272,9 +272,7 @@ pub fn load() -> Option<WebSettings> {
 /// Persist settings to `<data>/web.json` with 0600 perms (atomic, no
 /// create-then-chmod window).
 pub fn save(s: &WebSettings) -> Result<()> {
-    let path = settings_path();
-    crate::paths::write_private(&path, serde_json::to_string_pretty(s)?.as_bytes())?;
-    Ok(())
+    crate::json_store::save_private(&settings_path(), s)
 }
 
 #[cfg(test)]
