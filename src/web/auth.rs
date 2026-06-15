@@ -4,8 +4,15 @@
 //! with an expiry. Requests carry it as `Authorization: Bearer <token>` (or a
 //! `token` query param for WebSocket upgrades, which can't set headers from the
 //! browser). Failed logins are rate-limited per source to slow brute force.
+//!
+//! [`AuthState`] is a thin façade over four focused, self-contained stores —
+//! [`SessionStore`], [`ChallengeStore`], [`TicketStore`] and [`RateLimiter`] —
+//! each owning its own lock and lifecycle. [`AuthState::sweep`] prunes expired
+//! entries across all of them from one place (called periodically by the
+//! server), so lifecycle isn't scattered across ad-hoc prune-on-insert paths.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -31,27 +38,14 @@ const TICKET_TTL: Duration = Duration::from_secs(30);
 const MAX_CHALLENGES: usize = 4096;
 const MAX_TICKETS: usize = 4096;
 
+/// Web-console auth façade: bearer sessions, login challenges, one-time tickets
+/// and a per-source login rate limiter, each behind its own focused store.
 #[derive(Default)]
 pub struct AuthState {
-    sessions: Mutex<HashMap<String, SessionRec>>, // token -> {user, last access}
-    fails: Mutex<HashMap<String, Vec<Instant>>>,  // source -> failure times
-    challenges: Mutex<HashMap<String, Instant>>,  // login nonce -> issued (single use)
-    tickets: Mutex<HashMap<String, TicketRec>>,   // one-time WS/download ticket -> owner
-    /// Configurable session inactivity timeout in seconds (0 = use the built-in
-    /// SESSION_TTL default). Set from the persisted settings at startup and on
-    /// every settings save.
-    ttl_secs: std::sync::atomic::AtomicU64,
-    /// When true, the session map is persisted to disk (so a panel restart —
-    /// e.g. after a self-update — doesn't log everyone out).
-    persist: bool,
-}
-
-/// A persisted session: the owning account + last-access (unix secs, sliding).
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct SessionRec {
-    #[serde(default)]
-    user: String,
-    last: u64,
+    sessions: SessionStore,
+    challenges: ChallengeStore,
+    tickets: TicketStore,
+    rate: RateLimiter,
 }
 
 impl AuthState {
@@ -63,6 +57,123 @@ impl AuthState {
     /// Construct with on-disk session persistence, loading any still-valid
     /// sessions left by a previous run so a restart doesn't force re-login.
     pub fn with_store() -> Self {
+        Self {
+            sessions: SessionStore::with_store(),
+            ..Self::default()
+        }
+    }
+
+    /// Set the session inactivity timeout (seconds). 0 falls back to the default.
+    pub fn set_ttl_secs(&self, secs: u64) {
+        self.sessions.set_ttl_secs(secs);
+    }
+
+    /// Mint a new session token bound to `user`.
+    pub fn issue(&self, user: &str) -> String {
+        self.sessions.issue(user)
+    }
+
+    /// Validate a bearer token (sliding expiry).
+    pub fn valid(&self, token: &str) -> bool {
+        self.sessions.identity(token).is_some()
+    }
+
+    /// Resolve a bearer token to its account name, sliding the expiry window.
+    pub fn identity(&self, token: &str) -> Option<String> {
+        self.sessions.identity(token)
+    }
+
+    /// Invalidate a single session (logout).
+    pub fn revoke(&self, token: &str) {
+        self.sessions.revoke(token);
+    }
+
+    /// Revoke every session and pending ticket belonging to `user`, optionally
+    /// keeping one session token alive (the caller's current session). Called
+    /// after a password or 2FA change so a previously-leaked token is
+    /// invalidated immediately instead of surviving until its TTL expires.
+    pub fn revoke_user(&self, user: &str, keep: Option<&str>) {
+        self.sessions.revoke_user(user, keep);
+        self.tickets.revoke_user(user);
+    }
+
+    /// Whether `source` is currently allowed to attempt a login.
+    pub fn login_allowed(&self, source: &str) -> bool {
+        self.rate.allowed(source)
+    }
+
+    pub fn record_failure(&self, source: &str) {
+        self.rate.record(source);
+    }
+
+    pub fn clear_failures(&self, source: &str) {
+        self.rate.clear(source);
+    }
+
+    /// Mint a one-time login challenge nonce (hex). The client proves knowledge
+    /// of the password by returning `sha256(nonce:password)` so the cleartext
+    /// password never crosses the (plaintext-HTTP) wire.
+    pub fn issue_challenge(&self) -> String {
+        self.challenges.issue()
+    }
+
+    /// Consume a challenge nonce: valid only if present + unexpired, and it's
+    /// removed so it can't be replayed.
+    pub fn consume_challenge(&self, nonce: &str) -> bool {
+        self.challenges.consume(nonce)
+    }
+
+    /// Mint a one-time ticket (hex) bound to `user`, authorizing a single
+    /// WebSocket upgrade or download. The ticket — not the long-lived session
+    /// token — travels in the URL, so a leaked URL exposes only a 30-second,
+    /// single-use credential.
+    pub fn issue_ticket(&self, user: &str) -> String {
+        self.tickets.issue(user)
+    }
+
+    /// Consume a one-time ticket: returns the owning account name if present +
+    /// unexpired, then removes it so it can't be replayed.
+    pub fn consume_ticket(&self, ticket: &str) -> Option<String> {
+        self.tickets.consume(ticket)
+    }
+
+    /// Prune expired entries across every store. Idempotent and cheap; the
+    /// server calls this on a timer so memory doesn't rely solely on the
+    /// prune-on-insert paths.
+    pub fn sweep(&self) {
+        self.sessions.sweep();
+        self.challenges.sweep();
+        self.tickets.sweep();
+        self.rate.sweep();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
+
+/// A persisted session: the owning account + last-access (unix secs, sliding).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct SessionRec {
+    #[serde(default)]
+    user: String,
+    last: u64,
+}
+
+/// Bearer-token session store with a sliding inactivity timeout and optional
+/// on-disk persistence (so a restart — e.g. a self-update — doesn't log
+/// everyone out).
+#[derive(Default)]
+struct SessionStore {
+    map: Mutex<HashMap<String, SessionRec>>, // token -> {user, last access}
+    /// Configurable inactivity timeout in seconds (0 = built-in SESSION_TTL).
+    ttl_secs: AtomicU64,
+    /// When true, the session map is persisted to disk.
+    persist: bool,
+}
+
+impl SessionStore {
+    fn with_store() -> Self {
         let s = Self {
             persist: true,
             ..Self::default()
@@ -73,29 +184,19 @@ impl AuthState {
                 .into_iter()
                 .filter(|(_, r)| now.saturating_sub(r.last) <= SESSION_TTL.as_secs())
                 .collect();
-            *s.sessions.lock().unwrap() = live;
+            *s.map.lock().unwrap() = live;
         }
         s
     }
 
-    fn save_sessions(&self) {
-        if !self.persist {
-            return;
-        }
-        let snapshot = self.sessions.lock().unwrap().clone();
-        let _ = write_sessions(&snapshot);
+    fn set_ttl_secs(&self, secs: u64) {
+        self.ttl_secs.store(secs, Ordering::Relaxed);
     }
 
-    /// Set the session inactivity timeout (seconds). 0 falls back to the default.
-    pub fn set_ttl_secs(&self, secs: u64) {
-        self.ttl_secs
-            .store(secs, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// The active session inactivity timeout in seconds (configured value, or
-    /// the built-in default when unset/zero).
+    /// The active inactivity timeout in seconds (configured value, or the
+    /// built-in default when unset/zero).
     fn ttl_secs(&self) -> u64 {
-        let v = self.ttl_secs.load(std::sync::atomic::Ordering::Relaxed);
+        let v = self.ttl_secs.load(Ordering::Relaxed);
         if v == 0 {
             SESSION_TTL.as_secs()
         } else {
@@ -103,33 +204,19 @@ impl AuthState {
         }
     }
 
-    /// Whether `source` is currently allowed to attempt a login.
-    pub fn login_allowed(&self, source: &str) -> bool {
-        let mut m = self.fails.lock().unwrap();
-        let now = Instant::now();
-        let entry = m.entry(source.to_string()).or_default();
-        entry.retain(|t| now.duration_since(*t) <= FAIL_WINDOW);
-        entry.len() < FAIL_MAX
+    fn save(&self) {
+        if !self.persist {
+            return;
+        }
+        let snapshot = self.map.lock().unwrap().clone();
+        let _ = write_sessions(&snapshot);
     }
 
-    pub fn record_failure(&self, source: &str) {
-        let mut m = self.fails.lock().unwrap();
-        let now = Instant::now();
-        let entry = m.entry(source.to_string()).or_default();
-        entry.retain(|t| now.duration_since(*t) <= FAIL_WINDOW);
-        entry.push(now);
-    }
-
-    pub fn clear_failures(&self, source: &str) {
-        self.fails.lock().unwrap().remove(source);
-    }
-
-    /// Mint a new session token bound to `user`.
-    pub fn issue(&self, user: &str) -> String {
+    fn issue(&self, user: &str) -> String {
         let token = random_token();
         let now = now_secs();
         {
-            let mut m = self.sessions.lock().unwrap();
+            let mut m = self.map.lock().unwrap();
             // Opportunistically prune expired sessions.
             m.retain(|_, r| now.saturating_sub(r.last) <= self.ttl_secs());
             m.insert(
@@ -140,26 +227,21 @@ impl AuthState {
                 },
             );
         }
-        self.save_sessions();
+        self.save();
         token
     }
 
-    /// Validate a bearer token (sliding expiry).
-    pub fn valid(&self, token: &str) -> bool {
-        self.identity(token).is_some()
-    }
-
-    /// Resolve a bearer token to its account name, sliding the expiry window.
-    /// `None` when the token is missing/expired. An active access refreshes the
-    /// timestamp so an active user is never logged out mid-session.
-    pub fn identity(&self, token: &str) -> Option<String> {
+    /// Resolve a token to its account, sliding the expiry. `None` when missing
+    /// or expired. An active access refreshes the timestamp so an active user
+    /// is never logged out mid-session.
+    fn identity(&self, token: &str) -> Option<String> {
         if token.is_empty() {
             return None;
         }
         let now = now_secs();
         let mut persist = false;
         let user = {
-            let mut m = self.sessions.lock().unwrap();
+            let mut m = self.map.lock().unwrap();
             match m.get(token).cloned() {
                 Some(rec) if now.saturating_sub(rec.last) <= self.ttl_secs() => {
                     // Debounce disk writes: persist only every few minutes.
@@ -179,36 +261,51 @@ impl AuthState {
             }
         };
         if persist {
-            self.save_sessions();
+            self.save();
         }
         user
     }
 
-    /// Invalidate a session (logout).
-    pub fn revoke(&self, token: &str) {
-        self.sessions.lock().unwrap().remove(token);
-        self.save_sessions();
+    fn revoke(&self, token: &str) {
+        self.map.lock().unwrap().remove(token);
+        self.save();
     }
 
-    /// Revoke every session and pending ticket belonging to `user`, optionally
-    /// keeping one token alive (the caller's current session). Called after a
-    /// password or 2FA change so any previously-leaked token is immediately
-    /// invalidated instead of surviving until its TTL expires.
-    pub fn revoke_user(&self, user: &str, keep: Option<&str>) {
-        {
-            let mut m = self.sessions.lock().unwrap();
-            m.retain(|tok, rec| rec.user != user || keep == Some(tok.as_str()));
+    fn revoke_user(&self, user: &str, keep: Option<&str>) {
+        self.map
+            .lock()
+            .unwrap()
+            .retain(|tok, rec| rec.user != user || keep == Some(tok.as_str()));
+        self.save();
+    }
+
+    fn sweep(&self) {
+        let now = now_secs();
+        let changed = {
+            let mut m = self.map.lock().unwrap();
+            let before = m.len();
+            m.retain(|_, r| now.saturating_sub(r.last) <= self.ttl_secs());
+            m.len() != before
+        };
+        if changed {
+            self.save();
         }
-        self.tickets.lock().unwrap().retain(|_, r| r.user != user);
-        self.save_sessions();
     }
+}
 
-    /// Mint a one-time login challenge nonce (hex). The client proves knowledge
-    /// of the password by returning `sha256(nonce:password)` so the cleartext
-    /// password never crosses the (plaintext-HTTP) wire.
-    pub fn issue_challenge(&self) -> String {
+// ---------------------------------------------------------------------------
+// Login challenges (single-use nonces)
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct ChallengeStore {
+    map: Mutex<HashMap<String, Instant>>, // nonce -> issued
+}
+
+impl ChallengeStore {
+    fn issue(&self) -> String {
         let nonce = random_token();
-        let mut m = self.challenges.lock().unwrap();
+        let mut m = self.map.lock().unwrap();
         let now = Instant::now();
         m.retain(|_, t| now.duration_since(*t) <= CHALLENGE_TTL);
         // Bound memory: if still at the cap after pruning expired nonces, evict
@@ -224,27 +321,45 @@ impl AuthState {
         nonce
     }
 
-    /// Consume a challenge nonce: valid only if present + unexpired, and it's
-    /// removed so it can't be replayed.
-    pub fn consume_challenge(&self, nonce: &str) -> bool {
+    fn consume(&self, nonce: &str) -> bool {
         if nonce.is_empty() {
             return false;
         }
-        let mut m = self.challenges.lock().unwrap();
+        let mut m = self.map.lock().unwrap();
         match m.remove(nonce) {
             Some(t) => Instant::now().duration_since(t) <= CHALLENGE_TTL,
             None => false,
         }
     }
 
-    /// Mint a one-time ticket (hex) bound to `user`, authorizing a single
-    /// WebSocket upgrade or download. The caller must already hold a valid
-    /// session (the HTTP handler checks the bearer token first). The ticket —
-    /// not the long-lived session token — travels in the URL, so a leaked URL
-    /// exposes only a 30-second, single-use credential.
-    pub fn issue_ticket(&self, user: &str) -> String {
+    fn sweep(&self) {
+        let now = Instant::now();
+        self.map
+            .lock()
+            .unwrap()
+            .retain(|_, t| now.duration_since(*t) <= CHALLENGE_TTL);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// One-time tickets (WebSocket upgrade / download authorization)
+// ---------------------------------------------------------------------------
+
+/// A one-time ticket: issue time + the account it authorizes.
+struct TicketRec {
+    issued: Instant,
+    user: String,
+}
+
+#[derive(Default)]
+struct TicketStore {
+    map: Mutex<HashMap<String, TicketRec>>, // ticket -> owner
+}
+
+impl TicketStore {
+    fn issue(&self, user: &str) -> String {
         let ticket = random_token();
-        let mut m = self.tickets.lock().unwrap();
+        let mut m = self.map.lock().unwrap();
         let now = Instant::now();
         m.retain(|_, r| now.duration_since(r.issued) <= TICKET_TTL);
         while m.len() >= MAX_TICKETS {
@@ -264,25 +379,73 @@ impl AuthState {
         ticket
     }
 
-    /// Consume a one-time ticket: returns the owning account name if the ticket
-    /// is present + unexpired, then removes it so it can't be replayed.
-    pub fn consume_ticket(&self, ticket: &str) -> Option<String> {
+    fn consume(&self, ticket: &str) -> Option<String> {
         if ticket.is_empty() {
             return None;
         }
-        let mut m = self.tickets.lock().unwrap();
+        let mut m = self.map.lock().unwrap();
         match m.remove(ticket) {
             Some(r) if Instant::now().duration_since(r.issued) <= TICKET_TTL => Some(r.user),
             _ => None,
         }
     }
+
+    fn revoke_user(&self, user: &str) {
+        self.map.lock().unwrap().retain(|_, r| r.user != user);
+    }
+
+    fn sweep(&self) {
+        let now = Instant::now();
+        self.map
+            .lock()
+            .unwrap()
+            .retain(|_, r| now.duration_since(r.issued) <= TICKET_TTL);
+    }
 }
 
-/// A one-time ticket: issue time + the account it authorizes.
-struct TicketRec {
-    issued: Instant,
-    user: String,
+// ---------------------------------------------------------------------------
+// Per-source login rate limiter
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct RateLimiter {
+    map: Mutex<HashMap<String, Vec<Instant>>>, // source -> failure times
 }
+
+impl RateLimiter {
+    fn allowed(&self, source: &str) -> bool {
+        let mut m = self.map.lock().unwrap();
+        let now = Instant::now();
+        let entry = m.entry(source.to_string()).or_default();
+        entry.retain(|t| now.duration_since(*t) <= FAIL_WINDOW);
+        entry.len() < FAIL_MAX
+    }
+
+    fn record(&self, source: &str) {
+        let mut m = self.map.lock().unwrap();
+        let now = Instant::now();
+        let entry = m.entry(source.to_string()).or_default();
+        entry.retain(|t| now.duration_since(*t) <= FAIL_WINDOW);
+        entry.push(now);
+    }
+
+    fn clear(&self, source: &str) {
+        self.map.lock().unwrap().remove(source);
+    }
+
+    fn sweep(&self) {
+        let now = Instant::now();
+        let mut m = self.map.lock().unwrap();
+        m.retain(|_, v| {
+            v.retain(|t| now.duration_since(*t) <= FAIL_WINDOW);
+            !v.is_empty()
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers + persistence
+// ---------------------------------------------------------------------------
 
 fn random_token() -> String {
     use rand::Rng;
@@ -414,6 +577,18 @@ mod tests {
         assert!(!a.valid(""));
         a.revoke(&t);
         assert!(!a.valid(&t));
+    }
+
+    #[test]
+    fn revoke_user_clears_other_sessions() {
+        let a = AuthState::new();
+        let keep = a.issue("alice");
+        let other = a.issue("alice");
+        let bob = a.issue("bob");
+        a.revoke_user("alice", Some(&keep));
+        assert!(a.valid(&keep)); // current session kept
+        assert!(!a.valid(&other)); // other alice session revoked
+        assert!(a.valid(&bob)); // unrelated account untouched
     }
 
     #[test]

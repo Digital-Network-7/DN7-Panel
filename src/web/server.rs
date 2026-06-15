@@ -57,6 +57,16 @@ pub fn spawn(cfg: PanelConfig) {
         collector: Mutex::new(Collector::new()),
         cfg,
     });
+    // Periodically prune expired sessions/challenges/tickets/rate-limit entries
+    // so memory doesn't depend solely on the prune-on-insert paths.
+    let sweeper = state.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
+        loop {
+            tick.tick().await;
+            sweeper.auth.sweep();
+        }
+    });
     tokio::spawn(async move {
         if let Err(e) = serve(state, port, https).await {
             tracing::warn!("web console exited: {e}");
