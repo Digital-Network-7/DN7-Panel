@@ -6,15 +6,24 @@
 //! browser). Failed logins are rate-limited per source to slow brute force.
 //!
 //! [`AuthState`] is a thin façade over four focused, self-contained stores —
-//! [`SessionStore`], [`ChallengeStore`], [`TicketStore`] and [`RateLimiter`] —
-//! each owning its own lock and lifecycle. [`AuthState::sweep`] prunes expired
-//! entries across all of them from one place (called periodically by the
-//! server), so lifecycle isn't scattered across ad-hoc prune-on-insert paths.
+//! each in its own submodule (`session`/`challenge`/`ticket`/`rate`), owning its
+//! own lock and lifecycle. [`AuthState::sweep`] prunes expired entries across
+//! all of them from one place (called periodically by the server), so lifecycle
+//! isn't scattered across ad-hoc prune-on-insert paths. Shared helpers (token
+//! RNG/hashing, the challenge-response proof, session persistence) live here.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+mod challenge;
+mod rate;
+mod session;
+mod ticket;
+
+use challenge::ChallengeStore;
+use rate::RateLimiter;
+use session::SessionStore;
+use ticket::TicketStore;
 
 /// Session lifetime. Plaintext transport already limits the value of a long
 /// session, so keep it modest; the console refreshes on activity client-side.
@@ -149,7 +158,7 @@ impl AuthState {
 }
 
 // ---------------------------------------------------------------------------
-// Sessions
+// Shared session record + persistence (used by the `session` submodule)
 // ---------------------------------------------------------------------------
 
 /// A persisted session: the owning account + last-access (unix secs, sliding).
@@ -161,306 +170,26 @@ struct SessionRec {
     last: u64,
 }
 
-/// Bearer-token session store with a sliding inactivity timeout and optional
-/// on-disk persistence (so a restart — e.g. a self-update — doesn't log
-/// everyone out).
-#[derive(Default)]
-struct SessionStore {
-    map: Mutex<HashMap<String, SessionRec>>, // token -> {user, last access}
-    /// Configurable inactivity timeout in seconds (0 = built-in SESSION_TTL).
-    ttl_secs: AtomicU64,
-    /// When true, the session map is persisted to disk.
-    persist: bool,
+fn sessions_path() -> std::path::PathBuf {
+    crate::platform::paths::data_dir().join("sessions.json")
 }
 
-impl SessionStore {
-    fn with_store() -> Self {
-        let s = Self {
-            persist: true,
-            ..Self::default()
-        };
-        if let Some(map) = load_sessions() {
-            let now = now_secs();
-            let live: HashMap<String, SessionRec> = map
-                .into_iter()
-                .filter(|(_, r)| now.saturating_sub(r.last) <= SESSION_TTL.as_secs())
-                .collect();
-            *s.map.lock().unwrap_or_else(|p| p.into_inner()) = live;
-        }
-        s
-    }
+/// Load persisted sessions (sha256(token) -> session record). None on any error.
+fn load_sessions() -> Option<HashMap<String, SessionRec>> {
+    let s = std::fs::read_to_string(sessions_path()).ok()?;
+    serde_json::from_str(&s).ok()
+}
 
-    fn set_ttl_secs(&self, secs: u64) {
-        self.ttl_secs.store(secs, Ordering::Relaxed);
-    }
-
-    /// The active inactivity timeout in seconds (configured value, or the
-    /// built-in default when unset/zero).
-    fn ttl_secs(&self) -> u64 {
-        let v = self.ttl_secs.load(Ordering::Relaxed);
-        if v == 0 {
-            SESSION_TTL.as_secs()
-        } else {
-            v
-        }
-    }
-
-    fn save(&self) {
-        if !self.persist {
-            return;
-        }
-        let snapshot = self.map.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        let _ = write_sessions(&snapshot);
-    }
-
-    fn issue(&self, user: &str) -> String {
-        let token = random_token();
-        let key = token_key(&token);
-        let now = now_secs();
-        {
-            let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
-            // Opportunistically prune expired sessions.
-            m.retain(|_, r| now.saturating_sub(r.last) <= self.ttl_secs());
-            m.insert(
-                key,
-                SessionRec {
-                    user: user.to_string(),
-                    last: now,
-                },
-            );
-        }
-        self.save();
-        token
-    }
-
-    /// Resolve a token to its account, sliding the expiry. `None` when missing
-    /// or expired. An active access refreshes the timestamp so an active user
-    /// is never logged out mid-session.
-    fn identity(&self, token: &str) -> Option<String> {
-        if token.is_empty() {
-            return None;
-        }
-        let key = token_key(token);
-        let now = now_secs();
-        let mut persist = false;
-        let user = {
-            let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
-            match m.get(&key).cloned() {
-                Some(rec) if now.saturating_sub(rec.last) <= self.ttl_secs() => {
-                    // Debounce disk writes: persist only every few minutes.
-                    if now.saturating_sub(rec.last) >= 300 {
-                        persist = true;
-                    }
-                    m.insert(
-                        key,
-                        SessionRec {
-                            user: rec.user.clone(),
-                            last: now,
-                        },
-                    );
-                    Some(rec.user)
-                }
-                _ => None,
-            }
-        };
-        if persist {
-            self.save();
-        }
-        user
-    }
-
-    fn revoke(&self, token: &str) {
-        self.map
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&token_key(token));
-        self.save();
-    }
-
-    fn revoke_user(&self, user: &str, keep: Option<&str>) {
-        let keep_key = keep.map(token_key);
-        self.map
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .retain(|tok, rec| rec.user != user || keep_key.as_deref() == Some(tok.as_str()));
-        self.save();
-    }
-
-    fn sweep(&self) {
-        let now = now_secs();
-        let changed = {
-            let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
-            let before = m.len();
-            m.retain(|_, r| now.saturating_sub(r.last) <= self.ttl_secs());
-            m.len() != before
-        };
-        if changed {
-            self.save();
-        }
-    }
+/// Persist the session map. The keys are token hashes (never raw tokens), but
+/// they're still sensitive, so the file is written 0600 atomically.
+fn write_sessions(map: &HashMap<String, SessionRec>) -> std::io::Result<()> {
+    let path = sessions_path();
+    let data = serde_json::to_string(map).unwrap_or_else(|_| "{}".to_string());
+    crate::platform::paths::write_private(&path, data.as_bytes())
 }
 
 // ---------------------------------------------------------------------------
-// Login challenges (single-use nonces)
-// ---------------------------------------------------------------------------
-
-#[derive(Default)]
-struct ChallengeStore {
-    map: Mutex<HashMap<String, Instant>>, // nonce -> issued
-}
-
-impl ChallengeStore {
-    fn issue(&self) -> String {
-        let nonce = random_token();
-        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
-        let now = Instant::now();
-        m.retain(|_, t| now.duration_since(*t) <= CHALLENGE_TTL);
-        // Bound memory: if still at the cap after pruning expired nonces, evict
-        // the oldest ones so a flood of the public endpoint can't grow the map
-        // without limit.
-        while m.len() >= MAX_CHALLENGES {
-            let Some(oldest) = m.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) else {
-                break;
-            };
-            m.remove(&oldest);
-        }
-        m.insert(nonce.clone(), now);
-        nonce
-    }
-
-    fn consume(&self, nonce: &str) -> bool {
-        if nonce.is_empty() {
-            return false;
-        }
-        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
-        match m.remove(nonce) {
-            Some(t) => Instant::now().duration_since(t) <= CHALLENGE_TTL,
-            None => false,
-        }
-    }
-
-    fn sweep(&self) {
-        let now = Instant::now();
-        self.map
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .retain(|_, t| now.duration_since(*t) <= CHALLENGE_TTL);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// One-time tickets (WebSocket upgrade / download authorization)
-// ---------------------------------------------------------------------------
-
-/// A one-time ticket: issue time + the account it authorizes.
-struct TicketRec {
-    issued: Instant,
-    user: String,
-}
-
-#[derive(Default)]
-struct TicketStore {
-    map: Mutex<HashMap<String, TicketRec>>, // ticket -> owner
-}
-
-impl TicketStore {
-    fn issue(&self, user: &str) -> String {
-        let ticket = random_token();
-        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
-        let now = Instant::now();
-        m.retain(|_, r| now.duration_since(r.issued) <= TICKET_TTL);
-        while m.len() >= MAX_TICKETS {
-            let Some(oldest) = m
-                .iter()
-                .min_by_key(|(_, r)| r.issued)
-                .map(|(k, _)| k.clone())
-            else {
-                break;
-            };
-            m.remove(&oldest);
-        }
-        m.insert(
-            ticket.clone(),
-            TicketRec {
-                issued: now,
-                user: user.to_string(),
-            },
-        );
-        ticket
-    }
-
-    fn consume(&self, ticket: &str) -> Option<String> {
-        if ticket.is_empty() {
-            return None;
-        }
-        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
-        match m.remove(ticket) {
-            Some(r) if Instant::now().duration_since(r.issued) <= TICKET_TTL => Some(r.user),
-            _ => None,
-        }
-    }
-
-    fn revoke_user(&self, user: &str) {
-        self.map
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .retain(|_, r| r.user != user);
-    }
-
-    fn sweep(&self) {
-        let now = Instant::now();
-        self.map
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .retain(|_, r| now.duration_since(r.issued) <= TICKET_TTL);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Per-source login rate limiter
-// ---------------------------------------------------------------------------
-
-#[derive(Default)]
-struct RateLimiter {
-    map: Mutex<HashMap<String, Vec<Instant>>>, // source -> failure times
-}
-
-impl RateLimiter {
-    fn allowed(&self, source: &str) -> bool {
-        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
-        let now = Instant::now();
-        let entry = m.entry(source.to_string()).or_default();
-        entry.retain(|t| now.duration_since(*t) <= FAIL_WINDOW);
-        entry.len() < FAIL_MAX
-    }
-
-    fn record(&self, source: &str) {
-        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
-        let now = Instant::now();
-        let entry = m.entry(source.to_string()).or_default();
-        entry.retain(|t| now.duration_since(*t) <= FAIL_WINDOW);
-        entry.push(now);
-    }
-
-    fn clear(&self, source: &str) {
-        self.map
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(source);
-    }
-
-    fn sweep(&self) {
-        let now = Instant::now();
-        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
-        m.retain(|_, v| {
-            v.retain(|t| now.duration_since(*t) <= FAIL_WINDOW);
-            !v.is_empty()
-        });
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Shared helpers + persistence
+// Shared token + proof helpers
 // ---------------------------------------------------------------------------
 
 fn random_token() -> String {
@@ -487,24 +216,6 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-fn sessions_path() -> std::path::PathBuf {
-    crate::platform::paths::data_dir().join("sessions.json")
-}
-
-/// Load persisted sessions (token -> session record). None on any error.
-fn load_sessions() -> Option<HashMap<String, SessionRec>> {
-    let s = std::fs::read_to_string(sessions_path()).ok()?;
-    serde_json::from_str(&s).ok()
-}
-
-/// Persist the session map. Tokens are sensitive, so the file is written 0600
-/// atomically (no create-then-chmod window).
-fn write_sessions(map: &HashMap<String, SessionRec>) -> std::io::Result<()> {
-    let path = sessions_path();
-    let data = serde_json::to_string(map).unwrap_or_else(|_| "{}".to_string());
-    crate::platform::paths::write_private(&path, data.as_bytes())
 }
 
 /// Constant-time-ish password comparison (avoids early-exit timing leak).
