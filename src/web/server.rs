@@ -409,7 +409,6 @@ mod audit_api;
 mod branding_api;
 mod capability;
 mod files_api;
-mod files_service;
 mod gate;
 mod login;
 mod policy;

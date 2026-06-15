@@ -1,6 +1,17 @@
 //! File transfer (host + container) HTTP handlers (split from web/server.rs).
 use super::*;
 
+/// Map an `app::files` error to the file handlers' response shape: a 403 for a
+/// permission failure, else a 200 `{ ok:false, error }` for an op error.
+pub(crate) fn fs_err_response(e: crate::app::files::FsError) -> Response {
+    match e {
+        crate::app::files::FsError::Forbidden => api_err(StatusCode::FORBIDDEN, "auth.forbidden"),
+        crate::app::files::FsError::Op(e) => {
+            Json(json!({ "ok": false, "error": e.to_string() })).into_response()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // File transfer (host + container) — plain HTTP request/response.
 // ---------------------------------------------------------------------------
@@ -106,9 +117,16 @@ pub(crate) async fn files_list(
         Ok(a) => a,
         Err(r) => return r,
     };
-    match files_service::list(&acct, &req.path, ctn_ref(&req)).await {
+    match crate::app::files::list(
+        acct.is_admin,
+        acct.system_user.as_deref(),
+        &req.path,
+        ctn_ref(&req),
+    )
+    .await
+    {
         Ok(data) => Json(json!({ "ok": true, "data": data })).into_response(),
-        Err(e) => files_service::fs_err_response(e),
+        Err(e) => fs_err_response(e),
     }
 }
 
@@ -121,9 +139,16 @@ pub(crate) async fn files_mkdir(
         Ok(a) => a,
         Err(r) => return r,
     };
-    match files_service::mkdir(&acct, &req.path, ctn_ref(&req)).await {
+    match crate::app::files::mkdir(
+        acct.is_admin,
+        acct.system_user.as_deref(),
+        &req.path,
+        ctn_ref(&req),
+    )
+    .await
+    {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => files_service::fs_err_response(e),
+        Err(e) => fs_err_response(e),
     }
 }
 
@@ -136,9 +161,16 @@ pub(crate) async fn files_delete(
         Ok(a) => a,
         Err(r) => return r,
     };
-    match files_service::delete(&acct, &req.path, ctn_ref(&req)).await {
+    match crate::app::files::delete(
+        acct.is_admin,
+        acct.system_user.as_deref(),
+        &req.path,
+        ctn_ref(&req),
+    )
+    .await
+    {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => files_service::fs_err_response(e),
+        Err(e) => fs_err_response(e),
     }
 }
 
@@ -174,17 +206,9 @@ pub(crate) async fn files_download(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let res = match ctn {
-        Some(c) => {
-            if !acct.is_admin {
-                return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
-            }
-            crate::infra::file::web_ctn_read_stream(c, &q.path).await
-        }
-        None => {
-            crate::infra::file::web_host_read_stream(&q.path, acct.system_user.as_deref()).await
-        }
-    };
+    let res =
+        crate::app::files::read_stream(acct.is_admin, acct.system_user.as_deref(), &q.path, ctn)
+            .await;
     match res {
         Ok((name, stream)) => {
             // Keep the permit alive for the lifetime of the response stream.
@@ -202,7 +226,12 @@ pub(crate) async fn files_download(
             )
                 .into_response()
         }
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(crate::app::files::FsError::Forbidden) => {
+            api_err(StatusCode::FORBIDDEN, "auth.forbidden")
+        }
+        Err(crate::app::files::FsError::Op(e)) => {
+            (StatusCode::BAD_REQUEST, e.to_string()).into_response()
+        }
     }
 }
 
@@ -335,11 +364,18 @@ pub(crate) async fn files_upload(
         Ok(t) => t,
         Err(r) => return r,
     };
-    let res = files_service::write_file(&acct, &q.path, ctn, &tmp).await;
+    let res = crate::app::files::write_file(
+        acct.is_admin,
+        acct.system_user.as_deref(),
+        &q.path,
+        ctn,
+        &tmp,
+    )
+    .await;
     let _ = tokio::fs::remove_file(&tmp).await;
     match res {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => files_service::fs_err_response(e),
+        Err(e) => fs_err_response(e),
     }
 }
 

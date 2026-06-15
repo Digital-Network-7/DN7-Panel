@@ -10,6 +10,7 @@
 pub(crate) mod account;
 pub(crate) mod auth;
 pub(crate) mod docker;
+pub(crate) mod files;
 pub(crate) mod mysql;
 pub(crate) mod nginx;
 pub(crate) mod ports;
