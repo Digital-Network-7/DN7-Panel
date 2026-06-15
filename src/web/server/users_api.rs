@@ -164,13 +164,13 @@ pub(crate) async fn users_update(
         return Json(op_err_body(e)).into_response();
     }
     if let Some(f) = &req.full_name {
-        let _ = crate::web::system_account::set_full_name(&req.username, f.trim()).await;
+        let _ = crate::infra::system::set_full_name(&req.username, f.trim()).await;
     }
     // Sync the OS password to the new panel password (system user).
     if pw.is_some() {
         if let Some(p) = &req.password {
             if !p.is_empty() {
-                let _ = crate::web::system_account::set_system_password(&req.username, p).await;
+                let _ = crate::infra::system::set_system_password(&req.username, p).await;
             }
         }
         // An admin password reset must immediately cut off the target's existing
@@ -197,7 +197,7 @@ async fn apply_role_change(
         return Err(api_err(StatusCode::FORBIDDEN, "auth.forbidden"));
     }
     if role != target_role {
-        if let Err(e) = crate::web::system_account::set_sudo(&req.username, role == "admin").await {
+        if let Err(e) = crate::infra::system::set_sudo(&req.username, role == "admin").await {
             return Err(Json(op_err_body(e)).into_response());
         }
     }

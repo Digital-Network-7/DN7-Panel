@@ -83,7 +83,7 @@ pub(crate) fn me_view(state: &Shared, a: &Account) -> Value {
     // Home directory to open the file manager at: the user's system home, or
     // the panel owner's home (root) for the super-admin.
     let home = match &a.system_user {
-        Some(u) => crate::web::system_account::getpwnam(u)
+        Some(u) => crate::infra::system::getpwnam(u)
             .map(|(_, h)| h)
             .unwrap_or_else(|| "/".to_string()),
         None => std::env::var("HOME")

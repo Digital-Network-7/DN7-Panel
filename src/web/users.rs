@@ -14,7 +14,7 @@
 
 use anyhow::{anyhow, Result};
 
-use super::system_account;
+use crate::infra::system;
 
 /// The panel-user entity now lives in the domain layer; re-exported so call
 /// sites (`crate::web::users::PanelUser`) stay stable while this module keeps
@@ -73,7 +73,7 @@ pub async fn create(req: &NewUser<'_>) -> Result<PanelUser> {
         return Err(anyhow!("ERR_CODE:users.exists"));
     }
     provision_system_account(req).await?;
-    let (uid, _home) = system_account::getpwnam(req.username).unwrap_or((0, String::new()));
+    let (uid, _home) = system::getpwnam(req.username).unwrap_or((0, String::new()));
     let user = PanelUser {
         username: req.username.to_string(),
         pw_salt: req.pw_salt.to_string(),
@@ -115,7 +115,7 @@ fn validate_new_user(req: &NewUser<'_>) -> Result<()> {
 /// Provision the backing system account for a new panel user (delegates the OS
 /// side to `system_account`).
 async fn provision_system_account(req: &NewUser<'_>) -> Result<()> {
-    system_account::provision(
+    system::provision(
         req.username,
         req.full_name,
         req.role == "admin",
@@ -130,7 +130,7 @@ pub async fn delete(username: &str) -> Result<()> {
         return Err(anyhow!("ERR_CODE:users.not_found"));
     }
     // Remove the OS account + home (best-effort: keep going if already gone).
-    system_account::remove(username).await?;
+    system::remove(username).await?;
     mutate(|users| {
         users.retain(|u| u.username != username);
         Ok(())

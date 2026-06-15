@@ -78,7 +78,7 @@ pub(crate) async fn put_profile(
             return Json(op_err_body(e)).into_response();
         }
         if let Some(f) = &req.full_name {
-            let _ = crate::web::system_account::set_full_name(&a.username, &clip(f, 64)).await;
+            let _ = crate::infra::system::set_full_name(&a.username, &clip(f, 64)).await;
         }
     }
     Json(json!({ "ok": true })).into_response()
@@ -170,7 +170,7 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
     }
 
     async fn sync_system_password(&self, system_user: &str, plaintext: &str) {
-        let _ = crate::web::system_account::set_system_password(system_user, plaintext).await;
+        let _ = crate::infra::system::set_system_password(system_user, plaintext).await;
     }
 
     fn revoke_other_sessions(&self, username: &str, keep: Option<&str>) {
