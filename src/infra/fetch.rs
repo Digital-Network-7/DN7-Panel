@@ -17,7 +17,7 @@
 
 use anyhow::{anyhow, Result};
 
-use crate::config::PanelConfig;
+use crate::platform::config::PanelConfig;
 
 /// Which mirror a release came from / should be fetched from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -253,7 +253,7 @@ fn strip_and_verify(data: &mut Vec<u8>) -> Result<()> {
     }
     let split = data.len() - SIG_LEN;
     let sig = data.split_off(split); // `data` now holds the binary; `sig` the trailer
-    if !crate::signing::verify(data, &sig) {
+    if !crate::platform::signing::verify(data, &sig) {
         return Err(anyhow!(
             "signature verification FAILED — refusing to install (untrusted, tampered, or unsigned binary)"
         ));
@@ -272,13 +272,13 @@ async fn download_streaming<F: Fn(u64)>(
     let mut got: u64 = 0;
     let mut last_pct: u64 = 0;
     on_progress(0);
-    crate::update::set_bytes(0, total.unwrap_or(0));
+    crate::platform::update::set_bytes(0, total.unwrap_or(0));
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| anyhow!("download stream error: {e}"))?;
         bytes.extend_from_slice(&chunk);
         got += chunk.len() as u64;
-        crate::update::set_bytes(got, total.unwrap_or(0));
+        crate::platform::update::set_bytes(got, total.unwrap_or(0));
         if let Some(total) = total.filter(|t| *t > 0) {
             let pct = (got * 100 / total).min(100);
             if pct != last_pct {

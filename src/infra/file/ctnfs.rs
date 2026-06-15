@@ -78,7 +78,7 @@ pub async fn web_ctn_read_stream(container: &str, path: &str) -> Result<(String,
         return Err(anyhow!("invalid container reference"));
     }
     check_abs(path)?;
-    let dkr = crate::docker::dkr()?;
+    let dkr = crate::infra::docker::dkr()?;
     let opts = bollard::container::DownloadFromContainerOptions {
         path: path.to_string(),
     };

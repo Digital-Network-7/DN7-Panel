@@ -4,24 +4,13 @@ mod infra;
 mod platform;
 mod web;
 
-// Compatibility re-exports for modules relocated into the layered dirs
-// (infra/platform). Canonical paths are `crate::infra::*` / `crate::platform::*`;
-// these aliases keep existing call sites stable during the migration and can be
-// removed in a later mechanical pass. See .kiro/steering/architecture.md §10.
-pub(crate) use infra::{
-    crypto, docker, fetch, file, json_store, metrics, mysql, nginx, op_registry, procs,
-};
-pub(crate) use platform::{
-    autostart, banner, config, daemon, guardian, logrotate, panel, paths, procfile, signing,
-    supervisor, update,
-};
-pub(crate) use web::terminal;
+use platform::{autostart, banner, daemon, panel, paths, procfile, supervisor};
 
 use anyhow::Result;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::config::PanelConfig;
-use crate::procfile::RolePaths;
+use crate::platform::config::PanelConfig;
+use crate::platform::procfile::RolePaths;
 
 /// Single binary, two roles selected by argv:
 /// - no args  => supervisor (keeps the panel role alive; self-splits). On a

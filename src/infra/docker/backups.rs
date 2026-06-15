@@ -7,7 +7,7 @@ use super::*;
 
 /// Root directory holding all container backups (`<data>/docker-backups`).
 pub(crate) fn backups_root() -> std::path::PathBuf {
-    crate::paths::data_dir().join("docker-backups")
+    crate::platform::paths::data_dir().join("docker-backups")
 }
 
 /// Validate a container name used as a backups subdirectory (defensive — the
@@ -324,7 +324,7 @@ pub(crate) fn now_stamp() -> String {
 pub async fn backup_read_stream(
     name: &str,
     file: &str,
-) -> Result<(String, crate::file::ByteStream)> {
+) -> Result<(String, crate::infra::file::ByteStream)> {
     use futures::StreamExt;
     if !safe_dir_component(name) || !valid_backup_name(file) {
         return Err(anyhow!("invalid backup reference"));
@@ -367,7 +367,7 @@ where
 }
 
 /// Open a docker image export (`docker save`) for streaming download as a tar.
-pub async fn image_export_stream(image: &str) -> Result<(String, crate::file::ByteStream)> {
+pub async fn image_export_stream(image: &str) -> Result<(String, crate::infra::file::ByteStream)> {
     use futures::StreamExt;
     validate_token(image)?;
     let dkr = dkr()?;

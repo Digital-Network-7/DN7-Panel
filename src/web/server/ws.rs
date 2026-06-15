@@ -28,7 +28,7 @@ pub(crate) async fn terminal_ws(
 }
 
 pub(crate) async fn handle_terminal(socket: WebSocket, login_user: Option<String>) {
-    if let Err(e) = crate::terminal::run_web_pty(socket, login_user).await {
+    if let Err(e) = crate::web::terminal::run_web_pty(socket, login_user).await {
         tracing::debug!("web terminal ended: {e}");
     }
 }
@@ -62,7 +62,7 @@ pub(crate) async fn container_terminal_ws(
         return api_err(StatusCode::BAD_REQUEST, "terminal.missing_container");
     }
     ws.on_upgrade(move |socket| async move {
-        if let Err(e) = crate::terminal::run_web_container_exec(socket, &container).await {
+        if let Err(e) = crate::web::terminal::run_web_container_exec(socket, &container).await {
             tracing::debug!("web container terminal ended: {e}");
         }
     })

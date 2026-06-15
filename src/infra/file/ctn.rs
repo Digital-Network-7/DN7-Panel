@@ -12,7 +12,7 @@ pub(crate) async fn ctn_exec_collect(
     use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
     use futures::StreamExt;
 
-    let dkr = crate::docker::dkr()?;
+    let dkr = crate::infra::docker::dkr()?;
     let exec = dkr
         .create_exec(
             container,
@@ -112,7 +112,7 @@ pub(crate) async fn ctn_upload_file(
 
     let body = upload_tar_stream(header, temp_path.to_path_buf(), size);
 
-    let dkr = crate::docker::dkr()?;
+    let dkr = crate::infra::docker::dkr()?;
     let opts = bollard::container::UploadToContainerOptions {
         path: parent,
         ..Default::default()

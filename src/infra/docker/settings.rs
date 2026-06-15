@@ -69,7 +69,7 @@ impl Default for DockerSettings {
 }
 
 pub(crate) fn dk_settings_path() -> std::path::PathBuf {
-    crate::paths::data_dir().join("docker-settings.json")
+    crate::platform::paths::data_dir().join("docker-settings.json")
 }
 pub(crate) fn load_dk_settings() -> DockerSettings {
     std::fs::read_to_string(dk_settings_path())

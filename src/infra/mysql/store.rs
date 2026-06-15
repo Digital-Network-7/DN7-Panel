@@ -4,7 +4,7 @@
 use super::*;
 
 pub(crate) fn mysql_dir() -> std::path::PathBuf {
-    crate::paths::data_dir().join("mysql")
+    crate::platform::paths::data_dir().join("mysql")
 }
 
 pub(crate) fn manifest_path(id: &str) -> std::path::PathBuf {
@@ -12,7 +12,7 @@ pub(crate) fn manifest_path(id: &str) -> std::path::PathBuf {
 }
 
 pub(crate) fn save_manifest(m: &Manifest) -> Result<()> {
-    crate::json_store::save_private(&manifest_path(&m.id), m)
+    crate::infra::json_store::save_private(&manifest_path(&m.id), m)
 }
 
 pub(crate) fn load_manifest(id: &str) -> Result<Manifest> {

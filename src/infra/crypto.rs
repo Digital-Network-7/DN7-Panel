@@ -67,7 +67,7 @@ fn machine_fingerprint() -> Vec<u8> {
 /// Path of the fallback per-host random key (only used when no machine-id).
 /// Lives in the persisted-data subdir alongside the token.
 fn key_file_path() -> std::path::PathBuf {
-    crate::paths::data_dir().join(".panel_key")
+    crate::platform::paths::data_dir().join(".panel_key")
 }
 
 /// Read the persisted random key, generating + storing one on first use.

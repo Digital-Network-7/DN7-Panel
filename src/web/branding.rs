@@ -53,17 +53,17 @@ impl Default for Branding {
 }
 
 fn branding_path() -> std::path::PathBuf {
-    crate::paths::data_dir().join("branding.json")
+    crate::platform::paths::data_dir().join("branding.json")
 }
 
 /// Load persisted branding, falling back to defaults when absent/corrupt.
 pub fn load() -> Branding {
-    crate::json_store::load_or_default(&branding_path())
+    crate::infra::json_store::load_or_default(&branding_path())
 }
 
 /// Persist branding to `<data>/branding.json` with 0600 perms (atomic).
 pub fn save(b: &Branding) -> anyhow::Result<()> {
-    crate::json_store::save_private(&branding_path(), b)
+    crate::infra::json_store::save_private(&branding_path(), b)
 }
 
 /// Validate + normalise an incoming branding update. Returns the value to

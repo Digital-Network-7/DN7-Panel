@@ -322,7 +322,7 @@ async fn list_instances() -> Result<Value> {
         let mut phase = state.clone();
         let mut ready = false;
         if state == "running" {
-            let pwd = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+            let pwd = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
             ready = is_ready_cached(&m.container, &pwd).await;
             if !ready {
                 phase = "initializing".to_string();

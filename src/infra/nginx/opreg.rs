@@ -1,11 +1,11 @@
 //! Detached operation registry for the Nginx module (host setup + certificate
-//! issuance) — a thin wrapper over the shared [`crate::op_registry`]. These ops
+//! issuance) — a thin wrapper over the shared [`crate::infra::op_registry`]. These ops
 //! have no reliable progress percentage, so they report indeterminate.
-use crate::op_registry::{indeterminate_pct, Dismiss, OpRegistry};
+use crate::infra::op_registry::{indeterminate_pct, Dismiss, OpRegistry};
 use serde_json::Value;
 use std::sync::OnceLock;
 
-pub(super) use crate::op_registry::pmsg;
+pub(super) use crate::infra::op_registry::pmsg;
 
 fn reg() -> &'static OpRegistry {
     static R: OnceLock<OpRegistry> = OnceLock::new();

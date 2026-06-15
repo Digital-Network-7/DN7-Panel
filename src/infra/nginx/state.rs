@@ -13,7 +13,7 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 pub(crate) fn base_dir() -> std::path::PathBuf {
-    crate::paths::default_base_dir().join("nginx")
+    crate::platform::paths::default_base_dir().join("nginx")
 }
 pub(crate) fn setup_marker() -> std::path::PathBuf {
     base_dir().join("setup_done")
@@ -53,11 +53,11 @@ pub(crate) fn mark_setup() -> Result<()> {
 }
 
 pub(crate) fn load_sites() -> Vec<Site> {
-    crate::json_store::load_or_default(&sites_file())
+    crate::infra::json_store::load_or_default(&sites_file())
 }
 
 pub(crate) fn save_sites(sites: &[Site]) -> Result<()> {
-    crate::json_store::save_pretty(&sites_file(), sites)
+    crate::infra::json_store::save_pretty(&sites_file(), sites)
 }
 
 // ---------------------------------------------------------------------------
@@ -85,11 +85,11 @@ pub(crate) fn certs_manifest_file() -> std::path::PathBuf {
 }
 
 pub(crate) fn load_named_certs() -> Vec<NamedCert> {
-    crate::json_store::load_or_default(&certs_manifest_file())
+    crate::infra::json_store::load_or_default(&certs_manifest_file())
 }
 
 pub(crate) fn save_named_certs(certs: &[NamedCert]) -> Result<()> {
-    crate::json_store::save_pretty(&certs_manifest_file(), certs)
+    crate::infra::json_store::save_pretty(&certs_manifest_file(), certs)
 }
 
 pub(crate) fn named_crt_file(lo: &Layout, name: &str) -> std::path::PathBuf {

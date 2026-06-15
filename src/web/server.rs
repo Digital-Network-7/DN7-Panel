@@ -19,10 +19,10 @@ use tokio::sync::Mutex;
 
 use super::branding;
 use super::settings::{self, WebSettings};
-use crate::config::PanelConfig;
 use crate::infra::audit;
 use crate::infra::auth::{proof_matches, AuthState};
-use crate::metrics::Collector;
+use crate::infra::metrics::Collector;
+use crate::platform::config::PanelConfig;
 use include_dir::{include_dir, Dir};
 
 /// Web-console UI assets (css + js modules), embedded at compile time so the
@@ -204,7 +204,7 @@ async fn bind_and_serve(app: Router, addr: SocketAddr, https: bool) -> anyhow::R
 /// Safe-entry gate: when a non-"/" entry path is configured, only requests that
 /// Load (or generate + persist) the panel's self-signed TLS cert/key as PEM.
 fn ensure_panel_cert() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
-    let dir = crate::paths::data_dir();
+    let dir = crate::platform::paths::data_dir();
     let crt = dir.join("panel-tls.crt");
     let key = dir.join("panel-tls.key");
     if let (Ok(c), Ok(k)) = (std::fs::read(&crt), std::fs::read(&key)) {
@@ -433,7 +433,7 @@ async fn procs(State(state): State<Shared>, headers: header::HeaderMap) -> Respo
     if let Some(r) = require_auth(&state, &headers) {
         return r;
     }
-    let data = crate::procs::web_snapshot(20).await;
+    let data = crate::infra::procs::web_snapshot(20).await;
     Json(json!({ "ok": true, "data": data })).into_response()
 }
 

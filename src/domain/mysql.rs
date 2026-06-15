@@ -60,7 +60,7 @@ pub(crate) struct Manifest {
     pub(crate) volume: String,    // named data volume (dn7-mysql-<id>-data)
     /// host port if exposed, else None.
     pub(crate) port: Option<i64>,
-    /// at-rest-encrypted root password (nonce:cipher), via crate::crypto.
+    /// at-rest-encrypted root password (nonce:cipher), via crate::infra::crypto.
     pub(crate) root_enc: String,
     pub(crate) created_at: i64,
     /// The primary admin account name shown to the user (default "root"). When

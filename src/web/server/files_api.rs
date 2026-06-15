@@ -44,7 +44,7 @@ pub(crate) async fn stream_body_to_temp(
 ) -> Result<std::path::PathBuf, Response> {
     use futures::StreamExt;
     use tokio::io::AsyncWriteExt;
-    let (f, tmp) = match crate::file::create_temp_upload() {
+    let (f, tmp) = match crate::infra::file::create_temp_upload() {
         Ok(v) => v,
         Err(e) => {
             return Err(api_err_detail(
@@ -179,9 +179,11 @@ pub(crate) async fn files_download(
             if !acct.is_admin {
                 return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
             }
-            crate::file::web_ctn_read_stream(c, &q.path).await
+            crate::infra::file::web_ctn_read_stream(c, &q.path).await
         }
-        None => crate::file::web_host_read_stream(&q.path, acct.system_user.as_deref()).await,
+        None => {
+            crate::infra::file::web_host_read_stream(&q.path, acct.system_user.as_deref()).await
+        }
     };
     match res {
         Ok((name, stream)) => {
@@ -240,8 +242,8 @@ pub(crate) async fn docker_download(
     }
     let permit = transfer_sem().acquire_owned().await.ok();
     let res = match q.kind.as_str() {
-        "backup" => crate::docker::backup_read_stream(&q.name, &q.backup).await,
-        "image" => crate::docker::image_export_stream(&q.reference).await,
+        "backup" => crate::infra::docker::backup_read_stream(&q.name, &q.backup).await,
+        "image" => crate::infra::docker::image_export_stream(&q.reference).await,
         _ => Err(anyhow::anyhow!("invalid download kind")),
     };
     match res {
@@ -278,7 +280,7 @@ pub(crate) async fn docker_image_upload(
     }
     let _permit = transfer_sem().acquire_owned().await.ok();
     let stream = body.into_data_stream().map(|r| r.unwrap_or_default());
-    match crate::docker::import_image_upload(stream).await {
+    match crate::infra::docker::import_image_upload(stream).await {
         Ok(v) => Json(json!({ "ok": true, "data": v })).into_response(),
         Err(e) => Json(op_err_body(e)).into_response(),
     }
@@ -375,7 +377,8 @@ pub(crate) async fn nginx_static_upload(
     };
     let mode = q.mode.as_deref().unwrap_or("zip");
     let clear = q.clear.as_deref() == Some("1");
-    let res = crate::nginx::web_static_upload(&q.root, mode, q.rel.as_deref(), clear, &tmp).await;
+    let res =
+        crate::infra::nginx::web_static_upload(&q.root, mode, q.rel.as_deref(), clear, &tmp).await;
     let _ = tokio::fs::remove_file(&tmp).await;
     match res {
         Ok(n) => Json(json!({ "ok": true, "files": n })).into_response(),

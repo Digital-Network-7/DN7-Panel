@@ -205,10 +205,10 @@ impl Collector {
             disk_total,
             disk_used,
             disk_mounts,
-            update_phase: crate::update::phase_str().to_string(),
-            update_progress: crate::update::progress(),
-            update_done_bytes: crate::update::done_bytes(),
-            update_total_bytes: crate::update::total_bytes(),
+            update_phase: crate::platform::update::phase_str().to_string(),
+            update_progress: crate::platform::update::progress(),
+            update_done_bytes: crate::platform::update::done_bytes(),
+            update_total_bytes: crate::platform::update::total_bytes(),
         }
     }
 

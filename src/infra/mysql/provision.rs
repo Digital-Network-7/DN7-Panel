@@ -149,7 +149,7 @@ pub(crate) async fn run_install_detached(op_id: &str, spec: InstallSpec) -> Resu
 
     // 3. Use the provided root password, or generate one; store encrypted.
     let password = password.unwrap_or_else(gen_password);
-    let root_enc = crate::crypto::encrypt(&password);
+    let root_enc = crate::infra::crypto::encrypt(&password);
 
     // 4. Create + start the container.
     let container = CONTAINER.to_string();

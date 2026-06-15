@@ -193,7 +193,7 @@ pub async fn run_web_container_exec(
 
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    let dkr = crate::docker::dkr()?;
+    let dkr = crate::infra::docker::dkr()?;
     let exec = dkr
         .create_exec(
             container,

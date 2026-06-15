@@ -9,8 +9,8 @@ use std::process::{Command, Stdio};
 
 use fs2::FileExt;
 
-use crate::config::PanelConfig;
-use crate::procfile::{role_alive, write_heartbeat, write_pid, RolePaths};
+use crate::platform::config::PanelConfig;
+use crate::platform::procfile::{role_alive, write_heartbeat, write_pid, RolePaths};
 
 /// Write the panel role's pid file (call once at startup).
 pub fn write_own_pid(cfg: &PanelConfig) {
@@ -73,7 +73,7 @@ pub fn spawn(cfg: PanelConfig) {
 /// Uses `paths::stable_bin()` so a post-self-update "(deleted)" `current_exe()`
 /// never produces a non-existent path.
 fn relaunch_supervisor() -> std::io::Result<std::process::Child> {
-    let exe = crate::paths::stable_bin();
+    let exe = crate::platform::paths::stable_bin();
     Command::new(exe)
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())

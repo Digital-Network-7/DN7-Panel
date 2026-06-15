@@ -34,7 +34,7 @@ pub(crate) async fn validate_and_reload(_lo: &Layout) -> Result<()> {
 /// *name* — only an IP works). Returns the IP from a user-defined network if
 /// present, else the default bridge IP, else None.
 pub(crate) async fn container_ip(target: &str) -> Option<String> {
-    let dkr = crate::docker::dkr().ok()?;
+    let dkr = crate::infra::docker::dkr().ok()?;
     let inspect = dkr.inspect_container(target, None).await.ok()?;
     let networks = inspect.network_settings.and_then(|n| n.networks)?;
     // Prefer a user-defined network's IP; fall back to the bridge.
@@ -55,7 +55,7 @@ pub(crate) async fn container_ip(target: &str) -> Option<String> {
 /// which is stable across container restarts — unlike the container IP). Returns
 /// None when that port isn't published to the host.
 pub(crate) async fn published_host_port(target: &str, container_port: i64) -> Option<u16> {
-    let dkr = crate::docker::dkr().ok()?;
+    let dkr = crate::infra::docker::dkr().ok()?;
     let inspect = dkr.inspect_container(target, None).await.ok()?;
     let ports = inspect.network_settings.and_then(|n| n.ports)?;
     // Docker keys ports like "3000/tcp" -> [{HostIp, HostPort}, ...].

@@ -466,7 +466,7 @@ fn now_secs() -> u64 {
 }
 
 fn sessions_path() -> std::path::PathBuf {
-    crate::paths::data_dir().join("sessions.json")
+    crate::platform::paths::data_dir().join("sessions.json")
 }
 
 /// Load persisted sessions (token -> session record). None on any error.
@@ -480,7 +480,7 @@ fn load_sessions() -> Option<HashMap<String, SessionRec>> {
 fn write_sessions(map: &HashMap<String, SessionRec>) -> std::io::Result<()> {
     let path = sessions_path();
     let data = serde_json::to_string(map).unwrap_or_else(|_| "{}".to_string());
-    crate::paths::write_private(&path, data.as_bytes())
+    crate::platform::paths::write_private(&path, data.as_bytes())
 }
 
 /// Constant-time-ish password comparison (avoids early-exit timing leak).

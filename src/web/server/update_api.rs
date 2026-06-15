@@ -17,11 +17,11 @@ pub(crate) async fn update_status(
     Json(json!({
         "ok": true,
         "data": {
-            "phase": crate::update::phase_str(),
-            "progress": crate::update::progress(),
-            "done_bytes": crate::update::done_bytes(),
-            "total_bytes": crate::update::total_bytes(),
-            "in_progress": crate::update::in_progress(),
+            "phase": crate::platform::update::phase_str(),
+            "progress": crate::platform::update::progress(),
+            "done_bytes": crate::platform::update::done_bytes(),
+            "total_bytes": crate::platform::update::total_bytes(),
+            "in_progress": crate::platform::update::in_progress(),
             "current": env!("CARGO_PKG_VERSION"),
         }
     }))
@@ -35,7 +35,7 @@ pub(crate) async fn update_config_get(
     if let Err(r) = require_admin(&state, &headers) {
         return r;
     }
-    let st = crate::update::UpdateState::load();
+    let st = crate::platform::update::UpdateState::load();
     Json(json!({ "ok": true, "data": st })).into_response()
 }
 
@@ -56,7 +56,7 @@ pub(crate) async fn update_config_put(
     if let Err(r) = require_admin(&state, &headers) {
         return r;
     }
-    let mut st = crate::update::UpdateState::load();
+    let mut st = crate::platform::update::UpdateState::load();
     if let Some(a) = req.auto {
         st.auto = a;
     }
@@ -83,7 +83,7 @@ pub(crate) async fn update_check(
     if let Err(r) = require_admin(&state, &headers) {
         return r;
     }
-    let res = crate::update::check(&state.cfg).await;
+    let res = crate::platform::update::check(&state.cfg).await;
     Json(json!({ "ok": true, "data": res })).into_response()
 }
 
@@ -96,7 +96,7 @@ pub(crate) async fn update_changelog(
     if let Err(r) = require_admin(&state, &headers) {
         return r;
     }
-    let res = crate::update::changelog(&state.cfg).await;
+    let res = crate::platform::update::changelog(&state.cfg).await;
     Json(json!({ "ok": true, "data": res })).into_response()
 }
 
@@ -110,7 +110,7 @@ pub(crate) async fn update_apply(
     if let Err(r) = require_admin(&state, &headers) {
         return r;
     }
-    if crate::update::in_progress() {
+    if crate::platform::update::in_progress() {
         return Json(
             json!({ "ok": true, "data": { "started": false, "reason": "already in progress" } }),
         )
@@ -118,7 +118,7 @@ pub(crate) async fn update_apply(
     }
     let cfg = state.cfg.clone();
     tokio::spawn(async move {
-        crate::update::run_self_update(&cfg).await;
+        crate::platform::update::run_self_update(&cfg).await;
     });
     audit::record(&actor_name(&state, &headers), "update.apply", "", true, "");
     Json(json!({ "ok": true, "data": { "started": true } })).into_response()

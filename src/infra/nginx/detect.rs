@@ -193,7 +193,7 @@ pub(crate) fn proc_name_for_inode(inode: u64) -> Option<String> {
 /// offer "forward to container:port" targets. Uses the daemon API (no `docker`
 /// CLI); returns empty if Docker isn't present.
 pub(crate) async fn list_running_containers() -> Result<Value> {
-    let dkr = crate::docker::dkr()?;
+    let dkr = crate::infra::docker::dkr()?;
     let opts = bollard::container::ListContainersOptions::<String> {
         all: false,
         ..Default::default()

@@ -14,8 +14,8 @@ use std::time::Duration;
 use anyhow::Result;
 use tokio::process::{Child, Command};
 
-use crate::config::PanelConfig;
-use crate::procfile::{role_alive, try_lock, write_heartbeat, write_pid, RolePaths};
+use crate::platform::config::PanelConfig;
+use crate::platform::procfile::{role_alive, try_lock, write_heartbeat, write_pid, RolePaths};
 
 /// Entry point for the supervisor role.
 pub async fn run(cfg: PanelConfig) -> Result<()> {
@@ -36,13 +36,13 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     };
     write_pid(&me.pid)?;
     write_heartbeat(&me.heartbeat)?;
-    crate::procfile::write_version(&cfg.data_dir);
+    crate::platform::procfile::write_version(&cfg.data_dir);
     tracing::info!(pid = std::process::id(), "supervisor started");
 
     // Heartbeat task: keep our heartbeat fresh so the panel's guardian sees us.
     spawn_heartbeat(me.heartbeat.clone(), cfg.supervise_interval_secs.max(1));
     // Janitor task: trim the daemon log so it can't grow without bound.
-    crate::logrotate::spawn(cfg.clone());
+    crate::platform::logrotate::spawn(cfg.clone());
 
     let mut shutdown = signal_stream()?;
 
@@ -94,7 +94,7 @@ async fn adopt_if_alive(
 /// down on a shutdown signal.
 async fn supervise_loop(
     cfg: &PanelConfig,
-    lock: &crate::procfile::LockGuard,
+    lock: &crate::platform::procfile::LockGuard,
     mut shutdown: tokio::sync::mpsc::Receiver<()>,
 ) -> Result<()> {
     let mut child: Option<Child> = None;
@@ -126,7 +126,7 @@ async fn supervise_loop(
         let c = child.as_mut().unwrap();
         tokio::select! {
             status = c.wait() => {
-                let updated = matches!(&status, Ok(s) if s.code() == Some(crate::update::EXIT_UPDATED));
+                let updated = matches!(&status, Ok(s) if s.code() == Some(crate::platform::update::EXIT_UPDATED));
                 match status {
                     Ok(s) => tracing::warn!("panel exited with {s}; restarting"),
                     Err(e) => tracing::warn!("panel wait error: {e}; restarting"),
@@ -180,8 +180,8 @@ async fn supervise_loop(
 /// of fork+exec'ing the whole binary every ~60s just to print a version. False
 /// on any error so we never re-exec on a flaky/missing read.
 fn on_disk_is_newer(cfg: &PanelConfig) -> bool {
-    match crate::procfile::read_version(&cfg.data_dir) {
-        Some(disk) => crate::supervisor::version_gt(&disk, env!("CARGO_PKG_VERSION")),
+    match crate::platform::procfile::read_version(&cfg.data_dir) {
+        Some(disk) => crate::platform::supervisor::version_gt(&disk, env!("CARGO_PKG_VERSION")),
         None => false,
     }
 }
@@ -207,9 +207,9 @@ pub fn version_gt(a: &str, b: &str) -> bool {
 /// it comes back as the supervisor role). On success this never returns.
 fn reexec_supervisor() {
     use std::os::unix::process::CommandExt;
-    let exe = crate::paths::stable_bin();
+    let exe = crate::platform::paths::stable_bin();
     let err = std::process::Command::new(&exe)
-        .current_dir(crate::paths::INSTALL_DIR)
+        .current_dir(crate::platform::paths::INSTALL_DIR)
         .exec();
     tracing::warn!("supervisor re-exec failed: {err}");
 }
@@ -221,7 +221,7 @@ fn reexec_supervisor() {
 /// which is exactly what caused "failed to spawn panel: No such file".
 /// Stdio is inherited so the panel's logs show.
 fn spawn_panel() -> Result<Child> {
-    let exe = crate::paths::stable_bin();
+    let exe = crate::platform::paths::stable_bin();
     let child = Command::new(exe)
         .arg("panel")
         .stdin(Stdio::null())
@@ -259,7 +259,7 @@ async fn wait_until_panel_dead(panel: &RolePaths, cfg: &PanelConfig) {
 ///
 /// Best-effort: each step ignores "already gone" errors.
 pub fn stop_running_instance(cfg: &PanelConfig) {
-    use crate::procfile::{read_pid, signal_pid, RolePaths};
+    use crate::platform::procfile::{read_pid, signal_pid, RolePaths};
 
     const SIGKILL: i32 = 9;
 
@@ -274,7 +274,7 @@ pub fn stop_running_instance(cfg: &PanelConfig) {
     }
     // Also kill the daemonized parent recorded by the daemonizer, in case it
     // differs from the supervisor role pid.
-    let daemon_pid = cfg.runtime_dir.join(crate::daemon::PID_FILE);
+    let daemon_pid = cfg.runtime_dir.join(crate::platform::daemon::PID_FILE);
     if let Some(pid) = read_pid(&daemon_pid) {
         signal_pid(pid, SIGKILL);
     }

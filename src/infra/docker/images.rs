@@ -205,7 +205,7 @@ pub(crate) async fn managed_image_refs(dkr: &Docker) -> std::collections::HashSe
             .as_ref()
             .map(|l| l.contains_key("dn7.mysql"))
             .unwrap_or(false);
-        let managed = name == crate::mysql::CONTAINER || has_mysql_label;
+        let managed = name == crate::infra::mysql::CONTAINER || has_mysql_label;
         if managed {
             if let Some(image) = c.image.clone() {
                 out.insert(image);

@@ -7,13 +7,13 @@ use anyhow::Result;
 use crate::domain::identity::PanelUser;
 
 fn path() -> std::path::PathBuf {
-    crate::paths::data_dir().join("users.json")
+    crate::platform::paths::data_dir().join("users.json")
 }
 
 pub(crate) fn load() -> Vec<PanelUser> {
-    crate::json_store::load_or_default(&path())
+    crate::infra::json_store::load_or_default(&path())
 }
 
 pub(crate) fn save(users: &[PanelUser]) -> Result<()> {
-    crate::json_store::save_private(&path(), users)
+    crate::infra::json_store::save_private(&path(), users)
 }

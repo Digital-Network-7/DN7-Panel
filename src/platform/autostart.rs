@@ -21,7 +21,7 @@
 
 use std::path::Path;
 
-use crate::paths::{INSTALL_BIN, INSTALL_DIR};
+use crate::platform::paths::{INSTALL_BIN, INSTALL_DIR};
 
 const SYSTEMD_UNIT_PATH: &str = "/etc/systemd/system/dn7-panel.service";
 const CRON_D_PATH: &str = "/etc/cron.d/dn7-panel";

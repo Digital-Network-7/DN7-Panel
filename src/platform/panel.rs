@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::config::PanelConfig;
-use crate::guardian;
+use crate::platform::config::PanelConfig;
+use crate::platform::guardian;
 
 /// Entry point for the panel role.
 pub async fn run(cfg: PanelConfig) -> Result<()> {
@@ -22,7 +22,7 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     guardian::write_own_pid(&cfg);
     // Record the running version so a later foreground launch can decide whether
     // it's newer (and should replace us) or not.
-    crate::procfile::write_version(&cfg.data_dir);
+    crate::platform::procfile::write_version(&cfg.data_dir);
     guardian::spawn(cfg.clone());
 
     // On-box web management console (default on, port 1080). Runs in its own
@@ -32,16 +32,16 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     // Heal any site configs written by an older build (e.g. the legacy
     // `http2 on;` directive) by regenerating them from the current template.
     tokio::spawn(async {
-        crate::nginx::resync_confs().await;
+        crate::infra::nginx::resync_confs().await;
     });
 
     // Auto-renew Let's Encrypt / self-signed certs before they expire.
-    crate::nginx::spawn_cert_renewal();
+    crate::infra::nginx::spawn_cert_renewal();
 
     // Background self-update checker (GitHub + dn7.cn). Applies automatically
     // only when auto-update is enabled in settings; otherwise just keeps the
     // "update available" hint warm.
-    crate::update::spawn_periodic(cfg.clone());
+    crate::platform::update::spawn_periodic(cfg.clone());
 
     tracing::info!("DN7 Panel role started");
 

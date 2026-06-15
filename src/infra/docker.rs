@@ -367,7 +367,7 @@ async fn managed_container_guard(reference: &str) -> Option<String> {
         .as_ref()
         .and_then(|cf| cf.labels.clone())
         .unwrap_or_default();
-    let is_mysql = name == crate::mysql::CONTAINER || labels.contains_key("dn7.mysql");
+    let is_mysql = name == crate::infra::mysql::CONTAINER || labels.contains_key("dn7.mysql");
     if is_mysql {
         Some("ERR_CODE:docker.container_managed_mysql".to_string())
     } else {

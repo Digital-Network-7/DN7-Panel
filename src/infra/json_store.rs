@@ -3,7 +3,7 @@
 //! Every subsystem used to inline the same read-parse-default and
 //! create-dir-then-write-pretty boilerplate. These four helpers give one place
 //! for that I/O, and `save_private` routes sensitive files through the atomic
-//! 0600 [`crate::paths::write_private`] primitive (no create-then-chmod window).
+//! 0600 [`crate::platform::paths::write_private`] primitive (no create-then-chmod window).
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -35,10 +35,10 @@ pub(crate) fn save_pretty<T: Serialize + ?Sized>(path: &Path, value: &T) -> anyh
 }
 
 /// Persist `value` as pretty JSON with owner-only (0600) permissions from the
-/// moment of creation, written atomically (see [`crate::paths::write_private`]).
+/// moment of creation, written atomically (see [`crate::platform::paths::write_private`]).
 /// For sensitive files (credentials, tokens, account/instance manifests).
 pub(crate) fn save_private<T: Serialize + ?Sized>(path: &Path, value: &T) -> anyhow::Result<()> {
     let data = serde_json::to_string_pretty(value)?;
-    crate::paths::write_private(path, data.as_bytes())?;
+    crate::platform::paths::write_private(path, data.as_bytes())?;
     Ok(())
 }

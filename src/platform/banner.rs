@@ -4,7 +4,7 @@
 //! it's been shown the password is irrecoverable, so the banner only prints a
 //! notice (with a pointer to `dn7 panel reset` to regenerate it).
 
-use crate::config::PanelConfig;
+use crate::platform::config::PanelConfig;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs, UdpSocket};
 use std::time::Duration;

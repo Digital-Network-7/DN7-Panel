@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::config::PanelConfig;
-use crate::fetch::{self, Release, SourceKind};
+use crate::infra::fetch::{self, Release, SourceKind};
+use crate::platform::config::PanelConfig;
 
 mod changelog;
 pub(crate) use changelog::*;
@@ -123,7 +123,7 @@ impl Default for UpdateState {
 }
 
 fn state_path() -> PathBuf {
-    crate::paths::data_dir().join("update.json")
+    crate::platform::paths::data_dir().join("update.json")
 }
 
 fn now_secs() -> u64 {
@@ -135,11 +135,11 @@ fn now_secs() -> u64 {
 
 impl UpdateState {
     pub fn load() -> Self {
-        crate::json_store::load_or_default(&state_path())
+        crate::infra::json_store::load_or_default(&state_path())
     }
 
     pub fn save(&self) -> Result<()> {
-        crate::json_store::save_private(&state_path(), self)
+        crate::infra::json_store::save_private(&state_path(), self)
     }
 }
 
@@ -283,7 +283,7 @@ async fn read_binary_version(path: &Path) -> Result<String> {
 /// and replace the binary at the stable install path. Returns the replaced
 /// path; the caller should then exit so the supervisor relaunches the new build.
 pub async fn self_update(cfg: &PanelConfig) -> Result<PathBuf> {
-    let target = crate::paths::stable_bin();
+    let target = crate::platform::paths::stable_bin();
     set_phase(PHASE_DOWNLOADING);
     set_progress(0);
     set_bytes(0, 0);

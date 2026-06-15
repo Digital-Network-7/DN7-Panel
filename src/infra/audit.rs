@@ -83,7 +83,7 @@ pub struct Entry {
 }
 
 fn path() -> PathBuf {
-    crate::paths::data_dir().join(FILE)
+    crate::platform::paths::data_dir().join(FILE)
 }
 
 fn now_secs() -> i64 {

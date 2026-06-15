@@ -4,7 +4,7 @@
 //! and map the result to a response. This module owns the **business rule**
 //! shared by every file operation: a container-scoped op is admin-only, while a
 //! host op runs as the caller's own system user (OS perms then enforce access).
-//! The actual filesystem/Docker work lives in the `crate::file` infra module.
+//! The actual filesystem/Docker work lives in the `crate::infra::file` infra module.
 use super::*;
 
 /// A file-service failure: either the caller lacks permission, or the
@@ -41,11 +41,11 @@ pub(crate) async fn list(
     match container {
         Some(c) => {
             guard_container(acct)?;
-            crate::file::web_ctn_list(c, path)
+            crate::infra::file::web_ctn_list(c, path)
                 .await
                 .map_err(FsError::Op)
         }
-        None => crate::file::web_host_list(path, acct.system_user.as_deref())
+        None => crate::infra::file::web_host_list(path, acct.system_user.as_deref())
             .await
             .map_err(FsError::Op),
     }
@@ -60,11 +60,11 @@ pub(crate) async fn mkdir(
     match container {
         Some(c) => {
             guard_container(acct)?;
-            crate::file::web_ctn_mkdir(c, path)
+            crate::infra::file::web_ctn_mkdir(c, path)
                 .await
                 .map_err(FsError::Op)
         }
-        None => crate::file::web_host_mkdir(path, acct.system_user.as_deref())
+        None => crate::infra::file::web_host_mkdir(path, acct.system_user.as_deref())
             .await
             .map_err(FsError::Op),
     }
@@ -79,11 +79,11 @@ pub(crate) async fn delete(
     match container {
         Some(c) => {
             guard_container(acct)?;
-            crate::file::web_ctn_delete(c, path)
+            crate::infra::file::web_ctn_delete(c, path)
                 .await
                 .map_err(FsError::Op)
         }
-        None => crate::file::web_host_delete(path, acct.system_user.as_deref())
+        None => crate::infra::file::web_host_delete(path, acct.system_user.as_deref())
             .await
             .map_err(FsError::Op),
     }
@@ -99,11 +99,11 @@ pub(crate) async fn write_file(
     match container {
         Some(c) => {
             guard_container(acct)?;
-            crate::file::web_ctn_write_file(c, path, tmp)
+            crate::infra::file::web_ctn_write_file(c, path, tmp)
                 .await
                 .map_err(FsError::Op)
         }
-        None => crate::file::web_host_write_file(path, tmp, acct.system_user.as_deref())
+        None => crate::infra::file::web_host_write_file(path, tmp, acct.system_user.as_deref())
             .await
             .map_err(FsError::Op),
     }

@@ -39,10 +39,10 @@ impl PanelConfig {
         // special deployments / tests.
         let base_dir = env::var("DN7_RUNTIME_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| crate::paths::default_base_dir());
-        let data_dir = base_dir.join(crate::paths::DATA_SUBDIR);
-        let runtime_dir = base_dir.join(crate::paths::RUN_SUBDIR);
-        let log_dir = base_dir.join(crate::paths::LOG_SUBDIR);
+            .unwrap_or_else(|_| crate::platform::paths::default_base_dir());
+        let data_dir = base_dir.join(crate::platform::paths::DATA_SUBDIR);
+        let runtime_dir = base_dir.join(crate::platform::paths::RUN_SUBDIR);
+        let log_dir = base_dir.join(crate::platform::paths::LOG_SUBDIR);
         let heartbeat_timeout_secs = env::var("DN7_HEARTBEAT_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse().ok())

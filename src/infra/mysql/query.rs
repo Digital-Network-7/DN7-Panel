@@ -34,7 +34,7 @@ pub(crate) fn start_backup(req: &Req) -> Result<Value> {
 /// survives), and report the path + size.
 pub(crate) async fn run_backup_detached(op_id: &str, inst: &str) -> Result<()> {
     let m = load_manifest(inst)?;
-    let password = crate::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     if !is_ready(&m.container, &password).await {
         return Err(anyhow!("ERR_CODE:mysql.instance_not_ready"));
     }

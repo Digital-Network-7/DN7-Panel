@@ -1,12 +1,12 @@
 //! Detached op registry for the MySQL module (image pull / install / switch /
-//! backup) — a thin wrapper over the shared [`crate::op_registry`]. Ops attach
+//! backup) — a thin wrapper over the shared [`crate::infra::op_registry`]. Ops attach
 //! the resulting `inst_id` on success, reuse the docker image-pull progress
 //! estimator, and only forget finished ops on dismiss.
-use crate::op_registry::{pull_pct, Dismiss, OpRegistry};
+use crate::infra::op_registry::{pull_pct, Dismiss, OpRegistry};
 use serde_json::{json, Value};
 use std::sync::OnceLock;
 
-pub(super) use crate::op_registry::pmsg;
+pub(super) use crate::infra::op_registry::pmsg;
 
 fn reg() -> &'static OpRegistry {
     static R: OnceLock<OpRegistry> = OnceLock::new();

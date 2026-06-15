@@ -19,7 +19,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::config::PanelConfig;
+use crate::platform::config::PanelConfig;
 
 /// Trim the log once it grows past this many bytes.
 const MAX_BYTES: u64 = 5 * 1024 * 1024; // 5 MiB
@@ -30,7 +30,7 @@ const CHECK_EVERY: Duration = Duration::from_secs(300); // 5 min
 
 /// Path of the daemon log the panel writes to.
 fn log_path(cfg: &PanelConfig) -> PathBuf {
-    cfg.log_dir.join(crate::daemon::LOG_FILE)
+    cfg.log_dir.join(crate::platform::daemon::LOG_FILE)
 }
 
 /// Spawn the background log-trimming task (runs for the supervisor's lifetime).

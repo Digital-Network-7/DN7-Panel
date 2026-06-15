@@ -1,12 +1,12 @@
 //! Detached operation registry (pulls + install + create) — a thin wrapper over
-//! the shared [`crate::op_registry`]. Ops here attach a `result_image` field
+//! the shared [`crate::infra::op_registry`]. Ops here attach a `result_image` field
 //! (the final clean image name on a successful pull) and use the docker
 //! image-pull progress estimator.
-use crate::op_registry::{Dismiss, OpRegistry};
+use crate::infra::op_registry::{Dismiss, OpRegistry};
 use serde_json::{json, Value};
 use std::sync::OnceLock;
 
-pub(crate) use crate::op_registry::{pmsg, pull_pct};
+pub(crate) use crate::infra::op_registry::{pmsg, pull_pct};
 
 fn reg() -> &'static OpRegistry {
     static R: OnceLock<OpRegistry> = OnceLock::new();
