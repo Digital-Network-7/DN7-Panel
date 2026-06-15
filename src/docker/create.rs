@@ -660,16 +660,7 @@ pub(crate) async fn create_container(spec: CreateSpec) -> Result<(String, bool)>
     // Edit/upgrade: remove the container being replaced first so the new one can
     // reuse its name. Managed service containers are never replaced this way.
     if let Some(old) = spec.replace.as_deref() {
-        if let Some(why) = managed_container_guard(old).await {
-            return Err(anyhow!(why));
-        }
-        let opts = bollard::container::RemoveContainerOptions {
-            force: true,
-            ..Default::default()
-        };
-        dkr.remove_container(old, Some(opts))
-            .await
-            .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+        remove_replaced_container(&dkr, old).await?;
     }
     let options = spec
         .name
@@ -685,7 +676,37 @@ pub(crate) async fn create_container(spec: CreateSpec) -> Result<(String, bool)>
     let id = created.id;
     // Connect any additional networks before starting, each with its optional
     // MAC / static IPv4 endpoint config.
-    for a in &spec.extra_networks {
+    connect_extra_networks(&dkr, &id, &spec.extra_networks).await?;
+    if spec.start {
+        dkr.start_container(
+            &id,
+            None::<bollard::container::StartContainerOptions<String>>,
+        )
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    }
+    Ok((id, spec.start))
+}
+
+/// Force-remove the container `old` is replacing (edit/upgrade). Refuses to
+/// touch a DN7 Panel-managed service container.
+async fn remove_replaced_container(dkr: &Docker, old: &str) -> Result<()> {
+    if let Some(why) = managed_container_guard(old).await {
+        return Err(anyhow!(why));
+    }
+    let opts = bollard::container::RemoveContainerOptions {
+        force: true,
+        ..Default::default()
+    };
+    dkr.remove_container(old, Some(opts))
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))
+}
+
+/// Connect a freshly-created container to its additional networks (the first
+/// network is applied at create time), each with its optional MAC / static IPv4.
+async fn connect_extra_networks(dkr: &Docker, id: &str, nets: &[NetAttach]) -> Result<()> {
+    for a in nets {
         let endpoint = bollard::models::EndpointSettings {
             ipam_config: a
                 .ipv4
@@ -700,20 +721,12 @@ pub(crate) async fn create_container(spec: CreateSpec) -> Result<(String, bool)>
         dkr.connect_network(
             &a.network,
             bollard::network::ConnectNetworkOptions {
-                container: id.clone(),
+                container: id.to_string(),
                 endpoint_config: endpoint,
             },
         )
         .await
         .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
     }
-    if spec.start {
-        dkr.start_container(
-            &id,
-            None::<bollard::container::StartContainerOptions<String>>,
-        )
-        .await
-        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-    }
-    Ok((id, spec.start))
+    Ok(())
 }
