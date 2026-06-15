@@ -22,11 +22,20 @@ use serde_json::{json, Value};
 /// capability's internal JSON dispatcher.
 pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
     match body.get("op").and_then(|v| v.as_str()) {
-        // Read-only website settings (default-site + http tuning). Pure read,
-        // no nginx reload — first op migrated to the application layer.
+        // Read-only ops — owned by the application layer (no nginx reload).
         Some("get_settings") => get_settings(),
-        // Read-only managed-site list (manifests only).
+        Some("info") => crate::infra::nginx::nginx_info().await,
         Some("list_sites") => Ok(json!({ "sites": crate::infra::nginx::sites_snapshot() })),
+        Some("list_named_certs") => crate::infra::nginx::list_named_certs().await,
+        Some("list_access") => crate::infra::nginx::list_access().await,
+        Some("list_containers") => crate::infra::nginx::list_running_containers().await,
+        Some("list_dirs") => {
+            crate::infra::nginx::list_dirs(body.get("path").and_then(|v| v.as_str())).await
+        }
+        Some("list_ops") => Ok(crate::infra::nginx::ops_snapshot_value()),
+        Some("op_log") => Ok(crate::infra::nginx::op_log_value(
+            body.get("op_id").and_then(|v| v.as_str()).unwrap_or(""),
+        )),
         _ => crate::infra::nginx::web_dispatch(body).await,
     }
 }

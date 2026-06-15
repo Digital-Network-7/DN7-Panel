@@ -246,8 +246,8 @@ pub(crate) async fn list_running_containers() -> Result<Value> {
 
 /// List immediate subdirectories of an absolute host path (for the static-site
 /// "use existing directory" picker). Defaults to "/". Returns dirs only.
-pub(crate) async fn list_dirs(req: &Req) -> Result<Value> {
-    let raw = req.path.as_deref().map(str::trim).unwrap_or("/");
+pub(crate) async fn list_dirs(path_arg: Option<&str>) -> Result<Value> {
+    let raw = path_arg.map(str::trim).unwrap_or("/");
     let base = if raw.is_empty() { "/" } else { raw };
     let path = std::path::Path::new(base);
     if !path.is_absolute() {

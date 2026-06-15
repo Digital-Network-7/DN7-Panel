@@ -58,6 +58,7 @@ pub(crate) struct Req {
     #[serde(default)]
     local_root: Option<String>, // static (existing absolute host dir)
     #[serde(default)]
+    #[allow(dead_code)] // read at the app boundary (app::nginx list_dirs), not here
     path: Option<String>, // list_dirs: directory to enumerate
     // http/server tuning (set_tuning).
     #[serde(default)]
@@ -198,6 +199,13 @@ use setup::*;
 pub use sites::*;
 use state::*;
 use store::*;
+
+/// Read-only use-case accessors exposed for `app::nginx`. The application layer
+/// owns op routing (`info`/`list_access`/`list_named_certs`/`list_containers`/
+/// `list_dirs`); these delegate to the infra adapters that do the actual read.
+pub(crate) use access::list_access;
+pub(crate) use certs_named::list_named_certs;
+pub(crate) use detect::{list_dirs, list_running_containers, nginx_info};
 pub use upload::*;
 
 #[cfg(test)]
@@ -236,18 +244,24 @@ pub(crate) fn sites_snapshot() -> Vec<crate::domain::nginx::Site> {
     load_sites()
 }
 
+/// Detached-op-registry read projections for the `app::nginx` `list_ops` /
+/// `op_log` use-cases (the registry's own fns are `pub(super)`).
+pub(crate) fn ops_snapshot_value() -> Value {
+    ops_snapshot()
+}
+pub(crate) fn op_log_value(op_id: &str) -> Value {
+    op_log(op_id)
+}
+
 async fn handle(req: &Req) -> Result<Value> {
     match req.op.as_str() {
-        "info" => nginx_info().await,
         "setup" => start_setup(req),
         "add_site" => add_site(req).await,
         "update_site" => update_site(req).await,
         "remove_site" => remove_site(req).await,
-        "list_named_certs" => list_named_certs().await,
         "create_cert" => create_cert(req).await,
         "renew_cert" => renew_cert(req).await,
         "delete_cert" => delete_cert(req).await,
-        "list_access" => list_access().await,
         "save_access" => save_access_op(req).await,
         "delete_access" => delete_access_op(req).await,
         "set_default_site" => set_default_site(req).await,
@@ -256,10 +270,6 @@ async fn handle(req: &Req) -> Result<Value> {
             reload().await?;
             Ok(json!({ "reloaded": true }))
         }
-        "list_containers" => list_running_containers().await,
-        "list_dirs" => list_dirs(req).await,
-        "list_ops" => Ok(ops_snapshot()),
-        "op_log" => Ok(op_log(req.op_id.as_deref().unwrap_or(""))),
         "dismiss_op" => {
             if let Some(op_id) = req.op_id.as_deref() {
                 op_dismiss(op_id);

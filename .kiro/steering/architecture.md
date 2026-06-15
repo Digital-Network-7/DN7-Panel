@@ -150,7 +150,7 @@ platform 独立;跨层装配仅限"受控组合根集合"
 - `domain`:`authz`、`identity`(校验器 + `PanelUser` + `Principal`)、`settings`(`WebSettings`)、`error`(`domain::Error` + 唯一 web 边界映射 `map_domain_err`);并扩展到各能力规则/实体——`nginx`(校验器 + 持久化实体 `Site`/`Location`/`AccessList`/`AccessUser`/`AccessClient`/`DefaultSite`/`WebGlobal`/`HttpTuning`)、`mysql`(引擎目录规则 + `Manifest`)、`docker`(创建策略白名单)。持久化实体的 `serde` derive 属 §2/§4 评审例外,字段 `pub(crate)` 经 re-export 供子模块原样引用。
 - `infra`:`audit`、`auth`(会话/challenge/ticket/限流)、`store`(users/settings 持久化)、`system`(OS 适配)。
 - `app`:`account` 用例(改密/2FA,经 `AccountEnv` 端口 + mock 单测)、`users`(面板用户编排);账户自助凭据域 + settings 改密的错误全部走 `domain::Error`。
-- `app`:`docker`/`nginx`/`mysql` 能力**用例入口** `dispatch(body)` 已建立——web 能力 handler 一律经 `app::<cap>::dispatch`(web→app→infra),不再直接调 `infra::<cap>::web_dispatch`(架构测试已在 `web` 禁 `web_dispatch` token 锁死)。**首个真实 op 已上移**:`nginx` 的 `get_settings`(只读、无 reload)编排现由 `app::nginx::get_settings` 持有,只读快照经 `infra::nginx::web_settings_state` 委托;其余 op 仍薄缝转发,逐个迁移并各自真机验证。
+- `app`:`docker`/`nginx`/`mysql` 能力**用例入口** `dispatch(body)` 已建立——web 能力 handler 一律经 `app::<cap>::dispatch`(web→app→infra),不再直接调 `infra::<cap>::web_dispatch`(架构测试已在 `web` 禁 `web_dispatch` token 锁死)。**nginx 全部只读 op 已上移** app 层(`get_settings`/`info`/`list_sites`/`list_named_certs`/`list_access`/`list_containers`/`list_dirs`/`list_ops`/`op_log`),经 infra 暴露的最小只读访问器委托、行为零变化;写/reload op(`add_site`/`update_site`/`remove_site`/`set_tuning`/`set_default_site`/`create_cert`/`save_access`/`setup`/`reload`/`dismiss_op`)仍在 `infra::nginx::web_dispatch`,逐个上移并各自真机验证。
 
 **待办(建议按能力分阶段做,勿一次性强塞)**
 - 管理员用户管理 handler(`web/server/users_api.rs`)经评估**已处于合理薄度**;其对 `infra::system` 的直接调用与 `account_api` 的 `AccountEnv` adapter 同属 web 作组合根装配 infra 的既定模式,**暂不再薄化**。
