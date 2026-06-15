@@ -17,11 +17,11 @@ use axum::{
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use super::audit;
 use super::auth::{proof_matches, AuthState};
 use super::branding;
 use super::settings::{self, WebSettings};
 use crate::config::PanelConfig;
+use crate::infra::audit;
 use crate::metrics::Collector;
 use include_dir::{include_dir, Dir};
 

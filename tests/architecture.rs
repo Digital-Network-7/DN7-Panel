@@ -15,17 +15,24 @@ use std::fs;
 use std::path::Path;
 
 /// (governed directory relative to crate root, forbidden substrings).
-const RULES: &[(&str, &[&str])] = &[(
-    // domain 不懂传输,也不碰外部系统/进程。
-    "src/domain",
-    &[
-        "axum",
-        "bollard",
-        "reqwest",
-        "tokio::process",
-        "std::process",
-    ],
-)];
+const RULES: &[(&str, &[&str])] = &[
+    (
+        // domain 不懂传输,也不碰外部系统/进程。
+        "src/domain",
+        &[
+            "axum",
+            "bollard",
+            "reqwest",
+            "tokio::process",
+            "std::process",
+        ],
+    ),
+    (
+        // infra 实现规则,不决定规则;不得依赖交付层或 axum。
+        "src/infra",
+        &["axum", "crate::web"],
+    ),
+];
 
 fn scan(dir: &Path, forbidden: &[&str], violations: &mut Vec<String>) {
     let entries = match fs::read_dir(dir) {

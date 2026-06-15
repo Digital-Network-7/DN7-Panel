@@ -8,6 +8,7 @@ mod domain;
 mod fetch;
 mod file;
 mod guardian;
+mod infra;
 mod json_store;
 mod logrotate;
 mod metrics;
