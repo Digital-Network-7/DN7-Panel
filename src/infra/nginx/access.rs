@@ -207,67 +207,23 @@ pub(crate) async fn rewrite_sites_using_access(access_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Save http/server tuning and re-apply it (rewrite all managed site confs +
-/// the http include), then reload.
-pub(crate) async fn set_tuning(req: &Req) -> Result<Value> {
+/// Current persisted http/server tuning (or defaults) — read accessor for the
+/// `app::nginx` `set_tuning` use-case.
+pub(crate) fn current_tuning() -> HttpTuning {
+    load_tuning_opt().unwrap_or_default()
+}
+
+/// Persist already-validated tuning and re-apply it (rewrite all managed site
+/// confs + the http include), then reload. The validation/merge is owned by
+/// `domain::nginx::merge_http_tuning`; this is the side-effecting adapter.
+pub(crate) async fn apply_tuning(t: &HttpTuning) -> Result<Value> {
     let lo = layout()?;
-    let cur = load_tuning_opt().unwrap_or_default();
-    let t = parse_tuning(req, &cur)?;
-    save_tuning(&t)?;
+    save_tuning(t)?;
     write_tuning_conf();
     // Tuning is injected per-server, so rewrite every managed site conf.
     rewrite_managed_site_confs(&lo).await;
     validate_and_reload(&lo).await?;
     Ok(json!({ "ok": true }))
-}
-
-/// Validate the tuning request against fixed bounds, falling back to the current
-/// value for any field the request omits. Returns the merged `HttpTuning`.
-fn parse_tuning(req: &Req, cur: &HttpTuning) -> Result<HttpTuning> {
-    let snhbs = req
-        .server_names_hash_bucket_size
-        .unwrap_or(cur.server_names_hash_bucket_size);
-    if ![32u32, 64, 128, 256, 512].contains(&snhbs) {
-        return Err(anyhow!("ERR_CODE:nginx.bad_hash_bucket"));
-    }
-    let gcl = req.gzip_comp_level.unwrap_or(cur.gzip_comp_level);
-    if !(1..=9).contains(&gcl) {
-        return Err(anyhow!("ERR_CODE:nginx.bad_comp_level"));
-    }
-    let gmin = req.gzip_min_length.unwrap_or(cur.gzip_min_length);
-    if gmin > 10_000_000 {
-        return Err(anyhow!("ERR_CODE:nginx.bad_min_length"));
-    }
-    let kat = req.keepalive_timeout.unwrap_or(cur.keepalive_timeout);
-    if kat > 86_400 {
-        return Err(anyhow!("ERR_CODE:nginx.bad_keepalive"));
-    }
-    let chdr = req
-        .client_header_buffer_size
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&cur.client_header_buffer_size)
-        .to_string();
-    let cmbs = req
-        .client_max_body_size
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&cur.client_max_body_size)
-        .to_string();
-    if !valid_size_value(&chdr) || !valid_size_value(&cmbs) {
-        return Err(anyhow!("ERR_CODE:nginx.bad_size_value"));
-    }
-    Ok(HttpTuning {
-        server_names_hash_bucket_size: snhbs,
-        gzip: req.gzip.unwrap_or(cur.gzip),
-        client_header_buffer_size: chdr,
-        gzip_min_length: gmin,
-        client_max_body_size: cmbs,
-        gzip_comp_level: gcl,
-        keepalive_timeout: kat,
-    })
 }
 
 /// Rewrite every managed site's conf (e.g. after a tuning change, which is

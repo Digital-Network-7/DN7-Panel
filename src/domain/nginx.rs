@@ -370,3 +370,134 @@ impl Default for HttpTuning {
         }
     }
 }
+
+/// Optional http/server tuning inputs from a `set_tuning` request. `None` means
+/// "keep the current value". Pure transport-free shape consumed by
+/// [`merge_http_tuning`].
+#[derive(Default)]
+pub(crate) struct HttpTuningInput {
+    pub(crate) server_names_hash_bucket_size: Option<u32>,
+    pub(crate) gzip: Option<bool>,
+    pub(crate) client_header_buffer_size: Option<String>,
+    pub(crate) gzip_min_length: Option<u32>,
+    pub(crate) client_max_body_size: Option<String>,
+    pub(crate) gzip_comp_level: Option<u8>,
+    pub(crate) keepalive_timeout: Option<u32>,
+}
+
+/// Validate a tuning request against fixed bounds and merge it over the current
+/// values (any omitted field keeps its current value). Returns the merged
+/// entity, or a **stable error code** (without the transport `ERR_CODE:`
+/// prefix — the boundary adds it). Pure rule, unit-testable.
+pub(crate) fn merge_http_tuning(
+    cur: &HttpTuning,
+    input: &HttpTuningInput,
+) -> Result<HttpTuning, &'static str> {
+    let snhbs = input
+        .server_names_hash_bucket_size
+        .unwrap_or(cur.server_names_hash_bucket_size);
+    if ![32u32, 64, 128, 256, 512].contains(&snhbs) {
+        return Err("nginx.bad_hash_bucket");
+    }
+    let gcl = input.gzip_comp_level.unwrap_or(cur.gzip_comp_level);
+    if !(1..=9).contains(&gcl) {
+        return Err("nginx.bad_comp_level");
+    }
+    let gmin = input.gzip_min_length.unwrap_or(cur.gzip_min_length);
+    if gmin > 10_000_000 {
+        return Err("nginx.bad_min_length");
+    }
+    let kat = input.keepalive_timeout.unwrap_or(cur.keepalive_timeout);
+    if kat > 86_400 {
+        return Err("nginx.bad_keepalive");
+    }
+    let chdr = input
+        .client_header_buffer_size
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&cur.client_header_buffer_size)
+        .to_string();
+    let cmbs = input
+        .client_max_body_size
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&cur.client_max_body_size)
+        .to_string();
+    if !valid_size_value(&chdr) || !valid_size_value(&cmbs) {
+        return Err("nginx.bad_size_value");
+    }
+    Ok(HttpTuning {
+        server_names_hash_bucket_size: snhbs,
+        gzip: input.gzip.unwrap_or(cur.gzip),
+        client_header_buffer_size: chdr,
+        gzip_min_length: gmin,
+        client_max_body_size: cmbs,
+        gzip_comp_level: gcl,
+        keepalive_timeout: kat,
+    })
+}
+
+#[cfg(test)]
+mod tuning_tests {
+    use super::*;
+
+    #[test]
+    fn merge_keeps_current_when_omitted() {
+        let cur = HttpTuning::default();
+        let merged = merge_http_tuning(&cur, &HttpTuningInput::default()).unwrap();
+        assert_eq!(
+            merged.server_names_hash_bucket_size,
+            cur.server_names_hash_bucket_size
+        );
+        assert_eq!(merged.keepalive_timeout, cur.keepalive_timeout);
+        assert_eq!(merged.client_max_body_size, cur.client_max_body_size);
+    }
+
+    #[test]
+    fn merge_rejects_out_of_bounds() {
+        let cur = HttpTuning::default();
+        let bad_bucket = HttpTuningInput {
+            server_names_hash_bucket_size: Some(100),
+            ..Default::default()
+        };
+        assert_eq!(
+            merge_http_tuning(&cur, &bad_bucket).unwrap_err(),
+            "nginx.bad_hash_bucket"
+        );
+        let bad_level = HttpTuningInput {
+            gzip_comp_level: Some(10),
+            ..Default::default()
+        };
+        assert_eq!(
+            merge_http_tuning(&cur, &bad_level).unwrap_err(),
+            "nginx.bad_comp_level"
+        );
+        let bad_size = HttpTuningInput {
+            client_max_body_size: Some("50x".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            merge_http_tuning(&cur, &bad_size).unwrap_err(),
+            "nginx.bad_size_value"
+        );
+    }
+
+    #[test]
+    fn merge_accepts_valid_override() {
+        let cur = HttpTuning::default();
+        let input = HttpTuningInput {
+            server_names_hash_bucket_size: Some(128),
+            gzip_comp_level: Some(6),
+            client_max_body_size: Some("100m".to_string()),
+            keepalive_timeout: Some(75),
+            ..Default::default()
+        };
+        let merged = merge_http_tuning(&cur, &input).unwrap();
+        assert_eq!(merged.server_names_hash_bucket_size, 128);
+        assert_eq!(merged.gzip_comp_level, 6);
+        assert_eq!(merged.client_max_body_size, "100m");
+        assert_eq!(merged.keepalive_timeout, 75);
+    }
+}

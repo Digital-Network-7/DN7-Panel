@@ -60,20 +60,28 @@ pub(crate) struct Req {
     #[serde(default)]
     #[allow(dead_code)] // read at the app boundary (app::nginx list_dirs), not here
     path: Option<String>, // list_dirs: directory to enumerate
-    // http/server tuning (set_tuning).
+    // http/server tuning (set_tuning) — read at the app boundary (app::nginx
+    // set_tuning), deserialized here only to accept the wire fields.
     #[serde(default)]
+    #[allow(dead_code)]
     server_names_hash_bucket_size: Option<u32>,
     #[serde(default)]
+    #[allow(dead_code)]
     gzip: Option<bool>,
     #[serde(default)]
+    #[allow(dead_code)]
     client_header_buffer_size: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     gzip_min_length: Option<u32>,
     #[serde(default)]
+    #[allow(dead_code)]
     client_max_body_size: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     gzip_comp_level: Option<u8>,
     #[serde(default)]
+    #[allow(dead_code)]
     keepalive_timeout: Option<u32>,
     #[serde(default)]
     ssl: Option<bool>,
@@ -170,7 +178,7 @@ mod certparse;
 use crate::domain::nginx::{
     norm_scheme, primary_host, valid_access_name, valid_auth_username, valid_cert_name,
     valid_client_address, valid_container_name, valid_host_token, valid_location_path, valid_port,
-    valid_redirect_url, valid_root_segment, valid_server_name, valid_size_value,
+    valid_redirect_url, valid_root_segment, valid_server_name,
 };
 
 // ---------------------------------------------------------------------------
@@ -204,6 +212,7 @@ use store::*;
 /// owns op routing (`info`/`list_access`/`list_named_certs`/`list_containers`/
 /// `list_dirs`); these delegate to the infra adapters that do the actual read.
 pub(crate) use access::list_access;
+pub(crate) use access::{apply_tuning, current_tuning};
 pub(crate) use certs_named::list_named_certs;
 pub(crate) use detect::{list_dirs, list_running_containers, nginx_info};
 pub use upload::*;
@@ -265,7 +274,6 @@ async fn handle(req: &Req) -> Result<Value> {
         "save_access" => save_access_op(req).await,
         "delete_access" => delete_access_op(req).await,
         "set_default_site" => set_default_site(req).await,
-        "set_tuning" => set_tuning(req).await,
         "reload" => {
             reload().await?;
             Ok(json!({ "reloaded": true }))

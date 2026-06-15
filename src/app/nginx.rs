@@ -36,6 +36,8 @@ pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
         Some("op_log") => Ok(crate::infra::nginx::op_log_value(
             body.get("op_id").and_then(|v| v.as_str()).unwrap_or(""),
         )),
+        // Write op — validate/merge in domain, side effects in infra.
+        Some("set_tuning") => set_tuning(body).await,
         _ => crate::infra::nginx::web_dispatch(body).await,
     }
 }
@@ -60,4 +62,41 @@ fn get_settings() -> Result<Value> {
         },
         "tuning_configured": tuning_configured,
     }))
+}
+
+/// `set_tuning` use-case: read current tuning (infra) → validate/merge against
+/// fixed bounds (domain) → persist + rewrite confs + reload (infra). The stable
+/// validation code is surfaced through the transitional `ERR_CODE:` channel.
+async fn set_tuning(body: &Value) -> Result<Value> {
+    let input = crate::domain::nginx::HttpTuningInput {
+        server_names_hash_bucket_size: body
+            .get("server_names_hash_bucket_size")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32),
+        gzip: body.get("gzip").and_then(|v| v.as_bool()),
+        client_header_buffer_size: body
+            .get("client_header_buffer_size")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        gzip_min_length: body
+            .get("gzip_min_length")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32),
+        client_max_body_size: body
+            .get("client_max_body_size")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        gzip_comp_level: body
+            .get("gzip_comp_level")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u8),
+        keepalive_timeout: body
+            .get("keepalive_timeout")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32),
+    };
+    let cur = crate::infra::nginx::current_tuning();
+    let t = crate::domain::nginx::merge_http_tuning(&cur, &input)
+        .map_err(|code| anyhow::anyhow!("ERR_CODE:{code}"))?;
+    crate::infra::nginx::apply_tuning(&t).await
 }
