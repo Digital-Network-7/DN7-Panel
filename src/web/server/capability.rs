@@ -126,3 +126,36 @@ pub(crate) async fn mysql_op(
     let fut = crate::mysql::web_dispatch(&body);
     dispatch(&state, &headers, "mysql", body.clone(), fut).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::is_read_op;
+
+    #[test]
+    fn read_ops_are_not_audited() {
+        // A representative sample of read/poll ops that must NOT be logged.
+        for op in ["", "info", "list", "list_ops", "op_log", "status", "stats", "logs"] {
+            assert!(is_read_op(op), "{op} should be a read op");
+        }
+    }
+
+    #[test]
+    fn state_changing_ops_are_audited() {
+        // Mutating ops must be treated as auditable (not read ops).
+        for op in [
+            "create",
+            "delete",
+            "remove",
+            "start",
+            "stop",
+            "restart",
+            "add_site",
+            "update_site",
+            "install",
+            "switch",
+            "create_named_cert",
+        ] {
+            assert!(!is_read_op(op), "{op} must be auditable");
+        }
+    }
+}

@@ -196,3 +196,34 @@ fn redirect_url_validation() {
     assert!(!valid_redirect_url("https://a b.com"));
     assert!(!valid_redirect_url("javascript:alert(1)"));
 }
+
+#[test]
+fn trusted_cidrs_sanitize() {
+    // Valid IPs / CIDRs, normalized to a space-separated list.
+    assert_eq!(
+        sanitize_trusted_cidrs("10.0.0.0/8, 203.0.113.5").unwrap(),
+        "10.0.0.0/8 203.0.113.5"
+    );
+    assert_eq!(sanitize_trusted_cidrs("2001:db8::/32").unwrap(), "2001:db8::/32");
+    // Empty stays empty (caller falls back to the safe private-range default).
+    assert_eq!(sanitize_trusted_cidrs("   ").unwrap(), "");
+    // Malformed address / prefix / injection attempts are rejected.
+    assert!(sanitize_trusted_cidrs("999.1.1.1").is_err());
+    assert!(sanitize_trusted_cidrs("10.0.0.0/40").is_err());
+    assert!(sanitize_trusted_cidrs("1.2.3.4; rm -rf /").is_err());
+}
+
+#[test]
+fn trusted_proxy_sources_never_trusts_whole_internet() {
+    // No explicit list → private + loopback ranges only, never 0.0.0.0/0.
+    let site = mk_site("proxy_host", true);
+    let def = trusted_proxy_sources(&site);
+    assert!(def.contains(&"127.0.0.0/8".to_string()));
+    assert!(def.contains(&"10.0.0.0/8".to_string()));
+    assert!(def.contains(&"::1/128".to_string()));
+    assert!(!def.iter().any(|c| c == "0.0.0.0/0" || c == "::/0"));
+    // Explicit list is honoured verbatim.
+    let mut site2 = mk_site("proxy_host", true);
+    site2.trust_proxy_cidrs = "203.0.113.5 10.0.0.0/8".into();
+    assert_eq!(trusted_proxy_sources(&site2), vec!["203.0.113.5", "10.0.0.0/8"]);
+}

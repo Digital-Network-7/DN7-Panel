@@ -127,7 +127,7 @@ fn render_ssl_security(site: &Site) -> String {
 /// IP/CIDR list (already validated on save), or — when none are configured —
 /// the private + loopback ranges only. This never trusts the public internet,
 /// so a client can't forge `X-Forwarded-For` to spoof its source IP.
-fn trusted_proxy_sources(site: &Site) -> Vec<String> {
+pub(crate) fn trusted_proxy_sources(site: &Site) -> Vec<String> {
     let explicit: Vec<String> = site
         .trust_proxy_cidrs
         .split_whitespace()

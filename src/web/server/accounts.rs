@@ -152,3 +152,45 @@ pub(crate) fn after_credential_change(
     state.auth.revoke_user(username, keep);
     audit::record(username, action, username, true, "");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn acct(is_super: bool, is_admin: bool) -> Account {
+        Account {
+            username: "u".into(),
+            is_admin,
+            is_super,
+            system_user: None,
+        }
+    }
+
+    #[test]
+    fn privilege_levels() {
+        assert_eq!(account_level(&acct(true, true)), 2); // owner
+        assert_eq!(account_level(&acct(false, true)), 1); // admin
+        assert_eq!(account_level(&acct(false, false)), 0); // user
+        assert_eq!(role_level("admin"), 1);
+        assert_eq!(role_level("user"), 0);
+        assert_eq!(role_level("anything-else"), 0);
+    }
+
+    #[test]
+    fn management_matrix_only_strictly_below() {
+        let owner = account_level(&acct(true, true)); // 2
+        let admin = account_level(&acct(false, true)); // 1
+        let user = account_level(&acct(false, false)); // 0
+        // Owner manages admins + users, but not another owner.
+        assert!(can_manage(owner, role_level("admin")));
+        assert!(can_manage(owner, role_level("user")));
+        assert!(!can_manage(owner, owner));
+        // Admin manages only users, never another admin or the owner.
+        assert!(can_manage(admin, role_level("user")));
+        assert!(!can_manage(admin, role_level("admin")));
+        assert!(!can_manage(admin, owner));
+        // Plain users manage nobody.
+        assert!(!can_manage(user, role_level("user")));
+        assert!(!can_manage(user, role_level("admin")));
+    }
+}
