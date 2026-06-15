@@ -189,15 +189,6 @@ fn access_validators() {
 }
 
 #[test]
-fn redirect_url_validation() {
-    assert!(valid_redirect_url("https://example.com/path"));
-    assert!(valid_redirect_url("http://a.test"));
-    assert!(!valid_redirect_url("ftp://x"));
-    assert!(!valid_redirect_url("https://a b.com"));
-    assert!(!valid_redirect_url("javascript:alert(1)"));
-}
-
-#[test]
 fn trusted_cidrs_sanitize() {
     // Valid IPs / CIDRs, normalized to a space-separated list.
     assert_eq!(

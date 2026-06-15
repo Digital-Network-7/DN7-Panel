@@ -439,6 +439,27 @@ pub(crate) fn merge_http_tuning(
     })
 }
 
+/// Validate a default-site (catch-all) request and build the persisted entity.
+/// `mode` must be one of `404`/`welcome`/`444`/`redirect`; a `redirect` mode
+/// requires a valid http(s) URL. Returns a stable error code on failure (the
+/// boundary adds the transport `ERR_CODE:` prefix). Pure rule.
+pub(crate) fn build_default_site(
+    mode_input: &str,
+    redirect_url_input: &str,
+) -> Result<WebGlobal, &'static str> {
+    let mode = match mode_input {
+        m @ ("404" | "welcome" | "444" | "redirect") => m.to_string(),
+        _ => return Err("nginx.bad_default_mode"),
+    };
+    let redirect_url = redirect_url_input.trim().to_string();
+    if mode == "redirect" && !valid_redirect_url(&redirect_url) {
+        return Err("nginx.bad_redirect_url");
+    }
+    Ok(WebGlobal {
+        default_site: DefaultSite { mode, redirect_url },
+    })
+}
+
 #[cfg(test)]
 mod tuning_tests {
     use super::*;
@@ -499,5 +520,27 @@ mod tuning_tests {
         assert_eq!(merged.gzip_comp_level, 6);
         assert_eq!(merged.client_max_body_size, "100m");
         assert_eq!(merged.keepalive_timeout, 75);
+    }
+
+    #[test]
+    fn redirect_url_validation() {
+        assert!(valid_redirect_url("https://example.com/path"));
+        assert!(valid_redirect_url("http://a.test"));
+        assert!(!valid_redirect_url("ftp://x"));
+        assert!(!valid_redirect_url("https://a b.com"));
+        assert!(!valid_redirect_url("javascript:alert(1)"));
+    }
+
+    #[test]
+    fn default_site_rules() {
+        assert!(build_default_site("bogus", "").is_err());
+        assert!(build_default_site("welcome", "").is_ok());
+        assert_eq!(
+            build_default_site("redirect", "not-a-url").unwrap_err(),
+            "nginx.bad_redirect_url"
+        );
+        let g = build_default_site("redirect", " https://x.test ").unwrap();
+        assert_eq!(g.default_site.mode, "redirect");
+        assert_eq!(g.default_site.redirect_url, "https://x.test");
     }
 }

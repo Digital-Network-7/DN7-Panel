@@ -1,27 +1,14 @@
 //! Default (catch-all) site config + distro-default disabling (split from access.rs).
 use super::*;
 
-/// Save the default-site behaviour and (re)write the catch-all conf.
-pub(crate) async fn set_default_site(req: &Req) -> Result<Value> {
+/// Persist an already-validated default-site entity and (re)write the catch-all
+/// conf, then reload — rolling back the conf if nginx rejects it. The
+/// validation/build is owned by `domain::nginx::build_default_site`; this is the
+/// side-effecting adapter for the `app::nginx` use-case.
+pub(crate) async fn apply_default_site(g: &WebGlobal) -> Result<Value> {
     let lo = layout()?;
-    let mode = match req.default_mode.as_deref().unwrap_or("404") {
-        m @ ("404" | "welcome" | "444" | "redirect") => m.to_string(),
-        _ => return Err(anyhow!("ERR_CODE:nginx.bad_default_mode")),
-    };
-    let redirect_url = req
-        .redirect_url
-        .as_deref()
-        .map(str::trim)
-        .unwrap_or("")
-        .to_string();
-    if mode == "redirect" && !valid_redirect_url(&redirect_url) {
-        return Err(anyhow!("ERR_CODE:nginx.bad_redirect_url"));
-    }
-    let g = WebGlobal {
-        default_site: DefaultSite { mode, redirect_url },
-    };
-    save_webglobal(&g)?;
-    write_default_conf(&lo, &g).await?;
+    save_webglobal(g)?;
+    write_default_conf(&lo, g).await?;
     if let Err(e) = validate_and_reload(&lo).await {
         // Roll back: remove the default conf so nginx stays valid.
         let _ = std::fs::remove_file(default_conf_path());

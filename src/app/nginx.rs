@@ -38,6 +38,7 @@ pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
         )),
         // Write op — validate/merge in domain, side effects in infra.
         Some("set_tuning") => set_tuning(body).await,
+        Some("set_default_site") => set_default_site(body).await,
         _ => crate::infra::nginx::web_dispatch(body).await,
     }
 }
@@ -99,4 +100,20 @@ async fn set_tuning(body: &Value) -> Result<Value> {
     let t = crate::domain::nginx::merge_http_tuning(&cur, &input)
         .map_err(|code| anyhow::anyhow!("ERR_CODE:{code}"))?;
     crate::infra::nginx::apply_tuning(&t).await
+}
+
+/// `set_default_site` use-case: validate + build the default-site entity
+/// (domain) → persist + (re)write catch-all conf + reload/rollback (infra).
+async fn set_default_site(body: &Value) -> Result<Value> {
+    let mode = body
+        .get("default_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("404");
+    let redirect_url = body
+        .get("redirect_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let g = crate::domain::nginx::build_default_site(mode, redirect_url)
+        .map_err(|code| anyhow::anyhow!("ERR_CODE:{code}"))?;
+    crate::infra::nginx::apply_default_site(&g).await
 }

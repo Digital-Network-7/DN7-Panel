@@ -132,10 +132,13 @@ pub(crate) struct Req {
     users: Option<Vec<AccessUserInput>>, // basic-auth users (username + optional new password)
     #[serde(default)]
     clients: Option<Vec<AccessClient>>, // allow/deny IP rules
-    // Default-site (Settings) configuration.
+    // Default-site (Settings) configuration — read at the app boundary
+    // (app::nginx set_default_site), deserialized here only to accept the wire.
     #[serde(default)]
+    #[allow(dead_code)]
     default_mode: Option<String>, // "404" | "welcome" | "444" | "redirect"
     #[serde(default)]
+    #[allow(dead_code)]
     redirect_url: Option<String>,
 }
 
@@ -166,7 +169,7 @@ pub(crate) struct AccessUserInput {
 
 /// Default-site / global-settings / http-tuning domain entities, re-exported
 /// from `domain::nginx` so the nginx submodules reference them unchanged.
-pub(crate) use crate::domain::nginx::{DefaultSite, HttpTuning, WebGlobal};
+pub(crate) use crate::domain::nginx::{HttpTuning, WebGlobal};
 
 /// A custom path rule (NPM-style "custom location"): forward a path prefix to a
 // ---------------------------------------------------------------------------
@@ -178,7 +181,7 @@ mod certparse;
 use crate::domain::nginx::{
     norm_scheme, primary_host, valid_access_name, valid_auth_username, valid_cert_name,
     valid_client_address, valid_container_name, valid_host_token, valid_location_path, valid_port,
-    valid_redirect_url, valid_root_segment, valid_server_name,
+    valid_root_segment, valid_server_name,
 };
 
 // ---------------------------------------------------------------------------
@@ -212,7 +215,7 @@ use store::*;
 /// owns op routing (`info`/`list_access`/`list_named_certs`/`list_containers`/
 /// `list_dirs`); these delegate to the infra adapters that do the actual read.
 pub(crate) use access::list_access;
-pub(crate) use access::{apply_tuning, current_tuning};
+pub(crate) use access::{apply_default_site, apply_tuning, current_tuning};
 pub(crate) use certs_named::list_named_certs;
 pub(crate) use detect::{list_dirs, list_running_containers, nginx_info};
 pub use upload::*;
@@ -273,7 +276,6 @@ async fn handle(req: &Req) -> Result<Value> {
         "delete_cert" => delete_cert(req).await,
         "save_access" => save_access_op(req).await,
         "delete_access" => delete_access_op(req).await,
-        "set_default_site" => set_default_site(req).await,
         "reload" => {
             reload().await?;
             Ok(json!({ "reloaded": true }))
