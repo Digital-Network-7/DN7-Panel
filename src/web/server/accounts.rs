@@ -22,13 +22,12 @@ pub(crate) use crate::domain::authz::{can_manage, role_level};
 
 /// Verify the caller's current password before allowing a change: their
 /// `old_verifier` must equal the stored salted hash (super-admin → web.json,
-/// else the panel user's record).
-#[allow(clippy::result_large_err)]
+/// else the panel user's record). Returns a domain error (no transport types).
 pub(crate) fn verify_current_password(
     state: &Shared,
     a: &Account,
     old_verifier: &str,
-) -> Result<(), Response> {
+) -> Result<(), crate::domain::Error> {
     let cur_hash = if a.is_super {
         state.settings.lock().unwrap().pw_hash.clone()
     } else {
@@ -37,12 +36,20 @@ pub(crate) fn verify_current_password(
             .unwrap_or_default()
     };
     if cur_hash.is_empty() || old_verifier.to_lowercase() != cur_hash {
-        return Err(api_err(
-            StatusCode::BAD_REQUEST,
-            "settings.bad_old_password",
-        ));
+        return Err(crate::domain::Error::BadOldPassword);
     }
     Ok(())
+}
+
+/// Map an account domain error to its HTTP response. This is the single
+/// domain→transport mapping point for the account flow; it lives in the web
+/// layer because it owns the wire codes (aligned with the frontend `err.*`).
+pub(crate) fn account_err(e: crate::domain::Error) -> Response {
+    use crate::domain::Error::*;
+    match e {
+        BadPasswordFormat => api_err(StatusCode::BAD_REQUEST, "settings.pw_format"),
+        BadOldPassword => api_err(StatusCode::BAD_REQUEST, "settings.bad_old_password"),
+    }
 }
 
 /// Persist a new password verifier (super-admin → web.json, else the panel user

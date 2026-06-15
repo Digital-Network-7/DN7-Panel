@@ -6,4 +6,7 @@
 //! without any runtime.
 
 pub(crate) mod authz;
+pub(crate) mod error;
 pub(crate) mod identity;
+
+pub(crate) use error::Error;

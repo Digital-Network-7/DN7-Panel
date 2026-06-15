@@ -112,10 +112,10 @@ pub(crate) async fn put_password(
         Err(r) => return r,
     };
     if !crate::web::users::valid_pw_format(&req.pw_salt, &req.pw_hash) {
-        return api_err(StatusCode::BAD_REQUEST, "settings.pw_format");
+        return account_err(crate::domain::Error::BadPasswordFormat);
     }
-    if let Err(r) = verify_current_password(&state, &a, &req.old_verifier) {
-        return r;
+    if let Err(e) = verify_current_password(&state, &a, &req.old_verifier) {
+        return account_err(e);
     }
     if let Err(r) = save_new_password(&state, &a, &req.pw_salt, &req.pw_hash, &req.password).await {
         return r;
