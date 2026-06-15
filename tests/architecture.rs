@@ -17,7 +17,7 @@ use std::path::Path;
 /// (governed directory relative to crate root, forbidden substrings).
 const RULES: &[(&str, &[&str])] = &[
     (
-        // domain 不懂传输,也不碰外部系统/进程。
+        // domain 不懂传输,不碰外部系统/进程,也不依赖任何上层(app/infra/web)。
         "src/domain",
         &[
             "axum",
@@ -25,6 +25,9 @@ const RULES: &[(&str, &[&str])] = &[
             "reqwest",
             "tokio::process",
             "std::process",
+            "crate::app",
+            "crate::infra",
+            "crate::web",
         ],
     ),
     (
@@ -33,7 +36,7 @@ const RULES: &[(&str, &[&str])] = &[
         &["axum", "crate::web"],
     ),
     (
-        // app 编排用例,只依赖 domain + ports;不碰交付层/外部系统。
+        // app 编排用例,不碰交付层/外部系统;可直接用 infra 适配器(§5:仅在需 mock/swap 时才抽 port)。
         "src/app",
         &["axum", "bollard", "reqwest", "crate::web"],
     ),

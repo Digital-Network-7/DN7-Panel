@@ -143,7 +143,7 @@ platform 独立;跨层装配仅限"受控组合根集合"
 **已完成**
 - 分层骨架与依赖规则:`domain` / `app` / `infra` / `web` / `platform` 目录 + `tests/architecture.rs` tier-1 治理 `domain`/`infra`/`app`。
 - `domain`:`authz`、`identity`(校验器 + `PanelUser` + `Principal`)、`settings`(`WebSettings`)、`error`(`domain::Error` + 唯一 web 边界映射 `map_domain_err`)。
-- `domain`:`authz`、`identity`(校验器 + `PanelUser` + `Principal`)、`settings`(`WebSettings`)、`error`;并已扩展到各能力的规则/实体——`nginx`(校验器 + `Site`/`Location`)、`mysql`(引擎目录规则)、`docker`(创建策略白名单)。
+- `domain`:`authz`、`identity`(校验器 + `PanelUser` + `Principal`)、`settings`(`WebSettings`)、`error`;并已扩展到各能力的规则/实体——`nginx`(校验器 + 持久化实体 `Site`/`Location`/`AccessList`/`AccessUser`/`AccessClient`/`DefaultSite`/`WebGlobal`/`HttpTuning`)、`mysql`(引擎目录规则 + 持久化实体 `Manifest`)、`docker`(创建策略白名单)。持久化实体的 `serde` derive 属 §2/§4 评审例外,字段 `pub(crate)` 经 re-export 供各能力子模块原样引用。
 - `infra`:`audit`、`auth`(会话/challenge/ticket/限流)、`store`(users/settings 持久化)、`system`(OS 适配)。
 - `app`:`account` 用例(改密/2FA,经 `AccountEnv` 端口 + mock 单测)、`users`(面板用户编排);账户自助凭据域 + settings 改密的错误全部走 `domain::Error`。
 
