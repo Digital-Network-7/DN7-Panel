@@ -1,0 +1,158 @@
+//! In-container filesystem operations (list/mkdir/delete/read/write) (split from file.rs).
+use super::*;
+
+/// List a container directory → `{ path, entries:[{name,is_dir,size}] }`.
+pub async fn web_ctn_list(container: &str, path: &str) -> Result<serde_json::Value> {
+    if !valid_container_ref(container) {
+        return Err(anyhow!("invalid container reference"));
+    }
+    let dir = if path.trim().is_empty() { "/" } else { path };
+    check_abs(dir)?;
+    let script = r#"cd "$1" 2>/dev/null || exit 7
+for name in * .[!.]* ..?*; do
+  [ -e "$name" ] || [ -L "$name" ] || continue
+  if [ -d "$name" ]; then
+    printf 'd\t0\t%s\n' "$name"
+  else
+    sz=$(stat -c %s "$name" 2>/dev/null || stat -f %z "$name" 2>/dev/null || echo 0)
+    printf 'f\t%s\t%s\n' "$sz" "$name"
+  fi
+done"#;
+    let (code, stdout) = ctn_exec_collect(container, script, dir).await?;
+    if code != 0 {
+        return Err(anyhow!("目录不存在或无权限"));
+    }
+    let mut entries = Vec::new();
+    for line in stdout.lines() {
+        let mut it = line.splitn(3, '\t');
+        let t = it.next().unwrap_or("");
+        let sz = it.next().unwrap_or("0");
+        let name = match it.next() {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        let is_dir = t == "d";
+        let size: u64 = sz.trim().parse().unwrap_or(0);
+        entries.push(serde_json::json!({ "name": name, "is_dir": is_dir, "size": size }));
+    }
+    entries.sort_by(|a, b| {
+        let ad = a["is_dir"].as_bool().unwrap_or(false);
+        let bd = b["is_dir"].as_bool().unwrap_or(false);
+        bd.cmp(&ad).then_with(|| {
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["name"].as_str().unwrap_or(""))
+        })
+    });
+    Ok(serde_json::json!({ "path": dir, "entries": entries }))
+}
+
+/// Create a directory inside a container.
+pub async fn web_ctn_mkdir(container: &str, path: &str) -> Result<()> {
+    if !valid_container_ref(container) {
+        return Err(anyhow!("invalid container reference"));
+    }
+    ctn_exec_ok(container, "mkdir -p \"$1\"", path).await
+}
+
+/// Delete a path inside a container (refusing protected system dirs).
+pub async fn web_ctn_delete(container: &str, path: &str) -> Result<()> {
+    if !valid_container_ref(container) {
+        return Err(anyhow!("invalid container reference"));
+    }
+    if is_protected_path(path) {
+        return Err(anyhow!("该系统目录受保护，禁止删除"));
+    }
+    ctn_exec_ok(container, "rm -rf \"$1\"", path).await
+}
+
+/// Open a file in a container for **streaming** download → (file name, byte
+/// stream), via the archive (tar) API. The tar header is parsed up front (to
+/// learn the name + size), then content bytes are forwarded chunk-by-chunk as
+/// they arrive — never buffering the whole file.
+pub async fn web_ctn_read_stream(container: &str, path: &str) -> Result<(String, ByteStream)> {
+    use futures::StreamExt;
+
+    if !valid_container_ref(container) {
+        return Err(anyhow!("invalid container reference"));
+    }
+    check_abs(path)?;
+    let dkr = crate::docker::dkr()?;
+    let opts = bollard::container::DownloadFromContainerOptions {
+        path: path.to_string(),
+    };
+    let mut stream = dkr.download_from_container(container, Some(opts));
+
+    // Read just enough leading bytes to parse the 512-byte tar header.
+    let mut header: Vec<u8> = Vec::with_capacity(512);
+    let mut leftover: Bytes = Bytes::new();
+    let mut name = String::from("download");
+    let mut remaining: u64 = 0;
+    let mut begun = false;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| anyhow!(friendly_archive_err(&e)))?;
+        if header.len() < 512 {
+            let need = 512 - header.len();
+            let take = need.min(chunk.len());
+            header.extend_from_slice(&chunk[..take]);
+            if header.len() < 512 {
+                continue;
+            }
+            let (n, size) =
+                parse_tar_header(&header).ok_or_else(|| anyhow!("不能下载目录或空文件"))?;
+            if size == 0 {
+                return Err(anyhow!("不能下载目录或空文件"));
+            }
+            name = n;
+            remaining = size;
+            begun = true;
+            leftover = chunk.slice(take..); // content bytes already in this chunk
+            break;
+        }
+    }
+    if !begun {
+        return Err(anyhow!("文件不存在"));
+    }
+    // Emit the leftover content first, then keep pulling from the archive
+    // stream until `remaining` content bytes have been forwarded.
+    let s = futures::stream::unfold(
+        (stream, remaining, leftover),
+        |(mut stream, mut remaining, mut leftover)| async move {
+            if remaining == 0 {
+                return None;
+            }
+            if !leftover.is_empty() {
+                let n = (remaining as usize).min(leftover.len());
+                let out = leftover.split_to(n);
+                remaining -= n as u64;
+                return Some((Ok(out), (stream, remaining, leftover)));
+            }
+            match stream.next().await {
+                Some(Ok(chunk)) => {
+                    let n = (remaining as usize).min(chunk.len());
+                    let out = chunk.slice(0..n);
+                    remaining -= n as u64;
+                    Some((Ok(out), (stream, remaining, Bytes::new())))
+                }
+                Some(Err(e)) => Some((
+                    Err(std::io::Error::other(friendly_archive_err(&e))),
+                    (stream, 0, Bytes::new()),
+                )),
+                None => None,
+            }
+        },
+    );
+    Ok((name, Box::pin(s)))
+}
+
+/// Upload an already-staged temp file into a container at `dest_path` via the
+/// archive (tar) API (the tar body is streamed from the temp file). Works on
+/// shell-less images.
+pub async fn web_ctn_write_file(container: &str, dest_path: &str, temp: &Path) -> Result<()> {
+    if !valid_container_ref(container) {
+        return Err(anyhow!("invalid container reference"));
+    }
+    check_abs(dest_path)?;
+    ctn_upload_file(container, temp, dest_path).await
+}
