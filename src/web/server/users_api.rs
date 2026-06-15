@@ -14,7 +14,7 @@ pub(crate) async fn users_list(
     }
     let mut list = Vec::new();
     {
-        let s = state.settings.lock().unwrap();
+        let s = state.settings.lock().unwrap_or_else(|p| p.into_inner());
         list.push(json!({
             "username": s.username, "role": "admin", "is_super": true,
             "full_name": s.full_name, "nickname": s.nickname, "uid": s.owner_uid, "totp_enabled": s.totp_enabled,
@@ -64,7 +64,13 @@ pub(crate) async fn users_create(
         return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
     }
     // Can't collide with the super-admin's login name.
-    if req.username == state.settings.lock().unwrap().username {
+    if req.username
+        == state
+            .settings
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .username
+    {
         return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.exists"))).into_response();
     }
     match crate::app::users::create(&crate::app::users::NewUser {

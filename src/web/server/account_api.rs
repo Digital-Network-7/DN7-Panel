@@ -47,7 +47,7 @@ pub(crate) async fn put_profile(
     }
     if a.is_super {
         let saved = {
-            let mut s = state.settings.lock().unwrap();
+            let mut s = state.settings.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(f) = &req.full_name {
                 s.full_name = clip(f, 64);
             }
@@ -139,7 +139,12 @@ struct WebAccountEnv<'a> {
 impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
     fn current_verifier(&self, who: &crate::domain::identity::Principal) -> String {
         if who.is_super {
-            self.state.settings.lock().unwrap().pw_hash.clone()
+            self.state
+                .settings
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .pw_hash
+                .clone()
         } else {
             crate::app::users::find(&who.username)
                 .map(|u| u.pw_hash)
@@ -155,7 +160,11 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
     ) -> Result<(), crate::domain::Error> {
         if who.is_super {
             let saved = {
-                let mut s = self.state.settings.lock().unwrap();
+                let mut s = self
+                    .state
+                    .settings
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
                 s.set_password_hashed(salt, hash);
                 s.clone()
             };
@@ -179,7 +188,12 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
 
     fn read_totp(&self, who: &crate::domain::identity::Principal) -> String {
         if who.is_super {
-            self.state.settings.lock().unwrap().totp_secret.clone()
+            self.state
+                .settings
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .totp_secret
+                .clone()
         } else {
             crate::app::users::find(&who.username)
                 .map(|u| u.totp_secret)
@@ -195,7 +209,11 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
     ) -> Result<(), crate::domain::Error> {
         let res = if who.is_super {
             let saved = {
-                let mut s = self.state.settings.lock().unwrap();
+                let mut s = self
+                    .state
+                    .settings
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
                 s.totp_secret = secret.to_string();
                 s.totp_enabled = enabled;
                 s.clone()

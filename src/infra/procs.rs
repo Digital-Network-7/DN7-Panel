@@ -70,7 +70,7 @@ fn ensure_sampler() {
                 sys.refresh_cpu_usage();
                 sys.refresh_memory();
                 let snap = compute(&sys, CACHE_TOP);
-                *cache().lock().unwrap() = snap;
+                *cache().lock().unwrap_or_else(|p| p.into_inner()) = snap;
             }
         });
     });
@@ -84,7 +84,7 @@ pub async fn web_snapshot(limit: usize) -> Value {
     ensure_sampler();
     let lim = limit.clamp(1, CACHE_TOP);
     {
-        let c = cache().lock().unwrap();
+        let c = cache().lock().unwrap_or_else(|p| p.into_inner());
         if c.ready {
             return json!({
                 "total_mem": c.total_mem,

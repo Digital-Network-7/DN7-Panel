@@ -184,7 +184,7 @@ impl SessionStore {
                 .into_iter()
                 .filter(|(_, r)| now.saturating_sub(r.last) <= SESSION_TTL.as_secs())
                 .collect();
-            *s.map.lock().unwrap() = live;
+            *s.map.lock().unwrap_or_else(|p| p.into_inner()) = live;
         }
         s
     }
@@ -208,7 +208,7 @@ impl SessionStore {
         if !self.persist {
             return;
         }
-        let snapshot = self.map.lock().unwrap().clone();
+        let snapshot = self.map.lock().unwrap_or_else(|p| p.into_inner()).clone();
         let _ = write_sessions(&snapshot);
     }
 
@@ -216,7 +216,7 @@ impl SessionStore {
         let token = random_token();
         let now = now_secs();
         {
-            let mut m = self.map.lock().unwrap();
+            let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
             // Opportunistically prune expired sessions.
             m.retain(|_, r| now.saturating_sub(r.last) <= self.ttl_secs());
             m.insert(
@@ -241,7 +241,7 @@ impl SessionStore {
         let now = now_secs();
         let mut persist = false;
         let user = {
-            let mut m = self.map.lock().unwrap();
+            let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
             match m.get(token).cloned() {
                 Some(rec) if now.saturating_sub(rec.last) <= self.ttl_secs() => {
                     // Debounce disk writes: persist only every few minutes.
@@ -267,7 +267,10 @@ impl SessionStore {
     }
 
     fn revoke(&self, token: &str) {
-        self.map.lock().unwrap().remove(token);
+        self.map
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(token);
         self.save();
     }
 
@@ -282,7 +285,7 @@ impl SessionStore {
     fn sweep(&self) {
         let now = now_secs();
         let changed = {
-            let mut m = self.map.lock().unwrap();
+            let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
             let before = m.len();
             m.retain(|_, r| now.saturating_sub(r.last) <= self.ttl_secs());
             m.len() != before
@@ -305,7 +308,7 @@ struct ChallengeStore {
 impl ChallengeStore {
     fn issue(&self) -> String {
         let nonce = random_token();
-        let mut m = self.map.lock().unwrap();
+        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
         let now = Instant::now();
         m.retain(|_, t| now.duration_since(*t) <= CHALLENGE_TTL);
         // Bound memory: if still at the cap after pruning expired nonces, evict
@@ -325,7 +328,7 @@ impl ChallengeStore {
         if nonce.is_empty() {
             return false;
         }
-        let mut m = self.map.lock().unwrap();
+        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
         match m.remove(nonce) {
             Some(t) => Instant::now().duration_since(t) <= CHALLENGE_TTL,
             None => false,
@@ -359,7 +362,7 @@ struct TicketStore {
 impl TicketStore {
     fn issue(&self, user: &str) -> String {
         let ticket = random_token();
-        let mut m = self.map.lock().unwrap();
+        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
         let now = Instant::now();
         m.retain(|_, r| now.duration_since(r.issued) <= TICKET_TTL);
         while m.len() >= MAX_TICKETS {
@@ -386,7 +389,7 @@ impl TicketStore {
         if ticket.is_empty() {
             return None;
         }
-        let mut m = self.map.lock().unwrap();
+        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
         match m.remove(ticket) {
             Some(r) if Instant::now().duration_since(r.issued) <= TICKET_TTL => Some(r.user),
             _ => None,
@@ -394,7 +397,10 @@ impl TicketStore {
     }
 
     fn revoke_user(&self, user: &str) {
-        self.map.lock().unwrap().retain(|_, r| r.user != user);
+        self.map
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|_, r| r.user != user);
     }
 
     fn sweep(&self) {
@@ -417,7 +423,7 @@ struct RateLimiter {
 
 impl RateLimiter {
     fn allowed(&self, source: &str) -> bool {
-        let mut m = self.map.lock().unwrap();
+        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
         let now = Instant::now();
         let entry = m.entry(source.to_string()).or_default();
         entry.retain(|t| now.duration_since(*t) <= FAIL_WINDOW);
@@ -425,7 +431,7 @@ impl RateLimiter {
     }
 
     fn record(&self, source: &str) {
-        let mut m = self.map.lock().unwrap();
+        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
         let now = Instant::now();
         let entry = m.entry(source.to_string()).or_default();
         entry.retain(|t| now.duration_since(*t) <= FAIL_WINDOW);
@@ -433,12 +439,15 @@ impl RateLimiter {
     }
 
     fn clear(&self, source: &str) {
-        self.map.lock().unwrap().remove(source);
+        self.map
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(source);
     }
 
     fn sweep(&self) {
         let now = Instant::now();
-        let mut m = self.map.lock().unwrap();
+        let mut m = self.map.lock().unwrap_or_else(|p| p.into_inner());
         m.retain(|_, v| {
             v.retain(|t| now.duration_since(*t) <= FAIL_WINDOW);
             !v.is_empty()

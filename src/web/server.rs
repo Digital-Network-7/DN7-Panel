@@ -294,7 +294,7 @@ impl Account {
 /// Resolve an account name to a super-admin or panel-user view.
 fn resolve_account(state: &Shared, username: &str) -> Option<Account> {
     {
-        let su = state.settings.lock().unwrap();
+        let su = state.settings.lock().unwrap_or_else(|p| p.into_inner());
         if username == su.username {
             return Some(Account {
                 username: su.username.clone(),

@@ -31,7 +31,7 @@ pub async fn changelog(cfg: &PanelConfig) -> ChangelogResult {
     const RETRY_TTL: u64 = 45; // re-attempt backfill of blank notes this often
     let now = now_secs();
     let (have, fresh, blank, last) = {
-        let c = changelog_cache().lock().unwrap();
+        let c = changelog_cache().lock().unwrap_or_else(|p| p.into_inner());
         let blank = c.by_version.values().any(|n| n.notes.is_empty());
         (
             !c.by_version.is_empty(),
@@ -60,13 +60,16 @@ pub async fn changelog(cfg: &PanelConfig) -> ChangelogResult {
             }
         }
         if got_any {
-            changelog_cache().lock().unwrap().fetched_at = now;
+            changelog_cache()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .fetched_at = now;
         }
     }
 
     // Emit the merged set, newest-first.
     let mut entries: Vec<fetch::ReleaseNote> = {
-        let c = changelog_cache().lock().unwrap();
+        let c = changelog_cache().lock().unwrap_or_else(|p| p.into_inner());
         c.by_version.values().cloned().collect()
     };
     entries.sort_by_key(|e| std::cmp::Reverse(parse_semver(&e.version).unwrap_or((0, 0, 0))));
@@ -89,7 +92,7 @@ pub(crate) fn changelog_cache() -> &'static std::sync::Mutex<ChangelogCache> {
 /// only when the incoming notes are non-empty (so a blank fetch never erases
 /// notes we already have); a new version is inserted as-is.
 pub(crate) fn merge_changelog(list: Vec<fetch::ReleaseNote>) {
-    let mut c = changelog_cache().lock().unwrap();
+    let mut c = changelog_cache().lock().unwrap_or_else(|p| p.into_inner());
     for note in list {
         match c.by_version.get_mut(&note.version) {
             Some(existing) => {
