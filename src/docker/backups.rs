@@ -58,7 +58,6 @@ pub(crate) fn start_backup_container(req: &Req) -> Result<Value> {
 }
 
 pub(crate) async fn backup_container(op_id: &str, reference: &str, name: &str) -> Result<String> {
-    use std::io::Write;
     let dkr = dkr()?;
     let ts = now_stamp();
     let dir = backups_root().join(name);
@@ -76,38 +75,12 @@ pub(crate) async fn backup_container(op_id: &str, reference: &str, name: &str) -
 
     // Commit to a temporary image so the saved tar carries full config + layers.
     op_push(op_id, &pmsg("dk.bk_committing", &[]));
-    let tmp_repo = "dn7-backup";
-    let tmp_tag = format!("{name}-{ts}");
-    let commit = bollard::image::CommitContainerOptions {
-        container: reference.to_string(),
-        repo: tmp_repo.to_string(),
-        tag: tmp_tag.clone(),
-        comment: "DN7 Panel backup".to_string(),
-        author: "DN7 Panel".to_string(),
-        pause: true,
-        changes: None,
-    };
-    dkr.commit_container(commit, bollard::container::Config::<String>::default())
-        .await
-        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-    let tmp_image = format!("{tmp_repo}:{tmp_tag}");
+    let tmp_image = commit_backup_image(&dkr, reference, name, &ts).await?;
 
     // Stream `docker save` -> gzip -> file.
     op_push(op_id, &pmsg("dk.bk_saving", &[]));
     let tar_gz = dir.join(format!("{ts}.tar.gz"));
-    let result = async {
-        let file = std::fs::File::create(&tar_gz).map_err(|e| anyhow!("无法创建备份文件：{e}"))?;
-        let mut enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
-        let mut stream = dkr.export_image(&tmp_image);
-        while let Some(item) = stream.next().await {
-            let chunk = item.map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-            enc.write_all(&chunk)
-                .map_err(|e| anyhow!("写入备份失败：{e}"))?;
-        }
-        enc.finish().map_err(|e| anyhow!("写入备份失败：{e}"))?;
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
+    let result = stream_image_to_gz(&dkr, &tmp_image, &tar_gz).await;
 
     // Always remove the temp image tag; the tar is self-contained.
     let _ = dkr
@@ -127,6 +100,47 @@ pub(crate) async fn backup_container(op_id: &str, reference: &str, name: &str) -
         return Err(e);
     }
     Ok(format!("{ts}.tar.gz"))
+}
+
+/// Commit `reference` to a temporary `dn7-backup:<name>-<ts>` image so the
+/// exported tar carries the full config + layers. Returns the temp image name.
+async fn commit_backup_image(
+    dkr: &Docker,
+    reference: &str,
+    name: &str,
+    ts: &str,
+) -> Result<String> {
+    let tmp_repo = "dn7-backup";
+    let tmp_tag = format!("{name}-{ts}");
+    let commit = bollard::image::CommitContainerOptions {
+        container: reference.to_string(),
+        repo: tmp_repo.to_string(),
+        tag: tmp_tag.clone(),
+        comment: "DN7 Panel backup".to_string(),
+        author: "DN7 Panel".to_string(),
+        pause: true,
+        changes: None,
+    };
+    dkr.commit_container(commit, bollard::container::Config::<String>::default())
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    Ok(format!("{tmp_repo}:{tmp_tag}"))
+}
+
+/// Stream `docker save <image>` through gzip into `path`. The caller handles
+/// cleanup of the temp image and the partial file on error.
+async fn stream_image_to_gz(dkr: &Docker, image: &str, path: &std::path::Path) -> Result<()> {
+    use std::io::Write;
+    let file = std::fs::File::create(path).map_err(|e| anyhow!("无法创建备份文件：{e}"))?;
+    let mut enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut stream = dkr.export_image(image);
+    while let Some(item) = stream.next().await {
+        let chunk = item.map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+        enc.write_all(&chunk)
+            .map_err(|e| anyhow!("写入备份失败：{e}"))?;
+    }
+    enc.finish().map_err(|e| anyhow!("写入备份失败：{e}"))?;
+    Ok(())
 }
 
 /// List backups for a container name: file, size, created (mtime, secs).
