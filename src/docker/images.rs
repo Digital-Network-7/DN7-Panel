@@ -52,6 +52,27 @@ pub(crate) async fn retag_image(req: &Req) -> Result<Value> {
     if managed_image_guard(&reference).await {
         return Err(anyhow!("ERR_CODE:docker.image_in_use_builtin"));
     }
+    let desired = parse_desired_tags(req)?;
+    let dkr = dkr()?;
+    let info = dkr
+        .inspect_image(&reference)
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    let current: Vec<String> = info
+        .repo_tags
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t != "<none>:<none>")
+        .collect();
+    let add: Vec<&String> = desired.iter().filter(|t| !current.contains(t)).collect();
+    let remove: Vec<&String> = current.iter().filter(|t| !desired.contains(t)).collect();
+    apply_tag_changes(&dkr, &reference, &add, &remove).await?;
+    Ok(json!({ "added": add.len(), "removed": remove.len() }))
+}
+
+/// Parse + validate the desired tag set from the request (deduped, non-empty,
+/// capped at 20, each a valid image token).
+fn parse_desired_tags(req: &Req) -> Result<Vec<String>> {
     let mut desired: Vec<String> = req
         .tags
         .clone()
@@ -72,30 +93,28 @@ pub(crate) async fn retag_image(req: &Req) -> Result<Value> {
             return Err(anyhow!("ERR_CODE:docker.bad_tag"));
         }
     }
-    let dkr = dkr()?;
-    let info = dkr
-        .inspect_image(&reference)
-        .await
-        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-    let current: Vec<String> = info
-        .repo_tags
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|t| t != "<none>:<none>")
-        .collect();
-    let add: Vec<&String> = desired.iter().filter(|t| !current.contains(t)).collect();
-    let remove: Vec<&String> = current.iter().filter(|t| !desired.contains(t)).collect();
+    Ok(desired)
+}
 
-    for t in &add {
+/// Apply the computed tag diff to `reference`: add the new tags (`docker tag`),
+/// then drop the removed ones (`docker rmi`, non-forced so a tag in use elsewhere
+/// is preserved).
+async fn apply_tag_changes(
+    dkr: &Docker,
+    reference: &str,
+    add: &[&String],
+    remove: &[&String],
+) -> Result<()> {
+    for t in add {
         let (repo, tag) = split_repo_tag(t);
         dkr.tag_image(
-            &reference,
+            reference,
             Some(bollard::image::TagImageOptions::<String> { repo, tag }),
         )
         .await
         .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
     }
-    for t in &remove {
+    for t in remove {
         let opts = bollard::image::RemoveImageOptions {
             force: false,
             noprune: false,
@@ -104,7 +123,7 @@ pub(crate) async fn retag_image(req: &Req) -> Result<Value> {
             .await
             .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
     }
-    Ok(json!({ "added": add.len(), "removed": remove.len() }))
+    Ok(())
 }
 
 pub(crate) async fn list_images() -> Result<Value> {
