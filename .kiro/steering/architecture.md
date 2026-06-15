@@ -137,3 +137,15 @@ platform 独立;跨层装配仅限"受控组合根集合"
 3. **app/ports 长成新的大总线** → 靠 §5 的按能力分子模块挡。
 
 任何 PR 若让这三项之一变差,即使编译通过也应被拒。
+
+## 10. 迁移现状(随推进更新)
+
+**已完成**
+- 分层骨架与依赖规则:`domain` / `app` / `infra` / `web` / `platform` 目录 + `tests/architecture.rs` tier-1 治理 `domain`/`infra`/`app`。
+- `domain`:`authz`、`identity`(校验器 + `PanelUser` + `Principal`)、`settings`(`WebSettings`)、`error`(`domain::Error` + 唯一 web 边界映射 `map_domain_err`)。
+- `infra`:`audit`、`auth`(会话/challenge/ticket/限流)、`store`(users/settings 持久化)。
+- `app`:`account` 用例 `change_password` / `enable_2fa` / `disable_2fa`(经 `AccountEnv` 端口,内存 mock 单测);账户自助凭据域 + settings 改密的错误全部走 `domain::Error`。
+
+**待办(建议按能力分阶段做,勿一次性强塞)**
+- 管理员用户管理(`users_create/update/delete`)迁入 app 用例(字段多、role/sudo/OS/会话/审计纠缠,需保持原子写语义)。
+- 能力竖切 `nginx` / `docker` / `mysql` / `files`:这些模块已有 `validate/store/exec` 内部分层 + `web_dispatch` 薄缝;**命令模型(大 Req→按操作命令枚举)属高改动面、低收益(见 §5 取向),且涉及 bollard/nginx/系统调用、本地无法运行期验证**,务必逐能力小步推进、各自验证,不要在单次改动中全量重写。
