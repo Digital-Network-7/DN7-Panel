@@ -195,13 +195,28 @@ pub(crate) fn nginx_run_uid_gid() -> Option<(u32, u32)> {
     }
     let user = user?;
     let c = std::ffi::CString::new(user).ok()?;
-    // SAFETY: getpwnam reads the passwd db for a valid C string and returns a
-    // pointer we immediately copy out of (no retention).
-    unsafe {
-        let pw = libc::getpwnam(c.as_ptr());
-        if pw.is_null() {
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    let mut buf = vec![0 as libc::c_char; 1024];
+    loop {
+        // SAFETY: reentrant `getpwnam_r` fills `pwd`/`buf`; `result` is `&pwd`
+        // on success or null when the user is unknown. No shared static buffer.
+        let rc = unsafe {
+            libc::getpwnam_r(
+                c.as_ptr(),
+                &mut pwd,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut result,
+            )
+        };
+        if rc == libc::ERANGE && buf.len() < 65536 {
+            buf.resize(buf.len() * 2, 0);
+            continue;
+        }
+        if rc != 0 || result.is_null() {
             return None;
         }
-        Some(((*pw).pw_uid, (*pw).pw_gid))
+        return Some((pwd.pw_uid, pwd.pw_gid));
     }
 }

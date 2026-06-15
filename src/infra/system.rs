@@ -11,22 +11,43 @@ use std::ffi::{CStr, CString};
 
 use anyhow::{anyhow, Result};
 
-/// Look up a system account's uid + home dir (None if it doesn't exist).
+/// Look up a system account's uid + home dir (None if it doesn't exist). Uses
+/// the reentrant `getpwnam_r` (no shared static buffer → thread-safe).
 pub fn getpwnam(name: &str) -> Option<(u32, String)> {
     let cname = CString::new(name).ok()?;
-    // SAFETY: getpwnam reads the passwd db; we copy out the fields immediately.
-    unsafe {
-        let pw = libc::getpwnam(cname.as_ptr());
-        if pw.is_null() {
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    let mut buf = vec![0 as libc::c_char; 1024];
+    loop {
+        // SAFETY: `getpwnam_r` fills `pwd` + `buf` and sets `result` to `&pwd`
+        // on success (or null when the user doesn't exist). Reentrant: no shared
+        // static buffer. We copy fields out while `buf` is still alive.
+        let rc = unsafe {
+            libc::getpwnam_r(
+                cname.as_ptr(),
+                &mut pwd,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut result,
+            )
+        };
+        if rc == libc::ERANGE && buf.len() < 65536 {
+            buf.resize(buf.len() * 2, 0);
+            continue;
+        }
+        if rc != 0 || result.is_null() {
             return None;
         }
-        let uid = (*pw).pw_uid;
-        let dir = if (*pw).pw_dir.is_null() {
+        let uid = pwd.pw_uid;
+        let dir = if pwd.pw_dir.is_null() {
             format!("/home/{name}")
         } else {
-            CStr::from_ptr((*pw).pw_dir).to_string_lossy().to_string()
+            // SAFETY: `pw_dir` points into `buf`, still alive here.
+            unsafe { CStr::from_ptr(pwd.pw_dir) }
+                .to_string_lossy()
+                .to_string()
         };
-        Some((uid, dir))
+        return Some((uid, dir));
     }
 }
 
