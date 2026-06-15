@@ -85,6 +85,17 @@ jobs:
         continue-on-error: true
         run: cargo audit
 
+      # Supply-chain gate: advisories + license policy + banned/duplicate crates
+      # + source allow-list, per deny.toml. Advisory-only for license/ban drift
+      # is avoided — this is a hard gate; tune deny.toml when it legitimately
+      # flags a new (fixed) advisory or an additional permissive license.
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Dependency policy (cargo-deny)
+        run: cargo deny check advisories bans licenses sources
+
   build:
     needs: [version, check]
     runs-on: ubuntu-latest
