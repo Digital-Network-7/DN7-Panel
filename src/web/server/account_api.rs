@@ -78,7 +78,7 @@ pub(crate) async fn put_profile(
             return Json(op_err_body(e)).into_response();
         }
         if let Some(f) = &req.full_name {
-            let _ = crate::web::users::set_full_name(&a.username, &clip(f, 64)).await;
+            let _ = crate::web::system_account::set_full_name(&a.username, &clip(f, 64)).await;
         }
     }
     Json(json!({ "ok": true })).into_response()

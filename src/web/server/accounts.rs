@@ -99,7 +99,7 @@ pub(crate) async fn save_new_password(
         // Sync the OS password to the new panel password.
         if !plaintext.is_empty() {
             if let Some(u) = &a.system_user {
-                let _ = crate::web::users::set_system_password(u, plaintext).await;
+                let _ = crate::web::system_account::set_system_password(u, plaintext).await;
             }
         }
     }
@@ -175,7 +175,7 @@ pub(crate) fn me_view(state: &Shared, a: &Account) -> Value {
     // Home directory to open the file manager at: the user's system home, or
     // the panel owner's home (root) for the super-admin.
     let home = match &a.system_user {
-        Some(u) => crate::web::users::getpwnam(u)
+        Some(u) => crate::web::system_account::getpwnam(u)
             .map(|(_, h)| h)
             .unwrap_or_else(|| "/".to_string()),
         None => std::env::var("HOME")

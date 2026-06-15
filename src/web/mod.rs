@@ -21,6 +21,7 @@ mod auth;
 mod branding;
 mod server;
 mod settings;
+mod system_account;
 mod totp;
 mod users;
 
