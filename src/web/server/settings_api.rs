@@ -177,9 +177,7 @@ fn apply_password_change(s: &mut WebSettings, req: &SettingsReq) -> Result<(), R
     let cur_hash = s.pw_hash.clone();
     let salt = req.pw_salt.clone().unwrap_or_default();
     let hash = req.pw_hash.clone().unwrap_or_default();
-    let salt_ok = salt.len() == 32 && salt.bytes().all(|b| b.is_ascii_hexdigit());
-    let hash_ok = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
-    if !salt_ok || !hash_ok {
+    if !crate::web::users::valid_pw_format(&salt, &hash) {
         return Err(api_err(StatusCode::BAD_REQUEST, "settings.pw_format"));
     }
     // pw_check = sha256(current salt ":" new password) must NOT equal the stored

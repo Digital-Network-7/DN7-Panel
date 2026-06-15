@@ -233,6 +233,17 @@ pub async fn create(req: &NewUser<'_>) -> Result<PanelUser> {
     Ok(user)
 }
 
+/// Whether a client-computed credential pair is well-formed: a 32-hex salt and
+/// a 64-hex (sha256) verifier. The cleartext password never reaches the server,
+/// so this format is the only server-side credential check. Shared by every
+/// password entry point (create / self-change / admin reset / settings).
+pub(crate) fn valid_pw_format(salt: &str, hash: &str) -> bool {
+    salt.len() == 32
+        && salt.bytes().all(|b| b.is_ascii_hexdigit())
+        && hash.len() == 64
+        && hash.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Validate a new-user request (username chars, role, and well-formed hex
 /// salt/hash) before any system-account side effects.
 fn validate_new_user(req: &NewUser<'_>) -> Result<()> {
@@ -242,9 +253,7 @@ fn validate_new_user(req: &NewUser<'_>) -> Result<()> {
     if !matches!(req.role, "admin" | "user") {
         return Err(anyhow!("ERR_CODE:users.bad_role"));
     }
-    let salt_ok = req.pw_salt.len() == 32 && req.pw_salt.bytes().all(|b| b.is_ascii_hexdigit());
-    let hash_ok = req.pw_hash.len() == 64 && req.pw_hash.bytes().all(|b| b.is_ascii_hexdigit());
-    if !salt_ok || !hash_ok {
+    if !valid_pw_format(req.pw_salt, req.pw_hash) {
         return Err(anyhow!("ERR_CODE:settings.pw_format"));
     }
     Ok(())

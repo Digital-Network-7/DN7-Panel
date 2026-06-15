@@ -348,6 +348,7 @@ fn op_err_body(e: anyhow::Error) -> Value {
 // descendant modules can read their private items via `use super::*`.
 // ---------------------------------------------------------------------------
 mod account_api;
+mod accounts;
 mod assets;
 mod audit_api;
 mod branding_api;
@@ -360,6 +361,7 @@ mod update_api;
 mod users_api;
 mod ws;
 use account_api::*;
+use accounts::*;
 use assets::*;
 use audit_api::*;
 use branding_api::*;

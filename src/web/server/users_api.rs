@@ -29,24 +29,6 @@ pub(crate) async fn users_list(
     Json(json!({ "ok": true, "data": { "users": list } })).into_response()
 }
 
-/// Privilege level: super-admin (owner) 2, admin (sudo) 1, plain user 0.
-pub(crate) fn account_level(a: &Account) -> u8 {
-    if a.is_super {
-        2
-    } else if a.is_admin {
-        1
-    } else {
-        0
-    }
-}
-pub(crate) fn role_level(role: &str) -> u8 {
-    if role == "admin" {
-        1
-    } else {
-        0
-    }
-}
-
 #[derive(serde::Deserialize)]
 pub(crate) struct CreateUserReq {
     #[serde(default)]
@@ -78,7 +60,7 @@ pub(crate) async fn users_create(
     }
     // May only create an account strictly lower in privilege than oneself
     // (owner → admin/user; admin → user only).
-    if role_level(&req.role) >= account_level(&actor) {
+    if !accounts::can_manage(account_level(&actor), role_level(&req.role)) {
         return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
     }
     // Can't collide with the super-admin's login name.
@@ -150,7 +132,7 @@ pub(crate) async fn users_update(
         }
     };
     // Only manage accounts strictly below your own privilege.
-    if actor_lvl <= role_level(&target.role) {
+    if !accounts::can_manage(actor_lvl, role_level(&target.role)) {
         return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
     }
     // Optional role change (also adjusts the sudo group). The new role must
@@ -211,7 +193,7 @@ async fn apply_role_change(
     if !matches!(role.as_str(), "admin" | "user") {
         return Err(Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.bad_role"))).into_response());
     }
-    if role_level(role) >= actor_lvl {
+    if !accounts::can_manage(actor_lvl, role_level(role)) {
         return Err(api_err(StatusCode::FORBIDDEN, "auth.forbidden"));
     }
     if role != target_role {
@@ -232,9 +214,7 @@ fn parse_pw_update(req: &UpdateUserReq) -> Result<Option<(String, String)>, Resp
     }
     let salt = req.pw_salt.clone().unwrap_or_default();
     let hash = req.pw_hash.clone().unwrap_or_default();
-    let salt_ok = salt.len() == 32 && salt.bytes().all(|b| b.is_ascii_hexdigit());
-    let hash_ok = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
-    if !salt_ok || !hash_ok {
+    if !crate::web::users::valid_pw_format(&salt, &hash) {
         return Err(api_err(StatusCode::BAD_REQUEST, "settings.pw_format"));
     }
     Ok(Some((salt, hash.to_lowercase())))
@@ -257,7 +237,7 @@ pub(crate) async fn users_delete(
     };
     // Only delete accounts strictly below your own privilege.
     if let Some(t) = crate::web::users::find(&req.username) {
-        if account_level(&actor) <= role_level(&t.role) {
+        if !accounts::can_manage(account_level(&actor), role_level(&t.role)) {
             return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
         }
     }

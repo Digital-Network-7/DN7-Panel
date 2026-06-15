@@ -149,9 +149,7 @@ pub(crate) async fn put_password(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let salt_ok = req.pw_salt.len() == 32 && req.pw_salt.bytes().all(|b| b.is_ascii_hexdigit());
-    let hash_ok = req.pw_hash.len() == 64 && req.pw_hash.bytes().all(|b| b.is_ascii_hexdigit());
-    if !salt_ok || !hash_ok {
+    if !crate::web::users::valid_pw_format(&req.pw_salt, &req.pw_hash) {
         return api_err(StatusCode::BAD_REQUEST, "settings.pw_format");
     }
     if let Err(r) = verify_current_password(&state, &a, &req.old_verifier) {
