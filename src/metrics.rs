@@ -278,15 +278,7 @@ fn aggregate_disks(
     let mut used: u64 = 0;
     let mut mounts: Vec<DiskMount> = Vec::new();
     for disk in disks.list() {
-        // Only count real physical disks: skip pseudo / virtual filesystems
-        // (tmpfs, overlay, squashfs, proc, ...) which otherwise show up as
-        // spurious or zero-sized entries (and a blank row in the UI).
-        let fs = disk.file_system().to_string_lossy().to_ascii_lowercase();
-        if !is_physical_fs(&fs) {
-            continue;
-        }
-        let mount = disk.mount_point().to_string_lossy().to_string();
-        if is_virtual_mount(&mount) {
+        if !is_countable_disk(disk) {
             continue;
         }
         let key = disk.name().to_string_lossy().to_string();
@@ -294,39 +286,13 @@ fn aggregate_disks(
             continue; // already counted this device
         }
         let dt = disk.total_space();
-        if dt == 0 {
-            continue; // skip pseudo/zero-sized filesystems
-        }
-        // Sanity guard: reject absurd capacities (e.g. an FTP/network mount that
-        // reports a bogus multi-petabyte total) so one bad row can't blow up the
-        // aggregate percentage. 1 PiB is far above any realistic single mount.
-        const MAX_SANE_BYTES: u64 = 1 << 50; // 1 PiB
-        if dt > MAX_SANE_BYTES {
-            continue;
-        }
-        let avail = disk.available_space();
-        let du = dt.saturating_sub(avail);
+        let du = dt.saturating_sub(disk.available_space());
         total += dt;
         used += du;
         let dev_name = disk.name().to_string_lossy().to_string();
-        // Static device facts (kind / device path / whole-disk size) come from
-        // `/sys/block/*` which never changes at runtime — read once per device
-        // and reuse, so a 1s tick doesn't keep hitting the filesystem.
-        let st = cache.entry(dev_name.clone()).or_insert_with(|| {
-            let base = block_base_name(&dev_name);
-            let device = base
-                .as_ref()
-                .map(|b| format!("/dev/{b}"))
-                .unwrap_or_default();
-            let device_size = base.as_deref().map(whole_disk_size).unwrap_or(0);
-            DiskStatic {
-                kind: disk_kind(&dev_name),
-                device,
-                device_size,
-            }
-        });
+        let st = disk_static_facts(cache, &dev_name);
         mounts.push(DiskMount {
-            mount,
+            mount: disk.mount_point().to_string_lossy().to_string(),
             total: dt,
             used: du,
             kind: st.kind.clone(),
@@ -337,6 +303,48 @@ fn aggregate_disks(
     // Largest filesystems first so the UI shows the most relevant mounts on top.
     mounts.sort_by(|a, b| b.total.cmp(&a.total));
     (total, used, mounts)
+}
+
+/// Whether a disk represents a real, countable physical filesystem: skip
+/// pseudo/virtual filesystems (tmpfs, overlay, squashfs, proc, ...), virtual
+/// mount points, zero-sized entries, and absurd capacities (e.g. a network
+/// mount reporting bogus multi-petabyte totals) that would skew the aggregate.
+fn is_countable_disk(disk: &sysinfo::Disk) -> bool {
+    const MAX_SANE_BYTES: u64 = 1 << 50; // 1 PiB — far above any real single mount
+    let fs = disk.file_system().to_string_lossy().to_ascii_lowercase();
+    if !is_physical_fs(&fs) {
+        return false;
+    }
+    if is_virtual_mount(&disk.mount_point().to_string_lossy()) {
+        return false;
+    }
+    let dt = disk.total_space();
+    dt != 0 && dt <= MAX_SANE_BYTES
+}
+
+/// Static device facts (kind / device path / whole-disk size) for `dev_name`.
+/// These come from `/sys/block/*` and never change at runtime, so they're read
+/// once per device and cached — a 1s metrics tick won't keep hitting the FS.
+fn disk_static_facts(
+    cache: &mut std::collections::HashMap<String, DiskStatic>,
+    dev_name: &str,
+) -> DiskStatic {
+    cache
+        .entry(dev_name.to_string())
+        .or_insert_with(|| {
+            let base = block_base_name(dev_name);
+            let device = base
+                .as_ref()
+                .map(|b| format!("/dev/{b}"))
+                .unwrap_or_default();
+            let device_size = base.as_deref().map(whole_disk_size).unwrap_or(0);
+            DiskStatic {
+                kind: disk_kind(dev_name),
+                device,
+                device_size,
+            }
+        })
+        .clone()
 }
 
 /// True for real, local, persistent disk filesystems we want to count.
