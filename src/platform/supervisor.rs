@@ -322,6 +322,9 @@ mod tests {
         assert!(version_gt("1.0.22", "1.0.21"));
         assert!(version_gt("1.1.0", "1.0.99"));
         assert!(version_gt("v1.0.22", "1.0.21"));
+        // Minor-series bump: 1.4.0 must supersede the last 1.3.x build so
+        // deployed v1.3.99 panels self-update across the 1.3 → 1.4 boundary.
+        assert!(version_gt("1.4.0", "1.3.99"));
     }
 
     #[test]

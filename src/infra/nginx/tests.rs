@@ -138,6 +138,70 @@ async fn renders_custom_locations() {
     assert!(body.contains("proxy_pass http://127.0.0.1:3001;"));
 }
 
+/// A Layout whose confd/cert_store point at a unique temp dir, so conf-writing
+/// tests don't collide with each other or the host's real nginx tree.
+fn lo_tmp(tag: &str) -> Layout {
+    let base = std::env::temp_dir().join(format!("dn7-test-{tag}"));
+    let confd = base.join("confd");
+    let certs = base.join("certs");
+    let www = base.join("www");
+    std::fs::create_dir_all(&confd).unwrap();
+    std::fs::create_dir_all(&certs).unwrap();
+    Layout {
+        confd,
+        cert_ref: certs.to_string_lossy().into_owned(),
+        www_ref: www.to_string_lossy().into_owned(),
+        cert_store: certs,
+        www_store: www,
+    }
+}
+
+#[tokio::test]
+async fn unavailable_stub_returns_503_and_keeps_server_name() {
+    // A site whose upstream is gone must fail closed (503), never proxy.
+    let lo = lo_tmp("stub-plain");
+    let mut site = mk_site("proxy_container", false);
+    site.id = "stub1".into();
+    site.server_name = "gone.example.com".into();
+    write_unavailable_conf(&lo, &site).await.unwrap();
+    let conf = std::fs::read_to_string(conf_path(&lo, &site.id)).unwrap();
+    assert!(conf.contains("server_name gone.example.com;"));
+    assert!(conf.contains("return 503;"));
+    // The stub must NOT contain a proxy_pass — that's the whole point.
+    assert!(!conf.contains("proxy_pass"));
+}
+
+#[tokio::test]
+async fn unavailable_stub_degrades_to_http_when_cert_missing() {
+    // ssl=true but no cert files on disk → must degrade to plain :80 so the
+    // generated conf still passes `nginx -t` (a `listen 443 ssl` with no cert
+    // would fail and take the whole reload down).
+    let lo = lo_tmp("stub-nocert");
+    let mut site = mk_site("proxy_container", true);
+    site.id = "stub2".into();
+    write_unavailable_conf(&lo, &site).await.unwrap();
+    let conf = std::fs::read_to_string(conf_path(&lo, &site.id)).unwrap();
+    assert!(conf.contains("listen 80;"));
+    assert!(!conf.contains("ssl_certificate"));
+    assert!(conf.contains("return 503;"));
+}
+
+#[tokio::test]
+async fn unavailable_stub_keeps_tls_when_cert_present() {
+    // ssl=true with cert files present → keep TLS + redirect :80 to :443.
+    let lo = lo_tmp("stub-cert");
+    let mut site = mk_site("proxy_container", true);
+    site.id = "stub3".into();
+    std::fs::write(lo.cert_store.join("stub3.crt"), "x").unwrap();
+    std::fs::write(lo.cert_store.join("stub3.key"), "x").unwrap();
+    write_unavailable_conf(&lo, &site).await.unwrap();
+    let conf = std::fs::read_to_string(conf_path(&lo, &site.id)).unwrap();
+    assert!(conf.contains("listen 443 ssl"));
+    assert!(conf.contains("ssl_certificate "));
+    assert!(conf.contains("return 301 https://"));
+    assert!(conf.contains("return 503;"));
+}
+
 #[test]
 fn location_path_validation() {
     assert!(valid_location_path("/api"));

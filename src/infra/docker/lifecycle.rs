@@ -24,6 +24,9 @@ pub(crate) async fn rename_container(req: &Req) -> Result<Value> {
         )
         .await
         .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    // A rename changes the name an nginx `proxy_container` site resolves by, so
+    // re-sync site confs to pick up (or fail closed on) the new topology.
+    crate::infra::nginx::resync_after_container_change();
     Ok(json!({ "renamed": name }))
 }
 

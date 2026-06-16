@@ -455,6 +455,10 @@ pub(crate) async fn container_action(req: &Req, action: &str) -> Result<Value> {
             dkr.remove_container(&r, Some(opts))
                 .await
                 .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+            // A removed container may be the upstream of a `proxy_container`
+            // nginx site. Re-sync site confs so any now-dangling site fails
+            // closed (503 stub) instead of proxying to a recycled IP.
+            crate::infra::nginx::resync_after_container_change();
             "removed"
         }
         other => return Err(anyhow!("unsupported container action: {other}")),

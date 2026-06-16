@@ -401,7 +401,32 @@ pub async fn resync_confs() {
         }
         match write_site_conf(&lo, &site, &[]).await {
             Ok(()) => wrote = true,
-            Err(e) => tracing::warn!(site = %site.server_name, "resync conf failed: {e}"),
+            Err(e) => {
+                // The upstream couldn't be resolved — most commonly a
+                // `proxy_container` site whose backing container was deleted.
+                // Do NOT leave the previous conf in place: Docker may have
+                // recycled the gone container's IP for an unrelated container,
+                // so the stale `proxy_pass <ip>` would silently forward traffic
+                // to the wrong service. Fail closed with a 503 maintenance stub.
+                tracing::warn!(
+                    site = %site.server_name,
+                    "upstream unresolved, writing 503 maintenance stub: {e}"
+                );
+                match write_unavailable_conf(&lo, &site).await {
+                    Ok(()) => wrote = true,
+                    Err(e2) => {
+                        // Even the stub failed — remove any stale conf so we
+                        // never serve a misrouted upstream. Better a 404 from
+                        // the default site than traffic sent to the wrong place.
+                        tracing::warn!(
+                            site = %site.server_name,
+                            "stub conf write failed, removing stale conf: {e2}"
+                        );
+                        let _ = std::fs::remove_file(conf_path(&lo, &site.id));
+                        wrote = true;
+                    }
+                }
+            }
         }
     }
     // Re-apply the default-site catch-all if it has been configured.
@@ -421,4 +446,29 @@ pub async fn resync_confs() {
             tracing::info!("nginx site confs resynced to current template");
         }
     }
+}
+
+/// Fire-and-forget a conf re-sync after a Docker container topology change
+/// (remove / rename). A `proxy_container` site whose upstream just disappeared
+/// is rewritten to a 503 stub by [`resync_confs`] so it can never proxy to a
+/// recycled container IP. Spawned detached so the triggering Docker op returns
+/// promptly; `resync_confs` already serialises itself via the sites state lock.
+pub fn resync_after_container_change() {
+    tokio::spawn(async {
+        resync_confs().await;
+    });
+}
+
+/// Background guard: periodically re-sync site confs so a `proxy_container`
+/// upstream whose IP drifted (container recreated) is re-resolved, and a site
+/// whose container vanished without a panel-driven remove still fails closed.
+/// Low frequency — the event-driven [`resync_after_container_change`] handles
+/// the common cases; this only backstops out-of-band Docker changes.
+pub fn spawn_upstream_resync() {
+    tokio::spawn(async {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            resync_confs().await;
+        }
+    });
 }
