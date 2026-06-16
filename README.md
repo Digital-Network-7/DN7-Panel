@@ -78,7 +78,9 @@ available in settings.
 
 Capabilities:
 
-- **Monitoring** — CPU / memory / disk / network throughput + a process ranking.
+- **Monitoring** — CPU / memory / disk / network throughput, plus a history
+  chart (CPU / memory / network over 15m / 1h / 6h / 1d / 7d), sampled in the
+  background and persisted to `<data>/metrics-history.json`.
 - **Terminal** — a browser PTY shell on the host, and per-container shells
   (`docker exec`).
 - **Docker** — images (pull, create), containers (lifecycle, logs, networks,

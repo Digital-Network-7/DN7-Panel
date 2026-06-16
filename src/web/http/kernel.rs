@@ -52,6 +52,7 @@ pub fn spawn(cfg: PanelConfig) {
     // Periodically prune expired sessions/challenges/tickets/rate-limit entries
     // so memory doesn't depend solely on the prune-on-insert paths.
     let sweeper = state.clone();
+    crate::infra::metrics::history_start(); // begin the dashboard time-series sampler
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
         loop {

@@ -1,14 +1,35 @@
 // =========================================================================
-// Dashboard — one screen: stat cards + split network throughput + proc table
+// Dashboard — one screen: live stat cards + a history chart (CPU / 内存 / 网络
+// over 15m / 1h / 6h / 1d / 7d), drawn on a plain <canvas> (no chart lib).
 // =========================================================================
 function renderDash(v) {
   v.innerHTML = `
     <div class="dash">
       <div class="statrow" id="cards"></div>
-      <div class="card procwrap"><div class="proc-head" id="procHead"></div><div class="scroll" id="procs">${loading()}</div></div>
+      <div class="card histcard">
+        <div class="hist-head">
+          <div class="subtabs hist-metric" id="histMetric">
+            <button data-m="cpu" class="on">CPU</button>
+            <button data-m="mem">${tr('dash.mem')}</button>
+            <button data-m="net">${tr('dash.net')}</button>
+          </div>
+          <div class="subtabs hist-range" id="histRange">
+            <button data-r="15m" class="on">15m</button>
+            <button data-r="1h">1h</button>
+            <button data-r="6h">6h</button>
+            <button data-r="1d">1d</button>
+            <button data-r="7d">7d</button>
+          </div>
+        </div>
+        <div class="hist-body">
+          <canvas id="histCanvas"></canvas>
+          <div class="hist-empty mut" id="histEmpty" style="display:none"></div>
+        </div>
+      </div>
     </div>`;
   const hist = { rx: [], tx: [] };
-  const st = { sort: 'cpu', data: null };
+  const H = { metric: 'cpu', range: '15m', data: null };
+
   const doMetrics = () => {
     api('/api/metrics').then((b) => {
       const m = b.data;
@@ -23,72 +44,140 @@ function renderDash(v) {
       ].join('');
     }).catch(() => {});
   };
-  const doProcs = () => {
-    api('/api/procs').then((b) => { st.data = b.data; renderProcs(st); }).catch(() => {});
+  const doHistory = () => {
+    api('/api/metrics/history?metric=' + H.metric + '&range=' + H.range)
+      .then((b) => { H.data = b.data; drawHistory(H); })
+      .catch(() => {});
   };
-  // Poll loop: skip entirely while the tab is in the background (no point
-  // burning CPU collecting metrics nobody is looking at), and refresh the
-  // heavier process listing on a slower beat than the lightweight stat cards.
+
+  // Metric / range selectors: highlight the chosen button and reload the chart.
+  const pick = (group, attr, key) => (e) => {
+    const btn = e.target.closest('button'); if (!btn) return;
+    [...$(group).children].forEach((c) => c.classList.toggle('on', c === btn));
+    H[key] = btn.dataset[attr];
+    doHistory();
+  };
+  $('histMetric').addEventListener('click', pick('histMetric', 'm', 'metric'));
+  $('histRange').addEventListener('click', pick('histRange', 'r', 'range'));
+  window.addEventListener('resize', () => drawHistory(H));
+
+  // Poll loop: skip while the tab is hidden. Stat cards refresh every 2s; the
+  // history chart is cheap but slower-moving, so refresh it ~every 10s.
   let beat = 0;
   const tick = () => {
     if (document.hidden) return;
     doMetrics();
-    if (beat % 3 === 0) doProcs(); // process table every ~6s; cards every 2s
+    if (beat % 5 === 0) doHistory();
     beat++;
   };
-  // Clicking the CPU / 内存 header toggles which ranking is shown.
-  $('procHead').addEventListener('click', (e) => {
-    const th = e.target.closest('[data-sort]');
-    if (!th) return;
-    st.sort = th.dataset.sort;
-    renderProcs(st);
-  });
-  doMetrics(); doProcs(); // immediate first paint
+  doMetrics(); doHistory();
   beat = 1;
   S.timer = setInterval(tick, 2000);
 }
-// Render the process ranking. `st.sort` is 'cpu' | 'mem'; the panel returns both
-// pre-sorted lists (by_cpu / by_mem) so switching is instant + accurate. The
-// header is a separate (non-scrolling) table from the scrolling body so the
-// scrollbar never overlaps the header and the columns never jitter.
-const PROC_COLS = '<colgroup><col class="c-pid"/><col class="c-name"/><col class="c-user"/><col class="c-time"/><col class="c-cpu"/><col class="c-mem"/></colgroup>';
-function renderProcs(st) {
-  if (!st.data) return;
-  const rows = ((st.sort === 'mem' ? st.data.by_mem : st.data.by_cpu) || []).slice(0, 30);
-  const arrow = (k) => (st.sort === k ? ' <span class="sortar">▼</span>' : '');
-  // Header table (fixed, outside the scroll area).
-  $('procHead').innerHTML = '<table class="proctable proc-head-tbl">' + PROC_COLS +
-    '<tr><th class="num">PID</th><th>' + tr('dash.proc') + '</th><th>' + tr('dash.user') + '</th><th class="num">TIME</th>' +
-    `<th class="num sortable" data-sort="cpu">CPU${arrow('cpu')}</th>` +
-    `<th class="num sortable" data-sort="mem">${tr('dash.mem')}${arrow('mem')}</th></tr></table>`;
-  // Body table (scrolls).
-  let h = '<table class="proctable">' + PROC_COLS + '<tbody>';
-  rows.forEach((p) => {
-    h += `<tr><td class="num mono">${p.pid}</td><td class="mono nm" title="${esc(p.name)}">${esc(p.name)}</td><td class="mut nm" title="${esc(p.user || '')}">${esc(p.user || '-')}</td><td class="num mono">${fmtProcTime(p.time)}</td><td class="num">${(p.cpu || 0).toFixed(1)}%</td><td class="num">${fmtBytes(p.mem)}</td></tr>`;
-  });
-  const sc = $('procs');
-  sc.innerHTML = h + '</tbody></table>';
-  // Pad the header by the body's actual scrollbar width so columns stay aligned
-  // (and the scrollbar never sits beside the header).
-  const sbw = sc.offsetWidth - sc.clientWidth;
-  $('procHead').style.paddingRight = (sbw > 0 ? sbw : 0) + 'px';
-}
-// Format cumulative CPU time (seconds) like top: M:SS, or H:MM:SS past an hour.
-function fmtProcTime(sec) {
-  sec = Math.max(0, Math.floor(Number(sec) || 0));
-  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
-  const pad = (n) => (n < 10 ? '0' + n : '' + n);
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
-}
+
 function card(title, big, sub, pct) {
   const bar = pct == null ? '' : `<div class="bar"><i style="width:${Math.min(100, Math.max(0, pct)).toFixed(0)}%"></i></div>`;
   return `<div class="card"><h3>${title}</h3><div class="big">${big}</div><div class="sub">${sub}</div>${bar}</div>`;
 }
-// Network throughput as a single stat card (same size as CPU/mem/disk): two
-// Network throughput stat card (same footprint as CPU/mem/disk): a left/right
-// split — left = 上行 (upload, amber), right = 下行 (download, blue) — each with
-// a nice SVG icon, the live value, and its own mini area chart. The two colors
-// are deliberately far apart (warm vs cool) so up/down read at a glance.
+
+// ---- History chart (canvas) ----------------------------------------------
+
+// Size the canvas to its container at device-pixel resolution (crisp lines).
+function fitCanvas(cv, hpx) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(160, cv.parentElement.clientWidth);
+  cv.style.width = w + 'px'; cv.style.height = hpx + 'px';
+  cv.width = Math.round(w * dpr); cv.height = Math.round(hpx * dpr);
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w, h: hpx };
+}
+
+function cssVar(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+
+// Local HH:MM (and MM-DD for multi-day ranges) tick label for a unix-second ts.
+function histClock(ts, range) {
+  const d = new Date(ts * 1000);
+  const p = (n) => (n < 10 ? '0' + n : '' + n);
+  const hm = p(d.getHours()) + ':' + p(d.getMinutes());
+  return (range === '1d' || range === '7d') ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}` : hm;
+}
+
+function drawHistory(H) {
+  const cv = $('histCanvas'); if (!cv) return;
+  const pts = (H.data && H.data.points) || [];
+  const empty = $('histEmpty');
+  if (pts.length < 2) {
+    cv.style.display = 'none';
+    if (empty) { empty.style.display = 'flex'; empty.textContent = tr('dash.no_history'); }
+    return;
+  }
+  cv.style.display = 'block'; if (empty) empty.style.display = 'none';
+  const net = H.metric === 'net';
+  const { ctx, w, h } = fitCanvas(cv, 240);
+  const padL = 52, padR = 14, padT = 14, padB = 24;
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+  const n = pts.length;
+  const x = (i) => padL + (n === 1 ? 0 : (i * plotW) / (n - 1));
+
+  // Y scale: percent metrics are fixed 0..100; network auto-scales to its peak.
+  let yMax, fmtY;
+  if (net) {
+    const peak = Math.max(1, ...pts.map((p) => Math.max(p.rx || 0, p.tx || 0)));
+    yMax = peak * 1.15;
+    fmtY = (val) => fmtBytes(val) + '/s';
+  } else {
+    yMax = 100; fmtY = (val) => val.toFixed(0) + '%';
+  }
+  const y = (val) => padT + plotH - (Math.max(0, Math.min(val, yMax)) / yMax) * plotH;
+
+  const ink = cssVar('--muted', '#94a3b8');
+  const grid = cssVar('--border', 'rgba(148,163,184,0.18)');
+  ctx.clearRect(0, 0, w, h);
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.textBaseline = 'middle';
+
+  // Horizontal gridlines + y labels (5 steps).
+  ctx.strokeStyle = grid; ctx.fillStyle = ink; ctx.lineWidth = 1;
+  for (let k = 0; k <= 4; k++) {
+    const val = (yMax * k) / 4, yy = y(val);
+    ctx.globalAlpha = 0.5; ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(w - padR, yy); ctx.stroke();
+    ctx.globalAlpha = 1; ctx.textAlign = 'right'; ctx.fillText(fmtY(val), padL - 8, yy);
+  }
+  // X end labels (start + now).
+  ctx.textAlign = 'left'; ctx.fillText(histClock(pts[0].t, H.range), padL, h - padB / 2);
+  ctx.textAlign = 'right'; ctx.fillText(histClock(pts[n - 1].t, H.range), w - padR, h - padB / 2);
+
+  // Draw one series as an area + line; `key` reads the value off each point.
+  const series = (key, color) => {
+    ctx.beginPath();
+    pts.forEach((p, i) => { const xi = x(i), yi = y(p[key] || 0); i ? ctx.lineTo(xi, yi) : ctx.moveTo(xi, yi); });
+    ctx.lineTo(x(n - 1), y(0)); ctx.lineTo(x(0), y(0)); ctx.closePath();
+    const g = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+    g.addColorStop(0, color + '44'); g.addColorStop(1, color + '08');
+    ctx.fillStyle = g; ctx.fill();
+    ctx.beginPath();
+    pts.forEach((p, i) => { const xi = x(i), yi = y(p[key] || 0); i ? ctx.lineTo(xi, yi) : ctx.moveTo(xi, yi); });
+    ctx.strokeStyle = color; ctx.lineWidth = 1.8; ctx.lineJoin = 'round'; ctx.stroke();
+  };
+
+  if (net) {
+    series('rx', '#38bdf8'); // download (blue)
+    series('tx', '#f59e0b'); // upload (amber)
+    // Legend.
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#38bdf8'; ctx.fillRect(padL, padT + 2, 10, 3); ctx.fillStyle = ink; ctx.fillText(tr('dash.dn'), padL + 14, padT + 4);
+    ctx.fillStyle = '#f59e0b'; ctx.fillRect(padL + 60, padT + 2, 10, 3); ctx.fillStyle = ink; ctx.fillText(tr('dash.up'), padL + 74, padT + 4);
+  } else {
+    series('v', cssVar('--accent', '#3b82f6'));
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ---- Network throughput stat card (unchanged) ----------------------------
 function netCard(rx, tx, hist) {
   const upIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V7"/><path d="M6 11l6-6 6 6"/><path d="M5 21h14"/></svg>';
   const dnIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v12"/><path d="M6 13l6 6 6-6"/><path d="M5 3h14"/></svg>';
@@ -107,8 +196,8 @@ function netCard(rx, tx, hist) {
     </div>
   </div>`;
 }
-// Single-series smooth area chart, normalized to its own recent peak. `kind`
-// (up|dn) selects the gradient/stroke colour.
+// Single-series smooth area chart for the net stat card, normalized to its own
+// recent peak. `kind` (up|dn) selects the gradient/stroke colour.
 function areaChart(data, kind) {
   const W = 130, H = 34, pad = 3;
   const m = data.length;

@@ -16,12 +16,25 @@ pub(crate) async fn metrics(State(state): State<Shared>, headers: header::Header
     Json(json!({ "ok": true, "data": m })).into_response()
 }
 
-pub(crate) async fn procs(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+pub(crate) async fn metrics_history(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Query(q): Query<HistoryQuery>,
+) -> Response {
     if let Some(r) = require_auth(&state, &headers) {
         return r;
     }
-    let data = crate::infra::support::procs::web_snapshot(20).await;
+    let data = crate::infra::metrics::history_series(&q.range, &q.metric);
     Json(json!({ "ok": true, "data": data })).into_response()
+}
+
+/// Query for the dashboard history view: which metric + which time window.
+#[derive(serde::Deserialize)]
+pub(crate) struct HistoryQuery {
+    #[serde(default)]
+    metric: String,
+    #[serde(default)]
+    range: String,
 }
 
 /// Basic panel identity (version + hostname) for the console footer/topbar.

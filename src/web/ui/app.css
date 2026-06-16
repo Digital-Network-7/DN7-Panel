@@ -222,15 +222,13 @@
   .dash .card { padding:15px 18px; }
   .dash .statrow .card { display:flex; flex-direction:column; min-height:128px; }
   .dash .card .big { font-size:24px; }
-  .dash .procwrap { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; padding:10px 8px; }
-  /* Process table: fixed header table + separately scrolling body table. The
-     header sits OUTSIDE the scroll area so the scrollbar never runs beside it;
-     a reserved gutter (var(--sbw)) keeps the two tables' columns aligned. */
-  .dash .procwrap .proc-head { flex:0 0 auto; }
-  .dash .procwrap .scroll { flex:1 1 auto; min-height:0; overflow-y:auto; scrollbar-gutter:stable; }
-  .dash .procwrap .scroll::-webkit-scrollbar { width:9px; }
-  .dash .procwrap .scroll::-webkit-scrollbar-thumb { background:var(--line2); border-radius:99px; border:2px solid transparent; background-clip:content-box; }
-  .dash .procwrap .scroll::-webkit-scrollbar-thumb:hover { background:var(--mut); background-clip:content-box; }
+  /* History chart card: header (metric tabs left, range tabs right) + canvas. */
+  .dash .histcard { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; padding:14px 16px; }
+  .dash .histcard .hist-head { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px; }
+  .dash .histcard .subtabs { margin:0; }
+  .dash .histcard .hist-body { position:relative; flex:1 1 auto; min-height:200px; }
+  .dash .histcard .hist-body canvas { display:block; width:100%; }
+  .dash .histcard .hist-empty { position:absolute; inset:0; align-items:center; justify-content:center; }
   /* Network stat card: left/right split (上行 amber, 下行 blue). */
   .netcard .netsplit { display:flex; gap:10px; margin-top:2px; }
   .netcard .netcell { flex:1; min-width:0; }
@@ -259,18 +257,6 @@
   .tablewrap::-webkit-scrollbar-thumb { background:var(--line2); border-radius:99px; border:2px solid transparent; background-clip:content-box; }
   .tablewrap::-webkit-scrollbar-thumb:hover { background:var(--mut); background-clip:content-box; }
   /* Fixed-layout process tables (header + body share identical columns). */
-  table.proctable { table-layout:fixed; border-collapse:separate; border-spacing:0; }
-  table.proctable.proc-head-tbl th { background:var(--panel-solid); box-shadow:inset 0 -1px 0 var(--line); border-bottom:none; }
-  table.proctable td { border-bottom:1px solid var(--line); }
-  table.proctable col.c-pid { width:68px; }
-  table.proctable col.c-user { width:96px; }
-  table.proctable col.c-time { width:84px; }
-  table.proctable col.c-cpu { width:74px; }
-  table.proctable col.c-mem { width:92px; }
-  table.proctable td.nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  table.proctable th.sortable { cursor:pointer; user-select:none; }
-  table.proctable th.sortable:hover { color:var(--fg); }
-  table.proctable .sortar { font-size:9px; opacity:.8; }
   .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .actions { display:flex; gap:6px; flex-wrap:wrap; }
   .subtabs { display:flex; gap:4px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:4px; margin-bottom:16px; width:fit-content; }
