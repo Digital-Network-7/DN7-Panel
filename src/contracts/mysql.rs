@@ -30,8 +30,9 @@ pub(crate) struct Req {
     /// keep the data volume on remove (default false = delete data too)
     #[serde(default)]
     pub(crate) keep_data: Option<bool>,
-    /// op id (op_log / dismiss_op)
+    /// op id (op_log / dismiss_op) — routed at the app boundary (app::mysql).
     #[serde(default)]
+    #[allow(dead_code)]
     pub(crate) op_id: Option<String>,
     /// account management: username / host / password / privileges / database
     #[serde(default)]

@@ -171,16 +171,21 @@ async fn handle(req: &Req) -> Result<Value> {
         "revoke" => revoke(req).await,
         "user_grants" => user_grants(req).await,
         "backup" => start_backup(req),
-        "list_ops" => Ok(ops_snapshot()),
-        "op_log" => Ok(op_log(req.op_id.as_deref().unwrap_or(""))),
-        "dismiss_op" => {
-            if let Some(op_id) = req.op_id.as_deref() {
-                op_dismiss(op_id);
-            }
-            Ok(json!({ "dismissed": true }))
-        }
         other => Err(anyhow!("不支持的操作：{other}")),
     }
+}
+
+/// Read-only detached-op-registry projections + dismiss, exposed for the
+/// `app::mysql` router (the registry fns themselves are `pub(super)`). These ops
+/// touch neither the DB nor Docker.
+pub(crate) fn ops_snapshot_value() -> Value {
+    ops_snapshot()
+}
+pub(crate) fn op_log_value(op_id: &str) -> Value {
+    op_log(op_id)
+}
+pub(crate) fn op_dismiss_registry(op_id: &str) {
+    op_dismiss(op_id);
 }
 
 fn need_inst(req: &Req) -> Result<&str> {
