@@ -130,17 +130,44 @@ async fn commit_backup_image(
 /// Stream `docker save <image>` through gzip into `path`. The caller handles
 /// cleanup of the temp image and the partial file on error.
 async fn stream_image_to_gz(dkr: &Docker, image: &str, path: &std::path::Path) -> Result<()> {
-    use std::io::Write;
-    let file = std::fs::File::create(path).map_err(|e| anyhow!("无法创建备份文件：{e}"))?;
-    let mut enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    // Read the docker export asynchronously, but do the CPU-bound gzip + blocking
+    // file writes on the blocking pool (a dedicated writer task) so the runtime
+    // worker isn't pinned for the whole (potentially multi-GB) backup.
+    let path = path.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
+    let writer = tokio::task::spawn_blocking(move || -> Result<()> {
+        use std::io::Write;
+        let file = std::fs::File::create(&path).map_err(|e| anyhow!("无法创建备份文件：{e}"))?;
+        let mut enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        while let Ok(chunk) = rx.recv() {
+            enc.write_all(&chunk)
+                .map_err(|e| anyhow!("写入备份失败：{e}"))?;
+        }
+        enc.finish().map_err(|e| anyhow!("写入备份失败：{e}"))?;
+        Ok(())
+    });
+
     let mut stream = dkr.export_image(image);
+    let mut stream_err: Option<anyhow::Error> = None;
     while let Some(item) = stream.next().await {
-        let chunk = item.map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-        enc.write_all(&chunk)
-            .map_err(|e| anyhow!("写入备份失败：{e}"))?;
+        match item {
+            Ok(chunk) => {
+                if tx.send(chunk.to_vec()).is_err() {
+                    break; // writer task ended (it will surface the error below)
+                }
+            }
+            Err(e) => {
+                stream_err = Some(anyhow!(friendly_docker_err(&e)));
+                break;
+            }
+        }
     }
-    enc.finish().map_err(|e| anyhow!("写入备份失败：{e}"))?;
-    Ok(())
+    drop(tx); // signal EOF to the writer
+    writer.await.map_err(|e| anyhow!("备份任务失败：{e}"))??;
+    match stream_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// List backups for a container name: file, size, created (mtime, secs).

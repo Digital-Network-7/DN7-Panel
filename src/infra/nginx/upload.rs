@@ -17,6 +17,31 @@ pub async fn web_static_upload(
     clear: bool,
     temp: &std::path::Path,
 ) -> Result<usize> {
+    // The body is entirely synchronous (dir wipe + ZIP/DEFLATE extraction +
+    // blocking file writes), which would pin a runtime worker for the whole
+    // extraction. Run it on the blocking pool.
+    let (root, mode, rel, temp) = (
+        root.to_string(),
+        mode.to_string(),
+        rel.map(str::to_string),
+        temp.to_path_buf(),
+    );
+    tokio::task::spawn_blocking(move || {
+        web_static_upload_blocking(&root, &mode, rel.as_deref(), clear, &temp)
+    })
+    .await
+    .map_err(|e| anyhow!("静态站点上传任务失败：{e}"))?
+}
+
+/// Synchronous implementation of [`web_static_upload`] — runs on the blocking
+/// pool. See the async wrapper for the parameter contract.
+fn web_static_upload_blocking(
+    root: &str,
+    mode: &str,
+    rel: Option<&str>,
+    clear: bool,
+    temp: &std::path::Path,
+) -> Result<usize> {
     let lo = layout()?;
     if !valid_root_segment(root) {
         return Err(anyhow!("ERR_CODE:nginx.bad_static_dir"));

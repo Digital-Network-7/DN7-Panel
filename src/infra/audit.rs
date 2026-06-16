@@ -12,8 +12,15 @@
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+
+/// Serializes the log's append + in-place trim so two concurrent writers can't
+/// interleave an append with another's `set_len(0)` + rewrite (which would
+/// corrupt or drop lines). Held only inside the synchronous file work — never
+/// across an `.await` — and poison-recovered.
+static LOG_LOCK: Mutex<()> = Mutex::new(());
 
 /// File name under the data dir.
 const FILE: &str = "audit.log";
@@ -147,6 +154,23 @@ fn write_entry(
         Ok(s) => s,
         Err(_) => return,
     };
+    // The entry is built synchronously (so its timestamp/context are accurate),
+    // but the file append + size-trim are blocking I/O. Offload them to the
+    // blocking pool when we're on a runtime worker (the common case: a request
+    // handler) so the worker isn't stalled; fall back to inline off-runtime
+    // (startup / tests). Best-effort, matching the module's logging contract.
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) => {
+            h.spawn_blocking(move || append_and_trim(&line));
+        }
+        Err(_) => append_and_trim(&line),
+    }
+}
+
+/// Append one already-serialized line to the log and trim it if oversized.
+/// Serialized across writers by [`LOG_LOCK`]; runs on the blocking pool.
+fn append_and_trim(line: &str) {
+    let _guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let p = path();
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
