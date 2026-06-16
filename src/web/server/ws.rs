@@ -11,11 +11,33 @@ pub(crate) struct WsAuth {
     ticket: String,
 }
 
+/// Same-origin guard for WebSocket upgrades. When the browser sends an `Origin`,
+/// its authority must equal the request `Host`; a cross-site page is refused.
+/// A missing `Origin` (non-browser client) is allowed — the one-time ticket
+/// still authorizes. Defense in depth: auth is bearer-only (no ambient cookie),
+/// so cross-site WS hijacking is already structurally prevented; this also
+/// rejects mismatched origins before a ticket is consumed.
+fn ws_origin_ok(headers: &header::HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
+        return true; // no Origin header (non-browser) — ticket is the gate
+    };
+    let origin_authority = origin.split_once("://").map(|(_, a)| a).unwrap_or(origin);
+    let host = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    !host.is_empty() && origin_authority == host
+}
+
 pub(crate) async fn terminal_ws(
     State(state): State<Shared>,
+    headers: header::HeaderMap,
     Query(q): Query<WsAuth>,
     ws: WebSocketUpgrade,
 ) -> Response {
+    if !ws_origin_ok(&headers) {
+        return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+    }
     // WebSocket upgrades can't carry an Authorization header from the browser,
     // so a one-time ticket (minted via POST /api/ticket) authorizes the upgrade.
     let user = match state.auth.consume_ticket(&q.ticket) {
@@ -44,9 +66,13 @@ pub(crate) struct ContainerWsAuth {
 
 pub(crate) async fn container_terminal_ws(
     State(state): State<Shared>,
+    headers: header::HeaderMap,
     Query(q): Query<ContainerWsAuth>,
     ws: WebSocketUpgrade,
 ) -> Response {
+    if !ws_origin_ok(&headers) {
+        return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+    }
     // Container exec is a Docker capability — admin only. The ticket owner must
     // resolve to an admin account.
     let user = match state.auth.consume_ticket(&q.ticket) {

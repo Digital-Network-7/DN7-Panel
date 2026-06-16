@@ -53,7 +53,9 @@ pub(crate) async fn update_config_put(
     headers: header::HeaderMap,
     Json(req): Json<UpdateConfigReq>,
 ) -> Response {
-    if let Err(r) = require_admin(&state, &headers) {
+    // Changing the update channel / auto-update toggle steers what binary the
+    // host will run — super-admin only (matches the apply blast radius).
+    if let Err(r) = require_super(&state, &headers) {
         return r;
     }
     let mut st = crate::platform::update::UpdateState::load();
@@ -107,7 +109,9 @@ pub(crate) async fn update_apply(
     State(state): State<Shared>,
     headers: header::HeaderMap,
 ) -> Response {
-    if let Err(r) = require_admin(&state, &headers) {
+    // Replacing the running root binary is the highest-blast-radius op — super
+    // only (the signature + anti-rollback gates still apply on top).
+    if let Err(r) = require_super(&state, &headers) {
         return r;
     }
     if crate::platform::update::in_progress() {
