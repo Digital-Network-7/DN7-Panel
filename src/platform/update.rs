@@ -10,7 +10,6 @@
 //! honoured; otherwise a remembered probe winner is reused for a week, and a
 //! download failure fails over to the other source (forcing a re-probe).
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
@@ -230,16 +229,27 @@ pub async fn install_verified(bytes: &[u8], target: &Path) -> Result<()> {
         .parent()
         .ok_or_else(|| anyhow!("target has no parent dir"))?;
     tokio::fs::create_dir_all(dir).await.ok();
+    // Unpredictable name + O_EXCL: a predictable `.{name}.dl` that we write with
+    // a symlink-following, non-exclusive open let a local attacker pre-plant a
+    // symlink and redirect the (root) write. create_new refuses to follow a
+    // pre-existing path, and the random suffix isn't guessable.
+    let suffix: u64 = rand::random();
     let tmp = dir.join(format!(
-        ".{}.dl",
+        ".{}.{suffix:016x}.dl",
         target.file_name().and_then(|n| n.to_str()).unwrap_or("bin")
     ));
-    tokio::fs::write(&tmp, bytes)
-        .await
-        .context("write temp binary")?;
-    tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
-        .await
-        .context("chmod temp binary")?;
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true) // O_EXCL: never follow/clobber an existing path
+            .mode(0o755)
+            .open(&tmp)
+            .context("create temp binary")?;
+        f.write_all(bytes).context("write temp binary")?;
+        f.flush().context("flush temp binary")?;
+    }
     // Anti-rollback: refuse anything that isn't strictly newer than us.
     let current = env!("CARGO_PKG_VERSION");
     match read_binary_version(&tmp).await {
