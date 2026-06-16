@@ -1,4 +1,5 @@
 mod app;
+mod contracts;
 mod domain;
 mod infra;
 mod platform;

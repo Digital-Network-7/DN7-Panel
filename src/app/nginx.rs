@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 /// Parse the capability request DTO (opaque to the app — only passed through to
 /// the infra use-case). Mirrors the previous `infra::nginx::web_dispatch` parse.
-fn parse_req(body: &Value) -> Result<crate::infra::nginx::Req> {
+fn parse_req(body: &Value) -> Result<crate::contracts::nginx::Req> {
     serde_json::from_value(body.clone()).map_err(|e| anyhow!("bad nginx request: {e}"))
 }
 

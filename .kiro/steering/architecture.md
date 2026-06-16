@@ -151,6 +151,8 @@ platform 独立;跨层装配仅限"受控组合根集合"
 - `infra`:`audit`、`auth`(会话/challenge/ticket/限流)、`store`(users/settings 持久化)、`system`(OS 适配)。
 - `app`:`account` 用例(改密/2FA,经 `AccountEnv` 端口 + mock 单测)、`users`(面板用户编排);账户自助凭据域 + settings 改密的错误全部走 `domain::Error`。
 - `app`:`docker`/`nginx`/`mysql` 能力**用例入口** `dispatch(body)` 已建立——web 能力 handler 一律经 `app::<cap>::dispatch`(web→app→infra),不再直接调 `infra::<cap>::web_dispatch`(架构测试已在 `web` 禁 `web_dispatch` token 锁死)。**nginx 已全量 op 路由进 `app::nginx`**(`infra::nginx::web_dispatch` 已删除):只读 op 在 app 直接投影;`set_tuning`/`set_default_site` 纯校验/合并下沉 `domain::nginx`(+单测);其余写 op(`add_site`/`update_site`/`remove_site`/`create_cert`/`renew_cert`/`delete_cert`/`save_access`/`delete_access`/`setup`/`reload`/`dismiss_op`)由 app 解析 `Req` 后调 `infra::nginx::op_*` 适配器执行,行为零变化。**docker/mysql** 经 `app::<cap>::dispatch` 路由,其 op 无可干净抽出的纯领域规则(校验与 bollard/容器 exec 状态交织),**权威 per-op match 保留在 infra dispatcher**(在 app 重写其大 match 会有漏路由/改行为风险),故 app 委托 `infra::<cap>::web_dispatch` 执行。能力分层迁移到此完成。
+- **审计驱动的应用层成熟化**:认证用例层 `app::auth::verify_login`(登录策略单点编排:限流/单次 challenge/常量时间 proof/TOTP/签发;web 只解析+映射+审计);文件能力 `app::files`(host/容器 文件用例,经 `is_admin`/`system_user` 原语解耦 web `Account`);`totp` 下沉 `infra::totp`;`auth.rs` 拆 `session/challenge/ticket/rate` 子模块。
+- **`contracts` 层落地**(对外协议唯一来源):`contracts::nginx::{Req,AccessUserInput}`——nginx 请求 DTO 从 infra 迁出,`app::nginx` 现解析 `contracts` 类型而非 `infra::nginx::Req`;infra 经 re-export 供子模块原样引用。架构测试新增 `src/contracts` deny(不依赖 app/infra/web、不碰传输/外部系统)。其余能力 DTO 随竖切逐步迁入。
 
 **待办(建议按能力分阶段做,勿一次性强塞)**
 - 管理员用户管理 handler(`web/server/users_api.rs`)经评估**已处于合理薄度**;其对 `infra::system` 的直接调用与 `account_api` 的 `AccountEnv` adapter 同属 web 作组合根装配 infra 的既定模式,**暂不再薄化**。

@@ -18,6 +18,21 @@ use std::path::Path;
 /// (governed directory relative to crate root, forbidden substrings).
 const RULES: &[(&str, &[&str])] = &[
     (
+        // contracts 是对外协议唯一来源:可引用 domain 基础类型 + serde,但不依赖任何
+        // 上层(app/infra/web),也不碰传输框架/外部系统。
+        "src/contracts",
+        &[
+            "axum",
+            "bollard",
+            "reqwest",
+            "tokio::process",
+            "std::process",
+            "crate::app",
+            "crate::infra",
+            "crate::web",
+        ],
+    ),
+    (
         // domain 不懂传输,不碰外部系统/进程,也不依赖任何上层(app/infra/web)。
         "src/domain",
         &[

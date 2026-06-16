@@ -32,119 +32,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::process::Command;
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct Req {
-    #[serde(default)]
-    #[allow(dead_code)]
-    id: i64,
-    // `op` / `op_id` are routed at the app boundary (app::nginx); kept here so
-    // the rest of the request still deserializes into one struct.
-    #[allow(dead_code)]
-    op: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    op_id: Option<String>,
-    #[serde(default)]
-    site_id: Option<String>,
-    // add_site fields
-    #[serde(default)]
-    server_name: Option<String>,
-    #[serde(default)]
-    kind: Option<String>, // "proxy_host" | "proxy_container" | "static"
-    #[serde(default)]
-    target_url: Option<String>, // proxy_host
-    #[serde(default)]
-    container: Option<String>, // proxy_container
-    #[serde(default)]
-    container_port: Option<i64>, // proxy_container
-    #[serde(default)]
-    root: Option<String>, // static (subdir name)
-    #[serde(default)]
-    local_root: Option<String>, // static (existing absolute host dir)
-    #[serde(default)]
-    #[allow(dead_code)] // read at the app boundary (app::nginx list_dirs), not here
-    path: Option<String>, // list_dirs: directory to enumerate
-    // http/server tuning (set_tuning) — read at the app boundary (app::nginx
-    // set_tuning), deserialized here only to accept the wire fields.
-    #[serde(default)]
-    #[allow(dead_code)]
-    server_names_hash_bucket_size: Option<u32>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    gzip: Option<bool>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    client_header_buffer_size: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    gzip_min_length: Option<u32>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    client_max_body_size: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    gzip_comp_level: Option<u8>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    keepalive_timeout: Option<u32>,
-    #[serde(default)]
-    ssl: Option<bool>,
-    #[serde(default)]
-    cert_mode: Option<String>, // "self" | "le" | "manual"
-    #[serde(default)]
-    cert_pem: Option<String>, // manual
-    #[serde(default)]
-    key_pem: Option<String>, // manual
-    #[serde(default)]
-    cert_name: Option<String>, // standalone cert name (create_cert / reference)
-    // New add-site fields (NPM-style options + custom path rules).
-    #[serde(default)]
-    scheme: Option<String>, // proxy upstream scheme "http"|"https"
-    #[serde(default)]
-    cache: Option<bool>,
-    #[serde(default)]
-    block_attacks: Option<bool>,
-    #[serde(default)]
-    websockets: Option<bool>,
-    #[serde(default)]
-    force_ssl: Option<bool>,
-    #[serde(default)]
-    http2: Option<bool>,
-    #[serde(default)]
-    hsts: Option<bool>,
-    #[serde(default)]
-    hsts_sub: Option<bool>,
-    #[serde(default)]
-    trust_proxy: Option<bool>,
-    #[serde(default)]
-    trust_proxy_cidrs: Option<String>, // explicit trusted front-proxy IP/CIDR list
-    #[serde(default)]
-    locations: Option<Vec<Location>>, // custom path rules
-    #[serde(default)]
-    extra_conf: Option<String>, // raw nginx directives injected into the server block
-    // Access list reference on a site (empty = public/none).
-    #[serde(default)]
-    access_id: Option<String>,
-    // Access list management (create/update/delete).
-    #[serde(default)]
-    name: Option<String>, // access list display name
-    #[serde(default)]
-    satisfy: Option<String>, // "any" | "all"
-    #[serde(default)]
-    pass_auth: Option<bool>, // forward Authorization header upstream
-    #[serde(default)]
-    users: Option<Vec<AccessUserInput>>, // basic-auth users (username + optional new password)
-    #[serde(default)]
-    clients: Option<Vec<AccessClient>>, // allow/deny IP rules
-    // Default-site (Settings) configuration — read at the app boundary
-    // (app::nginx set_default_site), deserialized here only to accept the wire.
-    #[serde(default)]
-    #[allow(dead_code)]
-    default_mode: Option<String>, // "404" | "welcome" | "444" | "redirect"
-    #[serde(default)]
-    #[allow(dead_code)]
-    redirect_url: Option<String>,
-}
+/// The nginx capability request DTO now lives in the `contracts` layer (the
+/// external-protocol source of truth); re-exported here so the nginx submodules
+/// keep referring to `Req` via `use super::*` unchanged.
+pub(crate) use crate::contracts::nginx::Req;
 
 /// A managed site (domain entity), re-exported from `domain::nginx` so the
 /// nginx submodules keep referring to `Site`/`Location` unchanged.
@@ -158,18 +49,8 @@ pub(crate) use crate::domain::nginx::{Location, Site};
 
 /// Access-list domain entities (`AccessList`/`AccessUser`/`AccessClient`),
 /// re-exported from `domain::nginx` so the nginx submodules reference them
-/// unchanged. `AccessUserInput` (below) is transport input and stays here.
+/// unchanged. `AccessUserInput` (transport input) lives in `contracts::nginx`.
 pub(crate) use crate::domain::nginx::{AccessClient, AccessList, AccessUser};
-
-/// New/changed user input from the client (password is plaintext, optional on
-/// edit — empty keeps the existing hash).
-#[derive(Debug, Clone, Deserialize, Default)]
-pub(crate) struct AccessUserInput {
-    #[serde(default)]
-    username: String,
-    #[serde(default)]
-    password: String,
-}
 
 /// Default-site / global-settings / http-tuning domain entities, re-exported
 /// from `domain::nginx` so the nginx submodules reference them unchanged.
