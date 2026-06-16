@@ -46,6 +46,9 @@ pub async fn web_host_mkdir(path: &str, as_user: Option<&str>) -> Result<()> {
     if path.trim().is_empty() {
         return Err(anyhow!("路径不能为空"));
     }
+    if is_protected_host_mutation(path) {
+        return Err(anyhow!("该系统目录受保护，禁止写入"));
+    }
     if let Some(u) = as_user {
         check_abs(path)?;
         let (code, _) = run_as_user(u, "mkdir -p -- \"$1\"", path, None).await?;
@@ -62,8 +65,9 @@ pub async fn web_host_mkdir(path: &str, as_user: Option<&str>) -> Result<()> {
 /// Delete a host path (file or directory), refusing protected system dirs.
 /// Runs as `as_user` when set (OS perms enforced).
 pub async fn web_host_delete(path: &str, as_user: Option<&str>) -> Result<()> {
-    // Lexical guard (handles `..`, `.`, `//`, trailing slashes).
-    if is_protected_path(path) {
+    // Lexical guard (handles `..`, `.`, `//`, trailing slashes) — now also
+    // blocks descendants of the sensitive trees (e.g. /etc/shadow).
+    if is_protected_host_mutation(path) {
         return Err(anyhow!("该系统目录受保护，禁止删除"));
     }
     if let Some(u) = as_user {
@@ -79,7 +83,7 @@ pub async fn web_host_delete(path: &str, as_user: Option<&str>) -> Result<()> {
     // (following symlinks) and re-check, so a path that *resolves* to a
     // protected root — e.g. via a symlink — is still refused.
     if let Ok(canon) = tokio::fs::canonicalize(path).await {
-        if is_protected_path(&canon.to_string_lossy()) {
+        if is_protected_host_mutation(&canon.to_string_lossy()) {
             return Err(anyhow!("该系统目录受保护，禁止删除"));
         }
     }
@@ -141,6 +145,9 @@ pub async fn web_host_read_stream(
 pub async fn web_host_write_file(dest: &str, temp: &Path, as_user: Option<&str>) -> Result<()> {
     if dest.trim().is_empty() {
         return Err(anyhow!("路径不能为空"));
+    }
+    if is_protected_host_mutation(dest) {
+        return Err(anyhow!("该系统目录受保护，禁止写入"));
     }
     if let Some(u) = as_user {
         use std::process::Stdio;

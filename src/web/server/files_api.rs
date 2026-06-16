@@ -33,6 +33,23 @@ pub(crate) fn ctn_ref(req: &FileOpReq) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
+/// Audit target for a file op: `container:path` when container-scoped, else the
+/// bare host path. Keeps the log line self-describing.
+fn audit_target(path: &str, container: Option<&str>) -> String {
+    match container {
+        Some(c) => format!("{c}:{path}"),
+        None => path.to_string(),
+    }
+}
+
+/// Short audit detail string for a failed file op.
+fn fs_err_detail(e: &crate::app::files::FsError) -> String {
+    match e {
+        crate::app::files::FsError::Forbidden => "forbidden".to_string(),
+        crate::app::files::FsError::Op(e) => e.to_string(),
+    }
+}
+
 /// Default per-file upload cap (lowered from 512 MiB). Streaming keeps memory
 /// bounded regardless, but a smaller cap limits temp-disk blowups too.
 pub(crate) const UPLOAD_CAP: u64 = 256 * 1024 * 1024;
@@ -139,14 +156,21 @@ pub(crate) async fn files_mkdir(
         Ok(a) => a,
         Err(r) => return r,
     };
-    match crate::app::files::mkdir(
+    let res = crate::app::files::mkdir(
         acct.is_admin,
         acct.system_user.as_deref(),
         &req.path,
         ctn_ref(&req),
     )
-    .await
-    {
+    .await;
+    audit::record(
+        &acct.username,
+        "files.mkdir",
+        &audit_target(&req.path, ctn_ref(&req)),
+        res.is_ok(),
+        &res.as_ref().err().map(fs_err_detail).unwrap_or_default(),
+    );
+    match res {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => fs_err_response(e),
     }
@@ -161,14 +185,21 @@ pub(crate) async fn files_delete(
         Ok(a) => a,
         Err(r) => return r,
     };
-    match crate::app::files::delete(
+    let res = crate::app::files::delete(
         acct.is_admin,
         acct.system_user.as_deref(),
         &req.path,
         ctn_ref(&req),
     )
-    .await
-    {
+    .await;
+    audit::record(
+        &acct.username,
+        "files.delete",
+        &audit_target(&req.path, ctn_ref(&req)),
+        res.is_ok(),
+        &res.as_ref().err().map(fs_err_detail).unwrap_or_default(),
+    );
+    match res {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => fs_err_response(e),
     }
@@ -304,12 +335,24 @@ pub(crate) async fn docker_image_upload(
     body: axum::body::Body,
 ) -> Response {
     use futures::StreamExt;
-    if let Err(r) = require_admin(&state, &headers) {
-        return r;
-    }
+    let acct = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
     let _permit = transfer_sem().acquire_owned().await.ok();
     let stream = body.into_data_stream().map(|r| r.unwrap_or_default());
-    match crate::infra::docker::import_image_upload(stream).await {
+    let res = crate::infra::docker::import_image_upload(stream).await;
+    audit::record(
+        &acct.username,
+        "docker.image_upload",
+        "",
+        res.is_ok(),
+        &res.as_ref()
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default(),
+    );
+    match res {
         Ok(v) => Json(json!({ "ok": true, "data": v })).into_response(),
         Err(e) => Json(op_err_body(e)).into_response(),
     }
@@ -373,6 +416,13 @@ pub(crate) async fn files_upload(
     )
     .await;
     let _ = tokio::fs::remove_file(&tmp).await;
+    audit::record(
+        &acct.username,
+        "files.upload",
+        &audit_target(&q.path, ctn),
+        res.is_ok(),
+        &res.as_ref().err().map(fs_err_detail).unwrap_or_default(),
+    );
     match res {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => fs_err_response(e),
@@ -403,9 +453,10 @@ pub(crate) async fn nginx_static_upload(
     Query(q): Query<StaticUploadQuery>,
     body: axum::body::Body,
 ) -> Response {
-    if let Err(r) = require_admin(&state, &headers) {
-        return r;
-    }
+    let acct = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
     let _permit = transfer_sem().acquire_owned().await.ok();
     let tmp = match stream_body_to_temp(body, UPLOAD_CAP).await {
         Ok(t) => t,
@@ -416,6 +467,16 @@ pub(crate) async fn nginx_static_upload(
     let res =
         crate::infra::nginx::web_static_upload(&q.root, mode, q.rel.as_deref(), clear, &tmp).await;
     let _ = tokio::fs::remove_file(&tmp).await;
+    audit::record(
+        &acct.username,
+        "nginx.static_upload",
+        &q.root,
+        res.is_ok(),
+        &res.as_ref()
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default(),
+    );
     match res {
         Ok(n) => Json(json!({ "ok": true, "files": n })).into_response(),
         Err(e) => Json(op_err_body(e)).into_response(),

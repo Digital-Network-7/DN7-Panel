@@ -39,6 +39,22 @@ fn is_protected_path(path: &str) -> bool {
     PROTECTED.contains(&norm.as_str())
 }
 
+/// Stricter guard for **host-side** mutations (write / mkdir / delete): refuses
+/// the exact protected dirs (`is_protected_path`) **and any descendant** of the
+/// most sensitive trees, so writing/deleting e.g. `/etc/shadow` or
+/// `/root/.ssh/authorized_keys` is blocked — not just the bare directory. The
+/// super-admin runs host ops as root, so without this a single file write could
+/// clobber credentials or kernel state. Host-only: container paths keep the
+/// looser exact-dir guard so in-container `/etc` management still works.
+fn is_protected_host_mutation(path: &str) -> bool {
+    let norm = normalize_lexical(path);
+    if is_protected_path(&norm) {
+        return true;
+    }
+    const TREES: &[&str] = &["/etc", "/root", "/boot", "/proc", "/sys", "/dev"];
+    TREES.iter().any(|t| norm.starts_with(&format!("{t}/")))
+}
+
 /// Lexically normalize a path: resolve `.` and `..` segments, collapse repeated
 /// and trailing separators. Purely textual — no filesystem or symlink
 /// resolution — so it's safe to use for container paths too. `..` can never
@@ -223,7 +239,30 @@ pub(crate) use hostfs::*;
 
 #[cfg(test)]
 mod tests {
-    use super::{is_protected_path, parse_tar_header, valid_container_ref};
+    use super::{
+        is_protected_host_mutation, is_protected_path, parse_tar_header, valid_container_ref,
+    };
+
+    #[test]
+    fn host_mutation_blocks_sensitive_descendants() {
+        // Bare protected dirs (same as is_protected_path).
+        assert!(is_protected_host_mutation("/etc"));
+        assert!(is_protected_host_mutation("/"));
+        // Descendants of credential / kernel trees — the new coverage.
+        assert!(is_protected_host_mutation("/etc/shadow"));
+        assert!(is_protected_host_mutation("/etc/ssh/sshd_config"));
+        assert!(is_protected_host_mutation("/root/.ssh/authorized_keys"));
+        assert!(is_protected_host_mutation("/proc/sys/kernel"));
+        assert!(is_protected_host_mutation("/sys/class"));
+        assert!(is_protected_host_mutation("/dev/sda"));
+        assert!(is_protected_host_mutation("/boot/grub/grub.cfg"));
+        assert!(is_protected_host_mutation("/etc/../etc/passwd")); // traversal -> /etc/passwd
+                                                                   // Ordinary writable locations stay allowed.
+        assert!(!is_protected_host_mutation("/home/user/file.txt"));
+        assert!(!is_protected_host_mutation("/var/www/site/index.html"));
+        assert!(!is_protected_host_mutation("/srv/data/x"));
+        assert!(!is_protected_host_mutation("/etcd/data")); // not under /etc
+    }
 
     #[test]
     fn protected_paths() {
