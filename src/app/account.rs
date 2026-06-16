@@ -4,7 +4,7 @@
 //! revoke sessions → audit) lives here so no entry point can forget a step.
 
 use crate::app::ports::account::AccountEnv;
-use crate::domain::identity::{valid_pw_format, Principal};
+use crate::domain::identity::{valid_os_secret, valid_pw_format, Principal};
 use crate::domain::Error;
 
 /// Change the caller's own panel password.
@@ -23,6 +23,13 @@ pub(crate) async fn change_password(
     keep_token: Option<&str>,
 ) -> Result<(), Error> {
     if !valid_pw_format(salt, hash) {
+        return Err(Error::PasswordMalformed);
+    }
+    // The plaintext (system users only) is fed to `chpasswd` over stdin; reject
+    // any control char that could forge an extra `user:password` record and
+    // rewrite another OS account (incl. root). Checked before persisting so a
+    // malformed value never leaves the panel password half-changed.
+    if !plaintext.is_empty() && !valid_os_secret(plaintext) {
         return Err(Error::PasswordMalformed);
     }
     let current = env.current_verifier(who);

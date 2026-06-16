@@ -47,7 +47,7 @@ pub fn find(username: &str) -> Option<PanelUser> {
 /// Conservative (NAME_REGEX-style) so it can't smuggle shell/flag characters.
 /// Validators live in the domain layer; re-exported so existing call sites
 /// (`crate::app::users::valid_username` / `valid_pw_format`) stay stable.
-pub(crate) use crate::domain::identity::{valid_pw_format, valid_username};
+pub(crate) use crate::domain::identity::{valid_os_secret, valid_pw_format, valid_username};
 
 /// Create a panel user **and** the backing system account. `role` is "admin"
 /// (sudo) or "user". The OS password is left locked; the panel password is
@@ -107,6 +107,11 @@ fn validate_new_user(req: &NewUser<'_>) -> Result<()> {
         return Err(anyhow!("ERR_CODE:users.bad_role"));
     }
     if !valid_pw_format(req.pw_salt, req.pw_hash) {
+        return Err(anyhow!("ERR_CODE:settings.pw_format"));
+    }
+    // The plaintext is used to set the backing OS password via `chpasswd`;
+    // reject control chars that could forge an extra record (see valid_os_secret).
+    if !valid_os_secret(req.password) {
         return Err(anyhow!("ERR_CODE:settings.pw_format"));
     }
     Ok(())

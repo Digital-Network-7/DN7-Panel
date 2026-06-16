@@ -131,6 +131,11 @@ pub async fn set_system_password(username: &str, password: &str) -> Result<()> {
     if getpwnam(username).is_none() {
         return Ok(());
     }
+    // Defense in depth at the OS boundary: a control char in `password` would
+    // forge an extra `user:password` chpasswd record (callers validate too).
+    if !crate::domain::identity::valid_os_secret(password) {
+        return Err(anyhow!("ERR_CODE:users.set_pw_failed"));
+    }
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
     let mut child = tokio::process::Command::new("chpasswd")

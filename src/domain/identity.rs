@@ -73,9 +73,29 @@ pub(crate) fn valid_pw_format(salt: &str, hash: &str) -> bool {
         && hash.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Whether a cleartext secret is safe to hand to a line-oriented OS tool
+/// (`chpasswd`, which reads `user:password` records separated by newlines).
+/// A control character — notably `\n`/`\r`/`\0` — would let the value forge an
+/// extra record and rewrite another account's OS password, so any ASCII control
+/// or DEL byte is rejected. An empty secret is "safe" (it is simply not synced).
+pub(crate) fn valid_os_secret(s: &str) -> bool {
+    !s.bytes().any(|b| b < 0x20 || b == 0x7f)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn os_secret_rejects_control_chars() {
+        assert!(valid_os_secret("hunter2!#%"));
+        assert!(valid_os_secret("")); // empty = not synced, allowed
+        assert!(valid_os_secret("a:b")); // ':' is fine — chpasswd splits on the first one
+        assert!(!valid_os_secret("x\nroot:pwned")); // newline forges a 2nd record
+        assert!(!valid_os_secret("x\rfoo"));
+        assert!(!valid_os_secret("x\0foo"));
+        assert!(!valid_os_secret("x\ty")); // tab (control) rejected
+    }
 
     #[test]
     fn username_rules() {

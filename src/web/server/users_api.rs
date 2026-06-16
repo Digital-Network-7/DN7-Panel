@@ -223,6 +223,13 @@ fn parse_pw_update(req: &UpdateUserReq) -> Result<Option<(String, String)>, Resp
     if !crate::app::users::valid_pw_format(&salt, &hash) {
         return Err(map_domain_err(crate::domain::Error::PasswordMalformed));
     }
+    // The plaintext is synced to the OS password via `chpasswd`; reject control
+    // chars that could forge an extra record (see identity::valid_os_secret).
+    if let Some(p) = &req.password {
+        if !crate::app::users::valid_os_secret(p) {
+            return Err(map_domain_err(crate::domain::Error::PasswordMalformed));
+        }
+    }
     Ok(Some((salt, hash.to_lowercase())))
 }
 
