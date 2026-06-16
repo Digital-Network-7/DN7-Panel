@@ -201,7 +201,10 @@ fn d_gmin() -> u32 {
     20
 }
 fn d_cmbs() -> String {
-    "50m".to_string()
+    // Generous default: the panel itself proxies large file / Docker-image
+    // uploads through a managed site, so a small cap (or nginx's 1 MiB default)
+    // would 413 them. Operators can lower it per-deployment in the perf settings.
+    "1024m".to_string()
 }
 fn d_gcl() -> u8 {
     1

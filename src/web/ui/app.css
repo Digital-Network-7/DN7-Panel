@@ -227,7 +227,7 @@
   .dash .histcard .hist-head { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px; }
   .dash .histcard .subtabs { margin:0; }
   .dash .histcard .hist-body { position:relative; flex:1 1 auto; min-height:200px; }
-  .dash .histcard .hist-body canvas { display:block; width:100%; }
+  .dash .histcard .hist-body canvas { position:absolute; inset:0; display:block; width:100%; height:100%; }
   .dash .histcard .hist-empty { position:absolute; inset:0; align-items:center; justify-content:center; }
   /* Network stat card: left/right split (上行 amber, 下行 blue). */
   .netcard .netsplit { display:flex; gap:10px; margin-top:2px; }

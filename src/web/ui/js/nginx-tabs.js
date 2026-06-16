@@ -213,7 +213,7 @@ function ngSettingsTab(v) {
         <p class="mut" style="font-size:12.5px;margin:0 0 14px">${tr('ng.perf_desc')}</p>
         <div id="ngTuneBox">
         <div class="formgrid">
-          <div><label class="lbl">${tr('ng.t_cmbs')}</label><div class="field-suffix"><input id="ngCmbs" class="field" type="number" min="0" value="${esc(String(parseInt(t.client_max_body_size, 10) || 50))}" /><span class="suffix-tag">MB</span></div></div>
+          <div><label class="lbl">${tr('ng.t_cmbs')}</label><div class="field-suffix"><input id="ngCmbs" class="field" type="number" min="0" value="${esc(String(parseInt(t.client_max_body_size, 10) || 1024))}" /><span class="suffix-tag">MB</span></div></div>
           <div><label class="lbl">${tr('ng.t_chdr')}</label><div class="field-suffix"><input id="ngChdr" class="field" type="number" min="0" value="${esc(String(parseInt(t.client_header_buffer_size, 10) || 32))}" /><span class="suffix-tag">KB</span></div></div>
           <div><label class="lbl">${tr('ng.t_kat')}</label><input id="ngKat" class="field" type="number" min="0" value="${esc(String(t.keepalive_timeout != null ? t.keepalive_timeout : 60))}" /></div>
           <div><label class="lbl">${tr('ng.t_snhbs')}</label><select id="ngSnhbs" class="field">${bktOpts}</select></div>

@@ -6,11 +6,21 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 /// The server-context tuning directives, emitted into each managed server
-/// block. Returns "" until the operator configures tuning.
+/// block. When the operator hasn't configured tuning we still emit a generous
+/// `client_max_body_size` so a managed proxy site (e.g. the panel proxied
+/// behind its own nginx) doesn't inherit nginx's tiny 1 MiB default and return
+/// 413 on file / Docker-image uploads. The remaining directives stay opt-in
+/// (we don't override the distro's http defaults until the operator asks).
 pub(crate) fn render_tuning_block() -> String {
     let t = match load_tuning_opt() {
         Some(t) => t,
-        None => return String::new(),
+        None => {
+            // Not configured → only pin the upload size to a sane default.
+            return format!(
+                "    client_max_body_size {};\n",
+                HttpTuning::default().client_max_body_size
+            );
+        }
     };
     let mut s = String::new();
     s.push_str(&format!(

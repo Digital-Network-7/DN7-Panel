@@ -83,9 +83,14 @@ function card(title, big, sub, pct) {
 // ---- History chart (canvas) ----------------------------------------------
 
 // Size the canvas to its container at device-pixel resolution (crisp lines).
-function fitCanvas(cv, hpx) {
+// Height tracks the (flex-grown) container so the chart fills the card instead
+// of a fixed slice; the canvas is absolutely positioned (see app.css) so its
+// own size never feeds back into the container's measured height.
+function fitCanvas(cv) {
   const dpr = window.devicePixelRatio || 1;
-  const w = Math.max(160, cv.parentElement.clientWidth);
+  const parent = cv.parentElement;
+  const w = Math.max(160, parent.clientWidth);
+  const hpx = Math.max(180, parent.clientHeight);
   cv.style.width = w + 'px'; cv.style.height = hpx + 'px';
   cv.width = Math.round(w * dpr); cv.height = Math.round(hpx * dpr);
   const ctx = cv.getContext('2d');
@@ -117,7 +122,7 @@ function drawHistory(H) {
   }
   cv.style.display = 'block'; if (empty) empty.style.display = 'none';
   const net = H.metric === 'net';
-  const { ctx, w, h } = fitCanvas(cv, 240);
+  const { ctx, w, h } = fitCanvas(cv);
   const padL = 52, padR = 14, padT = 14, padB = 24;
   const plotW = w - padL - padR, plotH = h - padT - padB;
   const n = pts.length;
