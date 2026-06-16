@@ -10,11 +10,31 @@
 //! in the infra capability dispatcher — re-implementing it here would risk
 //! mis-routing an op. See .kiro/steering/architecture.md §10.
 
-use anyhow::Result;
-use serde_json::Value;
+use anyhow::{anyhow, Result};
+use serde_json::{json, Value};
 
-/// Run one docker capability request. `body` is the capability JSON command
-/// already authenticated/authorized by the web boundary.
+/// Run one docker capability request. The app layer owns parsing (into the
+/// docker request DTO) and op routing; the in-memory op-registry ops are handled
+/// here, and the daemon/container ops are delegated to the `infra::docker`
+/// adapter cluster (which holds the authoritative per-op match + managed-service
+/// guard).
 pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
-    crate::infra::docker::web_dispatch(body).await
+    let req: crate::infra::docker::Req =
+        serde_json::from_value(body.clone()).map_err(|e| anyhow!("bad docker request: {e}"))?;
+    match req.op.as_str() {
+        // Detached-op-registry ops — pure in-memory, no Docker contact.
+        "list_ops" => Ok(crate::infra::docker::ops_snapshot_value()),
+        "op_log" => Ok(crate::infra::docker::op_log_value(
+            req.op_id.as_deref().unwrap_or(""),
+        )),
+        "dismiss_op" => {
+            if let Some(id) = req.op_id.as_deref() {
+                crate::infra::docker::op_dismiss_registry(id);
+            }
+            Ok(json!({ "dismissed": true }))
+        }
+        // Daemon / container ops: the infra adapter holds the authoritative
+        // match (+ the managed-service guard that must run for every op).
+        _ => crate::infra::docker::run_op(&req).await,
+    }
 }

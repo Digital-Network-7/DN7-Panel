@@ -57,7 +57,7 @@ pub(crate) struct Req {
     #[serde(default)]
     #[allow(dead_code)]
     id: i64,
-    op: String,
+    pub(crate) op: String,
     #[serde(default)]
     image: Option<String>,
     #[serde(default)]
@@ -73,7 +73,7 @@ pub(crate) struct Req {
     #[serde(default)]
     tail: Option<i64>,
     #[serde(default)]
-    op_id: Option<String>,
+    pub(crate) op_id: Option<String>,
     // create_container fields
     #[serde(default)]
     name: Option<String>,
@@ -241,15 +241,13 @@ use volumes::*;
 mod tests;
 
 /// op result `data` on success.
-pub async fn web_dispatch(req: &Value) -> Result<Value> {
-    let r: Req =
-        serde_json::from_value(req.clone()).map_err(|e| anyhow!("bad docker request: {e}"))?;
-    handle(&r).await
-}
-
-/// Dispatch one request. Long ops (`pull_image`, `install`) start a detached
-/// task and return an `op_id` immediately.
-async fn handle(req: &Req) -> Result<Value> {
+///
+/// Execute one already-parsed docker request. The `app::docker` router owns
+/// parsing + the in-memory op-registry ops; this holds the authoritative match
+/// for the container/image/network/volume ops (each interleaved with bollard
+/// daemon state, so it stays as one adapter cluster). Long ops (`pull_image`,
+/// `install`) start a detached task and return an `op_id` immediately.
+pub(crate) async fn run_op(req: &Req) -> Result<Value> {
     guard_managed_ops(req).await?;
     match req.op.as_str() {
         "info" => docker_info().await,
@@ -260,17 +258,6 @@ async fn handle(req: &Req) -> Result<Value> {
             start_create(req)
         }
         "install" => start_install(req),
-        "list_ops" => Ok(ops_snapshot()),
-        "op_log" => {
-            let op_id = req.op_id.as_deref().unwrap_or("");
-            Ok(op_log(op_id))
-        }
-        "dismiss_op" => {
-            if let Some(op_id) = req.op_id.as_deref() {
-                op_dismiss(op_id);
-            }
-            Ok(json!({ "dismissed": true }))
-        }
         "remove_image" => remove_image_op(req).await,
         "tag_image" => add_image_tags(req).await,
         "retag_image" => retag_image(req).await,
@@ -310,6 +297,19 @@ async fn handle(req: &Req) -> Result<Value> {
         "restore_backup" => start_restore_backup(req),
         other => Err(anyhow!("unsupported op: {other}")),
     }
+}
+
+/// In-memory detached-op-registry projections + dismiss, exposed for the
+/// `app::docker` router (the registry fns are module-private). These ops touch
+/// neither Docker nor any container — pure process-local state.
+pub(crate) fn ops_snapshot_value() -> Value {
+    ops_snapshot()
+}
+pub(crate) fn op_log_value(op_id: &str) -> Value {
+    op_log(op_id)
+}
+pub(crate) fn op_dismiss_registry(op_id: &str) {
+    op_dismiss(op_id);
 }
 
 /// Reject operations on DN7 Panel-managed service containers/images (nginx /
