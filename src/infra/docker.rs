@@ -40,7 +40,7 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
 use bollard::Docker;
-use futures_util::StreamExt;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 

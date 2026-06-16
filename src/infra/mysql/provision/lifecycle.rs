@@ -92,10 +92,16 @@ pub(crate) async fn reset_password(req: &Req) -> Result<Value> {
 }
 
 /// Escape a value for safe inclusion inside a single-quoted SQL string literal.
-/// Backslashes and single quotes are doubled/escaped. The password charset
-/// already excludes quotes/backslashes, but we escape defensively.
+/// A single quote is doubled (`''`), which terminates+reopens the literal in a
+/// way that is correct in **every** SQL mode — unlike `\'`, which is not an
+/// escape under `NO_BACKSLASH_ESCAPES`/ANSI mode. A literal backslash is also
+/// doubled so it round-trips when backslash-escapes are enabled (the default);
+/// since a doubled quote never leaves a dangling backslash, the value can't
+/// break out of the literal in either mode. The password charset already
+/// excludes quotes/backslashes, but we escape defensively for user-supplied
+/// account names/hosts.
 pub(crate) fn sql_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\'', "\\'")
+    s.replace('\\', "\\\\").replace('\'', "''")
 }
 
 // ---------------------------------------------------------------------------
