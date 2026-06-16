@@ -117,12 +117,15 @@ fn invalidate_cache(path: &Path) {
 }
 
 /// Persist `value` as pretty JSON, creating the parent directory. For
-/// non-secret manifests/config (site lists, access metadata, tuning).
+/// non-secret manifests/config (site lists, access metadata, tuning). Written
+/// atomically (temp file + fsync + rename via
+/// [`crate::platform::paths::write_public`]) so a crash or a concurrent reader
+/// can never observe a torn/half-written file — a corrupt parse here makes
+/// `load_or_default` silently return the empty default, which would drop the
+/// whole manifest.
 pub(crate) fn save_pretty<T: Serialize + ?Sized>(path: &Path, value: &T) -> anyhow::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(path, serde_json::to_string_pretty(value)?)?;
+    let data = serde_json::to_string_pretty(value)?;
+    crate::platform::paths::write_public(path, data.as_bytes())?;
     invalidate_cache(path);
     Ok(())
 }
@@ -160,6 +163,31 @@ mod tests {
         assert_eq!(load_or_default_cached::<Vec<i64>>(&p), Vec::<i64>::new());
         std::fs::write(&p, "[7,7]").unwrap();
         assert_eq!(load_or_default_cached::<Vec<i64>>(&p), vec![7, 7]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn save_pretty_roundtrips_and_busts_cache() {
+        let p = std::env::temp_dir().join(format!("dn7-savepretty-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        // Seed the cache with the on-disk value.
+        save_pretty(&p, &vec![1, 2, 3]).unwrap();
+        assert_eq!(load_or_default_cached::<Vec<i64>>(&p), vec![1, 2, 3]);
+        // A same-length rewrite must still be observed immediately (cache busted
+        // by the save helper, not reliant on mtime/len changing).
+        save_pretty(&p, &vec![4, 5, 6]).unwrap();
+        assert_eq!(load_or_default_cached::<Vec<i64>>(&p), vec![4, 5, 6]);
+        // No leftover temp files in the directory (atomic rename cleaned up).
+        let dir = p.parent().unwrap();
+        let leftovers: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n.starts_with(".dn7-savepretty") && n.contains(".tmp-")
+            })
+            .collect();
+        assert!(leftovers.is_empty(), "atomic write left a temp file behind");
         let _ = std::fs::remove_file(&p);
     }
 }

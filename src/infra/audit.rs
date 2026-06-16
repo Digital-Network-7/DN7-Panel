@@ -236,8 +236,11 @@ pub fn read(limit: usize) -> Vec<Entry> {
     out
 }
 
-/// Erase the audit log.
+/// Erase the audit log. Serialized against the append path via [`LOG_LOCK`] so
+/// a concurrent `spawn_blocking` append can't interleave with the truncate and
+/// corrupt or resurrect partial content.
 pub fn clear() -> std::io::Result<()> {
+    let _guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::fs::write(path(), b"")
 }
 

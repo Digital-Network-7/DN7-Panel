@@ -172,10 +172,13 @@ pub(crate) fn upload_tar_stream(
                     let mut buf = vec![0u8; want];
                     match file.read(&mut buf).await {
                         Ok(0) => {
-                            // Unexpected EOF; move on to padding/footer.
-                            let next = if pad > 0 { Stage::Pad } else { Stage::Footer };
-                            // Emit nothing this step — recurse via an empty chunk.
-                            Some((Bytes::new(), next))
+                            // Premature EOF: the file is shorter than the size we
+                            // declared in the tar header. Stop WITHOUT emitting
+                            // padding/footer so the archive ends mid-entry — the
+                            // daemon's tar reader then fails with UnexpectedEOF
+                            // and the upload errors, instead of silently writing
+                            // a truncated file reported as success.
+                            Some((Bytes::new(), Stage::Done))
                         }
                         Ok(n) => {
                             buf.truncate(n);
@@ -192,7 +195,9 @@ pub(crate) fn upload_tar_stream(
                             };
                             Some((Bytes::from(buf), next))
                         }
-                        Err(_) => Some((Bytes::new(), Stage::Footer)),
+                        // Read error mid-file: same fail-closed handling — end the
+                        // archive incomplete so the daemon rejects the upload.
+                        Err(_) => Some((Bytes::new(), Stage::Done)),
                     }
                 }
                 Stage::Pad => Some((Bytes::from(vec![0u8; pad]), Stage::Footer)),
@@ -240,5 +245,64 @@ pub(crate) fn friendly_archive_err(e: &bollard::errors::Error) -> String {
         "文件不存在".to_string()
     } else {
         s.chars().take(300).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+
+    async fn collect(stream: impl futures::Stream<Item = bytes::Bytes>) -> Vec<u8> {
+        let mut buf = Vec::new();
+        futures::pin_mut!(stream);
+        while let Some(chunk) = stream.next().await {
+            buf.extend_from_slice(&chunk);
+        }
+        buf
+    }
+
+    fn header_for(size: u64) -> tar::Header {
+        let mut h = tar::Header::new_gnu();
+        h.set_size(size);
+        h.set_mode(0o644);
+        h.set_entry_type(tar::EntryType::file());
+        h.set_path("f.bin").unwrap();
+        h.set_cksum();
+        h
+    }
+
+    #[tokio::test]
+    async fn upload_stream_is_well_formed_when_complete() {
+        let p = std::env::temp_dir().join(format!("dn7-ctnup-ok-{}", std::process::id()));
+        std::fs::write(&p, b"hello world").unwrap();
+        let size = std::fs::metadata(&p).unwrap().len();
+        let out = collect(upload_tar_stream(header_for(size), p.clone(), size)).await;
+        // header (512) + content padded to 512 + 1024-byte footer.
+        assert_eq!(out.len(), 512 + 512 + 1024);
+        // A valid tar ends in at least two zero blocks.
+        assert!(out[out.len() - 1024..].iter().all(|&b| b == 0));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[tokio::test]
+    async fn upload_stream_omits_footer_when_file_truncated() {
+        // Declare a larger size than the file actually has → the body read hits
+        // EOF early and the stream must end WITHOUT the terminating zero blocks,
+        // so the daemon's tar reader rejects the upload instead of writing a
+        // silently-truncated file.
+        let p = std::env::temp_dir().join(format!("dn7-ctnup-trunc-{}", std::process::id()));
+        std::fs::write(&p, b"short").unwrap();
+        let declared = 9999u64; // far bigger than the 5-byte file
+        let out = collect(upload_tar_stream(header_for(declared), p.clone(), declared)).await;
+        // Must NOT carry a full 1024-byte zero footer (archive is intentionally
+        // incomplete). It's header + partial body, well under header+declared.
+        assert!(out.len() < 512 + declared as usize);
+        let tail_ok = out.len() >= 1024 && out[out.len() - 1024..].iter().all(|&b| b == 0);
+        assert!(
+            !tail_ok,
+            "truncated upload must not emit a complete tar footer"
+        );
+        let _ = std::fs::remove_file(&p);
     }
 }
