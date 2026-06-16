@@ -65,19 +65,28 @@ impl<'a> SecurityPolicy<'a> {
         ip_in_allowlist(&self.s.allow_ips, ip)
     }
 
-    /// Whether `peer` is a configured trusted front-proxy. Unlike the allow
-    /// list, loopback is **not** auto-trusted: forwarding must be opted into
-    /// explicitly so a direct local request can't spoof `X-Forwarded-For`.
+    /// Whether `peer` is a trusted front-proxy whose forwarded headers we honor.
+    ///
+    /// A **loopback** peer is always trusted: the recommended deployment binds
+    /// the panel to localhost behind a same-host reverse proxy (nginx / SSH
+    /// tunnel), so a request from 127.0.0.1 is that proxy (or another same-host
+    /// process, which is already privileged on the box). Without this, every
+    /// proxied request is attributed to 127.0.0.1 — losing the real client IP
+    /// in the audit log and silently bypassing the IP allow list (loopback is
+    /// always allowed). Non-loopback peers must be opted into explicitly so a
+    /// direct remote client can't spoof `X-Forwarded-For`.
     pub(crate) fn trusts_proxy(&self, peer: IpAddr) -> bool {
-        !self.s.trusted_proxies.is_empty() && ip_in_cidrs(&self.s.trusted_proxies, peer)
+        peer.is_loopback()
+            || (!self.s.trusted_proxies.is_empty() && ip_in_cidrs(&self.s.trusted_proxies, peer))
     }
 }
 
-/// Resolve the effective client IP for rate-limiting / allow-list decisions.
-/// When the direct TCP `peer` is a configured trusted proxy, take the rightmost
-/// `X-Forwarded-For` entry (the address the trusted proxy observed); otherwise
-/// use `peer` itself. `X-Forwarded-For` is never trusted from an untrusted peer
-/// (it's client-spoofable), so this can't be used to bypass the allow-list.
+/// Resolve the effective client IP for rate-limiting / allow-list / audit.
+/// When the direct TCP `peer` is trusted (a loopback same-host proxy, or a
+/// configured front-proxy CIDR), take the rightmost `X-Forwarded-For` entry
+/// (the address that proxy observed), falling back to `X-Real-IP`; otherwise
+/// use `peer` itself. Forwarded headers are never read from an untrusted peer
+/// (they're client-spoofable), so this can't be used to bypass the allow-list.
 pub(crate) fn client_ip(
     peer: IpAddr,
     headers: &header::HeaderMap,
@@ -93,6 +102,16 @@ pub(crate) fn client_ip(
             {
                 return ip;
             }
+        }
+        // No usable X-Forwarded-For — fall back to X-Real-IP (set by nginx to
+        // the immediate client `$remote_addr`).
+        if let Some(real) = headers
+            .get("x-real-ip")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .and_then(|s| s.parse::<IpAddr>().ok())
+        {
+            return real;
         }
     }
     peer
@@ -241,5 +260,30 @@ mod tests {
         h.insert("x-forwarded-for", "203.0.113.9".parse().unwrap());
         let peer: IpAddr = "10.0.0.1".parse().unwrap();
         assert_eq!(client_ip(peer, &h, &p), peer);
+    }
+
+    #[test]
+    fn loopback_proxy_is_trusted_and_resolves_real_client() {
+        use std::net::IpAddr;
+        let s = settings_with(&[], false, "/"); // no explicit trusted proxies
+        let p = pol(&s);
+        let lo: IpAddr = "127.0.0.1".parse().unwrap();
+        // A same-host (loopback) reverse proxy is trusted automatically, so the
+        // real client IP is taken from the forwarded headers instead of 127.0.0.1.
+        let mut xff = header::HeaderMap::new();
+        xff.insert("x-forwarded-for", "175.161.169.65".parse().unwrap());
+        assert_eq!(
+            client_ip(lo, &xff, &p),
+            "175.161.169.65".parse::<IpAddr>().unwrap()
+        );
+        // X-Real-IP is used when no X-Forwarded-For is present.
+        let mut real = header::HeaderMap::new();
+        real.insert("x-real-ip", "175.161.169.65".parse().unwrap());
+        assert_eq!(
+            client_ip(lo, &real, &p),
+            "175.161.169.65".parse::<IpAddr>().unwrap()
+        );
+        // No forwarded headers (direct loopback, e.g. SSH tunnel) → stays loopback.
+        assert_eq!(client_ip(lo, &header::HeaderMap::new(), &p), lo);
     }
 }
