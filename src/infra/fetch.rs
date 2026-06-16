@@ -266,7 +266,7 @@ async fn download_streaming<F: Fn(u64)>(
     resp: reqwest::Response,
     on_progress: F,
 ) -> Result<Vec<u8>> {
-    use futures_util::StreamExt;
+    use futures::StreamExt;
     let total = resp.content_length();
     let mut bytes: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
     let mut got: u64 = 0;

@@ -27,7 +27,7 @@ pub(crate) async fn list_containers() -> Result<Value> {
             }
         }
     });
-    let shells = futures_util::future::join_all(shell_futs).await;
+    let shells = futures::future::join_all(shell_futs).await;
 
     let mut items = Vec::new();
     for (c, has_shell) in containers.into_iter().zip(shells) {

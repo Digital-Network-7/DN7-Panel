@@ -41,6 +41,14 @@ pub(crate) async fn put_profile(
         Err(r) => return r,
     };
     if let Some(av) = &req.avatar {
+        let av = av.trim();
+        // Mirror the branding-logo rule: an avatar must be empty (clear it) or a
+        // base64 image data-URI, never an arbitrary string. The console renders
+        // it in an <img src>, but validating here keeps a non-image value (e.g.
+        // `javascript:`/HTML) from being stored and echoed by /api/me, /api/users.
+        if !av.is_empty() && !av.starts_with("data:image/") {
+            return api_err(StatusCode::BAD_REQUEST, "branding.logo_invalid");
+        }
         if av.len() > 700_000 {
             return api_err(StatusCode::BAD_REQUEST, "branding.logo_invalid");
         }

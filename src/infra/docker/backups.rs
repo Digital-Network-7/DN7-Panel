@@ -380,7 +380,7 @@ pub async fn backup_read_stream(
 /// the loaded image ref(s).
 pub async fn import_image_upload<S>(body: S) -> Result<Value>
 where
-    S: futures_util::Stream<Item = bytes::Bytes> + Send + 'static,
+    S: futures::Stream<Item = bytes::Bytes> + Send + 'static,
 {
     let dkr = dkr()?;
     let mut loaded: Vec<String> = Vec::new();

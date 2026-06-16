@@ -316,8 +316,12 @@ mod tests {
 
     #[test]
     fn sql_escape_quotes() {
-        assert_eq!(sql_escape("a'b"), "a\\'b");
+        // A single quote is doubled (mode-independent), not backslash-escaped —
+        // so it stays safe under NO_BACKSLASH_ESCAPES / ANSI mode too.
+        assert_eq!(sql_escape("a'b"), "a''b");
         assert_eq!(sql_escape("a\\b"), "a\\\\b");
+        // A quote adjacent to a backslash can't break out of the literal.
+        assert_eq!(sql_escape("a\\'b"), "a\\\\''b");
     }
 
     #[test]

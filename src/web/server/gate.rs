@@ -114,7 +114,9 @@ pub(crate) fn sanitize_headers(h: &header::HeaderMap) -> String {
             || nl.contains("password")
             || nl.contains("session")
             || nl.contains("api-key")
-            || nl.contains("apikey");
+            || nl.contains("apikey")
+            || nl.contains("credential")
+            || nl.contains("bearer");
         let v = if secret {
             "[redacted]".to_string()
         } else {
@@ -155,6 +157,12 @@ pub(crate) fn redact_json(v: &mut Value) {
                     || kl.contains("secret")
                     || kl.contains("salt")
                     || kl.contains("private")
+                    || kl.contains("hash")
+                    || kl.contains("verifier")
+                    || kl.contains("otp")
+                    || kl.contains("cred")
+                    || kl.contains("seed")
+                    || kl.contains("mnemonic")
                     || kl.ends_with("key")
                 {
                     *val = Value::String("[redacted]".into());
@@ -169,5 +177,45 @@ pub(crate) fn redact_json(v: &mut Value) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn redact_covers_credential_shaped_fields() {
+        let mut v = json!({
+            "username": "alice",
+            "pw_hash": "deadbeef",
+            "totp_secret": "ABC",
+            "verifier": "v",
+            "otp_code": "123456",
+            "recovery_seed": "x y z",
+            "credential": "c",
+            "nested": { "session_token": "t", "public": "ok" },
+            "list": [ { "api_key": "k" } ]
+        });
+        redact_json(&mut v);
+        assert_eq!(v["username"], json!("alice"));
+        assert_eq!(v["nested"]["public"], json!("ok"));
+        for ptr in [
+            "/pw_hash",
+            "/totp_secret",
+            "/verifier",
+            "/otp_code",
+            "/recovery_seed",
+            "/credential",
+            "/nested/session_token",
+            "/list/0/api_key",
+        ] {
+            assert_eq!(
+                v.pointer(ptr),
+                Some(&json!("[redacted]")),
+                "field {ptr} should be redacted"
+            );
+        }
     }
 }

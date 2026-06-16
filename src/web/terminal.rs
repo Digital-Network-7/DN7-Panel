@@ -8,7 +8,7 @@
 use std::io::{Read, Write};
 
 use anyhow::{anyhow, Result};
-use futures_util::{SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Deserialize;
 use tokio::sync::mpsc;

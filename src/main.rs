@@ -87,8 +87,16 @@ fn main() -> Result<()> {
 /// - `reset`: reset the console account + password to a fresh default (root /
 ///   the initializing OS user only).
 /// - `port` / `access`|`entry`: change the console port / secret entry path.
+/// - `help`/`-h`/`--help`: print usage.
+///
+/// An *unrecognized* leading argument prints usage and exits non-zero rather
+/// than falling through to a full supervisor launch (which would install the
+/// binary, write autostart units, and daemonize) — so a typo like
+/// `dn7-panel statuss` can't silently perform a root install.
 fn dispatch_subcommand(role: Option<&str>) -> Option<Result<()>> {
     match role {
+        // No arg or a foreground flag → real supervisor launch (handled by main).
+        None | Some("-f") | Some("--foreground") | Some("panel") => None,
         Some("version") => {
             println!("{}", env!("CARGO_PKG_VERSION"));
             Some(Ok(()))
@@ -96,8 +104,30 @@ fn dispatch_subcommand(role: Option<&str>) -> Option<Result<()>> {
         Some("reset") => Some(run_reset()),
         Some("port") => Some(run_set_port(std::env::args().nth(2))),
         Some("access") | Some("entry") => Some(run_set_entry(std::env::args().nth(2))),
-        _ => None,
+        Some("help") | Some("-h") | Some("--help") => {
+            print_usage();
+            Some(Ok(()))
+        }
+        Some(other) => {
+            eprintln!("dn7-panel: unknown command '{other}'\n");
+            print_usage();
+            Some(Err(anyhow::anyhow!("unknown command")))
+        }
     }
+}
+
+/// Print the CLI usage summary (the recognized subcommands).
+fn print_usage() {
+    println!(
+        "DN7 Panel — on-box management console\n\n\
+         Usage:\n\
+         \x20 dn7-panel [--foreground|-f]   start the panel (detaches unless -f)\n\
+         \x20 dn7-panel version             print the version\n\
+         \x20 dn7-panel reset               reset the console account + password\n\
+         \x20 dn7-panel port [N]            set the console port (random if omitted)\n\
+         \x20 dn7-panel access [/path]      set the secret entry path (random if omitted)\n\
+         \x20 dn7-panel help                show this help"
+    );
 }
 
 /// Acquire the supervisor single-instance lock. Returns `Ok(true)` to proceed

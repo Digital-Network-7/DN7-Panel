@@ -220,6 +220,16 @@ fn clean_deleted(p: &std::path::Path) -> PathBuf {
 /// must never drift with the launch directory or land in a shared/downloads
 /// folder.
 pub fn default_base_dir() -> PathBuf {
+    // An explicit override wins so every path helper (data/run/log + the nginx /
+    // mysql / web stores that resolve through here) shares one base with
+    // `PanelConfig::from_env`. Without this the supervisor's pid/lock/version
+    // would honor the override while persisted credentials/state stayed under
+    // /var/dn7/panel — a split that breaks isolated/test deployments.
+    if let Some(dir) = std::env::var_os("DN7_RUNTIME_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
     let p = PathBuf::from(INSTALL_DIR);
     if p.is_dir() {
         return p;
