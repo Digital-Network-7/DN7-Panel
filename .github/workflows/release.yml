@@ -206,3 +206,35 @@ jobs:
             Each binary is Ed25519-signed (signature appended to the file) and verified by the panel before self-update.
             Commit: ${{ github.sha }}
           files: dist/*
+
+      # Push the freshly-built, signed binaries to dn7.cn — the domestic origin
+      # / "stable channel". The site authenticates the upload purely by the
+      # appended Ed25519 signature (it verifies against the same embedded key
+      # the panel trusts), so there is no shared token to manage. The binaries
+      # land as a new (unstable) version; an operator promotes one to "stable"
+      # in the dn7.cn admin backend. GitHub remains the always-latest "preview"
+      # channel, so this push only feeds the curated channel.
+      #
+      # Override the target by setting the repo variable DN7_INGEST_URL (e.g.
+      # https://api.teaops.dn7.cn) — defaults to https://dn7.cn.
+      - name: Push binaries to dn7.cn (stable-channel origin)
+        env:
+          SITE: ${{ vars.DN7_INGEST_URL || 'https://dn7.cn' }}
+          V: ${{ needs.version.outputs.version }}
+        run: |
+          rc=0
+          for arch in x86_64 arm64; do
+            f="dist/${BIN_NAME}-linux-${arch}-v${V}"
+            if [ ! -f "$f" ]; then
+              echo "::error::missing artifact $f"; rc=1; continue
+            fi
+            echo "pushing $f -> $SITE/api/panel/ingest?version=${V}&arch=${arch}"
+            code=$(curl -sS --retry 3 --retry-delay 5 -o /tmp/ingest_resp \
+              -w '%{http_code}' -X POST --data-binary @"$f" \
+              "$SITE/api/panel/ingest?version=${V}&arch=${arch}" || echo 000)
+            echo "  http ${code}: $(cat /tmp/ingest_resp 2>/dev/null)"
+            if [ "$code" != "200" ]; then
+              echo "::error::ingest failed for ${arch} (http ${code})"; rc=1
+            fi
+          done
+          exit $rc
