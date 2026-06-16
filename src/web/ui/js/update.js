@@ -2,7 +2,7 @@
 // Self-update — version modal (manual / auto), dual-source (GitHub + dn7.cn).
 // Opened from the sidebar version line; talks to /api/update/*.
 // =========================================================================
-const UPD = { polling: null };
+const UPD = { polling: null, active: false };
 
 // Passive check on login: light up the sidebar dot when a newer build exists.
 function updateBadge() {
@@ -53,12 +53,25 @@ function openUpdate() {
     $('uCheck').onclick = runUpdCheck;
     $('uAuto').onchange = saveUpdCfg;
     $('uBeta').onchange = () => { saveUpdCfg(); runUpdCheck(); };
-    runUpdCheck();
-    // Re-attach the progress poller only if an update is already running (so a
-    // transient error on open can't trigger the restart/reload path).
+    // Decide the initial view from whether an update is already running, so
+    // re-opening the modal mid-update shows live progress — not the "update
+    // now" CTA plus a dead, empty bar. Check status first; runUpdCheck() still
+    // fills in the version line + changelog but suppresses the apply CTA while
+    // an update is active (see UPD.active).
     api('/api/update/status').then((b) => {
-      if (b.data && b.data.in_progress) { resetUpdProg(); $('uProg').classList.remove('hidden'); pollUpdStatus(); }
-    }).catch(() => {});
+      if (b.data && b.data.in_progress) {
+        UPD.active = true;
+        resetUpdProg();
+        $('uProg').classList.remove('hidden');
+        setUpdBar(0, 'indet');
+        updTxt(tr('upd.starting'));
+        runUpdCheck();
+        pollUpdStatus();
+      } else {
+        UPD.active = false;
+        runUpdCheck();
+      }
+    }).catch(() => { UPD.active = false; runUpdCheck(); });
   });
 }
 
@@ -76,6 +89,15 @@ function runUpdCheck() {
     const d = b.data, dot = $('verDot');
     if (dot) dot.classList.toggle('hidden', !d.has_update);
     if (cur) cur.textContent = 'v' + d.current;
+    // While an update is actually running, the progress UI is the live state:
+    // show the running version + changelog, but never the "update now" CTA
+    // (re-opening the modal mid-update used to show a misleading "update now").
+    if (UPD.active) {
+      state.className = 'upd-state';
+      state.textContent = tr('upd.in_progress');
+      loadChangelog();
+      return;
+    }
     if (d.has_update) {
       state.className = 'upd-state avail';
       state.textContent = tr('upd.avail', { latest: d.latest });
@@ -130,6 +152,7 @@ function applyUpdate() {
     if (!tok) return;
     if (btn) { btn.disabled = true; btn.textContent = tr('upd.starting'); }
     resetUpdProg();
+    UPD.active = true;
     api('/api/update/apply', { method: 'POST', headers: { 'X-DN7-Stepup': tok } }).then((b) => {
       if (b.data && b.data.started === false) toast(tr('upd.in_progress'));
       // Show the progress immediately (indeterminate until the first byte count),
@@ -209,9 +232,15 @@ function pollUpdStatus() {
         setUpdBar(100, 'err');
         updTxt(tr('upd.error'));
         clearInterval(UPD.polling); UPD.polling = null;
-        const btn = $('uApply'); if (btn) { btn.disabled = false; btn.textContent = tr('upd.retry'); }
+        UPD.active = false;
+        const btn = $('uApply');
+        if (btn) { btn.disabled = false; btn.textContent = tr('upd.retry'); }
+        else runUpdCheck(); // re-attached view has no CTA yet — rebuild it
+      } else {
+        // idle / checking / not-yet-started: show an indeterminate bar so a
+        // re-attached view never shows a dead, empty bar. Keep polling.
+        if (!UPD.ramp) { setUpdBar(null, 'indet'); updTxt(tr('upd.starting')); }
       }
-      // else idle / not-yet-started — keep polling.
     }).catch(() => {
       // Server unreachable → install finished and the panel is restarting onto
       // the new build. Move to the final phase: fill, count down, then reload.
