@@ -227,6 +227,38 @@ impl OpRegistry {
     }
 }
 
+/// Generate the per-capability op-registry forwarders that are byte-identical
+/// across the docker / nginx / mysql wrappers. Each wrapper still hand-writes
+/// the parts that genuinely differ — its `reg()` (prefix + pct estimator +
+/// dismiss policy), its `op_finish` (different extra-field shape), and
+/// `op_running` (only where used) — and invokes this macro for the rest.
+///
+/// `$reg` is passed as the caller's own `reg` ident (not a hygienic macro ident)
+/// so the generated bodies resolve to the wrapper's local registry accessor.
+macro_rules! opreg_forwarders {
+    ($vis:vis $reg:ident) => {
+        $vis fn new_op_id() -> String {
+            $reg().new_id()
+        }
+        $vis fn op_create(op_id: &str, kind: &str, target: &str) {
+            $reg().create(op_id, kind, target);
+        }
+        $vis fn op_push(op_id: &str, line: &str) {
+            $reg().push(op_id, line);
+        }
+        $vis fn ops_snapshot() -> ::serde_json::Value {
+            $reg().snapshot()
+        }
+        $vis fn op_log(op_id: &str) -> ::serde_json::Value {
+            $reg().log(op_id)
+        }
+        $vis fn op_dismiss(op_id: &str) {
+            $reg().dismiss(op_id);
+        }
+    };
+}
+pub(crate) use opreg_forwarders;
+
 /// Build a localizable progress line for the op log: a sentinel-delimited `MSG`
 /// record the web console maps to `msg.<code>` (positional `{0}`, `{1}`… args).
 /// An arg prefixed with `@` is itself a translation key resolved on the client.
