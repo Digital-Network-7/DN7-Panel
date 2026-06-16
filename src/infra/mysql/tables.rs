@@ -37,7 +37,7 @@ pub(crate) fn valid_table(s: &str) -> bool {
 /// List base tables in a database with row estimate, size, and engine.
 pub(crate) async fn tables(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let db = req.database.as_deref().map(str::trim).unwrap_or("");
     if !valid_ident(db, false) {
         return Err(mysql_err(MysqlError::BadDbName));
@@ -76,7 +76,7 @@ pub(crate) async fn tables(req: &Req) -> Result<Value> {
 /// List a table's columns (name / type / nullable / key / default / extra).
 pub(crate) async fn columns(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let db = req.database.as_deref().map(str::trim).unwrap_or("");
     let tbl = req.table.as_deref().map(str::trim).unwrap_or("");
     if !valid_ident(db, false) {
@@ -126,7 +126,7 @@ pub(crate) async fn columns(req: &Req) -> Result<Value> {
 /// Preview rows of a table (default 100, capped 500) → column names + rows.
 pub(crate) async fn table_rows(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let db = req.database.as_deref().map(str::trim).unwrap_or("");
     let tbl = req.table.as_deref().map(str::trim).unwrap_or("");
     if !valid_ident(db, false) {
@@ -330,7 +330,7 @@ fn col_type_modifiers(tail: &str) -> Option<(bool, bool)> {
 /// Modify a column's name / type / nullability / default via ALTER TABLE.
 pub(crate) async fn modify_column(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let db = req.database.as_deref().map(str::trim).unwrap_or("");
     let tbl = req.table.as_deref().map(str::trim).unwrap_or("");
     let col = req.column.as_deref().map(str::trim).unwrap_or("");
@@ -380,7 +380,7 @@ pub(crate) async fn modify_column(req: &Req) -> Result<Value> {
 /// of database → "all" | "ro" (`*.*` maps to the key "*").
 pub(crate) async fn user_grants(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let user = req.username.as_deref().map(str::trim).unwrap_or("");
     let host = req.host.as_deref().map(str::trim).unwrap_or("%");
     if !valid_ident(user, false) || !valid_ident(host, true) {

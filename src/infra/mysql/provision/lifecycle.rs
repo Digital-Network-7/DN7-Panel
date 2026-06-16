@@ -48,7 +48,7 @@ pub(crate) async fn remove_instance(req: &Req) -> Result<Value> {
 /// Return connection credentials (decrypted root password) for an instance.
 pub(crate) async fn credentials(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let user = if m.admin_user.is_empty() {
         "root".to_string()
     } else {
@@ -69,7 +69,7 @@ pub(crate) async fn credentials(req: &Req) -> Result<Value> {
 /// container via the mysql client, then persist the new ciphertext.
 pub(crate) async fn reset_password(req: &Req) -> Result<Value> {
     let mut m = load_manifest(need_inst(req)?)?;
-    let old = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let old = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let new = gen_password();
 
     // ALTER USER over the local socket, authenticating with the current root
@@ -86,7 +86,7 @@ pub(crate) async fn reset_password(req: &Req) -> Result<Value> {
             out.trim().chars().take(200).collect::<String>()
         ));
     }
-    m.root_enc = crate::infra::crypto::encrypt(&new);
+    m.root_enc = crate::infra::support::crypto::encrypt(&new);
     save_manifest(&m)?;
     Ok(json!({ "password": new }))
 }
@@ -121,7 +121,7 @@ pub(crate) async fn change_port(req: &Req) -> Result<Value> {
         None
     };
 
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let image = image_ref(&m.engine, &m.version);
     // Reject a host port already owned by a *different* container.
     if let Some(p) = new_port {
@@ -248,7 +248,7 @@ pub(crate) async fn run_switch_detached(
     op_push(op_id, &pmsg("my.pulling", &[image.as_str()]));
     pull_image(&dkr, &image, op_id).await?;
 
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     // Update engine/version on the manifest before recreate so the new
     // container carries the correct engine label.
     m.engine = engine.to_string();

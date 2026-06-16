@@ -40,7 +40,7 @@ pub(crate) fn start_backup(req: &Req) -> Result<Value> {
 /// so it doesn't create a phantom database.
 pub(crate) async fn run_backup_detached(op_id: &str, inst: &str) -> Result<()> {
     let m = load_manifest(inst)?;
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     if !is_ready(&m.container, &password).await {
         return Err(mysql_err(MysqlError::InstanceNotReady));
     }

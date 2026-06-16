@@ -5,7 +5,7 @@ use super::*;
 /// System schemas are flagged so the UI can de-emphasize them.
 pub(crate) async fn databases(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
 
     // Tab-separated output: schema \t tables \t bytes. ORDER keeps it stable.
     let sql = "SELECT s.schema_name, \
@@ -47,7 +47,7 @@ pub(crate) async fn databases(req: &Req) -> Result<Value> {
 /// Create a new (non-system) database/schema in the single instance.
 pub(crate) async fn create_database(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let db = req.database.as_deref().map(str::trim).unwrap_or("");
     if !valid_ident(db, false) {
         return Err(mysql_err(MysqlError::DbNameRules));
@@ -89,7 +89,7 @@ pub(crate) async fn create_database(req: &Req) -> Result<Value> {
 /// Drop a (non-system) database/schema.
 pub(crate) async fn drop_database(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let db = req.database.as_deref().map(str::trim).unwrap_or("");
     if !valid_ident(db, false) {
         return Err(mysql_err(MysqlError::BadDbName));

@@ -19,17 +19,17 @@ pub(crate) fn websettings_file() -> std::path::PathBuf {
 
 pub(crate) fn load_access() -> Vec<AccessList> {
     // Cached (mtime+len-validated): read during conf generation + access checks.
-    crate::infra::json_store::load_or_default_cached(&access_file())
+    crate::infra::support::json_store::load_or_default_cached(&access_file())
 }
 pub(crate) fn save_access(lists: &[AccessList]) -> Result<()> {
-    crate::infra::json_store::save_pretty(&access_file(), lists)
+    crate::infra::support::json_store::save_pretty(&access_file(), lists)
 }
 pub(crate) fn load_webglobal() -> WebGlobal {
     // Cached: read per site during conf generation (default-site + resync loops).
-    crate::infra::json_store::load_or_default_cached(&websettings_file())
+    crate::infra::support::json_store::load_or_default_cached(&websettings_file())
 }
 pub(crate) fn save_webglobal(g: &WebGlobal) -> Result<()> {
-    crate::infra::json_store::save_pretty(&websettings_file(), g)
+    crate::infra::support::json_store::save_pretty(&websettings_file(), g)
 }
 
 pub(crate) fn webtuning_file() -> std::path::PathBuf {
@@ -40,10 +40,10 @@ pub(crate) fn webtuning_file() -> std::path::PathBuf {
 pub(crate) fn load_tuning_opt() -> Option<HttpTuning> {
     // Cached: render_tuning_block reads this once per site, inside the N-site
     // resync / rewrite loops — an uncached re-parse per site was O(N) disk reads.
-    crate::infra::json_store::load_opt_cached(&webtuning_file())
+    crate::infra::support::json_store::load_opt_cached(&webtuning_file())
 }
 pub(crate) fn save_tuning(t: &HttpTuning) -> Result<()> {
-    crate::infra::json_store::save_pretty(&webtuning_file(), t)
+    crate::infra::support::json_store::save_pretty(&webtuning_file(), t)
 }
 
 /// An access-list id (random, filesystem-safe).

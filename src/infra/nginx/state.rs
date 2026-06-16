@@ -107,11 +107,11 @@ pub(crate) fn is_issuing(conf_id: &str) -> bool {
 
 pub(crate) fn load_sites() -> Vec<Site> {
     // Cached (mtime+len-validated): read repeatedly during conf generation.
-    crate::infra::json_store::load_or_default_cached(&sites_file())
+    crate::infra::support::json_store::load_or_default_cached(&sites_file())
 }
 
 pub(crate) fn save_sites(sites: &[Site]) -> Result<()> {
-    crate::infra::json_store::save_pretty(&sites_file(), sites)
+    crate::infra::support::json_store::save_pretty(&sites_file(), sites)
 }
 
 // ---------------------------------------------------------------------------
@@ -140,11 +140,11 @@ pub(crate) fn certs_manifest_file() -> std::path::PathBuf {
 
 pub(crate) fn load_named_certs() -> Vec<NamedCert> {
     // Cached: read during list/conf generation; the save path busts the cache.
-    crate::infra::json_store::load_or_default_cached(&certs_manifest_file())
+    crate::infra::support::json_store::load_or_default_cached(&certs_manifest_file())
 }
 
 pub(crate) fn save_named_certs(certs: &[NamedCert]) -> Result<()> {
-    crate::infra::json_store::save_pretty(&certs_manifest_file(), certs)
+    crate::infra::support::json_store::save_pretty(&certs_manifest_file(), certs)
 }
 
 pub(crate) fn named_crt_file(lo: &Layout, name: &str) -> std::path::PathBuf {

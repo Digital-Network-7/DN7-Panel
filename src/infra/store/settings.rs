@@ -12,10 +12,10 @@ fn path() -> std::path::PathBuf {
 
 /// Read persisted settings without seeding. None when not initialized/corrupt.
 pub(crate) fn load() -> Option<WebSettings> {
-    crate::infra::json_store::load_opt(&path())
+    crate::infra::support::json_store::load_opt(&path())
 }
 
 /// Persist settings 0600 atomically (no create-then-chmod window).
 pub(crate) fn save(s: &WebSettings) -> Result<()> {
-    crate::infra::json_store::save_private(&path(), s)
+    crate::infra::support::json_store::save_private(&path(), s)
 }

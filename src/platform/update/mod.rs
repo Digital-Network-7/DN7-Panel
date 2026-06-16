@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::infra::fetch::{self, Release, SourceKind};
+use crate::infra::support::fetch::{self, Release, SourceKind};
 use crate::platform::config::PanelConfig;
 
 mod changelog;
@@ -134,11 +134,11 @@ fn now_secs() -> u64 {
 
 impl UpdateState {
     pub fn load() -> Self {
-        crate::infra::json_store::load_or_default(&state_path())
+        crate::infra::support::json_store::load_or_default(&state_path())
     }
 
     pub fn save(&self) -> Result<()> {
-        crate::infra::json_store::save_private(&state_path(), self)
+        crate::infra::support::json_store::save_private(&state_path(), self)
     }
 }
 

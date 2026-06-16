@@ -46,7 +46,7 @@ pub(crate) fn valid_limit(n: i64) -> bool {
 /// List non-system MySQL accounts as {user, host}. Reads mysql.user.
 pub(crate) async fn list_users(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let sql = "SELECT User, Host FROM mysql.user ORDER BY User, Host;";
     let (code, out) = mysql_exec_query(&m.container, &password, sql).await?;
     if code != 0 {
@@ -90,7 +90,7 @@ pub(crate) async fn list_users(req: &Req) -> Result<Value> {
 /// require-SSL flag.
 pub(crate) async fn create_user(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let user = req.username.as_deref().map(str::trim).unwrap_or("");
     let host = req.host.as_deref().map(str::trim).unwrap_or("%");
     let pwd = req.password.as_deref().unwrap_or("");
@@ -181,7 +181,7 @@ fn mysql_limits_clause(req: &Req) -> Result<String> {
 /// Drop a user `'name'@'host'`. root and system accounts are protected.
 pub(crate) async fn drop_user(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let user = req.username.as_deref().map(str::trim).unwrap_or("");
     let host = req.host.as_deref().map(str::trim).unwrap_or("%");
     if !valid_ident(user, false) || !valid_ident(host, true) {
@@ -202,7 +202,7 @@ pub(crate) async fn drop_user(req: &Req) -> Result<Value> {
 /// or "ro" (SELECT only). Database "*" means all databases.
 pub(crate) async fn grant(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let user = req.username.as_deref().map(str::trim).unwrap_or("");
     let host = req.host.as_deref().map(str::trim).unwrap_or("%");
     let db = req.database.as_deref().map(str::trim).unwrap_or("*");
@@ -232,7 +232,7 @@ pub(crate) async fn grant(req: &Req) -> Result<Value> {
 /// Revoke all privileges on a database from a user.
 pub(crate) async fn revoke(req: &Req) -> Result<Value> {
     let m = load_manifest(need_inst(req)?)?;
-    let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+    let password = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let user = req.username.as_deref().map(str::trim).unwrap_or("");
     let host = req.host.as_deref().map(str::trim).unwrap_or("%");
     let db = req.database.as_deref().map(str::trim).unwrap_or("*");

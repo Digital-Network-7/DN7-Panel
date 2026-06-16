@@ -259,10 +259,10 @@ pub(crate) async fn twofa_setup(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let secret = crate::infra::totp::gen_secret();
+    let secret = crate::infra::support::totp::gen_secret();
     let issuer = branding::load().panel_name;
-    let uri = crate::infra::totp::provisioning_uri(&issuer, &a.username, &secret);
-    let qr = crate::infra::totp::qr_svg(&uri);
+    let uri = crate::infra::support::totp::provisioning_uri(&issuer, &a.username, &secret);
+    let qr = crate::infra::support::totp::qr_svg(&uri);
     if let Err(e) = write_totp(&state, &a, &secret, false) {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }

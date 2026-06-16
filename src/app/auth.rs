@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn totp_code_is_single_use_across_logins() {
-        use crate::infra::totp;
+        use crate::infra::support::totp;
         let auth = AuthState::new();
         let secret = totp::gen_secret();
         // A live code for the current step.

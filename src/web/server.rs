@@ -19,7 +19,7 @@ use tokio::sync::Mutex;
 
 use super::branding;
 use super::settings::{self, WebSettings};
-use crate::infra::audit;
+use crate::infra::support::audit;
 use crate::infra::auth::AuthState;
 use crate::infra::metrics::Collector;
 use crate::platform::config::PanelConfig;
@@ -454,7 +454,7 @@ async fn procs(State(state): State<Shared>, headers: header::HeaderMap) -> Respo
     if let Some(r) = require_auth(&state, &headers) {
         return r;
     }
-    let data = crate::infra::procs::web_snapshot(20).await;
+    let data = crate::infra::support::procs::web_snapshot(20).await;
     Json(json!({ "ok": true, "data": data })).into_response()
 }
 

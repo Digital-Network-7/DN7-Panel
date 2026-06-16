@@ -147,7 +147,7 @@ impl AuthState {
     /// would still satisfy the bare RFC 6238 check. Use this everywhere a code is
     /// accepted as a second factor (login, enable/disable 2FA).
     pub fn verify_totp_single_use(&self, secret: &str, code: &str) -> bool {
-        match crate::infra::totp::matched_step(secret, code) {
+        match crate::infra::support::totp::matched_step(secret, code) {
             Some(step) => self.totp.consume(secret, step),
             None => false,
         }
