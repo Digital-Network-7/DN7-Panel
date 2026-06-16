@@ -50,11 +50,11 @@ pub(crate) async fn create_database(req: &Req) -> Result<Value> {
     let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let db = req.database.as_deref().map(str::trim).unwrap_or("");
     if !valid_ident(db, false) {
-        return Err(anyhow!("ERR_CODE:mysql.db_name_rules"));
+        return Err(mysql_err(MysqlError::DbNameRules));
     }
     const SYS: [&str; 4] = ["information_schema", "performance_schema", "mysql", "sys"];
     if SYS.contains(&db) {
-        return Err(anyhow!("ERR_CODE:mysql.reserved_db_name"));
+        return Err(mysql_err(MysqlError::ReservedDbName));
     }
     // Character set + collation: validated as plain charset identifiers so they
     // can't break out of the statement. Invalid combos are rejected by the
@@ -72,10 +72,10 @@ pub(crate) async fn create_database(req: &Req) -> Result<Value> {
         .filter(|s| !s.is_empty())
         .unwrap_or("utf8mb4_unicode_ci");
     if !valid_charset_name(charset) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_charset"));
+        return Err(mysql_err(MysqlError::BadCharset));
     }
     if !valid_charset_name(collation) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_collation"));
+        return Err(mysql_err(MysqlError::BadCollation));
     }
     // Backtick-quote the identifier; valid_ident already restricts the charset.
     let sql = format!(
@@ -92,11 +92,11 @@ pub(crate) async fn drop_database(req: &Req) -> Result<Value> {
     let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let db = req.database.as_deref().map(str::trim).unwrap_or("");
     if !valid_ident(db, false) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_db_name"));
+        return Err(mysql_err(MysqlError::BadDbName));
     }
     const SYS: [&str; 4] = ["information_schema", "performance_schema", "mysql", "sys"];
     if SYS.contains(&db) {
-        return Err(anyhow!("ERR_CODE:mysql.no_drop_system_db"));
+        return Err(mysql_err(MysqlError::NoDropSystemDb));
     }
     let sql = format!("DROP DATABASE `{}`;", db);
     run_stmt(&m.container, &password, &sql).await?;

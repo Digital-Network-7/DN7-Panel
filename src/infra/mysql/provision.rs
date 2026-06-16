@@ -12,7 +12,7 @@ pub(crate) use lifecycle::*;
 
 pub(crate) fn validate_port(port: i64) -> Result<()> {
     if !(1..=65535).contains(&port) {
-        return Err(anyhow!("ERR_CODE:mysql.port_range"));
+        return Err(mysql_err(MysqlError::PortRange));
     }
     Ok(())
 }
@@ -22,7 +22,7 @@ pub(crate) fn start_install(req: &Req) -> Result<Value> {
     // Single-instance: refuse if one already exists (the user manages multiple
     // databases inside it, not multiple instances).
     if load_manifest(INSTANCE_ID).is_ok() {
-        return Err(anyhow!("ERR_CODE:mysql.instance_exists"));
+        return Err(mysql_err(MysqlError::InstanceExists));
     }
     let spec = parse_install_req(req)?;
 
@@ -51,7 +51,7 @@ fn parse_install_req(req: &Req) -> Result<InstallSpec> {
         .unwrap_or("mysql")
         .to_string();
     if !valid_engine(&engine) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_engine"));
+        return Err(mysql_err(MysqlError::BadEngine));
     }
     let version = req
         .version
@@ -61,7 +61,7 @@ fn parse_install_req(req: &Req) -> Result<InstallSpec> {
         .unwrap_or("8.0")
         .to_string();
     if !valid_version(&engine, &version) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_version"));
+        return Err(mysql_err(MysqlError::BadVersion));
     }
     let port = if req.expose.unwrap_or(false) {
         let p = req.port.unwrap_or(3306);
@@ -80,12 +80,12 @@ fn parse_install_req(req: &Req) -> Result<InstallSpec> {
         .unwrap_or("root")
         .to_string();
     if admin_user != "root" && !valid_ident(&admin_user, false) {
-        return Err(anyhow!("ERR_CODE:mysql.user_name_rules"));
+        return Err(mysql_err(MysqlError::UserNameRules));
     }
     let password = match req.password.as_deref().map(str::trim) {
         Some(p) if !p.is_empty() => {
             if p.len() < 6 || p.len() > 128 {
-                return Err(anyhow!("ERR_CODE:mysql.bad_password"));
+                return Err(mysql_err(MysqlError::BadPassword));
             }
             Some(p.to_string())
         }

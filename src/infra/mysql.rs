@@ -62,6 +62,14 @@ pub const INSTANCE_ID: &str = "default";
 pub const CONTAINER: &str = "dn7-mysql";
 const VOLUME: &str = "dn7-mysql-data";
 
+/// Build the transitional `anyhow` error for a typed [`MysqlError`]: prefixes
+/// the semantic code with the `ERR_CODE:` transport marker the `op_err_body`
+/// web boundary parses into the wire `code`. The `ERR_CODE:` marker lives here
+/// (infra), not in the domain enum, per §2/§4.
+fn mysql_err(e: MysqlError) -> anyhow::Error {
+    anyhow!("ERR_CODE:{}", e.code())
+}
+
 /// Connect to the local Docker daemon (or fail with a friendly hint).
 fn dkr() -> Result<Docker> {
     Docker::connect_with_defaults().map_err(|e| {
@@ -91,7 +99,9 @@ mod provision;
 mod query;
 mod store;
 mod tables;
-use crate::domain::mysql::{image_ref, supported_versions, valid_engine, valid_version};
+use crate::domain::mysql::{
+    image_ref, supported_versions, valid_engine, valid_version, MysqlError,
+};
 use accounts::*;
 use catalog::*;
 use exec::*;
@@ -191,7 +201,7 @@ fn need_inst(req: &Req) -> Result<&str> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("ERR_CODE:mysql.missing_instance_id"))
+        .ok_or_else(|| mysql_err(MysqlError::MissingInstanceId))
 }
 
 // ---------------------------------------------------------------------------

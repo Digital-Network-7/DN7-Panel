@@ -42,7 +42,7 @@ pub(crate) async fn run_backup_detached(op_id: &str, inst: &str) -> Result<()> {
     let m = load_manifest(inst)?;
     let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     if !is_ready(&m.container, &password).await {
-        return Err(anyhow!("ERR_CODE:mysql.instance_not_ready"));
+        return Err(mysql_err(MysqlError::InstanceNotReady));
     }
     op_push(op_id, &pmsg("my.exporting", &[]));
     let ts = now_secs();
