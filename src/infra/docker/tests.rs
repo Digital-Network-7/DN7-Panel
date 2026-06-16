@@ -247,6 +247,49 @@ fn build_create_spec_rejects_bad_restart() {
 }
 
 #[test]
+fn spec_binds_rejects_host_escape_paths() {
+    for denied in ["/var/run/docker.sock", "/etc/shadow", "/root/.ssh", "/"] {
+        let mut req = mk_req("nginx");
+        req.volumes = Some(vec![VolumeMap {
+            host: denied.into(),
+            container: "/data".into(),
+            readonly: false,
+        }]);
+        assert!(
+            build_create_spec(&req).is_err(),
+            "bind mount of {denied} must be rejected"
+        );
+    }
+    // An ordinary data path is still accepted.
+    let mut req = mk_req("nginx");
+    req.volumes = Some(vec![VolumeMap {
+        host: "/srv/data".into(),
+        container: "/data".into(),
+        readonly: false,
+    }]);
+    assert!(build_create_spec(&req).is_ok());
+}
+
+#[test]
+fn create_policy_gates_privileged_and_host_network_to_super() {
+    // Privileged: denied for a non-super admin, allowed for the super-admin.
+    let mut req = mk_req("nginx");
+    req.privileged = Some(true);
+    assert!(enforce_create_policy(&req, false).is_err());
+    assert!(enforce_create_policy(&req, true).is_ok());
+
+    // Host network mode: same gate.
+    let mut req = mk_req("nginx");
+    req.network = Some("host".into());
+    assert!(enforce_create_policy(&req, false).is_err());
+    assert!(enforce_create_policy(&req, true).is_ok());
+
+    // A normal container passes for any admin.
+    let req = mk_req("nginx");
+    assert!(enforce_create_policy(&req, false).is_ok());
+}
+
+#[test]
 fn build_create_spec_includes_network() {
     let mut req = mk_req("nginx");
     req.network = Some("my-net".into());

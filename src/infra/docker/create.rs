@@ -7,6 +7,34 @@ mod run;
 pub(crate) use checks::*;
 pub(crate) use run::*;
 
+/// Capability guardrail for the two host-escape create primitives: `privileged`
+/// mode and a host/container network namespace. Both default to closed (an
+/// unset request gets `privileged=false` / a bridge network) and are allowed
+/// **only for the super-admin**, who opts in by explicitly requesting them. A
+/// non-super caller requesting either is rejected before the container is built.
+/// The bind-mount deny-list is enforced unconditionally in `spec_binds`.
+pub(crate) fn enforce_create_policy(req: &Req, is_super: bool) -> Result<()> {
+    if is_super {
+        return Ok(());
+    }
+    if req.privileged.unwrap_or(false) {
+        return Err(anyhow!("ERR_CODE:docker.privileged_requires_super"));
+    }
+    // Inspect every requested network attachment (the multi-net `networks` list
+    // and the single `network` field) for a host/container namespace.
+    let host_net = req
+        .networks
+        .iter()
+        .flatten()
+        .map(|a| a.network.trim())
+        .chain(req.network.as_deref().map(str::trim))
+        .any(crate::domain::docker::network_mode_privileged);
+    if host_net {
+        return Err(anyhow!("ERR_CODE:docker.host_network_requires_super"));
+    }
+    Ok(())
+}
+
 /// Build a bollard create config from a validated request. Every user value is
 /// validated before it lands in the config (no shell, no CLI args).
 pub(crate) fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
@@ -304,6 +332,11 @@ fn spec_binds(req: &Req) -> Result<Vec<String>> {
         // volume (no leading slash). The container target is always absolute.
         if host.starts_with('/') {
             validate_path(host)?;
+            // Reject host-compromise bind sources (docker socket, /etc, /root,
+            // kernel pseudo-fs, …) — unconditional, regardless of caller.
+            if crate::domain::docker::host_bind_denied(host) {
+                return Err(anyhow!("ERR_CODE:docker.bind_host_path_denied"));
+            }
         } else {
             validate_name(host)?;
         }

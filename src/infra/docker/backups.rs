@@ -207,7 +207,7 @@ pub(crate) fn delete_backup(req: &Req) -> Result<Value> {
 
 /// Start a detached restore: load the saved image then recreate the container
 /// from the snapshot config (replacing any current container with the name).
-pub(crate) fn start_restore_backup(req: &Req) -> Result<Value> {
+pub(crate) fn start_restore_backup(req: &Req, is_super: bool) -> Result<Value> {
     let name = req
         .name
         .as_deref()
@@ -227,7 +227,7 @@ pub(crate) fn start_restore_backup(req: &Req) -> Result<Value> {
     let op_id_t = op_id.clone();
     let target = name.clone();
     tokio::spawn(async move {
-        match restore_backup(&op_id_t, &name, &file).await {
+        match restore_backup(&op_id_t, &name, &file, is_super).await {
             Ok(()) => op_finish(&op_id_t, "done", "", &name),
             Err(e) => op_finish(&op_id_t, "error", &e.to_string(), ""),
         }
@@ -235,7 +235,12 @@ pub(crate) fn start_restore_backup(req: &Req) -> Result<Value> {
     Ok(json!({ "op_id": op_id, "target": target }))
 }
 
-pub(crate) async fn restore_backup(op_id: &str, name: &str, file: &str) -> Result<()> {
+pub(crate) async fn restore_backup(
+    op_id: &str,
+    name: &str,
+    file: &str,
+    is_super: bool,
+) -> Result<()> {
     let dkr = dkr()?;
     let dir = backups_root().join(name);
     let tar_gz = dir.join(file);
@@ -249,7 +254,7 @@ pub(crate) async fn restore_backup(op_id: &str, name: &str, file: &str) -> Resul
 
     // Read the config snapshot and recreate the container from the loaded image.
     op_push(op_id, &pmsg("dk.bk_recreating", &[]));
-    recreate_from_snapshot(&dir, file, name, &loaded_image).await
+    recreate_from_snapshot(&dir, file, name, &loaded_image, is_super).await
 }
 
 /// `docker load` a backup tarball and return the repo:tag it recorded
@@ -286,6 +291,7 @@ async fn recreate_from_snapshot(
     file: &str,
     name: &str,
     loaded_image: &str,
+    is_super: bool,
 ) -> Result<()> {
     let json_path = dir.join(file.replace(".tar.gz", ".json"));
     let mut body: Value = match std::fs::read(&json_path) {
@@ -303,6 +309,9 @@ async fn recreate_from_snapshot(
     obj.insert("start".to_string(), json!(true));
     let restore_req: Req =
         serde_json::from_value(body).map_err(|_| anyhow!("ERR_CODE:docker.backup_bad_config"))?;
+    // A restore must not materialize a privileged / host-network container for a
+    // non-super caller, even from a snapshot saved by one (same gate as create).
+    enforce_create_policy(&restore_req, is_super)?;
     let (spec, _) = build_create_spec(&restore_req)?;
     create_container(spec).await?;
     Ok(())

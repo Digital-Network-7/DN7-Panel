@@ -17,8 +17,9 @@ use serde_json::{json, Value};
 /// docker request DTO) and op routing; the in-memory op-registry ops are handled
 /// here, and the daemon/container ops are delegated to the `infra::docker`
 /// adapter cluster (which holds the authoritative per-op match + managed-service
-/// guard).
-pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
+/// guard). `is_super` carries the caller's authz level so the infra layer can
+/// gate the host-escape create primitives (privileged / host network).
+pub(crate) async fn dispatch(body: &Value, is_super: bool) -> Result<Value> {
     let req: crate::infra::docker::Req =
         serde_json::from_value(body.clone()).map_err(|e| anyhow!("bad docker request: {e}"))?;
     match req.op.as_str() {
@@ -35,6 +36,6 @@ pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
         }
         // Daemon / container ops: the infra adapter holds the authoritative
         // match (+ the managed-service guard that must run for every op).
-        _ => crate::infra::docker::run_op(&req).await,
+        _ => crate::infra::docker::run_op(&req, is_super).await,
     }
 }

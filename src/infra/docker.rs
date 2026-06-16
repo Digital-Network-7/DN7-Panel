@@ -247,13 +247,15 @@ mod tests;
 /// for the container/image/network/volume ops (each interleaved with bollard
 /// daemon state, so it stays as one adapter cluster). Long ops (`pull_image`,
 /// `install`) start a detached task and return an `op_id` immediately.
-pub(crate) async fn run_op(req: &Req) -> Result<Value> {
+pub(crate) async fn run_op(req: &Req, is_super: bool) -> Result<Value> {
     guard_managed_ops(req).await?;
     match req.op.as_str() {
         "info" => docker_info().await,
         "list_images" => list_images().await,
         "pull_image" => start_pull(req),
         "create_container" => {
+            // Guardrail: privileged / host-network are super-only (default deny).
+            enforce_create_policy(req, is_super)?;
             check_port_conflicts(req).await?;
             start_create(req)
         }
@@ -294,7 +296,7 @@ pub(crate) async fn run_op(req: &Req) -> Result<Value> {
         "backup_container" => start_backup_container(req),
         "list_backups" => list_backups(req).await,
         "delete_backup" => delete_backup(req),
-        "restore_backup" => start_restore_backup(req),
+        "restore_backup" => start_restore_backup(req, is_super),
         other => Err(anyhow!("unsupported op: {other}")),
     }
 }

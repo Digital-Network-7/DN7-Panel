@@ -105,7 +105,13 @@ pub(crate) async fn docker_op(
     headers: header::HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    let fut = crate::app::docker::dispatch(&body);
+    // Resolve the caller's authz level for the create guardrail (privileged /
+    // host-network are super-only). If they're not even an admin the inner
+    // dispatch's require_admin rejects before the future is polled.
+    let is_super = require_admin(&state, &headers)
+        .map(|a| a.is_super)
+        .unwrap_or(false);
+    let fut = crate::app::docker::dispatch(&body, is_super);
     dispatch(&state, &headers, "docker", body.clone(), fut).await
 }
 
