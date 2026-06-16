@@ -1,6 +1,6 @@
 mod app;
 mod contracts;
-mod domain;
+mod core;
 mod infra;
 mod platform;
 mod web;

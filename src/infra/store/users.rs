@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 
-use crate::domain::identity::PanelUser;
+use crate::core::identity::PanelUser;
 
 fn path() -> std::path::PathBuf {
     crate::platform::paths::data_dir().join("users.json")

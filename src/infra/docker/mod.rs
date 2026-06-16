@@ -238,12 +238,12 @@ mod pull;
 mod settings;
 mod validate;
 mod volumes;
-use crate::domain::docker::{net_driver_allowed, restart_allowed, DockerError};
+use crate::core::docker::{net_driver_allowed, restart_allowed, DockerError};
 
 /// Build the transitional `anyhow` error for a typed [`DockerError`]: prefixes
 /// the semantic code with the `ERR_CODE:` transport marker the `op_err_body`
 /// web boundary parses into the wire `code`. The marker lives here (infra), not
-/// in the domain enum, per §2/§4.
+/// in the core enum, per §2/§4.
 pub(crate) fn docker_err(e: DockerError) -> anyhow::Error {
     anyhow!("ERR_CODE:{}", e.code())
 }

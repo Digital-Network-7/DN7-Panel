@@ -3,7 +3,7 @@
 //! an in-memory fake so the create/delete orchestration (validation order,
 //! create-race re-check, persistence) is exercised without touching the OS.
 
-use crate::domain::identity::PanelUser;
+use crate::core::identity::PanelUser;
 
 /// The environment a user use-case runs against: the backing system-account
 /// side effects + the panel-user store. One cohesive capability port (not split
@@ -31,8 +31,8 @@ pub(crate) trait UsersEnv {
     /// the closure receives the current users and may mutate them in place).
     fn mutate(
         &self,
-        f: &mut dyn FnMut(&mut Vec<PanelUser>) -> Result<(), crate::domain::Error>,
-    ) -> Result<(), crate::domain::Error>;
+        f: &mut dyn FnMut(&mut Vec<PanelUser>) -> Result<(), crate::core::Error>,
+    ) -> Result<(), crate::core::Error>;
 
     /// Whether a panel user with `username` already exists (unlocked read).
     fn exists(&self, username: &str) -> bool;

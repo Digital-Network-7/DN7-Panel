@@ -5,12 +5,12 @@ use super::*;
 
 /// Privilege level: super-admin (owner) 2, admin (sudo) 1, plain user 0.
 pub(crate) fn account_level(a: &Account) -> u8 {
-    crate::domain::authz::level(a.is_super, a.is_admin)
+    crate::core::authz::level(a.is_super, a.is_admin)
 }
 
 /// Privilege model lives in the domain layer; re-exported so the user handlers
 /// can keep calling `role_level` / `accounts::can_manage` unchanged.
-pub(crate) use crate::domain::authz::{can_manage, role_level};
+pub(crate) use crate::core::authz::{can_manage, role_level};
 
 // ---------------------------------------------------------------------------
 // Account use-case services
@@ -24,8 +24,8 @@ pub(crate) use crate::domain::authz::{can_manage, role_level};
 /// domain→transport mapping point for the account/credential flows; it lives in
 /// the web layer because it owns the wire codes (aligned with the frontend
 /// `err.*`). Shared by the account, settings and user-management handlers.
-pub(crate) fn map_domain_err(e: crate::domain::Error) -> Response {
-    use crate::domain::Error::*;
+pub(crate) fn map_core_err(e: crate::core::Error) -> Response {
+    use crate::core::Error::*;
     match e {
         PasswordMalformed => api_err(StatusCode::BAD_REQUEST, "settings.pw_format"),
         OldPasswordWrong => api_err(StatusCode::BAD_REQUEST, "settings.bad_old_password"),

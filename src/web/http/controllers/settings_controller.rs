@@ -205,14 +205,14 @@ fn apply_password_change(s: &mut WebSettings, req: &SettingsReq) -> Result<bool,
     let salt = req.pw_salt.clone().unwrap_or_default();
     let hash = req.pw_hash.clone().unwrap_or_default();
     if !crate::app::users::valid_pw_format(&salt, &hash) {
-        return Err(map_domain_err(crate::domain::Error::PasswordMalformed));
+        return Err(map_core_err(crate::core::Error::PasswordMalformed));
     }
     // pw_check = sha256(current salt ":" new password) must NOT equal the stored
     // default hash, proving the new password differs from the default.
     if was_default {
         let chk = req.pw_check.clone().unwrap_or_default().to_lowercase();
         if chk.is_empty() || chk == cur_hash {
-            return Err(map_domain_err(crate::domain::Error::PasswordIsDefault));
+            return Err(map_core_err(crate::core::Error::PasswordIsDefault));
         }
     }
     s.set_password_hashed(&salt, &hash.to_lowercase());

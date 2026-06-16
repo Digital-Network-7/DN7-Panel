@@ -161,11 +161,11 @@ adding new ones):
 | nginx `extra_conf` | `validate_extra_conf` + `nginx -t` + rollback | empty (no directives) |
 | static `local_root` | `valid_local_root` (absolute, exists, deny-list) | upload-managed dir |
 | `allow_ips` | `settings::normalize_allow_ips` | empty = allow any, gate fails closed on unknown peer |
-| `redirect_url` | `domain/nginx::valid_redirect_url` (http/https only) | n/a |
-| proxy target / `server_name` / location path | `domain/nginx.rs` token checks (`valid_host_token`/`valid_server_name`/`valid_location_path`) | n/a |
-| docker container bind mounts | `domain/docker::host_bind_denied` (deny docker.sock, `/`, `/etc` `/root` `/boot` `/proc` `/sys` `/dev` + descendants) | named volume / non-sensitive path |
+| `redirect_url` | `core/nginx::valid_redirect_url` (http/https only) | n/a |
+| proxy target / `server_name` / location path | `core/nginx.rs` token checks (`valid_host_token`/`valid_server_name`/`valid_location_path`) | n/a |
+| docker container bind mounts | `core/docker::host_bind_denied` (deny docker.sock, `/`, `/etc` `/root` `/boot` `/proc` `/sys` `/dev` + descendants) | named volume / non-sensitive path |
 | docker `privileged` | `infra/docker/create::enforce_create_policy` — super-only, default deny | `false` (unprivileged) |
-| docker container `network` = host/`container:` | `domain/docker::network_mode_privileged` via `enforce_create_policy` — super-only | bridge (isolated) |
+| docker container `network` = host/`container:` | `core/docker::network_mode_privileged` via `enforce_create_policy` — super-only | bridge (isolated) |
 | mysql `expose` host port | `mysql/provision::validate_port`; published port binds `127.0.0.1` | loopback only (not `0.0.0.0`) |
 
 When adding a knob that touches nginx/system/network config, add its row here

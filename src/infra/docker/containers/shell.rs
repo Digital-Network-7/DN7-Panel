@@ -113,7 +113,7 @@ pub(crate) async fn container_is_privileged(reference: &str) -> bool {
     }
     // Host/container network namespace (host-net shares the host's stack).
     if let Some(mode) = h.network_mode.as_deref() {
-        if crate::domain::docker::network_mode_privileged(mode) {
+        if crate::core::docker::network_mode_privileged(mode) {
             return true;
         }
     }

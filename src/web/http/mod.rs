@@ -197,8 +197,8 @@ impl Account {
     }
 
     /// The domain `Principal` for this account (use-case actor).
-    fn to_principal(&self) -> crate::domain::identity::Principal {
-        crate::domain::identity::Principal {
+    fn to_principal(&self) -> crate::core::identity::Principal {
+        crate::core::identity::Principal {
             username: self.username.clone(),
             is_super: self.is_super,
             system_user: self.system_user.clone(),

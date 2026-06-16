@@ -85,12 +85,12 @@ pub(crate) use crate::contracts::mysql::Req;
 /// Persisted per-instance manifest entity (`<data>/mysql/<id>.json`), now in
 /// the domain layer; re-exported so the mysql submodules reference `Manifest`
 /// unchanged.
-pub(crate) use crate::domain::mysql::Manifest;
+pub(crate) use crate::core::mysql::Manifest;
 
 // ---------------------------------------------------------------------------
 // Submodules (see .kiro/steering/code-structure.md). Req stays here so
 // descendant modules can read its private fields; the Manifest entity lives in
-// domain::mysql.
+// core::mysql.
 // ---------------------------------------------------------------------------
 mod accounts;
 mod catalog;
@@ -99,9 +99,7 @@ mod provision;
 mod query;
 mod store;
 mod tables;
-use crate::domain::mysql::{
-    image_ref, supported_versions, valid_engine, valid_version, MysqlError,
-};
+use crate::core::mysql::{image_ref, supported_versions, valid_engine, valid_version, MysqlError};
 use accounts::*;
 use catalog::*;
 use exec::*;

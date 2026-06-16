@@ -4,7 +4,7 @@
 //! Tier 1 (directory-level deny) governs `domain`/`infra`/`app`/`web`. Tier 2
 //! (module allowlist) is in place via `capability_tokens_stay_in_their_layer`
 //! (`bollard` only under `infra/`, `axum` only under `web/`). Tier 3 (semantic):
-//! `domain_serde_is_whitelisted` restricts serde to reviewed `domain` entities.
+//! `core_serde_is_whitelisted` restricts serde to reviewed `domain` entities.
 //! Rules are added as modules migrate — start loose, tighten over time.
 //!
 //! Robustness: we scan `use`/code lines, skip comment lines (incl. `///`/`//!`
@@ -33,8 +33,8 @@ const RULES: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        // domain 不懂传输,不碰外部系统/进程,也不依赖任何上层(app/infra/web)。
-        "src/domain",
+        // core 不懂传输,不碰外部系统/进程,也不依赖任何上层(app/infra/web)。
+        "src/core",
         &[
             "axum",
             "bollard",
@@ -123,13 +123,13 @@ fn layers_respect_dependency_rules() {
 /// was split into a directory keeps a precise whitelist (e.g. only
 /// `nginx/model.rs`, not every `model.rs`).
 const DOMAIN_SERDE_WHITELIST: &[&str] = &[
-    "domain/identity.rs",
-    "domain/settings.rs",
-    "domain/mysql.rs",
-    "domain/nginx/model.rs",
+    "core/identity.rs",
+    "core/settings.rs",
+    "core/mysql.rs",
+    "core/nginx/model.rs",
 ];
 
-fn scan_domain_serde(dir: &Path, violations: &mut Vec<String>) {
+fn scan_core_serde(dir: &Path, violations: &mut Vec<String>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -137,7 +137,7 @@ fn scan_domain_serde(dir: &Path, violations: &mut Vec<String>) {
     for ent in entries.flatten() {
         let p = ent.path();
         if p.is_dir() {
-            scan_domain_serde(&p, violations);
+            scan_core_serde(&p, violations);
             continue;
         }
         if p.extension().and_then(|s| s.to_str()) != Some("rs") {
@@ -169,10 +169,10 @@ fn scan_domain_serde(dir: &Path, violations: &mut Vec<String>) {
 }
 
 #[test]
-fn domain_serde_is_whitelisted() {
+fn core_serde_is_whitelisted() {
     let root = env!("CARGO_MANIFEST_DIR");
     let mut violations = Vec::new();
-    scan_domain_serde(&Path::new(root).join("src/domain"), &mut violations);
+    scan_core_serde(&Path::new(root).join("src/core"), &mut violations);
     assert!(
         violations.is_empty(),
         "domain serde must be a reviewed exception (see .kiro/steering/architecture.md §2/§4):\n{}",

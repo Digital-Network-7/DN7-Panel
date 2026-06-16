@@ -217,7 +217,7 @@ pub(crate) fn current_tuning() -> HttpTuning {
 
 /// Persist already-validated tuning and re-apply it (rewrite all managed site
 /// confs + the http include), then reload. The validation/merge is owned by
-/// `domain::nginx::merge_http_tuning`; this is the side-effecting adapter.
+/// `core::nginx::merge_http_tuning`; this is the side-effecting adapter.
 pub(crate) async fn apply_tuning(t: &HttpTuning) -> Result<Value> {
     let lo = layout()?;
     save_tuning(t)?;

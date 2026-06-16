@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 
-use crate::domain::settings::WebSettings;
+use crate::core::settings::WebSettings;
 
 fn path() -> std::path::PathBuf {
     crate::platform::paths::data_dir().join("web.json")

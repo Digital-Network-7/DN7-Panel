@@ -2,8 +2,8 @@
 //! the live console state (settings/users store, session guard, audit sink,
 //! system accounts); tests implement it with in-memory fakes.
 
-use crate::domain::identity::Principal;
-use crate::domain::Error;
+use crate::core::identity::Principal;
+use crate::core::Error;
 
 /// The environment an account use-case runs against: credential persistence +
 /// the side effects a credential change triggers (OS password sync, session

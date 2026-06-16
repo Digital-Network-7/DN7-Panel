@@ -14,7 +14,7 @@ pub(crate) use run::*;
 /// non-super caller requesting either is rejected before the container is built.
 /// The bind-mount deny-list is enforced unconditionally in `spec_binds`.
 ///
-/// The *rule* (what counts as a host-escape) lives in `domain::docker`; this
+/// The *rule* (what counts as a host-escape) lives in `core::docker`; this
 /// adapter only supplies the request's facts, applies the super-admin decision,
 /// and maps the verdict to the transitional `ERR_CODE:` channel.
 pub(crate) fn enforce_create_policy(req: &Req, is_super: bool) -> Result<()> {
@@ -29,11 +29,11 @@ pub(crate) fn enforce_create_policy(req: &Req, is_super: bool) -> Result<()> {
         .flatten()
         .map(|a| a.network.as_str())
         .chain(req.network.as_deref());
-    match crate::domain::docker::create_escalation(req.privileged.unwrap_or(false), net_modes) {
-        Some(crate::domain::docker::CreateEscalation::Privileged) => {
+    match crate::core::docker::create_escalation(req.privileged.unwrap_or(false), net_modes) {
+        Some(crate::core::docker::CreateEscalation::Privileged) => {
             Err(docker_err(DockerError::PrivilegedRequiresSuper))
         }
-        Some(crate::domain::docker::CreateEscalation::HostNetwork) => {
+        Some(crate::core::docker::CreateEscalation::HostNetwork) => {
             Err(docker_err(DockerError::HostNetworkRequiresSuper))
         }
         None => Ok(()),
@@ -339,7 +339,7 @@ fn spec_binds(req: &Req) -> Result<Vec<String>> {
             validate_path(host)?;
             // Reject host-compromise bind sources (docker socket, /etc, /root,
             // kernel pseudo-fs, …) — unconditional, regardless of caller.
-            if crate::domain::docker::host_bind_denied(host) {
+            if crate::core::docker::host_bind_denied(host) {
                 return Err(docker_err(DockerError::BindHostPathDenied));
             }
         } else {

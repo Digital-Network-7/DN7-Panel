@@ -83,7 +83,7 @@ pub(crate) async fn put_profile(
             }
         });
         if let Err(e) = res {
-            return map_domain_err(e);
+            return map_core_err(e);
         }
         if let Some(f) = &req.full_name {
             let _ = crate::infra::system::set_full_name(&a.username, &clip(f, 64)).await;
@@ -136,7 +136,7 @@ pub(crate) async fn put_password(
     .await
     {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => map_domain_err(e),
+        Err(e) => map_core_err(e),
     }
 }
 
@@ -147,7 +147,7 @@ struct WebAccountEnv<'a> {
 }
 
 impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
-    fn current_verifier(&self, who: &crate::domain::identity::Principal) -> String {
+    fn current_verifier(&self, who: &crate::core::identity::Principal) -> String {
         if who.is_super {
             self.state
                 .settings
@@ -164,10 +164,10 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
 
     fn save_password(
         &self,
-        who: &crate::domain::identity::Principal,
+        who: &crate::core::identity::Principal,
         salt: &str,
         hash: &str,
-    ) -> Result<(), crate::domain::Error> {
+    ) -> Result<(), crate::core::Error> {
         if who.is_super {
             let saved = {
                 let mut s = self
@@ -178,9 +178,9 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
                 s.set_password_hashed(salt, hash);
                 s.clone()
             };
-            settings::save(&saved).map_err(|e| crate::domain::Error::Persist(e.to_string()))
+            settings::save(&saved).map_err(|e| crate::core::Error::Persist(e.to_string()))
         } else {
-            // app::users::update already returns domain::Error.
+            // app::users::update already returns core::Error.
             crate::app::users::update(&who.username, |u| {
                 u.pw_salt = salt.to_string();
                 u.pw_hash = hash.to_string();
@@ -196,7 +196,7 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
         self.state.auth.revoke_user(username, keep);
     }
 
-    fn read_totp(&self, who: &crate::domain::identity::Principal) -> String {
+    fn read_totp(&self, who: &crate::core::identity::Principal) -> String {
         if who.is_super {
             self.state
                 .settings
@@ -213,10 +213,10 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
 
     fn write_totp(
         &self,
-        who: &crate::domain::identity::Principal,
+        who: &crate::core::identity::Principal,
         secret: &str,
         enabled: bool,
-    ) -> Result<(), crate::domain::Error> {
+    ) -> Result<(), crate::core::Error> {
         if who.is_super {
             let saved = {
                 let mut s = self
@@ -228,9 +228,9 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
                 s.totp_enabled = enabled;
                 s.clone()
             };
-            settings::save(&saved).map_err(|e| crate::domain::Error::Persist(e.to_string()))
+            settings::save(&saved).map_err(|e| crate::core::Error::Persist(e.to_string()))
         } else {
-            // app::users::update already returns domain::Error.
+            // app::users::update already returns core::Error.
             crate::app::users::update(&who.username, |u| {
                 u.totp_secret = secret.to_string();
                 u.totp_enabled = enabled;
@@ -290,7 +290,7 @@ pub(crate) async fn twofa_enable(
     let keep = bearer(&headers);
     match crate::app::account::enable_2fa(&env, &a.to_principal(), &req.code, keep.as_deref()) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => map_domain_err(e),
+        Err(e) => map_core_err(e),
     }
 }
 
@@ -308,6 +308,6 @@ pub(crate) async fn twofa_disable(
     let keep = bearer(&headers);
     match crate::app::account::disable_2fa(&env, &a.to_principal(), &req.code, keep.as_deref()) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => map_domain_err(e),
+        Err(e) => map_core_err(e),
     }
 }

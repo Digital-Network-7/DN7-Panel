@@ -13,18 +13,18 @@
 //! branding/user-management) is denied for them server-side.
 
 use crate::app::ports::users::UsersEnv;
-use crate::domain::Error;
+use crate::core::Error;
 use crate::infra::system;
 
 /// Result alias for the user use-cases — semantic [`Error`], mapped to a wire
-/// code at the single web boundary (`map_domain_err`), consistent with
+/// code at the single web boundary (`map_core_err`), consistent with
 /// `app::account`.
 type Result<T> = std::result::Result<T, Error>;
 
 /// The panel-user entity lives in the domain layer; re-exported so call sites
 /// (`crate::app::users::PanelUser`) stay stable while this module keeps the
 /// system-account orchestration. Persistence is delegated to infra/store.
-pub(crate) use crate::domain::identity::PanelUser;
+pub(crate) use crate::core::identity::PanelUser;
 pub(crate) use crate::infra::store::users::{load, save};
 
 /// Serializes read-modify-write access to users.json so concurrent admin
@@ -85,7 +85,7 @@ impl UsersEnv for LiveUsersEnv {
 /// Conservative (NAME_REGEX-style) so it can't smuggle shell/flag characters.
 /// Validators live in the domain layer; re-exported so existing call sites
 /// (`crate::app::users::valid_username` / `valid_pw_format`) stay stable.
-pub(crate) use crate::domain::identity::{valid_os_secret, valid_pw_format, valid_username};
+pub(crate) use crate::core::identity::{valid_os_secret, valid_pw_format, valid_username};
 
 /// Create a panel user **and** the backing system account. `role` is "admin"
 /// (sudo) or "user". The OS password is left locked; the panel password is

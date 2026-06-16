@@ -40,9 +40,9 @@ pub(crate) use crate::contracts::nginx::{
     CreateCert, DeleteAccess, DeleteCert, RenewCert, SaveAccess, SiteForm,
 };
 
-/// A managed site (domain entity), re-exported from `domain::nginx` so the
+/// A managed site (domain entity), re-exported from `core::nginx` so the
 /// nginx submodules keep referring to `Site`/`Location` unchanged.
-pub(crate) use crate::domain::nginx::{Location, Site};
+pub(crate) use crate::core::nginx::{Location, Site};
 
 // ---------------------------------------------------------------------------
 // Access lists (NPM-style): HTTP Basic Auth users + IP allow/deny rules, with
@@ -51,20 +51,20 @@ pub(crate) use crate::domain::nginx::{Location, Site};
 // ---------------------------------------------------------------------------
 
 /// Access-list domain entities (`AccessList`/`AccessUser`/`AccessClient`),
-/// re-exported from `domain::nginx` so the nginx submodules reference them
+/// re-exported from `core::nginx` so the nginx submodules reference them
 /// unchanged. `AccessUserInput` (transport input) lives in `contracts::nginx`.
-pub(crate) use crate::domain::nginx::{AccessClient, AccessList, AccessUser};
+pub(crate) use crate::core::nginx::{AccessClient, AccessList, AccessUser};
 
 /// Default-site / global-settings / http-tuning domain entities, re-exported
-/// from `domain::nginx` so the nginx submodules reference them unchanged.
-pub(crate) use crate::domain::nginx::{HttpTuning, WebGlobal};
+/// from `core::nginx` so the nginx submodules reference them unchanged.
+pub(crate) use crate::core::nginx::{HttpTuning, WebGlobal};
 
 /// A custom path rule (NPM-style "custom location"): forward a path prefix to a
 // ---------------------------------------------------------------------------
 // Detached operation registry (setup + cert issuance) — see `opreg` submodule.
 // ---------------------------------------------------------------------------
 mod opreg;
-use crate::domain::nginx::{
+use crate::core::nginx::{
     norm_scheme, primary_host, valid_access_name, valid_auth_username, valid_cert_name,
     valid_client_address, valid_container_name, valid_host_token, valid_location_path, valid_port,
     valid_root_segment, valid_server_name, NginxError,
@@ -127,8 +127,8 @@ mod tests;
 /// `app::nginx`): persisted default-site + http tuning, plus whether each has
 /// been configured. Pure read — no nginx reload.
 pub(crate) fn web_settings_state() -> (
-    crate::domain::nginx::WebGlobal,
-    crate::domain::nginx::HttpTuning,
+    crate::core::nginx::WebGlobal,
+    crate::core::nginx::HttpTuning,
     bool,
     bool,
 ) {
@@ -142,7 +142,7 @@ pub(crate) fn web_settings_state() -> (
 
 /// Read-only managed-site list for the `list_sites` use-case (owned by
 /// `app::nginx`). Pure read — manifests only, no nginx contact.
-pub(crate) fn sites_snapshot() -> Vec<crate::domain::nginx::Site> {
+pub(crate) fn sites_snapshot() -> Vec<crate::core::nginx::Site> {
     load_sites()
 }
 

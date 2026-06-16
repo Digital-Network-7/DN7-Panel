@@ -3,7 +3,7 @@ use super::*;
 
 /// Persist an already-validated default-site entity and (re)write the catch-all
 /// conf, then reload — rolling back the conf if nginx rejects it. The
-/// validation/build is owned by `domain::nginx::build_default_site`; this is the
+/// validation/build is owned by `core::nginx::build_default_site`; this is the
 /// side-effecting adapter for the `app::nginx` use-case.
 pub(crate) async fn apply_default_site(g: &WebGlobal) -> Result<Value> {
     let lo = layout()?;

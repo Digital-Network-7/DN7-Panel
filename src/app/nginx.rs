@@ -7,7 +7,7 @@
 //! filesystem / `nginx -t` + reload).
 //!
 //! `set_tuning` / `set_default_site` have their pure validation in
-//! `domain::nginx`; the other write ops still carry their (infra-state-
+//! `core::nginx`; the other write ops still carry their (infra-state-
 //! interleaved) validation inside the infra use-case body, called here with the
 //! parsed capability `Req` (see .kiro/steering/architecture.md §10).
 
@@ -151,7 +151,7 @@ fn get_settings() -> Result<Value> {
 /// fixed bounds (domain) → persist + rewrite confs + reload (infra). The stable
 /// validation code is surfaced through the transitional `ERR_CODE:` channel.
 async fn set_tuning(body: &Value) -> Result<Value> {
-    let input = crate::domain::nginx::HttpTuningInput {
+    let input = crate::core::nginx::HttpTuningInput {
         server_names_hash_bucket_size: body
             .get("server_names_hash_bucket_size")
             .and_then(|v| v.as_u64())
@@ -179,7 +179,7 @@ async fn set_tuning(body: &Value) -> Result<Value> {
             .map(|n| n as u32),
     };
     let cur = crate::infra::nginx::current_tuning();
-    let t = crate::domain::nginx::merge_http_tuning(&cur, &input)
+    let t = crate::core::nginx::merge_http_tuning(&cur, &input)
         .map_err(|e| anyhow::anyhow!("ERR_CODE:{}", tuning_err_code(e)))?;
     crate::infra::nginx::apply_tuning(&t).await
 }
@@ -195,7 +195,7 @@ async fn set_default_site(body: &Value) -> Result<Value> {
         .get("redirect_url")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let g = crate::domain::nginx::build_default_site(mode, redirect_url)
+    let g = crate::core::nginx::build_default_site(mode, redirect_url)
         .map_err(|e| anyhow::anyhow!("ERR_CODE:{}", tuning_err_code(e)))?;
     crate::infra::nginx::apply_default_site(&g).await
 }
@@ -204,8 +204,8 @@ async fn set_default_site(body: &Value) -> Result<Value> {
 /// through the transitional `ERR_CODE:` channel (architecture §6). This is the
 /// single place the nginx tuning/default-site codes are spelled out; the domain
 /// stays free of protocol strings (§2).
-fn tuning_err_code(e: crate::domain::nginx::TuningError) -> &'static str {
-    use crate::domain::nginx::TuningError::*;
+fn tuning_err_code(e: crate::core::nginx::TuningError) -> &'static str {
+    use crate::core::nginx::TuningError::*;
     match e {
         HashBucket => "nginx.bad_hash_bucket",
         CompLevel => "nginx.bad_comp_level",

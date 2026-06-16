@@ -11,11 +11,11 @@ use std::ffi::{CStr, CString};
 
 use anyhow::{anyhow, Result};
 
-use crate::domain::identity::SystemUserError;
+use crate::core::identity::SystemUserError;
 
 /// Build the transitional `anyhow` error for a typed [`SystemUserError`]:
 /// prefixes the semantic code with the `ERR_CODE:` transport marker the
-/// `op_err_body` boundary parses. The marker lives here (infra), not in domain.
+/// `op_err_body` boundary parses. The marker lives here (infra), not in core.
 fn users_err(e: SystemUserError) -> anyhow::Error {
     anyhow!("ERR_CODE:{}", e.code())
 }
@@ -149,7 +149,7 @@ pub async fn set_system_password(username: &str, password: &str) -> Result<()> {
     }
     // Defense in depth at the OS boundary: a control char in `password` would
     // forge an extra `user:password` chpasswd record (callers validate too).
-    if !crate::domain::identity::valid_os_secret(password) {
+    if !crate::core::identity::valid_os_secret(password) {
         return Err(users_err(SystemUserError::SetPwFailed));
     }
     use std::process::Stdio;

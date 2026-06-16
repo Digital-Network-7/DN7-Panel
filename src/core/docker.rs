@@ -190,7 +190,7 @@ pub(crate) fn host_bind_denied(path: &str) -> bool {
     // Normalize FIRST: the daemon resolves `//`, `/./`, `/..` before mounting,
     // so a raw prefix match is trivially bypassed (e.g. `//var/run/docker.sock`,
     // `/srv/../etc/shadow`). Collapse to the canonical path the daemon will use.
-    let p = crate::domain::path::normalize_lexical(path);
+    let p = crate::core::path::normalize_lexical(path);
     let p = p.as_str();
     // The docker socket = instant host-root escape (not under a denied tree).
     if matches!(p, "/var/run/docker.sock" | "/run/docker.sock") {

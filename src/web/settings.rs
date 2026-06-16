@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 /// call sites (`crate::web::settings::WebSettings`) stay stable while this
 /// module keeps the credential/reset behaviour and validation. Persistence is
 /// delegated to infra/store.
-pub(crate) use crate::domain::settings::{default_timeout, default_username, WebSettings};
+pub(crate) use crate::core::settings::{default_timeout, default_username, WebSettings};
 pub(crate) use crate::infra::store::settings::{load, save};
 
 /// A random 6-char lowercase-alnum safe-entry path ("/xxxxxx").

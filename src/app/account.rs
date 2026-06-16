@@ -4,8 +4,8 @@
 //! revoke sessions → audit) lives here so no entry point can forget a step.
 
 use crate::app::ports::account::AccountEnv;
-use crate::domain::identity::{valid_os_secret, valid_pw_format, Principal};
-use crate::domain::Error;
+use crate::core::identity::{valid_os_secret, valid_pw_format, Principal};
+use crate::core::Error;
 
 /// A self-service password change request: the client-computed new verifier
 /// (`salt`/`hash`), the `old_verifier` proving the current password, the

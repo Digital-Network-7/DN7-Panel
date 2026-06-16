@@ -56,7 +56,7 @@ pub(crate) async fn users_create(
         Err(r) => return r,
     };
     if !matches!(req.role.as_str(), "admin" | "user") {
-        return map_domain_err(crate::domain::Error::RoleInvalid);
+        return map_core_err(crate::core::Error::RoleInvalid);
     }
     // May only create an account strictly lower in privilege than oneself
     // (owner → admin/user; admin → user only).
@@ -71,7 +71,7 @@ pub(crate) async fn users_create(
             .unwrap_or_else(|p| p.into_inner())
             .username
     {
-        return map_domain_err(crate::domain::Error::UserExists);
+        return map_core_err(crate::core::Error::UserExists);
     }
     match crate::app::users::create(&crate::app::users::NewUser {
         username: &req.username,
@@ -95,7 +95,7 @@ pub(crate) async fn users_create(
                 false,
                 &format!("{e:?}"),
             );
-            map_domain_err(e)
+            map_core_err(e)
         }
     }
 }
@@ -133,7 +133,7 @@ pub(crate) async fn users_update(
     let actor_lvl = account_level(&actor);
     let target = match crate::app::users::find(&req.username) {
         Some(t) => t,
-        None => return map_domain_err(crate::domain::Error::UserNotFound),
+        None => return map_core_err(crate::core::Error::UserNotFound),
     };
     // Only manage accounts strictly below your own privilege.
     if !accounts::can_manage(actor_lvl, role_level(&target.role)) {
@@ -165,7 +165,7 @@ pub(crate) async fn users_update(
         }
     });
     if let Err(e) = res {
-        return map_domain_err(e);
+        return map_core_err(e);
     }
     if let Some(f) = &req.full_name {
         let _ = crate::infra::system::set_full_name(&req.username, f.trim()).await;
@@ -195,7 +195,7 @@ async fn apply_role_change(
 ) -> Result<(), Response> {
     let Some(role) = &req.role else { return Ok(()) };
     if !matches!(role.as_str(), "admin" | "user") {
-        return Err(map_domain_err(crate::domain::Error::RoleInvalid));
+        return Err(map_core_err(crate::core::Error::RoleInvalid));
     }
     if !accounts::can_manage(actor_lvl, role_level(role)) {
         return Err(api_err(StatusCode::FORBIDDEN, "auth.forbidden"));
@@ -219,13 +219,13 @@ fn parse_pw_update(req: &UpdateUserReq) -> Result<Option<(String, String)>, Resp
     let salt = req.pw_salt.clone().unwrap_or_default();
     let hash = req.pw_hash.clone().unwrap_or_default();
     if !crate::app::users::valid_pw_format(&salt, &hash) {
-        return Err(map_domain_err(crate::domain::Error::PasswordMalformed));
+        return Err(map_core_err(crate::core::Error::PasswordMalformed));
     }
     // The plaintext is synced to the OS password via `chpasswd`; reject control
     // chars that could forge an extra record (see identity::valid_os_secret).
     if let Some(p) = &req.password {
         if !crate::app::users::valid_os_secret(p) {
-            return Err(map_domain_err(crate::domain::Error::PasswordMalformed));
+            return Err(map_core_err(crate::core::Error::PasswordMalformed));
         }
     }
     Ok(Some((salt, hash.to_lowercase())))
@@ -266,7 +266,7 @@ pub(crate) async fn users_delete(
                 false,
                 &format!("{e:?}"),
             );
-            map_domain_err(e)
+            map_core_err(e)
         }
     }
 }

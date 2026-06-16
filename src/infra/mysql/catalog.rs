@@ -1,5 +1,5 @@
 //! MySQL infra-support: credential generation. The engine/version catalog +
-//! image-reference rules live in `domain::mysql`.
+//! image-reference rules live in `core::mysql`.
 use super::*;
 
 /// Generate a strong random root password (no shell-special chars so it's safe
