@@ -17,6 +17,8 @@ runtime dependencies.
 > Part of the [Digital Network 7](https://dn7.cn) suite ·
 > <https://github.com/Digital-Network-7/DN7-Panel>
 
+中文文档：[`docs/README.zh-CN.md`](docs/README.zh-CN.md)
+
 ## Highlights
 
 - **One static binary.** Pure Rust + rustls (musl build), no system libraries,
@@ -110,6 +112,32 @@ Capabilities:
   info, multiple databases, account management, port remap, `mysqldump` backup.
 - **Files** — browse / upload / download / delete on the host and inside
   containers.
+
+## Screenshots
+
+### Monitoring
+
+![Monitoring page](docs/images/1.png)
+
+### Terminal
+
+![Terminal page](docs/images/2.png)
+
+### Containers
+
+![Containers page](docs/images/3.png)
+
+### Websites
+
+![Websites page](docs/images/4.png)
+
+### Files
+
+![Files page](docs/images/5.png)
+
+### Settings
+
+![Settings page](docs/images/6.png)
 
 ## Configuration
 
