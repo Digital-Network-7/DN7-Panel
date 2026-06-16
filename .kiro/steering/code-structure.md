@@ -166,6 +166,7 @@ adding new ones):
 | docker container bind mounts | `domain/docker::host_bind_denied` (deny docker.sock, `/`, `/etc` `/root` `/boot` `/proc` `/sys` `/dev` + descendants) | named volume / non-sensitive path |
 | docker `privileged` | `infra/docker/create::enforce_create_policy` — super-only, default deny | `false` (unprivileged) |
 | docker container `network` = host/`container:` | `domain/docker::network_mode_privileged` via `enforce_create_policy` — super-only | bridge (isolated) |
+| mysql `expose` host port | `mysql/provision::validate_port`; published port binds `127.0.0.1` | loopback only (not `0.0.0.0`) |
 
 When adding a knob that touches nginx/system/network config, add its row here
 and confirm it satisfies all four points above. Prefer **not** exposing a raw

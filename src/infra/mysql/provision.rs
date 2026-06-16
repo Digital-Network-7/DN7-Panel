@@ -340,7 +340,11 @@ pub(crate) async fn create_mysql_container(
         bindings.insert(
             "3306/tcp".to_string(),
             Some(vec![PortBinding {
-                host_ip: None,
+                // Bind the published port to loopback, not 0.0.0.0 — a managed
+                // database should be reachable from the host (and SSH tunnels),
+                // not exposed to the whole network by default. (Safe default per
+                // the capability-guardrail rules.)
+                host_ip: Some("127.0.0.1".to_string()),
                 host_port: Some(p.to_string()),
             }]),
         );
