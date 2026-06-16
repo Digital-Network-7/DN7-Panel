@@ -112,14 +112,14 @@ fn resolve_pull_source(req: &Req, image: &str) -> Result<(String, Option<String>
         // Private registry: pull `<registry>/<image>` verbatim (no Docker Hub
         // mirror applies).
         if !registry_allowed(reg) {
-            return Err(anyhow!("ERR_CODE:docker.bad_registry"));
+            return Err(docker_err(DockerError::BadRegistry));
         }
         return Ok((format!("{reg}/{}", with_default_tag(image)), None));
     }
     match mirror {
         Some(host) => {
             if !mirror_allowed(host) {
-                return Err(anyhow!("ERR_CODE:docker.bad_mirror"));
+                return Err(docker_err(DockerError::BadMirror));
             }
             match docker_io_path(image) {
                 // Pull from the mirror, then rename back to the canonical name.
@@ -210,6 +210,6 @@ pub(crate) async fn run_pull_detached(op_id: &str, pull_ref: &str) -> Result<()>
     // connection mid-transfer), so confirm before reporting success.
     dkr.inspect_image(pull_ref)
         .await
-        .map_err(|_| anyhow!("ERR_CODE:docker.pull_incomplete"))?;
+        .map_err(|_| docker_err(DockerError::PullIncomplete))?;
     Ok(())
 }

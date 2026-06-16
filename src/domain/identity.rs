@@ -3,6 +3,36 @@
 
 use serde::{Deserialize, Serialize};
 
+/// A system-account operation error — typed replacement for the
+/// `anyhow!("ERR_CODE:users.*")` literals in `infra::system`. Domain owns the
+/// semantic `users.*` code; the `ERR_CODE:` transport marker is added in infra
+/// (§2/§4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SystemUserError {
+    NoSudoGroup,
+    SetPwFailed,
+    BadFullName,
+}
+
+impl SystemUserError {
+    /// The stable, `users.`-namespaced semantic code (no transport prefix).
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            SystemUserError::NoSudoGroup => "users.no_sudo_group",
+            SystemUserError::SetPwFailed => "users.set_pw_failed",
+            SystemUserError::BadFullName => "users.bad_full_name",
+        }
+    }
+}
+
+impl std::fmt::Display for SystemUserError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+impl std::error::Error for SystemUserError {}
+
 /// A panel user, persisted in `users.json` and backed 1:1 by a Linux account.
 ///
 /// NOTE: a persisted **domain entity** — the `serde` derive is a reviewed

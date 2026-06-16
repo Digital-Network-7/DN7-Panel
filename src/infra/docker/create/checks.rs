@@ -5,13 +5,13 @@ use super::*;
 pub(crate) fn validate_cpus(s: &str) -> Result<()> {
     let v: f64 = s
         .parse()
-        .map_err(|_| anyhow!("ERR_CODE:docker.bad_cpu_format"))?;
+        .map_err(|_| docker_err(DockerError::BadCpuFormat))?;
     if v <= 0.0 || v > 1024.0 {
-        return Err(anyhow!("ERR_CODE:docker.cpu_out_of_range"));
+        return Err(docker_err(DockerError::CpuOutOfRange));
     }
     // Restrict the charset too (parse alone would accept "inf"/"NaN").
     if !s.chars().all(|c| c.is_ascii_digit() || c == '.') {
-        return Err(anyhow!("ERR_CODE:docker.bad_cpu_format"));
+        return Err(docker_err(DockerError::BadCpuFormat));
     }
     Ok(())
 }
@@ -25,13 +25,13 @@ pub(crate) fn validate_memory(s: &str) -> Result<()> {
         _ => (lower.as_str(), None),
     };
     if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
-        return Err(anyhow!("ERR_CODE:docker.bad_mem_format"));
+        return Err(docker_err(DockerError::BadMemFormat));
     }
     let n: u64 = num
         .parse()
-        .map_err(|_| anyhow!("ERR_CODE:docker.bad_mem_format"))?;
+        .map_err(|_| docker_err(DockerError::BadMemFormat))?;
     if n == 0 {
-        return Err(anyhow!("ERR_CODE:docker.mem_too_small"));
+        return Err(docker_err(DockerError::MemTooSmall));
     }
     Ok(())
 }
@@ -81,7 +81,7 @@ pub(crate) fn split_command(s: &str) -> Result<Vec<String>> {
                         has_token = false;
                     }
                 }
-                '\n' | '\r' => return Err(anyhow!("ERR_CODE:docker.cmd_no_newline")),
+                '\n' | '\r' => return Err(docker_err(DockerError::CmdNoNewline)),
                 _ => {
                     cur.push(c);
                     has_token = true;
@@ -90,13 +90,13 @@ pub(crate) fn split_command(s: &str) -> Result<Vec<String>> {
         }
     }
     if quote.is_some() {
-        return Err(anyhow!("ERR_CODE:docker.cmd_unclosed_quote"));
+        return Err(docker_err(DockerError::CmdUnclosedQuote));
     }
     if has_token {
         out.push(cur);
     }
     if out.len() > 100 {
-        return Err(anyhow!("ERR_CODE:docker.cmd_too_many_args"));
+        return Err(docker_err(DockerError::CmdTooManyArgs));
     }
     Ok(out)
 }

@@ -69,8 +69,16 @@ mod certparse;
 use crate::domain::nginx::{
     norm_scheme, primary_host, valid_access_name, valid_auth_username, valid_cert_name,
     valid_client_address, valid_container_name, valid_host_token, valid_location_path, valid_port,
-    valid_root_segment, valid_server_name,
+    valid_root_segment, valid_server_name, NginxError,
 };
+
+/// Build the transitional `anyhow` error for a typed [`NginxError`]: prefixes
+/// the semantic code with the `ERR_CODE:` transport marker the `op_err_body`
+/// web boundary parses into the wire `code`. The marker lives here (infra), not
+/// in the domain enum, per §2/§4.
+pub(crate) fn nginx_err(e: NginxError) -> anyhow::Error {
+    anyhow!("ERR_CODE:{}", e.code())
+}
 
 // ---------------------------------------------------------------------------
 // Operation submodules (see .kiro/steering/code-structure.md). All shared
@@ -201,7 +209,7 @@ pub(crate) struct Layout {
 
 fn layout() -> Result<Layout> {
     if !is_setup() {
-        return Err(anyhow!("ERR_CODE:nginx.not_setup"));
+        return Err(nginx_err(NginxError::NotSetup));
     }
     std::fs::create_dir_all(certs_dir())?;
     std::fs::create_dir_all(www_dir())?;

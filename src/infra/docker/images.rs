@@ -23,15 +23,15 @@ pub(crate) async fn add_image_tags(req: &Req) -> Result<Value> {
         .filter(|t| !t.is_empty())
         .collect();
     if tags.is_empty() {
-        return Err(anyhow!("ERR_CODE:docker.tag_empty"));
+        return Err(docker_err(DockerError::TagEmpty));
     }
     if tags.len() > 20 {
-        return Err(anyhow!("ERR_CODE:docker.too_many_tags"));
+        return Err(docker_err(DockerError::TooManyTags));
     }
     let dkr = dkr()?;
     for t in &tags {
         if validate_token(t).is_err() {
-            return Err(anyhow!("ERR_CODE:docker.bad_tag"));
+            return Err(docker_err(DockerError::BadTag));
         }
         let (repo, tag) = split_repo_tag(t);
         dkr.tag_image(
@@ -50,7 +50,7 @@ pub(crate) async fn add_image_tags(req: &Req) -> Result<Value> {
 pub(crate) async fn retag_image(req: &Req) -> Result<Value> {
     let reference = need_ref(req)?;
     if managed_image_guard(&reference).await {
-        return Err(anyhow!("ERR_CODE:docker.image_in_use_builtin"));
+        return Err(docker_err(DockerError::ImageInUseBuiltin));
     }
     let desired = parse_desired_tags(req)?;
     let dkr = dkr()?;
@@ -83,14 +83,14 @@ fn parse_desired_tags(req: &Req) -> Result<Vec<String>> {
         .collect();
     desired.dedup();
     if desired.is_empty() {
-        return Err(anyhow!("ERR_CODE:docker.tag_empty"));
+        return Err(docker_err(DockerError::TagEmpty));
     }
     if desired.len() > 20 {
-        return Err(anyhow!("ERR_CODE:docker.too_many_tags"));
+        return Err(docker_err(DockerError::TooManyTags));
     }
     for t in &desired {
         if validate_token(t).is_err() {
-            return Err(anyhow!("ERR_CODE:docker.bad_tag"));
+            return Err(docker_err(DockerError::BadTag));
         }
     }
     Ok(desired)

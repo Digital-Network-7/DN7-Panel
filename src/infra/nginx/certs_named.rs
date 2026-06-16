@@ -52,7 +52,7 @@ pub(crate) async fn create_cert(cmd: &CreateCert) -> Result<Value> {
     let lo = layout()?;
     let mode = cmd.cert_mode.as_deref().unwrap_or("self");
     if !matches!(mode, "self" | "le" | "manual") {
-        return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
+        return Err(nginx_err(NginxError::UnknownCertMode));
     }
     // Serialize the manifest read-modify-write against the background renewal
     // loop and other cert ops (lost-update guard on certs.json).
@@ -96,20 +96,20 @@ fn derive_cert_name(cmd: &CreateCert, certs: &[NamedCert]) -> Result<(String, St
         .unwrap_or("")
         .to_string();
     if domain.is_empty() {
-        return Err(anyhow!("ERR_CODE:nginx.need_cert_domain"));
+        return Err(nginx_err(NginxError::NeedCertDomain));
     }
     if !valid_server_name(&domain) {
-        return Err(anyhow!("ERR_CODE:nginx.bad_domain"));
+        return Err(nginx_err(NginxError::BadDomain));
     }
     let name = cert_name_from_domain(&domain);
     if !valid_cert_name(&name) {
-        return Err(anyhow!("ERR_CODE:nginx.bad_cert_name_chars"));
+        return Err(nginx_err(NginxError::BadCertNameChars));
     }
     if certs
         .iter()
         .any(|c| c.name == name || (!c.domain.is_empty() && c.domain.eq_ignore_ascii_case(&domain)))
     {
-        return Err(anyhow!("ERR_CODE:nginx.cert_domain_exists"));
+        return Err(nginx_err(NginxError::CertDomainExists));
     }
     Ok((domain, name))
 }
@@ -119,7 +119,7 @@ fn write_manual_cert(lo: &Layout, cmd: &CreateCert, name: &str) -> Result<()> {
     let cert = cmd.cert_pem.as_deref().unwrap_or("");
     let key = cmd.key_pem.as_deref().unwrap_or("");
     if cert.trim().is_empty() || key.trim().is_empty() {
-        return Err(anyhow!("ERR_CODE:nginx.need_cert_key"));
+        return Err(nginx_err(NginxError::NeedCertKey));
     }
     std::fs::create_dir_all(&lo.cert_store)?;
     std::fs::write(named_crt_file(lo, name), cert)?;
@@ -136,16 +136,16 @@ pub(crate) async fn renew_cert(cmd: &RenewCert) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("ERR_CODE:nginx.missing_cert_name"))?;
+        .ok_or_else(|| nginx_err(NginxError::MissingCertName))?;
     let cert = load_named_certs()
         .into_iter()
         .find(|c| c.name == name)
-        .ok_or_else(|| anyhow!("ERR_CODE:nginx.cert_not_found"))?;
+        .ok_or_else(|| nginx_err(NginxError::CertNotFound))?;
     match cert.cert_mode.as_str() {
         "le" => start_named_cert_issue(lo, cert.name.clone(), cert.domain.clone()),
         "self" => {
             if cert.domain.is_empty() {
-                return Err(anyhow!("ERR_CODE:nginx.need_cert_domain"));
+                return Err(nginx_err(NginxError::NeedCertDomain));
             }
             let host = primary_host(&cert.domain);
             gen_self_signed_to(
@@ -157,7 +157,7 @@ pub(crate) async fn renew_cert(cmd: &RenewCert) -> Result<Value> {
             let _ = validate_and_reload(&lo).await;
             Ok(json!({ "renewed": cert.name }))
         }
-        _ => Err(anyhow!("ERR_CODE:nginx.manual_no_renew")),
+        _ => Err(nginx_err(NginxError::ManualNoRenew)),
     }
 }
 
@@ -169,7 +169,7 @@ pub(crate) async fn delete_cert(cmd: &DeleteCert) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("ERR_CODE:nginx.missing_cert_name"))?;
+        .ok_or_else(|| nginx_err(NginxError::MissingCertName))?;
     let in_use = sites_using_certs();
     if let Some(sites) = in_use.get(name) {
         if !sites.is_empty() {
@@ -182,7 +182,7 @@ pub(crate) async fn delete_cert(cmd: &DeleteCert) -> Result<Value> {
     let before = certs.len();
     certs.retain(|c| c.name != name);
     if certs.len() == before {
-        return Err(anyhow!("ERR_CODE:nginx.cert_not_found"));
+        return Err(nginx_err(NginxError::CertNotFound));
     }
     let _ = std::fs::remove_file(named_crt_file(&lo, name));
     let _ = std::fs::remove_file(named_key_file(&lo, name));

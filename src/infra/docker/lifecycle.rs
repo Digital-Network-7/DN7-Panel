@@ -13,7 +13,7 @@ pub(crate) async fn rename_container(req: &Req) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_name"))?;
+        .ok_or_else(|| docker_err(DockerError::MissingName))?;
     validate_name(name)?;
     dkr()?
         .rename_container(
@@ -38,7 +38,7 @@ pub(crate) async fn commit_container_op(req: &Req) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_image_name"))?;
+        .ok_or_else(|| docker_err(DockerError::MissingImageName))?;
     validate_token(repo)?;
     let tag = req
         .tag
@@ -78,7 +78,7 @@ pub(crate) async fn container_stats(req: &Req) -> Result<Value> {
     let s = match stream.next().await {
         Some(Ok(s)) => s,
         Some(Err(e)) => return Err(anyhow!(friendly_docker_err(&e))),
-        None => return Err(anyhow!("ERR_CODE:docker.no_stats")),
+        None => return Err(docker_err(DockerError::NoStats)),
     };
 
     let (cpu_pct, online) = stats_cpu(&s);

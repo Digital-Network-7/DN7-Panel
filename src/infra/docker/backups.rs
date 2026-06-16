@@ -42,7 +42,7 @@ pub(crate) fn start_backup_container(req: &Req) -> Result<Value> {
         .map(str::to_string)
         .unwrap_or_else(|| r.chars().take(12).collect());
     if !safe_dir_component(&name) {
-        return Err(anyhow!("ERR_CODE:docker.bad_name"));
+        return Err(docker_err(DockerError::BadName));
     }
     let op_id = new_op_id();
     op_create(&op_id, "backup", &name);
@@ -177,7 +177,7 @@ pub(crate) async fn list_backups(req: &Req) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| safe_dir_component(s))
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.bad_name"))?;
+        .ok_or_else(|| docker_err(DockerError::BadName))?;
     let dir = backups_root().join(name);
     let mut items = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&dir) {
@@ -215,13 +215,13 @@ pub(crate) fn delete_backup(req: &Req) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| safe_dir_component(s))
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.bad_name"))?;
+        .ok_or_else(|| docker_err(DockerError::BadName))?;
     let file = req
         .backup
         .as_deref()
         .map(str::trim)
         .filter(|s| valid_backup_name(s))
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.bad_backup"))?;
+        .ok_or_else(|| docker_err(DockerError::BadBackup))?;
     let dir = backups_root().join(name);
     let tar_gz = dir.join(file);
     if tar_gz.exists() {
@@ -240,14 +240,14 @@ pub(crate) fn start_restore_backup(req: &Req, is_super: bool) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| safe_dir_component(s))
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.bad_name"))?
+        .ok_or_else(|| docker_err(DockerError::BadName))?
         .to_string();
     let file = req
         .backup
         .as_deref()
         .map(str::trim)
         .filter(|s| valid_backup_name(s))
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.bad_backup"))?
+        .ok_or_else(|| docker_err(DockerError::BadBackup))?
         .to_string();
     let op_id = new_op_id();
     op_create(&op_id, "restore", &name);
@@ -272,7 +272,7 @@ pub(crate) async fn restore_backup(
     let dir = backups_root().join(name);
     let tar_gz = dir.join(file);
     if !tar_gz.exists() {
-        return Err(anyhow!("ERR_CODE:docker.backup_missing"));
+        return Err(docker_err(DockerError::BackupMissing));
     }
 
     // Load the saved image (`docker load`); it records its own repo:tag.
@@ -328,7 +328,7 @@ async fn recreate_from_snapshot(
     };
     let obj = body
         .as_object_mut()
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.backup_bad_config"))?;
+        .ok_or_else(|| docker_err(DockerError::BackupBadConfig))?;
     if !loaded_image.is_empty() {
         obj.insert("image".to_string(), json!(loaded_image));
     }
@@ -336,7 +336,7 @@ async fn recreate_from_snapshot(
     obj.insert("replace".to_string(), json!(name));
     obj.insert("start".to_string(), json!(true));
     let restore_req: Req =
-        serde_json::from_value(body).map_err(|_| anyhow!("ERR_CODE:docker.backup_bad_config"))?;
+        serde_json::from_value(body).map_err(|_| docker_err(DockerError::BackupBadConfig))?;
     // A restore must not materialize a privileged / host-network container for a
     // non-super caller, even from a snapshot saved by one (same gate as create).
     enforce_create_policy(&restore_req, is_super)?;
@@ -398,7 +398,7 @@ where
         }
     }
     if loaded.is_empty() {
-        return Err(anyhow!("ERR_CODE:docker.import_no_image"));
+        return Err(docker_err(DockerError::ImportNoImage));
     }
     Ok(json!({ "loaded": loaded }))
 }
