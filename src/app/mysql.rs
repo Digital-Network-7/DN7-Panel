@@ -11,27 +11,29 @@
 //! in the infra capability dispatcher — re-implementing it here would risk
 //! mis-routing an op. See .kiro/steering/architecture.md §10.
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 
-/// Run one mysql capability request. `body` is the capability JSON command
-/// already authenticated/authorized by the web boundary.
+/// Run one mysql capability request. The app layer owns parsing (into the
+/// `contracts::mysql` DTO) and op routing; the in-memory op-registry ops are
+/// handled here, and the DB/container ops are delegated to the `infra::mysql`
+/// adapter cluster.
 pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
-    match body.get("op").and_then(|v| v.as_str()) {
+    let req: crate::contracts::mysql::Req =
+        serde_json::from_value(body.clone()).map_err(|e| anyhow!("bad mysql request: {e}"))?;
+    match req.op.as_str() {
         // Detached-op-registry ops — pure in-memory, no DB/Docker contact.
-        Some("list_ops") => Ok(crate::infra::mysql::ops_snapshot_value()),
-        Some("op_log") => Ok(crate::infra::mysql::op_log_value(
-            body.get("op_id").and_then(|v| v.as_str()).unwrap_or(""),
+        "list_ops" => Ok(crate::infra::mysql::ops_snapshot_value()),
+        "op_log" => Ok(crate::infra::mysql::op_log_value(
+            req.op_id.as_deref().unwrap_or(""),
         )),
-        Some("dismiss_op") => {
-            if let Some(id) = body.get("op_id").and_then(|v| v.as_str()) {
+        "dismiss_op" => {
+            if let Some(id) = req.op_id.as_deref() {
                 crate::infra::mysql::op_dismiss_registry(id);
             }
             Ok(json!({ "dismissed": true }))
         }
-        // Everything else: the infra dispatcher holds the authoritative op match
-        // (DB/container-state-interleaved; migrated incrementally with live
-        // verification — see .kiro/steering/architecture.md §10).
-        _ => crate::infra::mysql::web_dispatch(body).await,
+        // DB / container ops: the infra adapter holds the authoritative match.
+        _ => crate::infra::mysql::run_op(&req).await,
     }
 }

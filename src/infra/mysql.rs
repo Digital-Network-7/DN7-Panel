@@ -107,18 +107,16 @@ mod opreg;
 use opreg::{new_op_id, op_create, op_dismiss, op_finish, op_log, op_push, ops_snapshot, pmsg};
 
 // ---------------------------------------------------------------------------
-// Channel loop.
+// ---------------------------------------------------------------------------
+// Dispatch.
 // ---------------------------------------------------------------------------
 
-/// Public entrypoint for the local web console: parse a JSON request and run it.
-pub async fn web_dispatch(req: &Value) -> Result<Value> {
-    let r: Req =
-        serde_json::from_value(req.clone()).map_err(|e| anyhow!("bad mysql request: {e}"))?;
-    handle(&r).await
-}
-
-/// Dispatch one request.
-async fn handle(req: &Req) -> Result<Value> {
+/// Execute one already-parsed mysql capability request. The `app::mysql` router
+/// owns parsing + the in-memory op-registry ops; this holds the authoritative
+/// match for the DB/container ops (each interleaved with bollard / in-container
+/// exec state, so it stays as one adapter cluster rather than being re-typed in
+/// the app layer).
+pub(crate) async fn run_op(req: &Req) -> Result<Value> {
     match req.op.as_str() {
         "info" => info().await,
         "list" => list_instances().await,
