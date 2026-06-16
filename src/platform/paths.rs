@@ -105,6 +105,50 @@ pub fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()>
     }))
 }
 
+/// Atomically write `data` to `path` with default (non-secret) permissions.
+/// Same temp-file + fsync + rename dance as [`write_private`] — so a reader
+/// never observes a torn/half-written file and a crash mid-write can't corrupt
+/// the target — but without forcing 0600. Use for non-sensitive manifests/config
+/// (site lists, access metadata, tuning) that must survive partial writes.
+pub fn write_public(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let base = path.file_name().and_then(|s| s.to_str()).unwrap_or("state");
+    let mut last_err = None;
+    for _ in 0..16 {
+        let tmp = dir.join(format!(".{base}.tmp-{:016x}", rand::random::<u64>()));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        match opts.open(&tmp) {
+            Ok(mut f) => {
+                let r = f.write_all(data).and_then(|_| f.sync_all());
+                if let Err(e) = r {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(e);
+                }
+                drop(f);
+                if let Err(e) = std::fs::rename(&tmp, path) {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(e);
+                }
+                return Ok(());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_err = Some(e);
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "temp file name collision",
+        )
+    }))
+}
+
 /// Install a global `dn7` CLI dispatcher (best-effort; needs root). It routes
 /// `dn7 panel <args...>` to the canonical panel binary, so operators get
 /// `dn7 panel` (status banner), `dn7 panel reset`, `dn7 panel version`, etc.

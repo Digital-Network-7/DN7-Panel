@@ -139,7 +139,16 @@ pub async fn web_ctn_read_stream(container: &str, path: &str) -> Result<(String,
                     Err(std::io::Error::other(friendly_archive_err(&e))),
                     (stream, 0, Bytes::new()),
                 )),
-                None => None,
+                // Archive ended before all `remaining` content bytes arrived:
+                // surface an error so the client sees a failed transfer rather
+                // than a silently-truncated file reported as success.
+                None => Some((
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "容器归档流意外结束，文件可能不完整",
+                    )),
+                    (stream, 0, Bytes::new()),
+                )),
             }
         },
     );

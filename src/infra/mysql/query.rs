@@ -31,7 +31,13 @@ pub(crate) fn start_backup(req: &Req) -> Result<Value> {
 
 /// Run `mysqldump --all-databases` inside the container, writing to
 /// `/var/lib/mysql/dn7-backup-<ts>.sql` (on the persistent data volume so it
-/// survives), and report the path + size.
+/// survives container recreation), and report the path + size.
+///
+/// Each run first removes any previous `dn7-backup-*.sql` so dumps can't
+/// accumulate and fill the data volume (which would eventually stop mysqld from
+/// writing). The file lives in the datadir *root* — a stray non-directory file
+/// there is ignored by the server (only subdirectories are treated as schemas),
+/// so it doesn't create a phantom database.
 pub(crate) async fn run_backup_detached(op_id: &str, inst: &str) -> Result<()> {
     let m = load_manifest(inst)?;
     let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
@@ -42,12 +48,16 @@ pub(crate) async fn run_backup_detached(op_id: &str, inst: &str) -> Result<()> {
     let ts = now_secs();
     let path = format!("/var/lib/mysql/dn7-backup-{ts}.sql");
     // Use the dump tool that matches the engine; both accept the same flags.
+    // Reap any earlier dumps first so a single backup file is ever retained,
+    // bounding data-volume growth. Write to a temp name and rename on success so
+    // an interrupted dump never leaves a half-written file in its place.
     let script = format!(
-        "if command -v mysqldump >/dev/null 2>&1; then DUMP=mysqldump; else DUMP=mariadb-dump; fi; \
-         \"$DUMP\" -uroot --all-databases --single-transaction --routines --events > '{}' 2>/tmp/dumperr; \
-         rc=$?; if [ $rc -ne 0 ]; then cat /tmp/dumperr; exit $rc; fi; \
-         wc -c < '{}'",
-        path, path
+        "rm -f /var/lib/mysql/dn7-backup-*.sql; \
+         if command -v mysqldump >/dev/null 2>&1; then DUMP=mysqldump; else DUMP=mariadb-dump; fi; \
+         \"$DUMP\" -uroot --all-databases --single-transaction --routines --events > '{0}.part' 2>/tmp/dumperr; \
+         rc=$?; if [ $rc -ne 0 ]; then rm -f '{0}.part'; cat /tmp/dumperr; exit $rc; fi; \
+         mv '{0}.part' '{0}'; wc -c < '{0}'",
+        path
     );
     let (code, out) = exec_sh(&m.container, &password, &script).await?;
     if code != 0 {
