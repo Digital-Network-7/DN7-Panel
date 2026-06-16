@@ -19,7 +19,8 @@ function renderSettings(v) {
     </div>
     <div id="setGeneral">
       <div style="max-width:480px">
-        <label class="lbl">${tr('set.port_label')}</label>
+        <label class="switch" style="padding:0"><input type="checkbox" id="setPublic" ${s.public_access === false ? '' : 'checked'} /><span class="swbox"></span><span class="swtxt"><b>${tr('set.public_access')}</b><span>${tr('set.public_access_hint')}</span></span></label>
+        <label class="lbl" style="margin-top:16px">${tr('set.port_label')}</label>
         <input id="setPort" class="field" type="number" value="${esc(String(s.port || ''))}" style="max-width:160px" />
         <p class="formnote" style="margin-top:6px">${tr('set.port_restart_d')}</p>
         <label class="lbl" style="margin-top:16px">${tr('set.entry')}</label>
@@ -107,6 +108,7 @@ function renderSettings(v) {
         session_timeout: Number($('setTimeout').value) || 1440,
         allow_ips: allowIps,
         https: $('setHttps').checked,
+        public_access: $('setPublic').checked,
       };
       SettingsApi.save(body)
         .then((b) => { m.className = 'err ok'; m.textContent = tr('common.saved') + (b.needs_restart ? tr('common.restart_hint') : ''); if ($('setSave')._dirtyReset) $('setSave')._dirtyReset(); })

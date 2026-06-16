@@ -67,12 +67,23 @@ pub async fn changelog(cfg: &PanelConfig) -> ChangelogResult {
         }
     }
 
-    // Emit the merged set, newest-first.
+    // Emit the merged set, newest-first, capped to the 10 most recent versions.
     let mut entries: Vec<fetch::ReleaseNote> = {
         let c = changelog_cache().lock().unwrap_or_else(|p| p.into_inner());
         c.by_version.values().cloned().collect()
     };
     entries.sort_by_key(|e| std::cmp::Reverse(parse_semver(&e.version).unwrap_or((0, 0, 0))));
+    entries.truncate(10);
+    // A version with no fetched release notes shows a neutral English summary
+    // rather than an empty "(no release notes)" placeholder.
+    for e in &mut entries {
+        if e.notes.is_empty() {
+            e.notes = vec![
+                "Routine maintenance: stability, performance and security improvements."
+                    .to_string(),
+            ];
+        }
+    }
     ChangelogResult { current, entries }
 }
 

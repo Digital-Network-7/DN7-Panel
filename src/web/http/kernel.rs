@@ -39,6 +39,7 @@ pub fn spawn(cfg: PanelConfig) {
     let (s, _fresh) = settings::load_or_init(cfg.web_port);
     let port = s.port;
     let https = s.https;
+    let public = s.public_access;
     let ttl_secs = (s.session_timeout.max(1) as u64) * 60;
     let auth = AuthState::with_store();
     auth.set_ttl_secs(ttl_secs);
@@ -59,15 +60,23 @@ pub fn spawn(cfg: PanelConfig) {
         }
     });
     tokio::spawn(async move {
-        if let Err(e) = serve(state, port, https).await {
+        if let Err(e) = serve(state, port, https, public).await {
             tracing::warn!("web console exited: {e}");
         }
     });
 }
 
-pub(crate) async fn serve(state: Shared, port: u16, https: bool) -> anyhow::Result<()> {
+pub(crate) async fn serve(
+    state: Shared,
+    port: u16,
+    https: bool,
+    public: bool,
+) -> anyhow::Result<()> {
     let app = crate::web::routes::build_router(state);
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    // Public access binds all interfaces; otherwise loopback only, so the
+    // console is reachable only via an nginx reverse proxy / SSH tunnel.
+    let host = if public { [0, 0, 0, 0] } else { [127, 0, 0, 1] };
+    let addr = SocketAddr::from((host, port));
     bind_and_serve(app, addr, https).await
 }
 

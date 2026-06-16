@@ -20,6 +20,7 @@ pub(crate) async fn get_settings(
         "ok": true,
         "data": { "port": s.port, "username": s.username, "pw_default": s.pw_default,
                   "entry_path": s.entry_path, "https": s.https,
+                  "public_access": s.public_access,
                   "session_timeout": s.session_timeout, "allow_ips": s.allow_ips,
                   "trusted_proxies": s.trusted_proxies,
                   "must_setup": s.pw_default || s.username.eq_ignore_ascii_case("admin") }
@@ -50,6 +51,10 @@ pub(crate) struct SettingsReq {
     /// Serve over HTTPS (self-signed). Changing requires a restart.
     #[serde(default)]
     https: Option<bool>,
+    /// Allow direct access from any address (bind 0.0.0.0); off = loopback only
+    /// (reach via nginx/SSH tunnel). Changing requires a restart.
+    #[serde(default)]
+    public_access: Option<bool>,
     /// Session inactivity timeout in minutes. Applied live.
     #[serde(default)]
     session_timeout: Option<u32>,
@@ -159,6 +164,13 @@ fn apply_settings_update(
     if let Some(h) = req.https {
         if h != s.https {
             s.https = h;
+            needs_restart = true;
+        }
+    }
+    // Public-access toggle — needs a restart to rebind (0.0.0.0 vs 127.0.0.1).
+    if let Some(pub_acc) = req.public_access {
+        if pub_acc != s.public_access {
+            s.public_access = pub_acc;
             needs_restart = true;
         }
     }

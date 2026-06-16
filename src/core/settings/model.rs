@@ -50,6 +50,12 @@ pub(crate) struct WebSettings {
     /// Serve the console over HTTPS with a self-signed cert (default off).
     #[serde(default)]
     pub(crate) https: bool,
+    /// Allow the console to be reached directly from any address (bind
+    /// `0.0.0.0`). When **off**, it binds loopback only (`127.0.0.1`) so it's
+    /// reachable only through an nginx reverse proxy or an SSH tunnel on the
+    /// host — the recommended hardening. Default on. Changing needs a restart.
+    #[serde(default = "default_true")]
+    pub(crate) public_access: bool,
     /// Session inactivity timeout, in minutes (default 1440 = 24h). Applied
     /// live to the auth layer.
     #[serde(default = "default_timeout")]
