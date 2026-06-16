@@ -14,17 +14,30 @@ pub(crate) async fn list_containers() -> Result<Value> {
 
     // Probe shell availability for all running containers concurrently rather
     // than sequentially — each probe waits up to ~500ms, so for N running
-    // containers this turns ~N*500ms into ~500ms total.
+    // containers this turns ~N*500ms into ~500ms total. Results are cached by
+    // image id (shell availability is a property of the image, invariant for a
+    // container's life), so repeated UI polls of an unchanged list skip the
+    // exec probe entirely.
     let shell_futs = containers.iter().map(|c| {
         let dkr = dkr.clone();
         let id = c.id.clone().unwrap_or_default();
+        // Key the cache on the image id when known; fall back to the container id.
+        let cache_key = c
+            .image_id
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| id.clone());
         let running = c.state.as_deref() == Some("running");
         async move {
-            if running {
-                container_has_shell(&dkr, &id).await
-            } else {
-                false
+            if !running {
+                return false;
             }
+            if let Some(cached) = shell_cache_get(&cache_key) {
+                return cached;
+            }
+            let has = container_has_shell(&dkr, &id).await;
+            shell_cache_put(&cache_key, has);
+            has
         }
     });
     let shells = futures::future::join_all(shell_futs).await;
@@ -136,6 +149,43 @@ pub(crate) fn fmt_ports(ports: &Option<Vec<bollard::models::Port>>) -> String {
     out.sort();
     out.dedup();
     out.join(", ")
+}
+
+/// Cache of `has_shell` probe results keyed by image id, with a short TTL.
+/// Shell availability is a property of the image (the binaries it ships), so it
+/// doesn't change over a container's life; the TTL just bounds staleness if an
+/// image is rebuilt under the same id.
+fn shell_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, (bool, u64)>> {
+    static C: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, (bool, u64)>>,
+    > = std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+const SHELL_CACHE_TTL_SECS: u64 = 60;
+
+fn shell_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Return a cached `has_shell` result for `key` if present and fresh.
+fn shell_cache_get(key: &str) -> Option<bool> {
+    let now = shell_now();
+    let mut m = shell_cache().lock().unwrap_or_else(|p| p.into_inner());
+    // Opportunistically drop stale entries so the map can't grow unbounded.
+    m.retain(|_, (_, ts)| now.saturating_sub(*ts) <= SHELL_CACHE_TTL_SECS);
+    m.get(key).map(|(v, _)| *v)
+}
+
+/// Record a `has_shell` result for `key`.
+fn shell_cache_put(key: &str, has: bool) {
+    shell_cache()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(key.to_string(), (has, shell_now()));
 }
 
 /// Probe whether a running container has a usable `/bin/sh` (so the terminal
@@ -499,4 +549,22 @@ pub(crate) async fn container_action(req: &Req, action: &str) -> Result<Value> {
     let mut m = serde_json::Map::new();
     m.insert(verb.to_string(), Value::String(r));
     Ok(Value::Object(m))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_cache_roundtrip_and_miss() {
+        let key = format!("dn7-test-img-{}", std::process::id());
+        // Miss before insert.
+        assert_eq!(shell_cache_get(&key), None);
+        // Hit after insert.
+        shell_cache_put(&key, true);
+        assert_eq!(shell_cache_get(&key), Some(true));
+        // Overwrite with a different value.
+        shell_cache_put(&key, false);
+        assert_eq!(shell_cache_get(&key), Some(false));
+    }
 }
