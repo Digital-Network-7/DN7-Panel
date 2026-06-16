@@ -118,7 +118,16 @@ fn layers_respect_dependency_rules() {
 /// `domain` must stay pure rules/values with no transport/serialization shape.
 /// New serde in a non-whitelisted domain file is a deliberate review decision:
 /// add the file here (and a `NOTE:` doc comment) only after that review.
-const DOMAIN_SERDE_WHITELIST: &[&str] = &["identity.rs", "settings.rs", "mysql.rs", "nginx.rs"];
+///
+/// Entries are path suffixes (relative to the crate root) so a capability that
+/// was split into a directory keeps a precise whitelist (e.g. only
+/// `nginx/model.rs`, not every `model.rs`).
+const DOMAIN_SERDE_WHITELIST: &[&str] = &[
+    "domain/identity.rs",
+    "domain/settings.rs",
+    "domain/mysql.rs",
+    "domain/nginx/model.rs",
+];
 
 fn scan_domain_serde(dir: &Path, violations: &mut Vec<String>) {
     let entries = match fs::read_dir(dir) {
@@ -134,8 +143,11 @@ fn scan_domain_serde(dir: &Path, violations: &mut Vec<String>) {
         if p.extension().and_then(|s| s.to_str()) != Some("rs") {
             continue;
         }
-        let fname = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        if DOMAIN_SERDE_WHITELIST.contains(&fname) {
+        let path_str = p.to_string_lossy().replace('\\', "/");
+        if DOMAIN_SERDE_WHITELIST
+            .iter()
+            .any(|suffix| path_str.ends_with(suffix))
+        {
             continue;
         }
         let src = fs::read_to_string(&p).unwrap_or_default();
