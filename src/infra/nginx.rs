@@ -40,7 +40,7 @@ pub(crate) use crate::contracts::nginx::RemoveSite;
 /// external-protocol source of truth); re-exported here so the nginx submodules
 /// keep referring to `Req` via `use super::*` unchanged.
 pub(crate) use crate::contracts::nginx::Req;
-pub(crate) use crate::contracts::nginx::{DeleteAccess, DeleteCert, RenewCert};
+pub(crate) use crate::contracts::nginx::{CreateCert, DeleteAccess, DeleteCert, RenewCert};
 
 /// A managed site (domain entity), re-exported from `domain::nginx` so the
 /// nginx submodules keep referring to `Site`/`Location` unchanged.
@@ -164,8 +164,8 @@ pub(crate) async fn op_update_site(req: &Req) -> Result<Value> {
 pub(crate) async fn op_remove_site(cmd: &RemoveSite) -> Result<Value> {
     remove_site(cmd).await
 }
-pub(crate) async fn op_create_cert(req: &Req) -> Result<Value> {
-    create_cert(req).await
+pub(crate) async fn op_create_cert(cmd: &CreateCert) -> Result<Value> {
+    create_cert(cmd).await
 }
 pub(crate) async fn op_renew_cert(cmd: &RenewCert) -> Result<Value> {
     renew_cert(cmd).await

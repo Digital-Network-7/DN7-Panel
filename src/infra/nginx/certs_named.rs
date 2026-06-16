@@ -48,14 +48,14 @@ pub(crate) fn sites_using_certs() -> HashMap<String, Vec<String>> {
 ///   - "self":   self-signed for `domain` (synchronous)
 ///   - "manual": cert_pem + key_pem (synchronous)
 ///   - "le":     Let's Encrypt for `domain` (detached → returns {op_id})
-pub(crate) async fn create_cert(req: &Req) -> Result<Value> {
+pub(crate) async fn create_cert(cmd: &CreateCert) -> Result<Value> {
     let lo = layout()?;
-    let mode = req.cert_mode.as_deref().unwrap_or("self");
+    let mode = cmd.cert_mode.as_deref().unwrap_or("self");
     if !matches!(mode, "self" | "le" | "manual") {
         return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
     }
     let mut certs = load_named_certs();
-    let (domain, name) = derive_cert_name(req, &certs)?;
+    let (domain, name) = derive_cert_name(cmd, &certs)?;
 
     match mode {
         "self" => {
@@ -67,7 +67,7 @@ pub(crate) async fn create_cert(req: &Req) -> Result<Value> {
             )
             .await?;
         }
-        "manual" => write_manual_cert(&lo, req, &name)?,
+        "manual" => write_manual_cert(&lo, cmd, &name)?,
         // Let's Encrypt issuance runs detached and records the manifest itself.
         "le" => return start_named_cert_issue(lo, name, domain),
         _ => {}
@@ -85,8 +85,8 @@ pub(crate) async fn create_cert(req: &Req) -> Result<Value> {
 /// Validate the requested cert domain and derive its (unique) storage name.
 /// Certs are identified by their domain — there's no separate name — so this
 /// also enforces one certificate per domain. Returns `(domain, name)`.
-fn derive_cert_name(req: &Req, certs: &[NamedCert]) -> Result<(String, String)> {
-    let domain = req
+fn derive_cert_name(cmd: &CreateCert, certs: &[NamedCert]) -> Result<(String, String)> {
+    let domain = cmd
         .server_name
         .as_deref()
         .map(str::trim)
@@ -112,9 +112,9 @@ fn derive_cert_name(req: &Req, certs: &[NamedCert]) -> Result<(String, String)> 
 }
 
 /// Write a user-supplied (manual) cert + key pair into the named cert store.
-fn write_manual_cert(lo: &Layout, req: &Req, name: &str) -> Result<()> {
-    let cert = req.cert_pem.as_deref().unwrap_or("");
-    let key = req.key_pem.as_deref().unwrap_or("");
+fn write_manual_cert(lo: &Layout, cmd: &CreateCert, name: &str) -> Result<()> {
+    let cert = cmd.cert_pem.as_deref().unwrap_or("");
+    let key = cmd.key_pem.as_deref().unwrap_or("");
     if cert.trim().is_empty() || key.trim().is_empty() {
         return Err(anyhow!("ERR_CODE:nginx.need_cert_key"));
     }

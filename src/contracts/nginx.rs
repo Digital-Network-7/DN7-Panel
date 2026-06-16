@@ -160,3 +160,11 @@ pub(crate) struct DeleteCert {
 pub(crate) struct DeleteAccess {
     pub(crate) access_id: Option<String>,
 }
+
+/// `create_cert`: create a standalone named cert (self-signed / manual / LE).
+pub(crate) struct CreateCert {
+    pub(crate) cert_mode: Option<String>,
+    pub(crate) server_name: Option<String>,
+    pub(crate) cert_pem: Option<String>,
+    pub(crate) key_pem: Option<String>,
+}
