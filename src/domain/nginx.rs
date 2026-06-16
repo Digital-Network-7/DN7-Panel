@@ -385,31 +385,45 @@ pub(crate) struct HttpTuningInput {
     pub(crate) keepalive_timeout: Option<u32>,
 }
 
+/// A nginx tuning / default-site validation failure. A **semantic** value (no
+/// transport or frontend `err.*` string — per architecture §2 the domain must
+/// not carry protocol content). The app boundary maps each variant to the
+/// transitional `ERR_CODE:` channel (§6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TuningError {
+    HashBucket,
+    CompLevel,
+    MinLength,
+    Keepalive,
+    SizeValue,
+    DefaultMode,
+    RedirectUrl,
+}
+
 /// Validate a tuning request against fixed bounds and merge it over the current
 /// values (any omitted field keeps its current value). Returns the merged
-/// entity, or a **stable error code** (without the transport `ERR_CODE:`
-/// prefix — the boundary adds it). Pure rule, unit-testable.
+/// entity, or a semantic [`TuningError`]. Pure rule, unit-testable.
 pub(crate) fn merge_http_tuning(
     cur: &HttpTuning,
     input: &HttpTuningInput,
-) -> Result<HttpTuning, &'static str> {
+) -> Result<HttpTuning, TuningError> {
     let snhbs = input
         .server_names_hash_bucket_size
         .unwrap_or(cur.server_names_hash_bucket_size);
     if ![32u32, 64, 128, 256, 512].contains(&snhbs) {
-        return Err("nginx.bad_hash_bucket");
+        return Err(TuningError::HashBucket);
     }
     let gcl = input.gzip_comp_level.unwrap_or(cur.gzip_comp_level);
     if !(1..=9).contains(&gcl) {
-        return Err("nginx.bad_comp_level");
+        return Err(TuningError::CompLevel);
     }
     let gmin = input.gzip_min_length.unwrap_or(cur.gzip_min_length);
     if gmin > 10_000_000 {
-        return Err("nginx.bad_min_length");
+        return Err(TuningError::MinLength);
     }
     let kat = input.keepalive_timeout.unwrap_or(cur.keepalive_timeout);
     if kat > 86_400 {
-        return Err("nginx.bad_keepalive");
+        return Err(TuningError::Keepalive);
     }
     let chdr = input
         .client_header_buffer_size
@@ -426,7 +440,7 @@ pub(crate) fn merge_http_tuning(
         .unwrap_or(&cur.client_max_body_size)
         .to_string();
     if !valid_size_value(&chdr) || !valid_size_value(&cmbs) {
-        return Err("nginx.bad_size_value");
+        return Err(TuningError::SizeValue);
     }
     Ok(HttpTuning {
         server_names_hash_bucket_size: snhbs,
@@ -441,19 +455,19 @@ pub(crate) fn merge_http_tuning(
 
 /// Validate a default-site (catch-all) request and build the persisted entity.
 /// `mode` must be one of `404`/`welcome`/`444`/`redirect`; a `redirect` mode
-/// requires a valid http(s) URL. Returns a stable error code on failure (the
-/// boundary adds the transport `ERR_CODE:` prefix). Pure rule.
+/// requires a valid http(s) URL. Returns a semantic [`TuningError`] on failure.
+/// Pure rule.
 pub(crate) fn build_default_site(
     mode_input: &str,
     redirect_url_input: &str,
-) -> Result<WebGlobal, &'static str> {
+) -> Result<WebGlobal, TuningError> {
     let mode = match mode_input {
         m @ ("404" | "welcome" | "444" | "redirect") => m.to_string(),
-        _ => return Err("nginx.bad_default_mode"),
+        _ => return Err(TuningError::DefaultMode),
     };
     let redirect_url = redirect_url_input.trim().to_string();
     if mode == "redirect" && !valid_redirect_url(&redirect_url) {
-        return Err("nginx.bad_redirect_url");
+        return Err(TuningError::RedirectUrl);
     }
     Ok(WebGlobal {
         default_site: DefaultSite { mode, redirect_url },
@@ -485,7 +499,7 @@ mod tuning_tests {
         };
         assert_eq!(
             merge_http_tuning(&cur, &bad_bucket).unwrap_err(),
-            "nginx.bad_hash_bucket"
+            TuningError::HashBucket
         );
         let bad_level = HttpTuningInput {
             gzip_comp_level: Some(10),
@@ -493,7 +507,7 @@ mod tuning_tests {
         };
         assert_eq!(
             merge_http_tuning(&cur, &bad_level).unwrap_err(),
-            "nginx.bad_comp_level"
+            TuningError::CompLevel
         );
         let bad_size = HttpTuningInput {
             client_max_body_size: Some("50x".to_string()),
@@ -501,7 +515,7 @@ mod tuning_tests {
         };
         assert_eq!(
             merge_http_tuning(&cur, &bad_size).unwrap_err(),
-            "nginx.bad_size_value"
+            TuningError::SizeValue
         );
     }
 
@@ -537,7 +551,7 @@ mod tuning_tests {
         assert!(build_default_site("welcome", "").is_ok());
         assert_eq!(
             build_default_site("redirect", "not-a-url").unwrap_err(),
-            "nginx.bad_redirect_url"
+            TuningError::RedirectUrl
         );
         let g = build_default_site("redirect", " https://x.test ").unwrap();
         assert_eq!(g.default_site.mode, "redirect");

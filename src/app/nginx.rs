@@ -180,7 +180,7 @@ async fn set_tuning(body: &Value) -> Result<Value> {
     };
     let cur = crate::infra::nginx::current_tuning();
     let t = crate::domain::nginx::merge_http_tuning(&cur, &input)
-        .map_err(|code| anyhow::anyhow!("ERR_CODE:{code}"))?;
+        .map_err(|e| anyhow::anyhow!("ERR_CODE:{}", tuning_err_code(e)))?;
     crate::infra::nginx::apply_tuning(&t).await
 }
 
@@ -196,6 +196,23 @@ async fn set_default_site(body: &Value) -> Result<Value> {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let g = crate::domain::nginx::build_default_site(mode, redirect_url)
-        .map_err(|code| anyhow::anyhow!("ERR_CODE:{code}"))?;
+        .map_err(|e| anyhow::anyhow!("ERR_CODE:{}", tuning_err_code(e)))?;
     crate::infra::nginx::apply_default_site(&g).await
+}
+
+/// Map a domain [`TuningError`] to its stable frontend `err.*` code, surfaced
+/// through the transitional `ERR_CODE:` channel (architecture §6). This is the
+/// single place the nginx tuning/default-site codes are spelled out; the domain
+/// stays free of protocol strings (§2).
+fn tuning_err_code(e: crate::domain::nginx::TuningError) -> &'static str {
+    use crate::domain::nginx::TuningError::*;
+    match e {
+        HashBucket => "nginx.bad_hash_bucket",
+        CompLevel => "nginx.bad_comp_level",
+        MinLength => "nginx.bad_min_length",
+        Keepalive => "nginx.bad_keepalive",
+        SizeValue => "nginx.bad_size_value",
+        DefaultMode => "nginx.bad_default_mode",
+        RedirectUrl => "nginx.bad_redirect_url",
+    }
 }
