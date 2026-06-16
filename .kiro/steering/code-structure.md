@@ -39,23 +39,43 @@ these seams:
 - **`dispatch`** — the `op`/route table that maps an incoming request to the
   right operation. Keep this small; it only routes.
 
-Parent module pattern (Rust 2018): keep `foo.rs` as the module root that
-declares its children and re-exports the public surface:
+## `mod.rs` is pure assembly (no definitions)
+
+A module root (`foo/mod.rs`, or a `foo.rs` with a `foo/` dir) contains **only
+wiring**: `mod` declarations, `use` imports, and `pub use` re-exports. It holds
+**no item definitions** (`fn`/`struct`/`enum`/`impl`/`const`/`static`/`trait`).
+Anything that would be a definition — the capability's shared types, the
+dispatch/router entry, helpers used across submodules — lives in a **named
+sibling** submodule (`model.rs` / `kernel.rs` / `dispatch.rs` / `api.rs` /
+`shared.rs`), which `mod.rs` then re-exports. This keeps every module root a
+trivially-scannable "table of contents".
 
 ```rust
-// foo.rs
-mod model;
+// foo/mod.rs  — pure assembly
+use anyhow::Result;        // imports the children rely on via `use super::*`
+
+mod model;                 // shared types
+mod dispatch;              // the op router / entry
 mod validate;
 mod store;
-mod exec;
-mod dispatch;
 
-pub use dispatch::web_dispatch;   // re-export only what callers need
+pub(crate) use dispatch::*;   // re-export the surface callers need
+pub(crate) use model::*;      // shared types, so children get them via super::*
 ```
 
-Child modules reach shared private items via `use super::*;` (descendant
-modules can see an ancestor's private items). Keep cross-module items
-`pub(crate)` or `pub(super)` — never wider than necessary.
+```rust
+// foo/dispatch.rs  — a definition-bearing sibling
+use super::*;              // sees the parent's imports + the other siblings
+pub(crate) async fn run_op(...) -> Result<...> { ... }
+```
+
+Child modules still reach shared items via `use super::*;` — the re-export in
+`mod.rs` (`pub(crate) use model::*`) puts the sibling's items back into the
+parent namespace, so descendants see them unchanged. A shared **struct whose
+fields are read across submodules** moves to its sibling with **`pub(crate)`
+fields** (it's no longer an ancestor of the readers, so descendant-visibility
+no longer applies). Keep cross-module items `pub(crate)`/`pub(super)` — never
+wider than necessary.
 
 ## Workflow rules when refactoring
 
@@ -92,9 +112,11 @@ planning the whole thing in your head first.
   reasoning about visibility/imports up front.
 - **Default visibility for moved items: `pub(crate)`.** Slight over-exposure is
   fine for an internal split; tighten later if it matters.
-- **Keep structs whose fields are read across modules in the parent module**
-  (descendant submodules can read a parent's private fields), or make the
-  fields `pub(crate)`. This avoids a cascade of field-visibility edits.
+- **Shared structs read across submodules go in a named sibling with
+  `pub(crate)` fields** (not in `mod.rs`, which stays definition-free). Moving
+  the struct out of an ancestor means descendant-visibility no longer covers its
+  private fields, so widen the fields to `pub(crate)` — a mechanical,
+  compiler-driven step.
 - Use mechanical tools (sed/awk) to move line ranges rather than retyping —
   it's faster and avoids transcription errors.
 
