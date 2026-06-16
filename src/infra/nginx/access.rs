@@ -42,9 +42,9 @@ pub(crate) async fn list_access() -> Result<Value> {
 }
 
 /// Create (no access_id) or update (existing access_id) an access list.
-pub(crate) async fn save_access_op(req: &Req) -> Result<Value> {
+pub(crate) async fn save_access_op(cmd: &SaveAccess) -> Result<Value> {
     let _ = layout()?; // require setup
-    let name = req
+    let name = cmd
         .name
         .as_deref()
         .map(str::trim)
@@ -54,18 +54,18 @@ pub(crate) async fn save_access_op(req: &Req) -> Result<Value> {
     if !valid_access_name(&name) {
         return Err(anyhow!("ERR_CODE:nginx.bad_access_name"));
     }
-    let satisfy = match req.satisfy.as_deref().unwrap_or("any") {
+    let satisfy = match cmd.satisfy.as_deref().unwrap_or("any") {
         "all" => "all",
         _ => "any",
     }
     .to_string();
-    let pass_auth = req.pass_auth.unwrap_or(false);
+    let pass_auth = cmd.pass_auth.unwrap_or(false);
 
     // Validate clients.
-    let clients = build_access_clients(req)?;
+    let clients = build_access_clients(cmd)?;
 
     let mut lists = load_access();
-    let existing_id = req
+    let existing_id = cmd
         .access_id
         .as_deref()
         .map(str::trim)
@@ -77,7 +77,7 @@ pub(crate) async fn save_access_op(req: &Req) -> Result<Value> {
 
     // Build the user list: a provided password (re)hashes; an empty password on
     // an existing username reuses the stored hash.
-    let users = build_access_users(req, old.as_ref())?;
+    let users = build_access_users(cmd, old.as_ref())?;
 
     let id = existing_id.clone().unwrap_or_else(new_access_id);
     let list = AccessList {
@@ -100,9 +100,9 @@ pub(crate) async fn save_access_op(req: &Req) -> Result<Value> {
 }
 
 /// Validate the access list's IP allow/deny client rules from the request.
-fn build_access_clients(req: &Req) -> Result<Vec<AccessClient>> {
+fn build_access_clients(cmd: &SaveAccess) -> Result<Vec<AccessClient>> {
     let mut clients = Vec::new();
-    for c in req.clients.clone().unwrap_or_default() {
+    for c in cmd.clients.clone().unwrap_or_default() {
         let dir = if c.directive == "deny" {
             "deny"
         } else {
@@ -121,10 +121,10 @@ fn build_access_clients(req: &Req) -> Result<Vec<AccessClient>> {
 
 /// Build the access list's basic-auth users: a provided password (re)hashes;
 /// an empty password on an existing username reuses its stored hash (`old`).
-fn build_access_users(req: &Req, old: Option<&AccessList>) -> Result<Vec<AccessUser>> {
+fn build_access_users(cmd: &SaveAccess, old: Option<&AccessList>) -> Result<Vec<AccessUser>> {
     let mut users = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for u in req.users.clone().unwrap_or_default() {
+    for u in cmd.users.clone().unwrap_or_default() {
         let username = u.username.trim().to_string();
         if username.is_empty() {
             continue;

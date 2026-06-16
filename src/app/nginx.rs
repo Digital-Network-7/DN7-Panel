@@ -105,7 +105,11 @@ pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
             };
             crate::infra::nginx::op_delete_cert(&cmd).await
         }
-        "save_access" => crate::infra::nginx::op_save_access(&parse_req(body)?).await,
+        "save_access" => {
+            let cmd: crate::contracts::nginx::SaveAccess = serde_json::from_value(body.clone())
+                .map_err(|e| anyhow!("bad nginx request: {e}"))?;
+            crate::infra::nginx::op_save_access(&cmd).await
+        }
         "delete_access" => {
             let cmd = crate::contracts::nginx::DeleteAccess {
                 access_id: body

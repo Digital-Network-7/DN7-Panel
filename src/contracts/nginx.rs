@@ -104,16 +104,22 @@ pub(crate) struct Req {
     // Access list reference on a site (empty = public/none).
     #[serde(default)]
     pub(crate) access_id: Option<String>,
-    // Access list management (create/update/delete).
+    // Access list management (create/update/delete) — read at the app boundary
+    // via the typed `SaveAccess` command, not in infra.
     #[serde(default)]
+    #[allow(dead_code)]
     pub(crate) name: Option<String>, // access list display name
     #[serde(default)]
+    #[allow(dead_code)]
     pub(crate) satisfy: Option<String>, // "any" | "all"
     #[serde(default)]
+    #[allow(dead_code)]
     pub(crate) pass_auth: Option<bool>, // forward Authorization header upstream
     #[serde(default)]
+    #[allow(dead_code)]
     pub(crate) users: Option<Vec<AccessUserInput>>, // basic-auth users (username + optional new pw)
     #[serde(default)]
+    #[allow(dead_code)]
     pub(crate) clients: Option<Vec<AccessClient>>, // allow/deny IP rules
     // Default-site (Settings) configuration — read at the app boundary
     // (app::nginx set_default_site), deserialized here only to accept the wire.
@@ -167,4 +173,23 @@ pub(crate) struct CreateCert {
     pub(crate) server_name: Option<String>,
     pub(crate) cert_pem: Option<String>,
     pub(crate) key_pem: Option<String>,
+}
+
+/// `save_access`: create/update an access list (HTTP basic-auth users + IP
+/// allow/deny rules). Carries `Vec` inputs, so it derives `Deserialize` and is
+/// parsed directly from the request body by the app boundary.
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct SaveAccess {
+    #[serde(default)]
+    pub(crate) access_id: Option<String>,
+    #[serde(default)]
+    pub(crate) name: Option<String>,
+    #[serde(default)]
+    pub(crate) satisfy: Option<String>,
+    #[serde(default)]
+    pub(crate) pass_auth: Option<bool>,
+    #[serde(default)]
+    pub(crate) users: Option<Vec<AccessUserInput>>,
+    #[serde(default)]
+    pub(crate) clients: Option<Vec<AccessClient>>,
 }
