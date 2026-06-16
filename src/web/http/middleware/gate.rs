@@ -1,5 +1,5 @@
 //! Safe-entry gate + request-audit header/response redaction + IP allow-list (split from web/server.rs).
-use super::*;
+use super::super::*;
 use crate::web::http::controllers::index_page;
 
 /// (a) carry a valid session token, (b) carry the matching `dn7_entry` cookie,
