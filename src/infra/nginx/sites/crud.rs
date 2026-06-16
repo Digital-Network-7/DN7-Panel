@@ -55,9 +55,9 @@ pub(crate) async fn add_site(req: &Req) -> Result<Value> {
     Ok(json!({ "site": site }))
 }
 
-pub(crate) async fn remove_site(req: &Req) -> Result<Value> {
+pub(crate) async fn remove_site(cmd: &RemoveSite) -> Result<Value> {
     let lo = layout()?;
-    let site_id = req
+    let site_id = cmd
         .site_id
         .as_deref()
         .map(str::trim)

@@ -134,3 +134,14 @@ pub(crate) struct AccessUserInput {
     #[serde(default)]
     pub(crate) password: String,
 }
+
+// ---------------------------------------------------------------------------
+// Per-op command model (incremental): focused typed inputs the app builds from
+// the request and hands to the infra adapters — so a write op receives only its
+// own fields, not the whole `Req`. Migrated one op at a time.
+// ---------------------------------------------------------------------------
+
+/// `remove_site`: delete a managed site by id.
+pub(crate) struct RemoveSite {
+    pub(crate) site_id: Option<String>,
+}

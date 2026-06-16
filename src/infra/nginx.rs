@@ -32,6 +32,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::process::Command;
 
+/// Per-op typed commands the app builds and hands to the infra adapters (so an
+/// op receives only its own fields, not the whole `Req`). Re-exported for the
+/// nginx submodules' `use super::*`.
+pub(crate) use crate::contracts::nginx::RemoveSite;
 /// The nginx capability request DTO now lives in the `contracts` layer (the
 /// external-protocol source of truth); re-exported here so the nginx submodules
 /// keep referring to `Req` via `use super::*` unchanged.
@@ -156,8 +160,8 @@ pub(crate) async fn op_add_site(req: &Req) -> Result<Value> {
 pub(crate) async fn op_update_site(req: &Req) -> Result<Value> {
     update_site(req).await
 }
-pub(crate) async fn op_remove_site(req: &Req) -> Result<Value> {
-    remove_site(req).await
+pub(crate) async fn op_remove_site(cmd: &RemoveSite) -> Result<Value> {
+    remove_site(cmd).await
 }
 pub(crate) async fn op_create_cert(req: &Req) -> Result<Value> {
     create_cert(req).await

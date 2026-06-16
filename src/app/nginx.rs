@@ -57,7 +57,15 @@ pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
         "setup" => crate::infra::nginx::op_setup(&parse_req(body)?),
         "add_site" => crate::infra::nginx::op_add_site(&parse_req(body)?).await,
         "update_site" => crate::infra::nginx::op_update_site(&parse_req(body)?).await,
-        "remove_site" => crate::infra::nginx::op_remove_site(&parse_req(body)?).await,
+        "remove_site" => {
+            let cmd = crate::contracts::nginx::RemoveSite {
+                site_id: body
+                    .get("site_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            };
+            crate::infra::nginx::op_remove_site(&cmd).await
+        }
         "create_cert" => crate::infra::nginx::op_create_cert(&parse_req(body)?).await,
         "renew_cert" => crate::infra::nginx::op_renew_cert(&parse_req(body)?).await,
         "delete_cert" => crate::infra::nginx::op_delete_cert(&parse_req(body)?).await,
