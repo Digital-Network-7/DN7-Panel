@@ -78,7 +78,6 @@ pub(crate) fn is_read_op(op: &str) -> bool {
             | "table_rows"
             | "list_users"
             | "user_grants"
-            | "credentials"
             | "images"
             | "networks"
             | "volumes"
