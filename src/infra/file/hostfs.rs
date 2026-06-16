@@ -58,6 +58,11 @@ pub async fn web_host_mkdir(path: &str, as_user: Option<&str>) -> Result<()> {
             Err(anyhow!("创建目录失败（无权限？）"))
         };
     }
+    // Root path: also refuse a target that resolves into a protected tree via a
+    // symlinked ancestor (the lexical guard above can't see symlinks).
+    if resolves_into_protected(path).await {
+        return Err(anyhow!("该系统目录受保护，禁止写入"));
+    }
     tokio::fs::create_dir_all(path).await?;
     Ok(())
 }
@@ -171,6 +176,11 @@ pub async fn web_host_write_file(dest: &str, temp: &Path, as_user: Option<&str>)
         } else {
             Err(anyhow!("写入失败（无权限？）"))
         };
+    }
+    // Root path: refuse a destination that resolves into a protected tree via a
+    // symlinked ancestor (lexical guard above can't see symlinks).
+    if resolves_into_protected(dest).await {
+        return Err(anyhow!("该系统目录受保护，禁止写入"));
     }
     tokio::fs::copy(temp, dest).await?; // chunked copy, bounded memory
     Ok(())

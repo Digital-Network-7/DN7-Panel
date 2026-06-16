@@ -59,6 +59,34 @@ fn is_protected_host_mutation(path: &str) -> bool {
     TREES.iter().any(|t| norm.starts_with(&format!("{t}/")))
 }
 
+/// Symlink-aware host-mutation guard for create paths (write / mkdir). The
+/// lexical guard catches `..`/`//`/`.` tricks, but not a *symlinked ancestor*:
+/// writing to `/srv/link/x` where `/srv/link -> /etc` resolves into a protected
+/// tree. This resolves the longest existing prefix (following symlinks),
+/// re-appends the not-yet-existing tail, and re-checks — so a symlinked
+/// ancestor can't smuggle a write into `/etc`/`/root`/etc. Delete already does
+/// the equivalent post-`canonicalize` check on the (existing) target.
+async fn resolves_into_protected(path: &str) -> bool {
+    let mut existing = Path::new(path).to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    while !existing.exists() {
+        match (existing.file_name(), existing.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name.to_os_string());
+                existing = parent.to_path_buf();
+            }
+            _ => break,
+        }
+    }
+    let Ok(mut resolved) = tokio::fs::canonicalize(&existing).await else {
+        return false; // nothing resolvable — the lexical guard already ran
+    };
+    for seg in tail.iter().rev() {
+        resolved.push(seg);
+    }
+    is_protected_host_mutation(&resolved.to_string_lossy())
+}
+
 // ---------------------------------------------------------------------------
 // Container-scoped file transfer (Docker daemon API; no `docker` CLI).
 //

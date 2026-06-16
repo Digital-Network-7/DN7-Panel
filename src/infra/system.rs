@@ -93,16 +93,23 @@ async fn grant_sudo(username: &str) -> Result<()> {
 /// panel password (so the user can log in over SSH/console). Adopting a
 /// pre-existing system user rather than failing keeps the op idempotent-ish.
 pub async fn provision(username: &str, full_name: &str, admin: bool, password: &str) -> Result<()> {
+    // The GECOS field lands in colon/newline-delimited /etc/passwd; only pass it
+    // when free of field-forging chars (control / ':'), else drop it. See gecos_ok.
+    let gecos = if !full_name.is_empty() && gecos_ok(full_name) {
+        Some(full_name)
+    } else {
+        None
+    };
     if getpwnam(username).is_none() {
         let mut args = vec!["-m", "-s", "/bin/bash"];
-        if !full_name.is_empty() {
+        if let Some(fname) = gecos {
             args.push("-c");
-            args.push(full_name);
+            args.push(fname);
         }
         args.push(username);
         run("useradd", &args).await?;
-    } else if !full_name.is_empty() {
-        let _ = run("usermod", &["-c", full_name, username]).await;
+    } else if let Some(fname) = gecos {
+        let _ = run("usermod", &["-c", fname, username]).await;
     }
     if admin {
         grant_sudo(username).await?;
@@ -173,8 +180,20 @@ pub async fn set_sudo(username: &str, on: bool) -> Result<()> {
     }
 }
 
-/// Set the system account's GECOS full-name field (`usermod -c`). Best-effort.
+/// Whether a GECOS (full-name) value is safe to write into /etc/passwd: no ASCII
+/// control char (a newline would forge a passwd line) and no ':' (the passwd
+/// field separator). Defense in depth — `useradd`/`usermod` also validate, but
+/// we don't rely on the host tool's checks (mirrors the chpasswd hardening).
+fn gecos_ok(s: &str) -> bool {
+    !s.bytes().any(|b| b < 0x20 || b == 0x7f || b == b':')
+}
+
+/// Set the system account's GECOS full-name field (`usermod -c`). Best-effort;
+/// a field-forging value is refused (not written) rather than passed through.
 pub async fn set_full_name(username: &str, full_name: &str) -> Result<()> {
+    if !gecos_ok(full_name) {
+        return Err(anyhow!("ERR_CODE:users.bad_full_name"));
+    }
     if getpwnam(username).is_some() {
         run("usermod", &["-c", full_name, username]).await
     } else {
