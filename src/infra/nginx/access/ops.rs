@@ -182,16 +182,7 @@ pub(crate) async fn rewrite_sites_using_access(access_id: &str) -> Result<()> {
         if site.access_id == access_id {
             // Skip SSL sites whose cert is missing (keeps nginx -t valid).
             let mut s = site.clone();
-            if s.ssl {
-                let have = if s.cert_name.is_empty() {
-                    lo.cert_store.join(format!("{}.crt", s.id)).exists()
-                } else {
-                    named_crt_file(&lo, &s.cert_name).exists()
-                };
-                if !have {
-                    s.ssl = false;
-                }
-            }
+            degrade_if_cert_missing(&lo, &mut s);
             if let Err(e) = write_site_conf(&lo, &s, &[]).await {
                 tracing::warn!(site = %s.server_name, "access rewrite failed: {e}");
             } else {
@@ -230,16 +221,7 @@ pub(crate) async fn apply_tuning(t: &HttpTuning) -> Result<Value> {
 async fn rewrite_managed_site_confs(lo: &Layout) {
     for site in load_sites() {
         let mut s = site.clone();
-        if s.ssl {
-            let have = if s.cert_name.is_empty() {
-                lo.cert_store.join(format!("{}.crt", s.id)).exists()
-            } else {
-                named_crt_file(lo, &s.cert_name).exists()
-            };
-            if !have {
-                s.ssl = false;
-            }
-        }
+        degrade_if_cert_missing(lo, &mut s);
         let _ = write_site_conf(lo, &s, &[]).await;
     }
 }

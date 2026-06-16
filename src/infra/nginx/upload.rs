@@ -5,29 +5,39 @@ use super::*;
 // console's "static" site type. Writes into <www_store>/<root>/.
 // ---------------------------------------------------------------------------
 
-/// Public entrypoint for the web console's static-site upload. `mode` is "zip"
-/// (extract `body` as a ZIP archive) or "file" (write `body` as a single file
-/// at `rel` within the webroot). `clear` wipes the webroot first. Returns the
-/// number of files written. `temp` is a host temp file holding the streamed
-/// upload body (never buffered fully in memory).
-pub async fn web_static_upload(
-    root: &str,
-    mode: &str,
-    rel: Option<&str>,
-    clear: bool,
-    temp: &std::path::Path,
-) -> Result<usize> {
+/// Inputs for a static-site content upload (bundled to keep the entrypoints
+/// within the param-count limit and make the call site self-documenting).
+/// `mode` is "zip" (extract `temp` as a ZIP) or "file" (write it at `rel`);
+/// `clear` wipes the webroot first; `temp` is the streamed-upload host temp file.
+pub struct StaticUpload<'a> {
+    pub root: &'a str,
+    pub mode: &'a str,
+    pub rel: Option<&'a str>,
+    pub clear: bool,
+    pub temp: &'a std::path::Path,
+}
+
+/// Public entrypoint for the web console's static-site upload. Returns the
+/// number of files written. The body is never buffered fully in memory.
+pub async fn web_static_upload(up: StaticUpload<'_>) -> Result<usize> {
     // The body is entirely synchronous (dir wipe + ZIP/DEFLATE extraction +
     // blocking file writes), which would pin a runtime worker for the whole
     // extraction. Run it on the blocking pool.
-    let (root, mode, rel, temp) = (
-        root.to_string(),
-        mode.to_string(),
-        rel.map(str::to_string),
-        temp.to_path_buf(),
+    let (root, mode, rel, clear, temp) = (
+        up.root.to_string(),
+        up.mode.to_string(),
+        up.rel.map(str::to_string),
+        up.clear,
+        up.temp.to_path_buf(),
     );
     tokio::task::spawn_blocking(move || {
-        web_static_upload_blocking(&root, &mode, rel.as_deref(), clear, &temp)
+        web_static_upload_blocking(&StaticUpload {
+            root: &root,
+            mode: &mode,
+            rel: rel.as_deref(),
+            clear,
+            temp: &temp,
+        })
     })
     .await
     .map_err(|e| anyhow!("静态站点上传任务失败：{e}"))?
@@ -35,13 +45,14 @@ pub async fn web_static_upload(
 
 /// Synchronous implementation of [`web_static_upload`] — runs on the blocking
 /// pool. See the async wrapper for the parameter contract.
-fn web_static_upload_blocking(
-    root: &str,
-    mode: &str,
-    rel: Option<&str>,
-    clear: bool,
-    temp: &std::path::Path,
-) -> Result<usize> {
+fn web_static_upload_blocking(up: &StaticUpload) -> Result<usize> {
+    let StaticUpload {
+        root,
+        mode,
+        rel,
+        clear,
+        temp,
+    } = *up;
     let lo = layout()?;
     if !valid_root_segment(root) {
         return Err(nginx_err(NginxError::BadStaticDir));

@@ -456,8 +456,14 @@ pub(crate) async fn nginx_static_upload(
     };
     let mode = q.mode.as_deref().unwrap_or("zip");
     let clear = q.clear.as_deref() == Some("1");
-    let res =
-        crate::infra::nginx::web_static_upload(&q.root, mode, q.rel.as_deref(), clear, &tmp).await;
+    let res = crate::infra::nginx::web_static_upload(crate::infra::nginx::StaticUpload {
+        root: &q.root,
+        mode,
+        rel: q.rel.as_deref(),
+        clear,
+        temp: &tmp,
+    })
+    .await;
     let _ = tokio::fs::remove_file(&tmp).await;
     audit::record(
         &acct.username,

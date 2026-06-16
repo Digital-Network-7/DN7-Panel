@@ -127,3 +127,23 @@ pub(crate) fn ensure_shared_conf() {
 pub(crate) fn conf_path(lo: &Layout, site_id: &str) -> std::path::PathBuf {
     lo.confd.join(format!("dn7-{site_id}.conf"))
 }
+
+/// Whether the cert **and** key a site references are present on disk (the
+/// per-site `<id>.crt/.key` pair, or a referenced standalone named cert). The
+/// single source of truth for "does this SSL site have usable cert material".
+pub(crate) fn cert_present(lo: &Layout, site: &Site) -> bool {
+    if site.cert_name.is_empty() {
+        lo.cert_store.join(format!("{}.crt", site.id)).exists()
+            && lo.cert_store.join(format!("{}.key", site.id)).exists()
+    } else {
+        named_crt_file(lo, &site.cert_name).exists()
+    }
+}
+
+/// Degrade an SSL site to plain HTTP when its cert material is missing, so one
+/// broken site can't fail the whole `nginx -t` reload. No-op for a non-SSL site.
+pub(crate) fn degrade_if_cert_missing(lo: &Layout, site: &mut Site) {
+    if site.ssl && !cert_present(lo, site) {
+        site.ssl = false;
+    }
+}

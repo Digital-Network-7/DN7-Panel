@@ -107,17 +107,7 @@ pub async fn resync_confs() {
     }
     let mut wrote = false;
     for mut site in load_sites() {
-        if site.ssl {
-            let have = if site.cert_name.is_empty() {
-                lo.cert_store.join(format!("{}.crt", site.id)).exists()
-                    && lo.cert_store.join(format!("{}.key", site.id)).exists()
-            } else {
-                named_crt_file(&lo, &site.cert_name).exists()
-            };
-            if !have {
-                site.ssl = false; // degrade to HTTP so the regenerated conf stays valid
-            }
-        }
+        degrade_if_cert_missing(&lo, &mut site); // missing cert → HTTP, keep reload valid
         match write_site_conf(&lo, &site, &[]).await {
             Ok(()) => wrote = true,
             Err(e) => {

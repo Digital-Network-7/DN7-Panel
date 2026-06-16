@@ -98,7 +98,7 @@ pub(crate) async fn write_unavailable_conf(lo: &Layout, site: &Site) -> Result<(
     // Only claim TLS when the cert files actually exist on disk; otherwise a
     // `listen 443 ssl` with no cert would fail `nginx -t` and take the whole
     // reload down — defeating the purpose of failing closed for one site.
-    let have_cert = site.ssl && cert_file_on_disk(lo, site);
+    let have_cert = site.ssl && cert_present(lo, site);
 
     if have_cert {
         let (crt, key) = cert_paths(lo, site);
@@ -128,16 +128,6 @@ pub(crate) async fn write_unavailable_conf(lo: &Layout, site: &Site) -> Result<(
     tokio::fs::create_dir_all(&lo.confd).await?;
     tokio::fs::write(conf_path(lo, &site.id), conf).await?;
     Ok(())
-}
-
-/// Whether the cert + key files a site references actually exist on disk.
-fn cert_file_on_disk(lo: &Layout, site: &Site) -> bool {
-    if site.cert_name.is_empty() {
-        lo.cert_store.join(format!("{}.crt", site.id)).exists()
-            && lo.cert_store.join(format!("{}.key", site.id)).exists()
-    } else {
-        named_crt_file(lo, &site.cert_name).exists()
-    }
 }
 
 /// The on-disk cert + key paths nginx reads for a site: the per-site pair, or a
