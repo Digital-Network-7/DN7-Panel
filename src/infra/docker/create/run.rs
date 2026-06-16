@@ -51,6 +51,15 @@ pub(crate) async fn create_container(spec: CreateSpec) -> Result<(String, bool)>
     // Edit/upgrade: remove the container being replaced first so the new one can
     // reuse its name. Managed service containers are never replaced this way.
     if let Some(old) = spec.replace.as_deref() {
+        // Don't destroy the existing container until the new image is confirmed
+        // present locally — otherwise an edit/upgrade to a missing or mistyped
+        // image tag would leave the user with no container at all.
+        dkr.inspect_image(&spec.image).await.map_err(|_| {
+            anyhow!(
+                "镜像「{}」在本地不存在，已保留原容器；请先拉取该镜像后再编辑/升级。",
+                spec.image
+            )
+        })?;
         remove_replaced_container(&dkr, old).await?;
     }
     let options = spec

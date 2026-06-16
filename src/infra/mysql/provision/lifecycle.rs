@@ -143,6 +143,13 @@ pub(crate) async fn recreate_container(
     password: &str,
 ) -> Result<()> {
     let dkr = dkr()?;
+    // Confirm the target image is present before destroying the running
+    // container — a missing image (e.g. an interrupted version switch) must not
+    // leave the instance with no container. The data volume is preserved either
+    // way, but the running container shouldn't be torn down on a doomed create.
+    dkr.inspect_image(image)
+        .await
+        .map_err(|_| anyhow!("镜像「{image}」在本地不存在，已保留原容器；请重试该操作。"))?;
     let opts = bollard::container::RemoveContainerOptions {
         force: true,
         v: false,
