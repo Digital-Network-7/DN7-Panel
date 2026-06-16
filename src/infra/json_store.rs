@@ -32,12 +32,14 @@ pub(crate) fn load_opt<T: DeserializeOwned>(path: &Path) -> Option<T> {
 // (mtime, len)-validated parse cache
 //
 // Read-heavy stores (users.json on every authenticated request, nginx sites /
-// access, settings) were re-read + re-parsed from disk per call. Memoize the
-// parsed value keyed by the file's (mtime, len): any write changes at least one
-// of them, so the cache can never serve a value older than what's on disk —
-// safe even for the auth store and for out-of-band edits. Assumes the host FS
-// reports sub-second mtime (Linux ext4/xfs do) and that writes to a given store
-// are serialized (they are: USERS_LOCK / nginx state_lock / atomic write_private).
+// access) were re-read + re-parsed from disk per call. Memoize the parsed value
+// keyed by the file's (mtime, len). The save helpers (`save_pretty`/
+// `save_private`) call `invalidate_cache`, so an **in-process write busts the
+// entry immediately** — the cache never depends on mtime resolution for the
+// panel's own writes (this is what makes it safe for the auth store: a same-
+// length password rotation can't serve a stale verifier). The (mtime, len)
+// check is the fallback for **out-of-band edits** only; any such write changes
+// at least one of mtime/len on a sub-second-mtime FS (Linux ext4/xfs).
 // A failed/torn parse is returned but NOT cached, so it self-heals on the next
 // call rather than sticking an empty/default value.
 // ---------------------------------------------------------------------------
@@ -101,6 +103,19 @@ where
     })
 }
 
+/// Drop any cached entry for `path`. Called by the save helpers so an
+/// **in-process** write is reflected immediately — without this the cache would
+/// rely on (mtime,len) changing, and a same-length rewrite (e.g. a panel-user
+/// password rotation: salt/hash are fixed-length hex) within one coarse mtime
+/// tick could otherwise serve the stale value. Out-of-band edits still fall back
+/// to the (mtime,len) check.
+fn invalidate_cache(path: &Path) {
+    cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(path);
+}
+
 /// Persist `value` as pretty JSON, creating the parent directory. For
 /// non-secret manifests/config (site lists, access metadata, tuning).
 pub(crate) fn save_pretty<T: Serialize + ?Sized>(path: &Path, value: &T) -> anyhow::Result<()> {
@@ -108,6 +123,7 @@ pub(crate) fn save_pretty<T: Serialize + ?Sized>(path: &Path, value: &T) -> anyh
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(path, serde_json::to_string_pretty(value)?)?;
+    invalidate_cache(path);
     Ok(())
 }
 
@@ -117,6 +133,7 @@ pub(crate) fn save_pretty<T: Serialize + ?Sized>(path: &Path, value: &T) -> anyh
 pub(crate) fn save_private<T: Serialize + ?Sized>(path: &Path, value: &T) -> anyhow::Result<()> {
     let data = serde_json::to_string_pretty(value)?;
     crate::platform::paths::write_private(path, data.as_bytes())?;
+    invalidate_cache(path);
     Ok(())
 }
 
