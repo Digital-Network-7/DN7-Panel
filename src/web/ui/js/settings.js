@@ -34,7 +34,7 @@ function renderSettings(v) {
         <p class="formnote" style="margin-top:6px">${tr('set.allow_ip_hint')}</p>
         <label class="switch" style="padding:0;margin-top:16px"><input type="checkbox" id="setHttps" ${s.https ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('set.https')}</b><span>${tr('set.https_hint')}</span></span></label>
       </div>
-      <div class="row" style="align-items:center;gap:12px;margin-top:18px"><button class="btn" id="setSave">${tr('set.save')}</button><span class="err ok" id="setMsg"></span></div>
+      <div class="row" style="align-items:center;gap:12px;margin-top:18px"><button class="btn danger" id="setSave">${tr('set.save_restart')}</button><span class="err ok" id="setMsg"></span></div>
     </div>
     <div id="setAppear" class="hidden">
       <div style="max-width:480px">
@@ -100,8 +100,9 @@ function renderSettings(v) {
         };
       });
     };
-    $('setSave').onclick = () => {
+    $('setSave').onclick = async () => {
       const m = $('setMsg');
+      if (!await confirmDanger(tr('set.save_restart_confirm'))) return;
       const body = {
         port: Number($('setPort').value),
         entry_path: $('setEntry').value.trim() || '/',
@@ -110,9 +111,16 @@ function renderSettings(v) {
         https: $('setHttps').checked,
         public_access: $('setPublic').checked,
       };
-      SettingsApi.save(body)
-        .then((b) => { m.className = 'err ok'; m.textContent = tr('common.saved') + (b.needs_restart ? tr('common.restart_hint') : ''); if ($('setSave')._dirtyReset) $('setSave')._dirtyReset(); })
-        .catch((e) => { m.className = 'err'; m.textContent = e.message; });
+      try {
+        await SettingsApi.save(body);
+        if ($('setSave')._dirtyReset) $('setSave')._dirtyReset();
+        // Settings are persisted; now restart so a changed port/bind/HTTPS
+        // takes effect. The panel exits and the supervisor respawns it; the UI
+        // polls until it answers again, then reloads (shared with self-update).
+        m.className = 'err ok'; m.textContent = tr('upd.restarting');
+        await api('/api/restart', { method: 'POST' });
+        waitForRestart();
+      } catch (e) { m.className = 'err'; m.textContent = e.message; }
     };
     bindDirty('setSave', 'setGeneral');
 

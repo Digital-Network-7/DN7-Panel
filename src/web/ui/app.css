@@ -511,6 +511,11 @@
    adjacent-button margin so it isn't doubled (matches Website/Files spacing). */
 .optable td.act .actions .btn + .btn { margin-left: 0; }
 
+/* ---- Audit log table: fixed column widths so columns don't jump per page ---- */
+.optable.logtbl { table-layout: fixed; width: 100%; }
+.optable.logtbl td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.optable.logtbl td.act { overflow: visible; }
+
 /* ---- Inline note (e.g. SSL auto-renew hint) ---- */
 .formnote { font-size: 12px; color: var(--mut); margin-top: 8px; line-height: 1.5; }
 

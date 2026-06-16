@@ -42,10 +42,28 @@ form — it splits off the panel itself.
 
 ## Quick start
 
+Grab the latest static binary from the
+[**Releases**](https://github.com/Digital-Network-7/DN7-Panel/releases) page
+(musl builds for `x86_64` and `arm64`) and run it directly — no build step, no
+dependencies:
+
 ```bash
-cargo build --release
-sudo ./target/release/dn7-panel
+# pick the asset matching your architecture, then:
+chmod +x dn7-panel
+sudo ./dn7-panel
 ```
+
+> **No release for your platform / version?** Build from source instead — it's
+> pure Rust + rustls, so a release build needs no system libraries:
+>
+> ```bash
+> cargo build --release
+> sudo ./target/release/dn7-panel
+> ```
+>
+> Hitting a problem, or missing a build for your platform? Please open an
+> [**Issue**](https://github.com/Digital-Network-7/DN7-Panel/issues) — bug
+> reports and requests are very welcome.
 
 On a normal launch the binary **installs itself to `/var/dn7/panel/dn7-panel`**
 and re-execs from there, so you can run the downloaded binary from anywhere — no

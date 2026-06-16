@@ -2,23 +2,33 @@
 // Audit log (Owner only) — privileged-action history from /api/logs
 // =========================================================================
 
-// Map a stable action key (e.g. "mysql.install", "auth.login") to a label.
-// Tries a full per-action key, then a channel-agnostic op key, then a
-// "Group · op" fallback so new backend ops still render readably.
-function logActionLabel(action) {
+// An action key is "<group>.<op>" (e.g. "nginx.add_site", "auth.login"). The
+// table shows the group and the op in two separate columns:
+//
+//   logGroup(action) → the module/category label  ("Website", "Auth", …)
+//   logOp(action)    → the operation label        ("Add site", "Sign in", …)
+//
+// Each tries the most specific i18n key and degrades to the raw token so a new
+// backend op still renders readably.
+
+function logGroup(action) {
+  const dot = action.indexOf('.');
+  if (dot <= 0) return '';
+  const grp = action.slice(0, dot);
+  const gk = 'log.grp.' + grp, gl = tr(gk);
+  return gl !== gk ? gl : grp;
+}
+
+function logOp(action) {
+  // Prefer a full per-action phrase ("Sign in"), then a channel-agnostic op
+  // label ("Add site"), then the raw op / action token.
   const full = 'log.act.' + action;
   const tf = tr(full);
   if (tf !== full) return tf;
   const dot = action.indexOf('.');
-  if (dot > 0) {
-    const grp = action.slice(0, dot), op = action.slice(dot + 1);
-    const gk = 'log.grp.' + grp, gl = tr(gk);
-    const gname = gl !== gk ? gl : grp;
-    const ok = 'log.op.' + op, ol = tr(ok);
-    const oname = ol !== ok ? ol : op;
-    return gname + ' · ' + oname;
-  }
-  return action;
+  const op = dot > 0 ? action.slice(dot + 1) : action;
+  const ok = 'log.op.' + op, ol = tr(ok);
+  return ol !== ok ? ol : op;
 }
 
 function logFmtTime(ts) {
@@ -61,12 +71,12 @@ function renderLogs(v) {
     if (!rows.length) { $('logBody').innerHTML = `<div class="empty">${tr('log.none')}</div>`; $('logPager').innerHTML = ''; return; }
     const slice = rows.slice((page - 1) * LOG_PAGE_SIZE, page * LOG_PAGE_SIZE);
     $('logBody').innerHTML = `<div class="tablescroll" style="max-height:none"><table class="optable logtbl">
-      <tr><th style="width:150px">${tr('log.time')}</th><th>${tr('log.actor')}</th><th>${tr('log.action')}</th><th>${tr('log.target')}</th><th>${tr('log.col_ip')}</th><th>${tr('log.result')}</th><th class="act">${tr('log.col_actions')}</th></tr>` +
+      <tr><th style="width:150px">${tr('log.time')}</th><th style="width:120px">${tr('log.actor')}</th><th style="width:110px">${tr('log.col_module')}</th><th>${tr('log.action')}</th><th style="width:130px">${tr('log.col_ip')}</th><th style="width:92px">${tr('log.result')}</th><th class="act" style="width:88px">${tr('log.col_actions')}</th></tr>` +
       slice.map((e, i) => `<tr>
         <td class="mut mono" style="white-space:nowrap">${logFmtTime(e.ts)}</td>
-        <td>${esc(e.actor || '?')}</td>
-        <td>${esc(logActionLabel(e.action))}</td>
-        <td class="mono">${esc(e.target || '')}</td>
+        <td title="${esc(e.actor || '?')}">${esc(e.actor || '?')}</td>
+        <td title="${esc(logGroup(e.action))}">${esc(logGroup(e.action))}</td>
+        <td title="${esc(logOp(e.action))}">${esc(logOp(e.action))}</td>
         <td class="mono mut" style="white-space:nowrap">${esc(e.ip || '-')}</td>
         <td>${e.ok ? `<span class="chip on"><span class="dot-s on"></span>${tr('log.ok')}</span>` : `<span class="chip warn"><span class="dot-s"></span>${tr('log.fail')}</span>`}</td>
         <td class="act"><button class="btn sec sm" data-idx="${(page - 1) * LOG_PAGE_SIZE + i}">${tr('log.detail_btn')}</button></td>
@@ -94,27 +104,34 @@ function renderLogs(v) {
   load();
 }
 
-// Detail modal: request headers, response, and (for failures) the error.
+// Detail modal: target (when present), request headers, response, and (for
+// failures) the error — each on its own tab.
 function logDetail(e) {
   let resp = e.response || '';
   try { if (resp) resp = JSON.stringify(JSON.parse(resp), null, 2); } catch (_) { /* keep raw */ }
   const failed = !e.ok;
-  const tabs = [`<button data-s="headers" class="on">${tr('log.dt_headers')}</button>`, `<button data-s="response">${tr('log.dt_response')}</button>`];
-  if (failed) tabs.push(`<button data-s="error">${tr('log.dt_error')}</button>`);
+  const hasTarget = !!(e.target && String(e.target).trim());
+  const grp = logGroup(e.action), op = logOp(e.action);
+  const actLabel = grp ? grp + ' · ' + op : op;
+  const ids = [];
+  const tabs = [];
+  if (hasTarget) { tabs.push(`<button data-s="target" class="on">${tr('log.target')}</button>`); ids.push('target'); }
+  tabs.push(`<button data-s="headers"${ids.length ? '' : ' class="on"'}>${tr('log.dt_headers')}</button>`); ids.push('headers');
+  tabs.push(`<button data-s="response">${tr('log.dt_response')}</button>`); ids.push('response');
+  if (failed) { tabs.push(`<button data-s="error">${tr('log.dt_error')}</button>`); ids.push('error'); }
   const pane = (id, body, hidden) => `<pre class="out" id="ld_${id}" style="max-height:46vh;margin:0;${hidden ? 'display:none' : ''}">${esc(body || tr('log.dt_empty'))}</pre>`;
   modal(tr('log.detail_title'), `
     <div class="row" style="gap:14px;flex-wrap:wrap;margin-bottom:12px">
       <span class="mut" style="font-size:12.5px">${tr('log.time')}: ${logFmtTime(e.ts)}</span>
       <span class="mut" style="font-size:12.5px">${tr('log.actor')}: ${esc(e.actor || '?')}</span>
       <span class="mut" style="font-size:12.5px">${tr('log.col_ip')}: ${esc(e.ip || '-')}</span>
-      <span class="mut" style="font-size:12.5px">${tr('log.action')}: ${esc(logActionLabel(e.action))}</span>
-      ${e.target ? `<span class="mut" style="font-size:12.5px">${tr('log.target')}: ${esc(e.target)}</span>` : ''}
+      <span class="mut" style="font-size:12.5px">${tr('log.action')}: ${esc(actLabel)}</span>
     </div>
     <div class="subtabs" id="ldTabs">${tabs.join('')}</div>
-    ${pane('headers', e.headers || '')}
+    ${hasTarget ? pane('target', e.target || '') : ''}
+    ${pane('headers', e.headers || '', hasTarget)}
     ${pane('response', resp, true)}
     ${failed ? pane('error', e.detail || '', true) : ''}`, (close, root) => {
-    const ids = failed ? ['headers', 'response', 'error'] : ['headers', 'response'];
     const t = root.querySelector('#ldTabs');
     t.querySelectorAll('button').forEach((btn) => btn.onclick = () => {
       t.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === btn));

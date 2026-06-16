@@ -37,6 +37,29 @@ pub(crate) struct HistoryQuery {
     range: String,
 }
 
+/// POST /api/restart — restart the panel process so settings (e.g. a changed
+/// port) take effect. The panel simply exits; the supervisor respawns it and
+/// the fresh process re-reads `web.json`. Super-admin only (host-level blast
+/// radius). The actual process exit lives in `platform` (the web layer must not
+/// touch `std::process`).
+pub(crate) async fn restart_panel(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+) -> Response {
+    if let Err(r) = require_super(&state, &headers) {
+        return r;
+    }
+    audit::record(
+        &actor_name(&state, &headers),
+        "settings.restart",
+        "",
+        true,
+        "",
+    );
+    crate::platform::panel::request_restart();
+    Json(json!({ "ok": true, "data": { "restarting": true } })).into_response()
+}
+
 /// Basic panel identity (version + hostname) for the console footer/topbar.
 pub(crate) async fn panel_info(
     State(state): State<Shared>,
