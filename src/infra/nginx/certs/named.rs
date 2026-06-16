@@ -16,7 +16,7 @@ pub(crate) async fn list_named_certs() -> Result<Value> {
         let not_after = if has_cert {
             std::fs::read_to_string(&crt)
                 .ok()
-                .and_then(|pem| cert_not_after(&pem))
+                .and_then(|pem| parse_cert_not_after(&pem))
                 .unwrap_or_default()
         } else {
             String::new()

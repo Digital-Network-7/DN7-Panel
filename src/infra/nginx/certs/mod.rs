@@ -2,7 +2,11 @@
 use super::*;
 
 mod acme;
+mod named;
+mod parse;
 use acme::*;
+pub(crate) use named::*;
+pub(crate) use parse::cert_not_after as parse_cert_not_after;
 
 // Certificates.
 // ---------------------------------------------------------------------------

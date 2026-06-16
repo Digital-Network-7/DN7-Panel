@@ -5,7 +5,7 @@
 //! returns `None` when the structure isn't as expected.
 
 /// Parse a PEM cert's notAfter (expiry) as a "YYYY-MM-DD" string.
-pub(super) fn cert_not_after(pem: &str) -> Option<String> {
+pub(crate) fn cert_not_after(pem: &str) -> Option<String> {
     let der = pem_first_cert_der(pem)?;
     parse_not_after(&der)
 }

@@ -65,7 +65,6 @@ pub(crate) use crate::domain::nginx::{HttpTuning, WebGlobal};
 // ---------------------------------------------------------------------------
 mod opreg;
 use opreg::{new_op_id, op_create, op_dismiss, op_finish, op_log, op_push, ops_snapshot, pmsg};
-mod certparse;
 use crate::domain::nginx::{
     norm_scheme, primary_host, valid_access_name, valid_auth_username, valid_cert_name,
     valid_client_address, valid_container_name, valid_host_token, valid_location_path, valid_port,
@@ -87,7 +86,6 @@ pub(crate) fn nginx_err(e: NginxError) -> anyhow::Error {
 // ---------------------------------------------------------------------------
 mod access;
 mod certs;
-mod certs_named;
 mod confgen;
 mod detect;
 mod htpasswd;
@@ -98,7 +96,6 @@ mod store;
 mod upload;
 use access::*;
 use certs::*;
-use certs_named::*;
 use confgen::*;
 use detect::*;
 use htpasswd::*;
@@ -112,7 +109,7 @@ use store::*;
 /// `list_dirs`); these delegate to the infra adapters that do the actual read.
 pub(crate) use access::list_access;
 pub(crate) use access::{apply_default_site, apply_tuning, current_tuning};
-pub(crate) use certs_named::list_named_certs;
+pub(crate) use certs::list_named_certs;
 pub(crate) use detect::{list_dirs, list_running_containers, nginx_info};
 pub use upload::*;
 

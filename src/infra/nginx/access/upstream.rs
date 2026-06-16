@@ -4,7 +4,7 @@ use super::*;
 /// Best-effort parse of a PEM cert's notAfter (expiry) as an ISO date string.
 /// Implemented in the `certparse` submodule (minimal ASN.1 walk).
 pub(crate) fn cert_not_after(pem: &str) -> Option<String> {
-    certparse::cert_not_after(pem)
+    parse_cert_not_after(pem)
 }
 
 /// Reload nginx (`nginx -s reload`).
