@@ -1,5 +1,5 @@
 //! Branding API (split from web/server.rs).
-use super::*;
+use super::super::*;
 
 // ---------------------------------------------------------------------------
 // Branding (panel name / logo / accent / default theme) — public GET so the

@@ -1,5 +1,5 @@
 //! Settings API handlers (split from web/server.rs).
-use super::*;
+use super::super::*;
 
 // ---------------------------------------------------------------------------
 // Settings

@@ -1,5 +1,5 @@
 //! Self-update API (GitHub + dn7.cn) (split from web/server.rs).
-use super::*;
+use super::super::*;
 
 // ---------------------------------------------------------------------------
 // Self-update (GitHub + dn7.cn)

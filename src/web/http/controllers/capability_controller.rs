@@ -1,5 +1,5 @@
 //! Capability dispatch (docker/nginx/mysql JSON protocol) (split from web/server.rs).
-use super::*;
+use super::super::*;
 
 // ---------------------------------------------------------------------------
 // Capability dispatch (docker / nginx / mysql) — same JSON protocol as relays

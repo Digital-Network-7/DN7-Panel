@@ -1,5 +1,5 @@
 //! Terminal (PTY over WebSocket) handlers (split from web/server.rs).
-use super::*;
+use super::super::*;
 
 // ---------------------------------------------------------------------------
 // Terminal (PTY over WebSocket)

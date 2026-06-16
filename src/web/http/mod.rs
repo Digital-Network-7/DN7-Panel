@@ -11,7 +11,6 @@ use axum::{
     http::{header, StatusCode},
     middleware::Next,
     response::{Html, IntoResponse, Response},
-    routing::{get, post},
     Json, Router,
 };
 use serde_json::{json, Value};
@@ -40,7 +39,7 @@ pub struct WebState {
     cfg: PanelConfig,
 }
 
-type Shared = Arc<WebState>;
+pub(crate) type Shared = Arc<WebState>;
 
 impl WebState {
     /// Poison-safe guard over the console settings — the single typed accessor
@@ -89,108 +88,9 @@ pub fn spawn(cfg: PanelConfig) {
 }
 
 async fn serve(state: Shared, port: u16, https: bool) -> anyhow::Result<()> {
-    let app = build_router(state);
+    let app = crate::web::routes::build_router(state);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     bind_and_serve(app, addr, https).await
-}
-
-/// Build the web console's full route table with the auth/entry-gate middleware
-/// and shared state applied. Routes above the gate layer are public (login);
-/// everything else requires an authenticated session.
-fn build_router(state: Shared) -> Router {
-    Router::new()
-        // Public (no auth): the login page + login endpoint.
-        .route("/", get(index_page))
-        .route("/ui/*path", get(ui_asset))
-        .route("/api/login/challenge", get(login_challenge))
-        .route("/api/login", post(login))
-        // Authenticated API.
-        .route("/api/logout", post(logout))
-        .route("/api/ticket", post(mint_ticket))
-        .route("/api/me", get(me))
-        .route("/api/profile", post(put_profile))
-        .route("/api/password", post(put_password))
-        .route("/api/2fa/setup", post(twofa_setup))
-        .route("/api/2fa/enable", post(twofa_enable))
-        .route("/api/2fa/disable", post(twofa_disable))
-        .route("/api/users", get(users_list).post(users_create))
-        .route("/api/users/update", post(users_update))
-        .route("/api/users/delete", post(users_delete))
-        .route("/api/info", get(panel_info))
-        .route("/api/metrics", get(metrics))
-        .route("/api/procs", get(procs))
-        .route("/api/settings", get(get_settings).post(put_settings))
-        .route("/api/logs", get(logs_list))
-        .route("/api/logs/clear", post(logs_clear))
-        .route("/api/branding", get(get_branding).post(put_branding))
-        .route("/api/update/status", get(update_status))
-        .route(
-            "/api/update/config",
-            get(update_config_get).post(update_config_put),
-        )
-        .route("/api/update/check", post(update_check))
-        .route("/api/update/changelog", get(update_changelog))
-        .route("/api/update/apply", post(update_apply))
-        .route("/api/docker", post(docker_op))
-        .route("/api/nginx", post(nginx_op))
-        .route("/api/mysql", post(mysql_op))
-        .route("/api/terminal", get(terminal_ws))
-        .route("/api/container/terminal", get(container_terminal_ws))
-        .route("/api/files/list", post(files_list))
-        .route("/api/files/mkdir", post(files_mkdir))
-        .route("/api/files/delete", post(files_delete))
-        .route("/api/files/download", get(files_download))
-        .route("/api/files/upload", post(files_upload))
-        .route("/api/docker/download", get(docker_download))
-        .route("/api/docker/image-upload", post(docker_image_upload))
-        .route("/api/nginx/static-upload", post(nginx_static_upload))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            entry_gate,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            security_headers,
-        ))
-        .with_state(state)
-}
-
-/// Attach defensive security headers to every response. A Content-Security-
-/// Policy locks `default-src`/`connect-src`/`img-src` to same-origin, which
-/// blocks an injected script from exfiltrating the session token to an external
-/// origin. `script-src 'self'` (no `'unsafe-inline'`) — the UI ships zero inline
-/// scripts/handlers (the pre-paint logic is `/ui/js/prepaint.js` and controls
-/// are wired via `addEventListener` in `boot.js`). `style-src` keeps
-/// `'unsafe-inline'` for the bundled inline styles. HSTS is sent only over
-/// HTTPS (browsers ignore it over HTTP, and sending it could strand an
-/// HTTP-only deployment).
-async fn security_headers(State(state): State<Shared>, req: Request, next: Next) -> Response {
-    let https = state
-        .settings
-        .lock()
-        .map(|s| SecurityPolicy::new(&s).https())
-        .unwrap_or(false);
-    let mut resp = next.run(req).await;
-    let h = resp.headers_mut();
-    const CSP: &str = "default-src 'self'; script-src 'self'; \
-        style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; \
-        object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'";
-    let mut set = |name: header::HeaderName, val: &str| {
-        if let Ok(v) = header::HeaderValue::from_str(val) {
-            h.insert(name, v);
-        }
-    };
-    set(header::CONTENT_SECURITY_POLICY, CSP);
-    set(header::X_CONTENT_TYPE_OPTIONS, "nosniff");
-    set(header::X_FRAME_OPTIONS, "DENY");
-    set(header::REFERRER_POLICY, "same-origin");
-    if https {
-        set(
-            header::STRICT_TRANSPORT_SECURITY,
-            "max-age=31536000; includeSubDomains",
-        );
-    }
-    resp
 }
 
 /// Bind and serve the app on `addr`, over self-signed HTTPS (rustls ring
@@ -275,7 +175,7 @@ fn require_auth(state: &Shared, headers: &header::HeaderMap) -> Option<Response>
 /// per request by `resolve_account` from the bearer token, it carries the
 /// identity facts handlers/services need (role, system user, 2FA state) so they
 /// never re-derive "who is this / what may they do" from settings/users.
-struct Account {
+pub(crate) struct Account {
     username: String,
     is_admin: bool,
     is_super: bool,
@@ -402,74 +302,21 @@ fn op_err_body(e: anyhow::Error) -> Value {
 // (WebState/Account/Shared) and auth/error helpers stay in this parent so the
 // descendant modules can read their private items via `use super::*`.
 // ---------------------------------------------------------------------------
-mod account_api;
 mod accounts;
-mod assets;
-mod audit_api;
-mod branding_api;
-mod capability;
-mod files_api;
-mod gate;
-mod login;
 mod policy;
-mod settings_api;
-mod update_api;
-mod users_api;
-mod ws;
-use account_api::*;
 use accounts::*;
-use assets::*;
-use audit_api::*;
-use branding_api::*;
-use capability::*;
-use files_api::*;
-use gate::*;
-use login::*;
 use policy::*;
-use settings_api::*;
-use update_api::*;
-use users_api::*;
-use ws::*;
 
-// ---------------------------------------------------------------------------
-// Monitoring
-// ---------------------------------------------------------------------------
+// Handler bodies live in `controllers` (≈ Laravel app/Http/Controllers); the
+// gate + security-header layers in `middleware`. The route table that binds
+// them is `crate::web::routes`.
+pub(crate) mod controllers;
+pub(crate) mod middleware;
+pub(crate) use middleware::*;
 
-async fn metrics(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
-        return r;
-    }
-    // `collect()` does blocking syscalls (stat of every mount via disks.refresh,
-    // and a sync UdpSocket bind/connect for the local-IP probe). A stalled mount
-    // (NFS, dead device) would otherwise block this tokio worker for all other
-    // requests on it. Run the blocking work off the async poll with
-    // `block_in_place` (multi-thread runtime), keeping the &mut borrow valid.
-    let mut guard = state.collector.lock().await;
-    let m = tokio::task::block_in_place(|| guard.collect());
-    drop(guard);
-    Json(json!({ "ok": true, "data": m })).into_response()
-}
-
-async fn procs(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
-        return r;
-    }
-    let data = crate::infra::support::procs::web_snapshot(20).await;
-    Json(json!({ "ok": true, "data": data })).into_response()
-}
-
-/// Basic panel identity (version + hostname) for the console footer/topbar.
-async fn panel_info(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
-    if let Some(r) = require_auth(&state, &headers) {
-        return r;
-    }
-    let hostname = sysinfo::System::host_name().unwrap_or_default();
-    Json(json!({
-        "ok": true,
-        "data": {
-            "version": env!("CARGO_PKG_VERSION"),
-            "hostname": hostname,
-        }
-    }))
-    .into_response()
+/// Best-effort current account name for audit records (empty when unresolved).
+pub(crate) fn actor_name(state: &Shared, headers: &header::HeaderMap) -> String {
+    current_account(state, headers)
+        .map(|a| a.username)
+        .unwrap_or_default()
 }

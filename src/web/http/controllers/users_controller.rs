@@ -1,5 +1,5 @@
 //! User management API (admin only) (split from web/server.rs).
-use super::*;
+use super::super::*;
 
 // ---------------------------------------------------------------------------
 // User management (admin only): panel users backed by system accounts

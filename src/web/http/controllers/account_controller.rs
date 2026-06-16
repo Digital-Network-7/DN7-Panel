@@ -1,5 +1,5 @@
 //! Account self-service: profile / password / 2FA (split from web/server.rs).
-use super::*;
+use super::super::*;
 
 // ---------------------------------------------------------------------------
 // Account self-service: profile / password / 2FA (any authenticated user)

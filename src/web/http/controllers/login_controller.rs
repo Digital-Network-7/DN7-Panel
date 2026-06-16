@@ -1,5 +1,5 @@
 //! Login / logout handlers (split from web/server.rs).
-use super::*;
+use super::super::*;
 
 // ---------------------------------------------------------------------------
 // Login / logout

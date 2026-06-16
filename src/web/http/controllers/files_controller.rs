@@ -1,5 +1,5 @@
 //! File transfer (host + container) HTTP handlers (split from web/server.rs).
-use super::*;
+use super::super::*;
 
 /// Map an `app::files` error to the file handlers' response shape: a 403 for a
 /// permission failure, else a 200 `{ ok:false, error }` for an op error.

@@ -1,5 +1,5 @@
 //! Audit log API (Owner only) (split from web/server.rs).
-use super::*;
+use super::super::*;
 
 // ---------------------------------------------------------------------------
 // Audit log (Owner only)
@@ -38,11 +38,4 @@ pub(crate) async fn logs_clear(
     }
     audit::record(&actor.username, "logs.clear", "", true, "");
     Json(json!({ "ok": true })).into_response()
-}
-
-/// Best-effort current account name for audit records (empty when unresolved).
-pub(crate) fn actor_name(state: &Shared, headers: &header::HeaderMap) -> String {
-    current_account(state, headers)
-        .map(|a| a.username)
-        .unwrap_or_default()
 }

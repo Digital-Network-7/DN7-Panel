@@ -17,11 +17,12 @@
 //! persisted; a restart applies a new port.
 
 mod branding;
-mod server;
+mod http;
+mod routes;
 mod settings;
 pub(crate) mod terminal;
 
-pub use server::spawn;
+pub use http::spawn;
 
 /// Console info for the startup banner. Reads the settings, **seeding them on
 /// first run** so the password exists. `new_password` is `Some` only on the run
