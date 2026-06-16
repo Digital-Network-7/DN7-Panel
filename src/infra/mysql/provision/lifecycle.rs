@@ -207,20 +207,20 @@ pub(crate) fn start_switch(req: &Req) -> Result<Value> {
         .unwrap_or(&m.engine)
         .to_string();
     if !valid_engine(&engine) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_engine"));
+        return Err(mysql_err(MysqlError::BadEngine));
     }
     let version = req
         .version
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("ERR_CODE:mysql.bad_version"))?
+        .ok_or_else(|| mysql_err(MysqlError::BadVersion))?
         .to_string();
     if !valid_version(&engine, &version) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_version"));
+        return Err(mysql_err(MysqlError::BadVersion));
     }
     if engine == m.engine && version == m.version {
-        return Err(anyhow!("ERR_CODE:mysql.same_version"));
+        return Err(mysql_err(MysqlError::SameVersion));
     }
 
     let op_id = new_op_id();

@@ -40,7 +40,7 @@ pub(crate) async fn tables(req: &Req) -> Result<Value> {
     let password = crate::infra::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
     let db = req.database.as_deref().map(str::trim).unwrap_or("");
     if !valid_ident(db, false) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_db_name"));
+        return Err(mysql_err(MysqlError::BadDbName));
     }
     let sql = format!(
         "SELECT table_name, COALESCE(table_rows,0), COALESCE(data_length+index_length,0), COALESCE(engine,'') \
@@ -80,10 +80,10 @@ pub(crate) async fn columns(req: &Req) -> Result<Value> {
     let db = req.database.as_deref().map(str::trim).unwrap_or("");
     let tbl = req.table.as_deref().map(str::trim).unwrap_or("");
     if !valid_ident(db, false) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_db_name"));
+        return Err(mysql_err(MysqlError::BadDbName));
     }
     if !valid_table(tbl) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_table"));
+        return Err(mysql_err(MysqlError::BadTable));
     }
     let sql = format!(
         "SELECT column_name, column_type, is_nullable, column_key, IFNULL(column_default,'\\0NULL'), extra \
@@ -130,10 +130,10 @@ pub(crate) async fn table_rows(req: &Req) -> Result<Value> {
     let db = req.database.as_deref().map(str::trim).unwrap_or("");
     let tbl = req.table.as_deref().map(str::trim).unwrap_or("");
     if !valid_ident(db, false) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_db_name"));
+        return Err(mysql_err(MysqlError::BadDbName));
     }
     if !valid_table(tbl) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_table"));
+        return Err(mysql_err(MysqlError::BadTable));
     }
     let limit = req.limit.unwrap_or(100).clamp(1, 500);
 
@@ -342,17 +342,17 @@ pub(crate) async fn modify_column(req: &Req) -> Result<Value> {
         .unwrap_or(col);
     let ctype = req.col_type.as_deref().map(str::trim).unwrap_or("");
     if !valid_ident(db, false) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_db_name"));
+        return Err(mysql_err(MysqlError::BadDbName));
     }
     if !valid_table(tbl) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_table"));
+        return Err(mysql_err(MysqlError::BadTable));
     }
     if !valid_ident(col, false) || !valid_ident(new, false) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_column"));
+        return Err(mysql_err(MysqlError::BadColumn));
     }
     // Canonicalize the type from a whitelist — never interpolate raw input
     // (prevents smuggling extra DDL clauses through the type field).
-    let ctype = canonical_col_type(ctype).ok_or_else(|| anyhow!("ERR_CODE:mysql.bad_col_type"))?;
+    let ctype = canonical_col_type(ctype).ok_or_else(|| mysql_err(MysqlError::BadColType))?;
     let nullable = req.col_null.unwrap_or(true);
     let mut sql = format!(
         "ALTER TABLE {}.{} CHANGE COLUMN {} {} {}",
@@ -384,7 +384,7 @@ pub(crate) async fn user_grants(req: &Req) -> Result<Value> {
     let user = req.username.as_deref().map(str::trim).unwrap_or("");
     let host = req.host.as_deref().map(str::trim).unwrap_or("%");
     if !valid_ident(user, false) || !valid_ident(host, true) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_user_or_host"));
+        return Err(mysql_err(MysqlError::BadUserOrHost));
     }
     let sql = format!(
         "SHOW GRANTS FOR '{}'@'{}';",

@@ -17,7 +17,7 @@ pub(crate) fn save_manifest(m: &Manifest) -> Result<()> {
 
 pub(crate) fn load_manifest(id: &str) -> Result<Manifest> {
     let raw = std::fs::read_to_string(manifest_path(id))
-        .map_err(|_| anyhow!("ERR_CODE:mysql.instance_not_found"))?;
+        .map_err(|_| mysql_err(MysqlError::InstanceNotFound))?;
     let m: Manifest = serde_json::from_str(&raw).map_err(|e| anyhow!("实例清单损坏：{e}"))?;
     Ok(m)
 }

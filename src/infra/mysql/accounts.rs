@@ -95,13 +95,13 @@ pub(crate) async fn create_user(req: &Req) -> Result<Value> {
     let host = req.host.as_deref().map(str::trim).unwrap_or("%");
     let pwd = req.password.as_deref().unwrap_or("");
     if !valid_ident(user, false) {
-        return Err(anyhow!("ERR_CODE:mysql.user_name_rules"));
+        return Err(mysql_err(MysqlError::UserNameRules));
     }
     if !valid_ident(host, true) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_host"));
+        return Err(mysql_err(MysqlError::BadHost));
     }
     if pwd.is_empty() || pwd.len() > 128 {
-        return Err(anyhow!("ERR_CODE:mysql.bad_password"));
+        return Err(mysql_err(MysqlError::BadPassword));
     }
 
     // Authentication clause — syntax differs between MySQL and MariaDB.
@@ -112,7 +112,7 @@ pub(crate) async fn create_user(req: &Req) -> Result<Value> {
         .filter(|s| !s.is_empty());
     if let Some(p) = plugin {
         if !valid_auth_plugin(&m.engine, p) {
-            return Err(anyhow!("ERR_CODE:mysql.bad_auth_plugin"));
+            return Err(mysql_err(MysqlError::BadAuthPlugin));
         }
     }
     let auth = mysql_auth_clause(&m.engine, plugin, &sql_escape(pwd));
@@ -158,7 +158,7 @@ fn mysql_limits_clause(req: &Req) -> Result<String> {
     let muc = req.max_user_connections.unwrap_or(0);
     for v in [mq, mc, muc] {
         if !valid_limit(v) {
-            return Err(anyhow!("ERR_CODE:mysql.bad_limit"));
+            return Err(mysql_err(MysqlError::BadLimit));
         }
     }
     let mut limit_clause = String::new();
@@ -185,13 +185,13 @@ pub(crate) async fn drop_user(req: &Req) -> Result<Value> {
     let user = req.username.as_deref().map(str::trim).unwrap_or("");
     let host = req.host.as_deref().map(str::trim).unwrap_or("%");
     if !valid_ident(user, false) || !valid_ident(host, true) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_user_or_host"));
+        return Err(mysql_err(MysqlError::BadUserOrHost));
     }
     if user.eq_ignore_ascii_case("root")
         || user.starts_with("mysql.")
         || user.starts_with("mariadb.")
     {
-        return Err(anyhow!("ERR_CODE:mysql.no_drop_system_user"));
+        return Err(mysql_err(MysqlError::NoDropSystemUser));
     }
     let sql = format!("DROP USER '{}'@'{}';", sql_escape(user), sql_escape(host));
     run_stmt(&m.container, &password, &sql).await?;
@@ -208,12 +208,12 @@ pub(crate) async fn grant(req: &Req) -> Result<Value> {
     let db = req.database.as_deref().map(str::trim).unwrap_or("*");
     let priv_kind = req.privilege.as_deref().unwrap_or("all");
     if !valid_ident(user, false) || !valid_ident(host, true) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_user_or_host"));
+        return Err(mysql_err(MysqlError::BadUserOrHost));
     }
     let privs = match priv_kind {
         "ro" => "SELECT",
         "all" => "ALL PRIVILEGES",
-        _ => return Err(anyhow!("ERR_CODE:mysql.bad_priv_type")),
+        _ => return Err(mysql_err(MysqlError::BadPrivType)),
     };
     let scope = if req.prefix.unwrap_or(false) {
         prefix_scope(user)
@@ -237,7 +237,7 @@ pub(crate) async fn revoke(req: &Req) -> Result<Value> {
     let host = req.host.as_deref().map(str::trim).unwrap_or("%");
     let db = req.database.as_deref().map(str::trim).unwrap_or("*");
     if !valid_ident(user, false) || !valid_ident(host, true) {
-        return Err(anyhow!("ERR_CODE:mysql.bad_user_or_host"));
+        return Err(mysql_err(MysqlError::BadUserOrHost));
     }
     let scope = if req.prefix.unwrap_or(false) {
         prefix_scope(user)
@@ -260,7 +260,7 @@ pub(crate) fn grant_scope(db: &str) -> Result<String> {
     } else if valid_ident(db, false) {
         Ok(format!("{}.*", ident_quote(db)))
     } else {
-        Err(anyhow!("ERR_CODE:mysql.bad_db_name"))
+        Err(mysql_err(MysqlError::BadDbName))
     }
 }
 
