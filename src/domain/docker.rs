@@ -3,6 +3,170 @@
 //! `ERR_CODE:` messages stay in `docker::validate` (transport-coupled) until the
 //! capability adopts a typed command model.
 
+/// A Docker capability error — a typed, exhaustive replacement for the scattered
+/// `anyhow!("ERR_CODE:docker.*")` string literals. Each variant owns its stable
+/// `docker.*` semantic code (aligned with the frontend `err.<code>` map) in one
+/// place. Domain owns only the semantic code; the `ERR_CODE:` transport marker
+/// the `op_err_body` boundary parses is added in infra (per §2/§4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DockerError {
+    BackupBadConfig,
+    BackupMissing,
+    BadBackup,
+    BadCgroup,
+    BadCidr,
+    BadCpuFormat,
+    BadHostLine,
+    BadHostname,
+    BadIpv4,
+    BadLogFile,
+    BadLogSize,
+    BadMac,
+    BadMemFormat,
+    BadMirror,
+    BadName,
+    BadNetDriver,
+    BadProto,
+    BadRegistry,
+    BadRestartPolicy,
+    BadSettings,
+    BadSocket,
+    BadTag,
+    BindHostPathDenied,
+    CmdNoNewline,
+    CmdTooManyArgs,
+    CmdUnclosedQuote,
+    ContainerManagedMysql,
+    CpuOutOfRange,
+    CpuSharesRange,
+    DaemonRestartFailed,
+    EnvBadChars,
+    EnvFormat,
+    EnvNameEmpty,
+    EnvNameRules,
+    EnvTooLong,
+    HostNetworkRequiresSuper,
+    ImageInUseBuiltin,
+    ImportNoImage,
+    InstallFailed,
+    InstallScriptNonzero,
+    MemOverHost,
+    MemTooSmall,
+    MissingImageName,
+    MissingName,
+    MissingNetworkName,
+    MissingSettings,
+    MissingVolumeName,
+    NameTooLong,
+    NeedRoot,
+    NetPredefinedIp,
+    NetRangeNeedsSubnet,
+    NetworkInUse,
+    NetworkPredefined,
+    NoStats,
+    PathBadChars,
+    PathNotAbsolute,
+    PortRange,
+    PrivilegedRequiresSuper,
+    PullIncomplete,
+    TagEmpty,
+    TooManyDns,
+    TooManyEnvs,
+    TooManyMounts,
+    TooManyNetworks,
+    TooManyPorts,
+    TooManyTags,
+    VolumeInUse,
+    VolumeManaged,
+}
+
+impl DockerError {
+    /// The stable, `docker.`-namespaced semantic code (no transport prefix).
+    pub(crate) fn code(self) -> &'static str {
+        use DockerError::*;
+        match self {
+            BackupBadConfig => "docker.backup_bad_config",
+            BackupMissing => "docker.backup_missing",
+            BadBackup => "docker.bad_backup",
+            BadCgroup => "docker.bad_cgroup",
+            BadCidr => "docker.bad_cidr",
+            BadCpuFormat => "docker.bad_cpu_format",
+            BadHostLine => "docker.bad_host_line",
+            BadHostname => "docker.bad_hostname",
+            BadIpv4 => "docker.bad_ipv4",
+            BadLogFile => "docker.bad_log_file",
+            BadLogSize => "docker.bad_log_size",
+            BadMac => "docker.bad_mac",
+            BadMemFormat => "docker.bad_mem_format",
+            BadMirror => "docker.bad_mirror",
+            BadName => "docker.bad_name",
+            BadNetDriver => "docker.bad_net_driver",
+            BadProto => "docker.bad_proto",
+            BadRegistry => "docker.bad_registry",
+            BadRestartPolicy => "docker.bad_restart_policy",
+            BadSettings => "docker.bad_settings",
+            BadSocket => "docker.bad_socket",
+            BadTag => "docker.bad_tag",
+            BindHostPathDenied => "docker.bind_host_path_denied",
+            CmdNoNewline => "docker.cmd_no_newline",
+            CmdTooManyArgs => "docker.cmd_too_many_args",
+            CmdUnclosedQuote => "docker.cmd_unclosed_quote",
+            ContainerManagedMysql => "docker.container_managed_mysql",
+            CpuOutOfRange => "docker.cpu_out_of_range",
+            CpuSharesRange => "docker.cpu_shares_range",
+            DaemonRestartFailed => "docker.daemon_restart_failed",
+            EnvBadChars => "docker.env_bad_chars",
+            EnvFormat => "docker.env_format",
+            EnvNameEmpty => "docker.env_name_empty",
+            EnvNameRules => "docker.env_name_rules",
+            EnvTooLong => "docker.env_too_long",
+            HostNetworkRequiresSuper => "docker.host_network_requires_super",
+            ImageInUseBuiltin => "docker.image_in_use_builtin",
+            ImportNoImage => "docker.import_no_image",
+            InstallFailed => "docker.install_failed",
+            InstallScriptNonzero => "docker.install_script_nonzero",
+            MemOverHost => "docker.mem_over_host",
+            MemTooSmall => "docker.mem_too_small",
+            MissingImageName => "docker.missing_image_name",
+            MissingName => "docker.missing_name",
+            MissingNetworkName => "docker.missing_network_name",
+            MissingSettings => "docker.missing_settings",
+            MissingVolumeName => "docker.missing_volume_name",
+            NameTooLong => "docker.name_too_long",
+            NeedRoot => "docker.need_root",
+            NetPredefinedIp => "docker.net_predefined_ip",
+            NetRangeNeedsSubnet => "docker.net_range_needs_subnet",
+            NetworkInUse => "docker.network_in_use",
+            NetworkPredefined => "docker.network_predefined",
+            NoStats => "docker.no_stats",
+            PathBadChars => "docker.path_bad_chars",
+            PathNotAbsolute => "docker.path_not_absolute",
+            PortRange => "docker.port_range",
+            PrivilegedRequiresSuper => "docker.privileged_requires_super",
+            PullIncomplete => "docker.pull_incomplete",
+            TagEmpty => "docker.tag_empty",
+            TooManyDns => "docker.too_many_dns",
+            TooManyEnvs => "docker.too_many_envs",
+            TooManyMounts => "docker.too_many_mounts",
+            TooManyNetworks => "docker.too_many_networks",
+            TooManyPorts => "docker.too_many_ports",
+            TooManyTags => "docker.too_many_tags",
+            VolumeInUse => "docker.volume_in_use",
+            VolumeManaged => "docker.volume_managed",
+        }
+    }
+}
+
+impl std::fmt::Display for DockerError {
+    /// Renders the semantic code only; the infra boundary adds the `ERR_CODE:`
+    /// marker when building the wire error.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+impl std::error::Error for DockerError {}
+
 /// Whitelisted container restart policies.
 pub(crate) fn restart_allowed(p: &str) -> bool {
     matches!(p, "no" | "unless-stopped" | "always")
@@ -82,6 +246,45 @@ pub(crate) fn create_escalation<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn docker_error_codes_namespaced_and_wire_stable() {
+        // Representative codes match the exact frontend `err.*` strings, incl.
+        // the two host-escape codes the create guardrail (A2) returns.
+        assert_eq!(DockerError::BadName.code(), "docker.bad_name");
+        assert_eq!(
+            DockerError::PrivilegedRequiresSuper.code(),
+            "docker.privileged_requires_super"
+        );
+        assert_eq!(
+            DockerError::HostNetworkRequiresSuper.code(),
+            "docker.host_network_requires_super"
+        );
+        assert_eq!(
+            DockerError::ContainerManagedMysql.code(),
+            "docker.container_managed_mysql"
+        );
+        // Display is the semantic code only (no transport prefix in domain).
+        assert_eq!(DockerError::PortRange.to_string(), "docker.port_range");
+        // Spot-check namespacing/charset on a spread of variants.
+        for e in [
+            DockerError::BackupBadConfig,
+            DockerError::BadIpv4,
+            DockerError::EnvNameRules,
+            DockerError::TooManyPorts,
+            DockerError::VolumeManaged,
+            DockerError::InstallScriptNonzero,
+        ] {
+            let c = e.code();
+            assert!(c.starts_with("docker."), "{c} not namespaced");
+            assert!(
+                c[7..]
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_'),
+                "{c} not snake_case"
+            );
+        }
+    }
 
     #[test]
     fn whitelists() {

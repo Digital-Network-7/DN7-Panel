@@ -43,7 +43,7 @@ pub(crate) async fn create_volume_op(req: &Req) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_volume_name"))?;
+        .ok_or_else(|| docker_err(DockerError::MissingVolumeName))?;
     validate_name(name)?;
     let mut opts = bollard::volume::CreateVolumeOptions {
         name: name.to_string(),
@@ -54,7 +54,7 @@ pub(crate) async fn create_volume_op(req: &Req) -> Result<Value> {
     // directory (local driver: type=none, o=bind, device=<path>).
     if let Some(dev) = req.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         if !dev.starts_with('/') {
-            return Err(anyhow!("ERR_CODE:docker.path_not_absolute"));
+            return Err(docker_err(DockerError::PathNotAbsolute));
         }
         let mut o = HashMap::new();
         o.insert("type".to_string(), "none".to_string());
@@ -72,13 +72,13 @@ pub(crate) async fn create_volume_op(req: &Req) -> Result<Value> {
 pub(crate) async fn remove_volume_op(req: &Req) -> Result<Value> {
     let name = need_ref(req)?;
     if name.starts_with("dn7-") {
-        return Err(anyhow!("ERR_CODE:docker.volume_managed"));
+        return Err(docker_err(DockerError::VolumeManaged));
     }
     let opts = bollard::volume::RemoveVolumeOptions { force: false };
     dkr()?.remove_volume(&name, Some(opts)).await.map_err(|e| {
         let raw = e.to_string().to_lowercase();
         if raw.contains("in use") {
-            anyhow!("ERR_CODE:docker.volume_in_use")
+            docker_err(DockerError::VolumeInUse)
         } else {
             anyhow!(friendly_docker_err(&e))
         }

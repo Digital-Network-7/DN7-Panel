@@ -11,6 +11,15 @@ use std::ffi::{CStr, CString};
 
 use anyhow::{anyhow, Result};
 
+use crate::domain::identity::SystemUserError;
+
+/// Build the transitional `anyhow` error for a typed [`SystemUserError`]:
+/// prefixes the semantic code with the `ERR_CODE:` transport marker the
+/// `op_err_body` boundary parses. The marker lives here (infra), not in domain.
+fn users_err(e: SystemUserError) -> anyhow::Error {
+    anyhow!("ERR_CODE:{}", e.code())
+}
+
 /// Look up a system account's uid + home dir (None if it doesn't exist). Uses
 /// the reentrant `getpwnam_r` (no shared static buffer → thread-safe).
 pub fn getpwnam(name: &str) -> Option<(u32, String)> {
@@ -85,7 +94,7 @@ async fn grant_sudo(username: &str) -> Result<()> {
             return run("usermod", &["-aG", group, username]).await;
         }
     }
-    Err(anyhow!("ERR_CODE:users.no_sudo_group"))
+    Err(users_err(SystemUserError::NoSudoGroup))
 }
 
 /// Create (or adopt) the backing system account: `useradd -m` with the GECOS
@@ -141,7 +150,7 @@ pub async fn set_system_password(username: &str, password: &str) -> Result<()> {
     // Defense in depth at the OS boundary: a control char in `password` would
     // forge an extra `user:password` chpasswd record (callers validate too).
     if !crate::domain::identity::valid_os_secret(password) {
-        return Err(anyhow!("ERR_CODE:users.set_pw_failed"));
+        return Err(users_err(SystemUserError::SetPwFailed));
     }
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
@@ -161,7 +170,7 @@ pub async fn set_system_password(username: &str, password: &str) -> Result<()> {
     if out.status.success() {
         Ok(())
     } else {
-        Err(anyhow!("ERR_CODE:users.set_pw_failed"))
+        Err(users_err(SystemUserError::SetPwFailed))
     }
 }
 
@@ -192,7 +201,7 @@ fn gecos_ok(s: &str) -> bool {
 /// a field-forging value is refused (not written) rather than passed through.
 pub async fn set_full_name(username: &str, full_name: &str) -> Result<()> {
     if !gecos_ok(full_name) {
-        return Err(anyhow!("ERR_CODE:users.bad_full_name"));
+        return Err(users_err(SystemUserError::BadFullName));
     }
     if getpwnam(username).is_some() {
         run("usermod", &["-c", full_name, username]).await

@@ -238,7 +238,15 @@ mod pull;
 mod settings;
 mod validate;
 mod volumes;
-use crate::domain::docker::{net_driver_allowed, restart_allowed};
+use crate::domain::docker::{net_driver_allowed, restart_allowed, DockerError};
+
+/// Build the transitional `anyhow` error for a typed [`DockerError`]: prefixes
+/// the semantic code with the `ERR_CODE:` transport marker the `op_err_body`
+/// web boundary parses into the wire `code`. The marker lives here (infra), not
+/// in the domain enum, per §2/§4.
+pub(crate) fn docker_err(e: DockerError) -> anyhow::Error {
+    anyhow!("ERR_CODE:{}", e.code())
+}
 pub use backups::*;
 pub(crate) use containers::container_is_privileged;
 use containers::*;
@@ -356,7 +364,7 @@ async fn guard_managed_ops(req: &Req) -> Result<()> {
     if req.op == "remove_image" {
         if let Some(r) = req.reference.as_deref() {
             if managed_image_guard(r).await {
-                return Err(anyhow!("ERR_CODE:docker.image_in_use_builtin"));
+                return Err(docker_err(DockerError::ImageInUseBuiltin));
             }
             if let Some(owner) = image_in_use_guard(r).await {
                 return Err(anyhow!(
@@ -387,7 +395,12 @@ async fn managed_container_guard(reference: &str) -> Option<String> {
         .unwrap_or_default();
     let is_mysql = name == crate::infra::mysql::CONTAINER || labels.contains_key("dn7.mysql");
     if is_mysql {
-        Some("ERR_CODE:docker.container_managed_mysql".to_string())
+        // The caller wraps this message in `anyhow!`, so it carries the full
+        // ERR_CODE: marker — sourced from the typed code so it can't drift.
+        Some(format!(
+            "ERR_CODE:{}",
+            DockerError::ContainerManagedMysql.code()
+        ))
     } else {
         None
     }
@@ -444,7 +457,7 @@ fn need_network(req: &Req) -> Result<String> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_network_name"))?;
+        .ok_or_else(|| docker_err(DockerError::MissingNetworkName))?;
     validate_token(n)?;
     Ok(n.to_string())
 }

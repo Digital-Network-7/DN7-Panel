@@ -127,9 +127,9 @@ pub(crate) async fn set_dk_settings(req: &Req) -> Result<Value> {
     let v = req
         .settings
         .clone()
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_settings"))?;
+        .ok_or_else(|| docker_err(DockerError::MissingSettings))?;
     let incoming: DockerSettings =
-        serde_json::from_value(v).map_err(|_| anyhow!("ERR_CODE:docker.bad_settings"))?;
+        serde_json::from_value(v).map_err(|_| docker_err(DockerError::BadSettings))?;
 
     // Mirror/registry lists are managed separately (Images → Advanced) and must
     // not be touched by the daemon-settings save — preserve them from the store.
@@ -141,21 +141,21 @@ pub(crate) async fn set_dk_settings(req: &Req) -> Result<Value> {
     // Validate.
     for m in incoming.mirrors.iter().chain(incoming.registries.iter()) {
         if !valid_host_line(m) {
-            return Err(anyhow!("ERR_CODE:docker.bad_host_line"));
+            return Err(docker_err(DockerError::BadHostLine));
         }
     }
     if !matches!(incoming.cgroup_driver.as_str(), "systemd" | "cgroupfs") {
-        return Err(anyhow!("ERR_CODE:docker.bad_cgroup"));
+        return Err(docker_err(DockerError::BadCgroup));
     }
     if !valid_log_size(&incoming.log_max_size) {
-        return Err(anyhow!("ERR_CODE:docker.bad_log_size"));
+        return Err(docker_err(DockerError::BadLogSize));
     }
     if incoming.log_max_file == 0 || incoming.log_max_file > 100 {
-        return Err(anyhow!("ERR_CODE:docker.bad_log_file"));
+        return Err(docker_err(DockerError::BadLogFile));
     }
     let sock = incoming.socket_path.trim();
     if !sock.starts_with('/') || !sock.ends_with(".sock") || sock.len() > 200 {
-        return Err(anyhow!("ERR_CODE:docker.bad_socket"));
+        return Err(docker_err(DockerError::BadSocket));
     }
 
     // Persist the panel-side store first (mirrors/registries take effect for
@@ -181,12 +181,12 @@ pub(crate) async fn set_registry_lists(req: &Req) -> Result<Value> {
     let v = req
         .settings
         .clone()
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_settings"))?;
+        .ok_or_else(|| docker_err(DockerError::MissingSettings))?;
     let lists: Lists =
-        serde_json::from_value(v).map_err(|_| anyhow!("ERR_CODE:docker.bad_settings"))?;
+        serde_json::from_value(v).map_err(|_| docker_err(DockerError::BadSettings))?;
     for m in lists.mirrors.iter().chain(lists.registries.iter()) {
         if !valid_host_line(m) {
-            return Err(anyhow!("ERR_CODE:docker.bad_host_line"));
+            return Err(docker_err(DockerError::BadHostLine));
         }
     }
     let mut cur = load_dk_settings();
@@ -245,7 +245,7 @@ pub(crate) async fn apply_daemon_settings(s: &DockerSettings) -> Result<()> {
     }
 
     rollback_daemon(&prev, prev_dropin, reloaded).await;
-    Err(anyhow!("ERR_CODE:docker.daemon_restart_failed"))
+    Err(docker_err(DockerError::DaemonRestartFailed))
 }
 
 /// Merge our managed keys into the existing daemon.json object (preserving any

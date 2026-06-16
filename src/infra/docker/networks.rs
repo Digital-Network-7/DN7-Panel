@@ -95,14 +95,14 @@ pub(crate) async fn set_network_ip(req: &Req) -> Result<Value> {
     let container = need_ref(req)?;
     let net = need_network(req)?;
     if net_predefined(&net) {
-        return Err(anyhow!("ERR_CODE:docker.net_predefined_ip"));
+        return Err(docker_err(DockerError::NetPredefinedIp));
     }
     let ip = req
         .ipv4
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.bad_ipv4"))?;
+        .ok_or_else(|| docker_err(DockerError::BadIpv4))?;
     valid_ipv4(ip)?;
     let dkr = dkr()?;
     let _ = dkr
@@ -152,10 +152,10 @@ pub(crate) async fn rename_network(req: &Req) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_network_name"))?;
+        .ok_or_else(|| docker_err(DockerError::MissingNetworkName))?;
     validate_name(new)?;
     if net_predefined(&old) {
-        return Err(anyhow!("ERR_CODE:docker.network_predefined"));
+        return Err(docker_err(DockerError::NetworkPredefined));
     }
     if old == new {
         return Ok(json!({ "renamed": new }));
@@ -309,7 +309,7 @@ pub(crate) async fn create_network_op(req: &Req) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.missing_network_name"))?;
+        .ok_or_else(|| docker_err(DockerError::MissingNetworkName))?;
     validate_name(name)?;
     // Driver (whitelisted; default bridge).
     let driver = req
@@ -319,7 +319,7 @@ pub(crate) async fn create_network_op(req: &Req) -> Result<Value> {
         .filter(|s| !s.is_empty())
         .unwrap_or("bridge");
     if !net_driver_allowed(driver) {
-        return Err(anyhow!("ERR_CODE:docker.bad_net_driver"));
+        return Err(docker_err(DockerError::BadNetDriver));
     }
     // Optional IPv4 IPAM config.
     let subnet = opt_trim(&req.subnet);
@@ -336,7 +336,7 @@ pub(crate) async fn create_network_op(req: &Req) -> Result<Value> {
     }
     // Gateway / range only make sense with a subnet.
     if subnet.is_none() && (gateway.is_some() || ip_range.is_some()) {
-        return Err(anyhow!("ERR_CODE:docker.net_range_needs_subnet"));
+        return Err(docker_err(DockerError::NetRangeNeedsSubnet));
     }
     let ipam = if subnet.is_some() {
         bollard::models::Ipam {
@@ -369,14 +369,12 @@ pub(crate) async fn remove_network_op(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
     if let Err(e) = dkr()?.remove_network(&r).await {
         let raw = e.to_string().to_lowercase();
-        let msg = if raw.contains("active endpoints") || raw.contains("in use") {
-            "ERR_CODE:docker.network_in_use".to_string()
+        if raw.contains("active endpoints") || raw.contains("in use") {
+            return Err(docker_err(DockerError::NetworkInUse));
         } else if raw.contains("predefined") || raw.contains("pre-defined") {
-            "ERR_CODE:docker.network_predefined".to_string()
-        } else {
-            friendly_docker_err(&e)
-        };
-        return Err(anyhow!(msg));
+            return Err(docker_err(DockerError::NetworkPredefined));
+        }
+        return Err(anyhow!(friendly_docker_err(&e)));
     }
     Ok(json!({ "removed": r }))
 }

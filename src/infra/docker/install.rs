@@ -9,7 +9,7 @@ pub(crate) fn start_install(req: &Req) -> Result<Value> {
     }
 
     if !is_root() {
-        return Err(anyhow!("ERR_CODE:docker.need_root"));
+        return Err(docker_err(DockerError::NeedRoot));
     }
 
     // "distro" (docker.io, default) | "ce"; "auto" (default) | "cn" | "global".
@@ -107,7 +107,7 @@ pub(crate) async fn run_install_detached(
         op_push(op_id, &pmsg("dk.install_done", &[]));
         Ok(())
     } else {
-        Err(anyhow!("ERR_CODE:docker.install_failed"))
+        Err(docker_err(DockerError::InstallFailed))
     }
 }
 
@@ -332,7 +332,7 @@ pub(crate) async fn stream_shell_to_op(op_id: &str, script: &str) -> Result<()> 
         op_push(op_id, line.trim());
     }
     if !status.success() {
-        return Err(anyhow!("ERR_CODE:docker.install_script_nonzero"));
+        return Err(docker_err(DockerError::InstallScriptNonzero));
     }
     Ok(())
 }

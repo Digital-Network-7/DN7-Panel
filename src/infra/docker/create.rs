@@ -31,10 +31,10 @@ pub(crate) fn enforce_create_policy(req: &Req, is_super: bool) -> Result<()> {
         .chain(req.network.as_deref());
     match crate::domain::docker::create_escalation(req.privileged.unwrap_or(false), net_modes) {
         Some(crate::domain::docker::CreateEscalation::Privileged) => {
-            Err(anyhow!("ERR_CODE:docker.privileged_requires_super"))
+            Err(docker_err(DockerError::PrivilegedRequiresSuper))
         }
         Some(crate::domain::docker::CreateEscalation::HostNetwork) => {
-            Err(anyhow!("ERR_CODE:docker.host_network_requires_super"))
+            Err(docker_err(DockerError::HostNetworkRequiresSuper))
         }
         None => Ok(()),
     }
@@ -91,7 +91,7 @@ pub(crate) fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
     let cpu_shares: Option<i64> = match req.cpu_shares {
         Some(v) if v > 0 => {
             if !(2..=262144).contains(&v) {
-                return Err(anyhow!("ERR_CODE:docker.cpu_shares_range"));
+                return Err(docker_err(DockerError::CpuSharesRange));
             }
             Some(v)
         }
@@ -192,7 +192,7 @@ fn spec_restart(req: &Req) -> Result<RestartPolicy> {
         .filter(|s| !s.is_empty())
         .unwrap_or("unless-stopped");
     if !restart_allowed(restart) {
-        return Err(anyhow!("ERR_CODE:docker.bad_restart_policy"));
+        return Err(docker_err(DockerError::BadRestartPolicy));
     }
     Ok(RestartPolicy {
         name: Some(match restart {
@@ -256,7 +256,7 @@ fn spec_attachments(req: &Req) -> Result<Vec<NetAttach>> {
         attachments.push(spec_one_attach(net, &req.mac, &req.ipv4)?);
     }
     if attachments.len() > 16 {
-        return Err(anyhow!("ERR_CODE:docker.too_many_networks"));
+        return Err(docker_err(DockerError::TooManyNetworks));
     }
     Ok(attachments)
 }
@@ -274,15 +274,15 @@ fn spec_ports(req: &Req) -> Result<PortSpec> {
         return Ok((exposed, bindings));
     };
     if ports.len() > 50 {
-        return Err(anyhow!("ERR_CODE:docker.too_many_ports"));
+        return Err(docker_err(DockerError::TooManyPorts));
     }
     for p in ports {
         if p.host < 1 || p.host > 65535 || p.container < 1 || p.container > 65535 {
-            return Err(anyhow!("ERR_CODE:docker.port_range"));
+            return Err(docker_err(DockerError::PortRange));
         }
         let proto = p.proto.as_deref().unwrap_or("tcp");
         if proto != "tcp" && proto != "udp" {
-            return Err(anyhow!("ERR_CODE:docker.bad_proto"));
+            return Err(docker_err(DockerError::BadProto));
         }
         let key = format!("{}/{}", p.container, proto);
         exposed.insert(key.clone(), HashMap::new());
@@ -308,7 +308,7 @@ fn spec_env(req: &Req) -> Result<Vec<String>> {
     let mut env: Vec<String> = Vec::new();
     let Some(envs) = &req.env else { return Ok(env) };
     if envs.len() > 100 {
-        return Err(anyhow!("ERR_CODE:docker.too_many_envs"));
+        return Err(docker_err(DockerError::TooManyEnvs));
     }
     for e in envs {
         let e = e.trim();
@@ -328,7 +328,7 @@ fn spec_binds(req: &Req) -> Result<Vec<String>> {
         return Ok(binds);
     };
     if vols.len() > 50 {
-        return Err(anyhow!("ERR_CODE:docker.too_many_mounts"));
+        return Err(docker_err(DockerError::TooManyMounts));
     }
     for v in vols {
         let host = v.host.trim();
@@ -340,7 +340,7 @@ fn spec_binds(req: &Req) -> Result<Vec<String>> {
             // Reject host-compromise bind sources (docker socket, /etc, /root,
             // kernel pseudo-fs, …) — unconditional, regardless of caller.
             if crate::domain::docker::host_bind_denied(host) {
-                return Err(anyhow!("ERR_CODE:docker.bind_host_path_denied"));
+                return Err(docker_err(DockerError::BindHostPathDenied));
             }
         } else {
             validate_name(host)?;
@@ -378,7 +378,7 @@ fn spec_cpu_mem(req: &Req) -> Result<(Option<i64>, Option<i64>)> {
         let host = host_mem_bytes();
         let bytes = mem_to_bytes(mem);
         if host > 0 && bytes > host {
-            return Err(anyhow!("ERR_CODE:docker.mem_over_host"));
+            return Err(docker_err(DockerError::MemOverHost));
         }
         memory = Some(bytes as i64);
     }
@@ -390,7 +390,7 @@ fn spec_dns(req: &Req) -> Result<Vec<String>> {
     let mut dns: Vec<String> = Vec::new();
     let Some(list) = &req.dns else { return Ok(dns) };
     if list.len() > 8 {
-        return Err(anyhow!("ERR_CODE:docker.too_many_dns"));
+        return Err(docker_err(DockerError::TooManyDns));
     }
     for d in list {
         let d = d.trim();
