@@ -140,12 +140,117 @@ pub(crate) async fn set_network_ip(req: &Req) -> Result<Value> {
     Ok(json!({ "ok": true, "ipv4": ip }))
 }
 
+/// A container's attachment on a network being recreated, preserved across a
+/// rename (the network is destroyed + recreated, so we re-apply each IPv4/MAC).
+struct NetMember {
+    id: String,
+    ipv4: Option<String>,
+    mac: Option<String>,
+}
+
+/// The recreatable configuration of a network — everything [`rename_network`]
+/// must carry over to the new name.
+struct NetSpec {
+    driver: String,
+    ipam: bollard::models::Ipam,
+    options: HashMap<String, String>,
+    labels: HashMap<String, String>,
+    internal: bool,
+    attachable: bool,
+    enable_ipv6: bool,
+}
+
+impl NetSpec {
+    fn create_opts(&self, name: &str) -> bollard::network::CreateNetworkOptions<String> {
+        bollard::network::CreateNetworkOptions {
+            name: name.to_string(),
+            check_duplicate: true,
+            driver: self.driver.clone(),
+            internal: self.internal,
+            attachable: self.attachable,
+            ingress: false,
+            ipam: self.ipam.clone(),
+            enable_ipv6: self.enable_ipv6,
+            options: self.options.clone(),
+            labels: self.labels.clone(),
+        }
+    }
+}
+
+/// Capture a network's recreatable spec + its attached members from an inspect.
+fn capture_net(n: &bollard::models::Network) -> (NetSpec, Vec<NetMember>) {
+    let spec = NetSpec {
+        driver: n.driver.clone().unwrap_or_else(|| "bridge".to_string()),
+        ipam: n.ipam.clone().unwrap_or_default(),
+        options: n.options.clone().unwrap_or_default(),
+        labels: n.labels.clone().unwrap_or_default(),
+        internal: n.internal.unwrap_or(false),
+        attachable: n.attachable.unwrap_or(false),
+        enable_ipv6: n.enable_ipv6.unwrap_or(false),
+    };
+    let members = n
+        .containers
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, c)| NetMember {
+            id,
+            ipv4: c
+                .ipv4_address
+                .filter(|s| !s.is_empty())
+                .map(|s| s.split('/').next().unwrap_or("").to_string())
+                .filter(|s| !s.is_empty()),
+            mac: c.mac_address.filter(|s| !s.is_empty()),
+        })
+        .collect();
+    (spec, members)
+}
+
+/// Detach every member from `net` (force).
+async fn detach_members(dkr: &Docker, net: &str, members: &[NetMember]) {
+    for m in members {
+        let _ = dkr
+            .disconnect_network(
+                net,
+                bollard::network::DisconnectNetworkOptions {
+                    container: m.id.clone(),
+                    force: true,
+                },
+            )
+            .await;
+    }
+}
+
+/// Re-attach every member to `net`, preserving each container's IPv4/MAC
+/// (best-effort: a single failed re-attach doesn't abort the rest).
+async fn reattach_members(dkr: &Docker, net: &str, members: &[NetMember]) {
+    use bollard::models::{EndpointIpamConfig, EndpointSettings};
+    for m in members {
+        let endpoint = EndpointSettings {
+            ipam_config: m.ipv4.clone().map(|ip| EndpointIpamConfig {
+                ipv4_address: Some(ip),
+                ..Default::default()
+            }),
+            mac_address: m.mac.clone(),
+            ..Default::default()
+        };
+        let _ = dkr
+            .connect_network(
+                net,
+                bollard::network::ConnectNetworkOptions {
+                    container: m.id.clone(),
+                    endpoint_config: endpoint,
+                },
+            )
+            .await;
+    }
+}
+
 /// Docker has no native network rename, so this recreates the network under the
 /// new name with the same driver/IPAM/options and re-attaches every container
 /// (preserving its IPv4/MAC). To avoid an IPAM subnet clash we remove the old
 /// network first, then recreate; on failure we best-effort restore the original.
 pub(crate) async fn rename_network(req: &Req) -> Result<Value> {
-    use bollard::models::{EndpointIpamConfig, EndpointSettings};
     let old = need_ref(req)?;
     let new = req
         .new_name
@@ -168,97 +273,21 @@ pub(crate) async fn rename_network(req: &Req) -> Result<Value> {
         )
         .await
         .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-
-    let driver = n.driver.clone().unwrap_or_else(|| "bridge".to_string());
-    let ipam = n.ipam.clone().unwrap_or_default();
-    let options = n.options.clone().unwrap_or_default();
-    let labels = n.labels.clone().unwrap_or_default();
-    let internal = n.internal.unwrap_or(false);
-    let attachable = n.attachable.unwrap_or(false);
-    let enable_ipv6 = n.enable_ipv6.unwrap_or(false);
-    // (container_id, ipv4, mac)
-    let members: Vec<(String, Option<String>, Option<String>)> = n
-        .containers
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(id, c)| {
-            let ipv4 = c
-                .ipv4_address
-                .filter(|s| !s.is_empty())
-                .map(|s| s.split('/').next().unwrap_or("").to_string())
-                .filter(|s| !s.is_empty());
-            let mac = c.mac_address.filter(|s| !s.is_empty());
-            (id, ipv4, mac)
-        })
-        .collect();
-
-    let mk_create = |name: &str| bollard::network::CreateNetworkOptions {
-        name: name.to_string(),
-        check_duplicate: true,
-        driver: driver.clone(),
-        internal,
-        attachable,
-        ingress: false,
-        ipam: ipam.clone(),
-        enable_ipv6,
-        options: options.clone(),
-        labels: labels.clone(),
-    };
-    let endpoint = |ipv4: &Option<String>, mac: &Option<String>| EndpointSettings {
-        ipam_config: ipv4.clone().map(|ip| EndpointIpamConfig {
-            ipv4_address: Some(ip),
-            ..Default::default()
-        }),
-        mac_address: mac.clone(),
-        ..Default::default()
-    };
+    let (spec, members) = capture_net(&n);
 
     // Detach all containers, then remove the old network (frees the subnet).
-    for (id, _, _) in &members {
-        let _ = dkr
-            .disconnect_network(
-                &old,
-                bollard::network::DisconnectNetworkOptions {
-                    container: id.clone(),
-                    force: true,
-                },
-            )
-            .await;
-    }
+    detach_members(&dkr, &old, &members).await;
     dkr.remove_network(&old)
         .await
         .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
 
     // Create the renamed network. On failure, restore the original + members.
-    if let Err(e) = dkr.create_network(mk_create(new)).await {
-        let _ = dkr.create_network(mk_create(&old)).await;
-        for (id, ipv4, mac) in &members {
-            let _ = dkr
-                .connect_network(
-                    &old,
-                    bollard::network::ConnectNetworkOptions {
-                        container: id.clone(),
-                        endpoint_config: endpoint(ipv4, mac),
-                    },
-                )
-                .await;
-        }
+    if let Err(e) = dkr.create_network(spec.create_opts(new)).await {
+        let _ = dkr.create_network(spec.create_opts(&old)).await;
+        reattach_members(&dkr, &old, &members).await;
         return Err(anyhow!(friendly_docker_err(&e)));
     }
-
-    // Re-attach every container to the renamed network.
-    for (id, ipv4, mac) in &members {
-        let _ = dkr
-            .connect_network(
-                new,
-                bollard::network::ConnectNetworkOptions {
-                    container: id.clone(),
-                    endpoint_config: endpoint(ipv4, mac),
-                },
-            )
-            .await;
-    }
+    reattach_members(&dkr, new, &members).await;
     Ok(json!({ "renamed": new }))
 }
 
@@ -321,7 +350,22 @@ pub(crate) async fn create_network_op(req: &Req) -> Result<Value> {
     if !net_driver_allowed(driver) {
         return Err(docker_err(DockerError::BadNetDriver));
     }
-    // Optional IPv4 IPAM config.
+    let opts = bollard::network::CreateNetworkOptions {
+        name: name.to_string(),
+        driver: driver.to_string(),
+        ipam: build_ipam(req)?,
+        ..Default::default()
+    };
+    dkr()?
+        .create_network(opts)
+        .await
+        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    Ok(json!({ "created": name }))
+}
+
+/// Validate + build the optional IPv4 IPAM config for `create_network` from the
+/// request's subnet/gateway/range (gateway/range require a subnet).
+fn build_ipam(req: &Req) -> Result<bollard::models::Ipam> {
     let subnet = opt_trim(&req.subnet);
     let gateway = opt_trim(&req.gateway);
     let ip_range = opt_trim(&req.ip_range);
@@ -338,30 +382,18 @@ pub(crate) async fn create_network_op(req: &Req) -> Result<Value> {
     if subnet.is_none() && (gateway.is_some() || ip_range.is_some()) {
         return Err(docker_err(DockerError::NetRangeNeedsSubnet));
     }
-    let ipam = if subnet.is_some() {
-        bollard::models::Ipam {
-            config: Some(vec![bollard::models::IpamConfig {
-                subnet,
-                gateway,
-                ip_range,
-                ..Default::default()
-            }]),
+    if subnet.is_none() {
+        return Ok(bollard::models::Ipam::default());
+    }
+    Ok(bollard::models::Ipam {
+        config: Some(vec![bollard::models::IpamConfig {
+            subnet,
+            gateway,
+            ip_range,
             ..Default::default()
-        }
-    } else {
-        Default::default()
-    };
-    let opts = bollard::network::CreateNetworkOptions {
-        name: name.to_string(),
-        driver: driver.to_string(),
-        ipam,
+        }]),
         ..Default::default()
-    };
-    dkr()?
-        .create_network(opts)
-        .await
-        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
-    Ok(json!({ "created": name }))
+    })
 }
 
 /// `remove_network`: delete, mapping in-use / predefined failures to clear codes.

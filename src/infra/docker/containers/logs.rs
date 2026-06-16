@@ -86,27 +86,34 @@ pub(crate) async fn container_logs(req: &Req) -> Result<Value> {
     // If there's no output, a constantly-restarting container is the usual
     // cause. Surface its state + last exit code so the user understands why.
     if text.trim().is_empty() {
-        if let Ok(c) = dkr.inspect_container(&r, None).await {
-            let st = c.state.as_ref();
-            let status = st
-                .and_then(|s| s.status.map(|x| format!("{x:?}").to_lowercase()))
-                .unwrap_or_default();
-            let exit = st.and_then(|s| s.exit_code).unwrap_or(0);
-            let err = st.and_then(|s| s.error.clone()).unwrap_or_default();
-            let restarts = c.restart_count.unwrap_or(0);
-            let mut hint = format!(
-                "（容器暂无日志输出）\n状态：{status} · 退出码：{exit} · 重启次数：{restarts}"
-            );
-            if !err.trim().is_empty() {
-                hint.push_str(&format!("\n错误：{}", err.trim()));
-            }
-            if restarts != 0 || status == "restarting" {
-                hint.push_str(
-                    "\n\n提示：容器可能因默认命令立即退出而不断重启。请在创建时开启「分配终端」或填写常驻启动命令（如 sleep infinity），或将重启策略设为 no。",
-                );
-            }
-            text = hint;
-        }
+        text = empty_logs_hint(&dkr, &r).await;
     }
     Ok(json!({ "logs": text }))
+}
+
+/// Build the placeholder text shown when a container produced no log output:
+/// its state + last exit code + restart count, plus a hint when it's stuck in a
+/// restart loop. Falls back to empty when the container can't be inspected.
+async fn empty_logs_hint(dkr: &Docker, r: &str) -> String {
+    let Ok(c) = dkr.inspect_container(r, None).await else {
+        return String::new();
+    };
+    let st = c.state.as_ref();
+    let status = st
+        .and_then(|s| s.status.map(|x| format!("{x:?}").to_lowercase()))
+        .unwrap_or_default();
+    let exit = st.and_then(|s| s.exit_code).unwrap_or(0);
+    let err = st.and_then(|s| s.error.clone()).unwrap_or_default();
+    let restarts = c.restart_count.unwrap_or(0);
+    let mut hint =
+        format!("（容器暂无日志输出）\n状态：{status} · 退出码：{exit} · 重启次数：{restarts}");
+    if !err.trim().is_empty() {
+        hint.push_str(&format!("\n错误：{}", err.trim()));
+    }
+    if restarts != 0 || status == "restarting" {
+        hint.push_str(
+            "\n\n提示：容器可能因默认命令立即退出而不断重启。请在创建时开启「分配终端」或填写常驻启动命令（如 sleep infinity），或将重启策略设为 no。",
+        );
+    }
+    hint
 }

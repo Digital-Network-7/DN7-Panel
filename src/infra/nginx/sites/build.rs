@@ -124,59 +124,69 @@ pub(crate) fn site_from_req(form: &SiteForm) -> Result<Site> {
 /// static root) on a site from the request, validating each.
 fn apply_site_kind(site: &mut Site, form: &SiteForm) -> Result<()> {
     match site.kind.as_str() {
-        "proxy_host" => {
-            let t = form
-                .target_url
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| nginx_err(NginxError::NeedTarget))?;
-            if !valid_host_token(t) {
-                return Err(nginx_err(NginxError::BadTarget));
-            }
-            site.target_url = t.to_string();
+        "proxy_host" => apply_proxy_host(site, form),
+        "proxy_container" => apply_proxy_container(site, form),
+        "static" => apply_static(site, form),
+        _ => Err(nginx_err(NginxError::UnknownSiteKind)),
+    }
+}
+
+/// `proxy_host`: validate + set the upstream host[:port] target.
+fn apply_proxy_host(site: &mut Site, form: &SiteForm) -> Result<()> {
+    let t = form
+        .target_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| nginx_err(NginxError::NeedTarget))?;
+    if !valid_host_token(t) {
+        return Err(nginx_err(NginxError::BadTarget));
+    }
+    site.target_url = t.to_string();
+    Ok(())
+}
+
+/// `proxy_container`: validate + set the upstream container name + port.
+fn apply_proxy_container(site: &mut Site, form: &SiteForm) -> Result<()> {
+    let c = form
+        .container
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| nginx_err(NginxError::NeedContainer))?;
+    if !valid_container_name(c) {
+        return Err(nginx_err(NginxError::BadContainer));
+    }
+    let port = form.container_port.unwrap_or(0);
+    if !valid_port(port) {
+        return Err(nginx_err(NginxError::BadContainerPort));
+    }
+    site.container = c.to_string();
+    site.container_port = port;
+    Ok(())
+}
+
+/// `static`: an existing absolute host dir (`local_root`), or a panel-managed
+/// upload dir under `<www>/<root>`.
+fn apply_static(site: &mut Site, form: &SiteForm) -> Result<()> {
+    let local = form
+        .local_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(p) = local {
+        site.local_root = valid_local_root(p)?;
+    } else {
+        let r = form
+            .root
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| nginx_err(NginxError::NeedStaticDir))?;
+        if !valid_root_segment(r) {
+            return Err(nginx_err(NginxError::BadStaticDirName));
         }
-        "proxy_container" => {
-            let c = form
-                .container
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| nginx_err(NginxError::NeedContainer))?;
-            if !valid_container_name(c) {
-                return Err(nginx_err(NginxError::BadContainer));
-            }
-            let port = form.container_port.unwrap_or(0);
-            if !valid_port(port) {
-                return Err(nginx_err(NginxError::BadContainerPort));
-            }
-            site.container = c.to_string();
-            site.container_port = port;
-        }
-        "static" => {
-            // Two sources: an existing absolute host directory (local_root), or
-            // a panel-managed upload dir under <www>/<root>.
-            let local = form
-                .local_root
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            if let Some(p) = local {
-                site.local_root = valid_local_root(p)?;
-            } else {
-                let r = form
-                    .root
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| nginx_err(NginxError::NeedStaticDir))?;
-                if !valid_root_segment(r) {
-                    return Err(nginx_err(NginxError::BadStaticDirName));
-                }
-                site.root = r.to_string();
-            }
-        }
-        _ => return Err(nginx_err(NginxError::UnknownSiteKind)),
+        site.root = r.to_string();
     }
     Ok(())
 }

@@ -139,6 +139,44 @@ pub(crate) async fn info() -> Result<Value> {
     }))
 }
 
+/// Project one managed instance (manifest + optional live container) into the
+/// list row, probing readiness for a `running` container so the UI can show
+/// "初始化中" vs "运行中".
+async fn instance_row(m: &Manifest, c: Option<&bollard::models::ContainerSummary>) -> Value {
+    let (state, status) = match c {
+        Some(c) => (
+            c.state.clone().unwrap_or_default(),
+            c.status.clone().unwrap_or_default(),
+        ),
+        None => ("missing".to_string(), "容器不存在".to_string()),
+    };
+    // A `running` container may still be initializing its data dir (queries fail
+    // until mysqld is up). `restarting` usually means an init/config failure loop.
+    let mut phase = state.clone();
+    let mut ready = false;
+    if state == "running" {
+        let pwd = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
+        ready = is_ready_cached(&m.container, &pwd).await;
+        if !ready {
+            phase = "initializing".to_string();
+        }
+    }
+    json!({
+        "id": m.id,
+        "engine": m.engine,
+        "version": m.version,
+        "container": m.container,
+        "port": m.port,
+        "exposed": m.port.is_some(),
+        "state": state,
+        "phase": phase,
+        "ready": ready,
+        "status": status,
+        "running": state == "running",
+        "created_at": m.created_at,
+    })
+}
+
 /// List DN7 Panel-managed instances (from manifests), enriched with live container
 /// state. Manifests are the source of truth for ownership — we never list a
 /// container we didn't create.
@@ -159,41 +197,7 @@ pub(crate) async fn list_instances() -> Result<Value> {
                 .map(|ns| ns.iter().any(|n| n.trim_start_matches('/') == m.container))
                 .unwrap_or(false)
         });
-        let (state, status) = match c {
-            Some(c) => (
-                c.state.clone().unwrap_or_default(),
-                c.status.clone().unwrap_or_default(),
-            ),
-            None => ("missing".to_string(), "容器不存在".to_string()),
-        };
-
-        // A `running` container may still be initializing its data dir (queries
-        // fail until mysqld is up). Probe so the UI can show "初始化中" vs
-        // "运行中". `restarting` usually means an init/config failure loop.
-        let mut phase = state.clone();
-        let mut ready = false;
-        if state == "running" {
-            let pwd = crate::infra::support::crypto::maybe_decrypt(&m.root_enc).unwrap_or_default();
-            ready = is_ready_cached(&m.container, &pwd).await;
-            if !ready {
-                phase = "initializing".to_string();
-            }
-        }
-
-        items.push(json!({
-            "id": m.id,
-            "engine": m.engine,
-            "version": m.version,
-            "container": m.container,
-            "port": m.port,
-            "exposed": m.port.is_some(),
-            "state": state,
-            "phase": phase,
-            "ready": ready,
-            "status": status,
-            "running": state == "running",
-            "created_at": m.created_at,
-        }));
+        items.push(instance_row(&m, c).await);
     }
     Ok(json!({ "instances": items }))
 }
