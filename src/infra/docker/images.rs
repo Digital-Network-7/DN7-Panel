@@ -351,7 +351,7 @@ pub(crate) fn list_dir_suggest(req: &Req) -> Result<Value> {
     let (dir, prefix): (String, String) = if input.is_empty() {
         ("/".into(), String::new())
     } else if input.ends_with('/') {
-        (input.clone(), String::new())
+        (input, String::new())
     } else {
         match input.rfind('/') {
             Some(0) => ("/".into(), input[1..].to_string()),

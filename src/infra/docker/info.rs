@@ -50,7 +50,7 @@ pub(crate) async fn docker_info() -> Result<Value> {
 
     let server_version = version.version.clone().unwrap_or_default();
     // The API version field is the closest "client" analogue without a CLI.
-    let client_version = version.api_version.clone().unwrap_or_default();
+    let client_version = version.api_version.unwrap_or_default();
 
     // Compose plugin version isn't exposed over the engine API; report empty.
     let compose_version = String::new();

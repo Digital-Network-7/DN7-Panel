@@ -81,7 +81,7 @@ pub(crate) async fn gen_self_signed_to(
         .map_err(|e| anyhow!("生成证书参数失败：{e}"))?;
     params
         .distinguished_name
-        .push(rcgen::DnType::CommonName, host.clone());
+        .push(rcgen::DnType::CommonName, host);
     // 10-year validity (self-signed; the browser will warn regardless).
     let now = std::time::SystemTime::now();
     params.not_before = now.into();

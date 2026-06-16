@@ -205,7 +205,7 @@ pub(crate) async fn container_create_body(dkr: &Docker, reference: &str) -> Resu
         "interactive": cfg.open_stdin.unwrap_or(false),
         "networks": networks,
         "hostname": cfg.hostname.clone().unwrap_or_default(),
-        "domainname": cfg.domainname.clone().unwrap_or_default(),
+        "domainname": cfg.domainname.unwrap_or_default(),
         "dns": hc.dns.clone().unwrap_or_default(),
         "cpu_shares": hc.cpu_shares.unwrap_or(0),
         "cpus": cpus,

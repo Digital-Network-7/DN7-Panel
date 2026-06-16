@@ -143,7 +143,7 @@ pub(crate) fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
         cpu_shares,
         privileged: Some(privileged),
         dns: if dns.is_empty() { None } else { Some(dns) },
-        network_mode: network.clone(),
+        network_mode: network,
         ..Default::default()
     };
 

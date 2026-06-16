@@ -79,8 +79,7 @@ pub(crate) async fn create_database(req: &Req) -> Result<Value> {
     }
     // Backtick-quote the identifier; valid_ident already restricts the charset.
     let sql = format!(
-        "CREATE DATABASE IF NOT EXISTS `{}` CHARACTER SET {} COLLATE {};",
-        db, charset, collation
+        "CREATE DATABASE IF NOT EXISTS `{db}` CHARACTER SET {charset} COLLATE {collation};"
     );
     run_stmt(&m.container, &password, &sql).await?;
     Ok(json!({ "created": db }))
@@ -98,7 +97,7 @@ pub(crate) async fn drop_database(req: &Req) -> Result<Value> {
     if SYS.contains(&db) {
         return Err(mysql_err(MysqlError::NoDropSystemDb));
     }
-    let sql = format!("DROP DATABASE `{}`;", db);
+    let sql = format!("DROP DATABASE `{db}`;");
     run_stmt(&m.container, &password, &sql).await?;
     Ok(json!({ "dropped": db }))
 }

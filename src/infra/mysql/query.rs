@@ -54,10 +54,9 @@ pub(crate) async fn run_backup_detached(op_id: &str, inst: &str) -> Result<()> {
     let script = format!(
         "rm -f /var/lib/mysql/dn7-backup-*.sql; \
          if command -v mysqldump >/dev/null 2>&1; then DUMP=mysqldump; else DUMP=mariadb-dump; fi; \
-         \"$DUMP\" -uroot --all-databases --single-transaction --routines --events > '{0}.part' 2>/tmp/dumperr; \
-         rc=$?; if [ $rc -ne 0 ]; then rm -f '{0}.part'; cat /tmp/dumperr; exit $rc; fi; \
-         mv '{0}.part' '{0}'; wc -c < '{0}'",
-        path
+         \"$DUMP\" -uroot --all-databases --single-transaction --routines --events > '{path}.part' 2>/tmp/dumperr; \
+         rc=$?; if [ $rc -ne 0 ]; then rm -f '{path}.part'; cat /tmp/dumperr; exit $rc; fi; \
+         mv '{path}.part' '{path}'; wc -c < '{path}'"
     );
     let (code, out) = exec_sh(&m.container, &password, &script).await?;
     if code != 0 {

@@ -159,11 +159,10 @@ pub fn install_global_cli() {
         "#!/bin/sh\n\
 # DN7 global CLI dispatcher (auto-generated; do not edit).\n\
 case \"$1\" in\n\
-  panel) shift; exec {bin} \"$@\" ;;\n\
+  panel) shift; exec {INSTALL_BIN} \"$@\" ;;\n\
   \"\"|-h|--help|help) echo \"usage: dn7 panel [reset|version]\"; exit 0 ;;\n\
   *) echo \"dn7: unknown component '$1' (try: dn7 panel)\" >&2; exit 1 ;;\n\
-esac\n",
-        bin = INSTALL_BIN
+esac\n"
     );
     for dir in ["/usr/local/bin", "/usr/bin"] {
         if !std::path::Path::new(dir).is_dir() {

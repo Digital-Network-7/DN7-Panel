@@ -114,9 +114,7 @@ pub(crate) async fn resolve_container_upstream(
     } else {
         let ip = container_ip(container).await.ok_or_else(|| {
             anyhow!(
-                "容器 {} 未映射端口 {} 到宿主机，且无法解析其 IP；请为容器发布该端口后重试",
-                container,
-                container_port
+                "容器 {container} 未映射端口 {container_port} 到宿主机，且无法解析其 IP；请为容器发布该端口后重试"
             )
         })?;
         Ok(format!("{ip}:{container_port}"))

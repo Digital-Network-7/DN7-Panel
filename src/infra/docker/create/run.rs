@@ -8,7 +8,7 @@ pub(crate) fn start_create(req: &Req) -> Result<Value> {
     let target = if display_name.is_empty() {
         spec.image.clone()
     } else {
-        display_name.clone()
+        display_name
     };
 
     let op_id = new_op_id();

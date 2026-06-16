@@ -181,7 +181,7 @@ fn try_decrypt(key: &[u8; 32], stored: &str) -> Result<String, String> {
 }
 
 fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn from_hex(s: &str) -> Option<Vec<u8>> {

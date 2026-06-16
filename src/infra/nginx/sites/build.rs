@@ -75,7 +75,7 @@ pub(crate) fn site_from_req(form: &SiteForm) -> Result<Site> {
     let mut site = Site {
         id: new_site_id(),
         server_name,
-        kind: kind.clone(),
+        kind,
         target_url: String::new(),
         container: String::new(),
         container_port: 0,
@@ -83,7 +83,7 @@ pub(crate) fn site_from_req(form: &SiteForm) -> Result<Site> {
         local_root: String::new(),
         ssl,
         cert_mode: cert_mode.clone(),
-        cert_name: cert_name.clone(),
+        cert_name,
         scheme: norm_scheme(form.scheme.as_deref()),
         cache: form.cache.unwrap_or(false),
         block_attacks: form.block_attacks.unwrap_or(false),

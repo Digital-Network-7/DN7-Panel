@@ -206,8 +206,8 @@ mod tests {
                 must_setup: false,
             };
             // att borrows; clone code into owned strings first.
-            let nonce = n.clone();
-            let proof = p.clone();
+            let nonce = n;
+            let proof = p;
             let attempt = LoginAttempt {
                 username: "alice",
                 source: "1.1.1.1",
