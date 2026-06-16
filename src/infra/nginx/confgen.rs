@@ -235,25 +235,25 @@ async fn render_proxy_locations(
     strip_auth: bool,
 ) -> Result<String> {
     let upstream = resolve_upstream(lo, site).await?;
-    let mut out = proxy_location(
-        "/",
-        &site.scheme,
-        &upstream,
-        site.websockets,
-        false,
-        fwd,
+    let mut out = proxy_location(&ProxyLocation {
+        path: "/",
+        scheme: &site.scheme,
+        upstream: &upstream,
+        websockets: site.websockets,
+        cache: false,
+        fwd_proto: fwd,
         strip_auth,
-    );
+    });
     if site.cache {
-        out.push_str(&proxy_location(
-            &format!("~* \\.({ASSET_EXT})$"),
-            &site.scheme,
-            &upstream,
-            site.websockets,
-            true,
-            fwd,
+        out.push_str(&proxy_location(&ProxyLocation {
+            path: &format!("~* \\.({ASSET_EXT})$"),
+            scheme: &site.scheme,
+            upstream: &upstream,
+            websockets: site.websockets,
+            cache: true,
+            fwd_proto: fwd,
             strip_auth,
-        ));
+        }));
     }
     Ok(out)
 }
@@ -291,15 +291,15 @@ async fn render_custom_locations(site: &Site, fwd: &str, strip_auth: bool) -> Re
         } else {
             with_scheme_port(&l.target, &l.scheme)
         };
-        out.push_str(&proxy_location(
-            &l.path,
-            &l.scheme,
-            &upstream,
-            l.websockets,
-            false,
-            fwd,
+        out.push_str(&proxy_location(&ProxyLocation {
+            path: &l.path,
+            scheme: &l.scheme,
+            upstream: &upstream,
+            websockets: l.websockets,
+            cache: false,
+            fwd_proto: fwd,
             strip_auth,
-        ));
+        }));
     }
     Ok(out)
 }
@@ -317,36 +317,44 @@ pub(crate) const BLOCK_EXPLOITS: &str = "    # block common exploits\n\
     if ($query_string ~* \"proc/self/environ\") { return 403; }\n\
     if ($query_string ~* \"base64_(en|de)code\\(.*\\)\") { return 403; }\n\n";
 
-/// A reverse-proxy location with sane forwarded headers. `cache` adds long
-/// expires for static assets; `websockets` adds the upgrade headers.
-pub(crate) fn proxy_location(
-    path: &str,
-    scheme: &str,
-    upstream: &str,
-    websockets: bool,
-    cache: bool,
-    fwd_proto: &str,
-    strip_auth: bool,
-) -> String {
+/// Inputs for one reverse-proxy `location` block (bundled to keep
+/// `proxy_location` within the param-count limit).
+pub(crate) struct ProxyLocation<'a> {
+    pub(crate) path: &'a str,
+    pub(crate) scheme: &'a str,
+    pub(crate) upstream: &'a str,
+    pub(crate) websockets: bool,
+    /// Adds long `expires` for static assets.
+    pub(crate) cache: bool,
+    pub(crate) fwd_proto: &'a str,
+    /// Don't forward the Basic-Auth header upstream (access list, Pass-Auth off).
+    pub(crate) strip_auth: bool,
+}
+
+/// A reverse-proxy location with sane forwarded headers.
+pub(crate) fn proxy_location(p: &ProxyLocation) -> String {
     let mut b = String::new();
-    b.push_str(&format!("    location {path} {{\n"));
-    b.push_str(&format!("        proxy_pass {scheme}://{upstream};\n"));
+    b.push_str(&format!("    location {} {{\n", p.path));
+    b.push_str(&format!(
+        "        proxy_pass {}://{};\n",
+        p.scheme, p.upstream
+    ));
     b.push_str("        proxy_set_header Host $host;\n");
     b.push_str("        proxy_set_header X-Real-IP $remote_addr;\n");
     b.push_str("        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n");
     b.push_str(&format!(
-        "        proxy_set_header X-Forwarded-Proto {fwd_proto};\n"
+        "        proxy_set_header X-Forwarded-Proto {};\n",
+        p.fwd_proto
     ));
-    // Access list with "Pass Auth" off: don't leak the Basic-Auth header upstream.
-    if strip_auth {
+    if p.strip_auth {
         b.push_str("        proxy_set_header Authorization \"\";\n");
     }
-    if websockets {
+    if p.websockets {
         b.push_str("        proxy_http_version 1.1;\n");
         b.push_str("        proxy_set_header Upgrade $http_upgrade;\n");
         b.push_str("        proxy_set_header Connection $dn7_conn_upgrade;\n");
     }
-    if cache {
+    if p.cache {
         b.push_str("        expires 7d;\n");
         b.push_str("        add_header Cache-Control \"public\";\n");
     }

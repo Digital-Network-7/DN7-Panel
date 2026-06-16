@@ -90,15 +90,17 @@ pub(crate) async fn login(
         totp_enabled: acct.totp_enabled,
         must_setup: acct.must_setup,
     };
-    use crate::app::auth::LoginOutcome;
+    use crate::app::auth::{LoginAttempt, LoginOutcome};
     match crate::app::auth::verify_login(
         &state.auth,
-        &req.username,
-        &source,
         &creds,
-        &req.nonce,
-        &req.proof,
-        &req.code,
+        &LoginAttempt {
+            username: &req.username,
+            source: &source,
+            nonce: &req.nonce,
+            proof: &req.proof,
+            code: &req.code,
+        },
     ) {
         LoginOutcome::RateLimited => api_err(StatusCode::TOO_MANY_REQUESTS, "auth.rate_limited"),
         LoginOutcome::BadCredentials => {

@@ -7,43 +7,47 @@ use crate::app::ports::account::AccountEnv;
 use crate::domain::identity::{valid_os_secret, valid_pw_format, Principal};
 use crate::domain::Error;
 
+/// A self-service password change request: the client-computed new verifier
+/// (`salt`/`hash`), the `old_verifier` proving the current password, the
+/// `plaintext` (system users only) that syncs the OS password, and `keep_token`
+/// (the caller's current session, kept alive while the rest are revoked).
+/// Bundled into a struct to keep [`change_password`] within the param limit.
+pub(crate) struct PasswordChange<'a> {
+    pub(crate) salt: &'a str,
+    pub(crate) hash: &'a str,
+    pub(crate) old_verifier: &'a str,
+    pub(crate) plaintext: &'a str,
+    pub(crate) keep_token: Option<&'a str>,
+}
+
 /// Change the caller's own panel password.
-///
-/// `salt`/`hash` are the client-computed new verifier; `old_verifier` proves
-/// the current password; `plaintext` (system users only) syncs the OS password;
-/// `keep_token` is the caller's current session (kept alive while the rest are
-/// revoked).
 pub(crate) async fn change_password(
     env: &impl AccountEnv,
     who: &Principal,
-    salt: &str,
-    hash: &str,
-    old_verifier: &str,
-    plaintext: &str,
-    keep_token: Option<&str>,
+    ch: PasswordChange<'_>,
 ) -> Result<(), Error> {
-    if !valid_pw_format(salt, hash) {
+    if !valid_pw_format(ch.salt, ch.hash) {
         return Err(Error::PasswordMalformed);
     }
     // The plaintext (system users only) is fed to `chpasswd` over stdin; reject
     // any control char that could forge an extra `user:password` record and
     // rewrite another OS account (incl. root). Checked before persisting so a
     // malformed value never leaves the panel password half-changed.
-    if !plaintext.is_empty() && !valid_os_secret(plaintext) {
+    if !ch.plaintext.is_empty() && !valid_os_secret(ch.plaintext) {
         return Err(Error::PasswordMalformed);
     }
     let current = env.current_verifier(who);
-    if current.is_empty() || old_verifier.to_lowercase() != current {
+    if current.is_empty() || ch.old_verifier.to_lowercase() != current {
         return Err(Error::OldPasswordWrong);
     }
-    env.save_password(who, salt, &hash.to_lowercase())?;
-    if !plaintext.is_empty() {
+    env.save_password(who, ch.salt, &ch.hash.to_lowercase())?;
+    if !ch.plaintext.is_empty() {
         if let Some(sys) = &who.system_user {
-            env.sync_system_password(sys, plaintext).await;
+            env.sync_system_password(sys, ch.plaintext).await;
         }
     }
     // Any other (possibly leaked) sessions die immediately; keep the caller's.
-    env.revoke_other_sessions(&who.username, keep_token);
+    env.revoke_other_sessions(&who.username, ch.keep_token);
     env.audit(&who.username, "account.password");
     Ok(())
 }
@@ -142,10 +146,27 @@ mod tests {
     const SALT: &str = "0123456789abcdef0123456789abcdef";
     const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
+    /// Terse builder for a `PasswordChange` in tests.
+    fn pc<'a>(
+        salt: &'a str,
+        hash: &'a str,
+        old_verifier: &'a str,
+        plaintext: &'a str,
+        keep_token: Option<&'a str>,
+    ) -> PasswordChange<'a> {
+        PasswordChange {
+            salt,
+            hash,
+            old_verifier,
+            plaintext,
+            keep_token,
+        }
+    }
+
     #[tokio::test]
     async fn rejects_bad_format() {
         let env = FakeEnv::default();
-        let r = change_password(&env, &principal(None), "short", HASH, "", "", None).await;
+        let r = change_password(&env, &principal(None), pc("short", HASH, "", "", None)).await;
         assert!(matches!(r, Err(Error::PasswordMalformed)));
         assert!(env.saved.borrow().is_none());
     }
@@ -156,7 +177,7 @@ mod tests {
             verifier: "the-real-verifier".into(),
             ..Default::default()
         };
-        let r = change_password(&env, &principal(None), SALT, HASH, "wrong", "", None).await;
+        let r = change_password(&env, &principal(None), pc(SALT, HASH, "wrong", "", None)).await;
         assert!(matches!(r, Err(Error::OldPasswordWrong)));
         assert!(env.saved.borrow().is_none());
     }
@@ -167,7 +188,12 @@ mod tests {
             verifier: "cur".into(),
             ..Default::default()
         };
-        let r = change_password(&env, &principal(None), SALT, HASH, "CUR", "", Some("tok")).await;
+        let r = change_password(
+            &env,
+            &principal(None),
+            pc(SALT, HASH, "CUR", "", Some("tok")),
+        )
+        .await;
         assert!(r.is_ok());
         assert_eq!(env.saved.borrow().as_ref().unwrap().0, SALT);
         assert!(env.synced.borrow().is_none()); // super-admin has no system user
@@ -185,7 +211,7 @@ mod tests {
             ..Default::default()
         };
         let who = principal(Some("alice"));
-        let r = change_password(&env, &who, SALT, HASH, "cur", "Secret123", None).await;
+        let r = change_password(&env, &who, pc(SALT, HASH, "cur", "Secret123", None)).await;
         assert!(r.is_ok());
         assert_eq!(
             env.synced.borrow().as_ref().unwrap(),

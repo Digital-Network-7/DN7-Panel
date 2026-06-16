@@ -104,51 +104,80 @@ fn clip(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
+/// Inputs for one audit line. Bundled into a struct so `write_entry` stays
+/// within the param-count limit; the public `record*` wrappers are the
+/// ergonomic facade and fill the optional `ip` / `response`.
+struct EntryArgs<'a> {
+    actor: &'a str,
+    action: &'a str,
+    target: &'a str,
+    ok: bool,
+    detail: &'a str,
+    ip: &'a str,
+    response: &'a str,
+}
+
 /// Record an action. Client IP + request headers are taken from the per-request
 /// context (set by the entry-gate middleware) when available.
 pub fn record(actor: &str, action: &str, target: &str, ok: bool, detail: &str) {
-    write_entry(actor, action, target, ok, detail, "", "");
+    write_entry(EntryArgs {
+        actor,
+        action,
+        target,
+        ok,
+        detail,
+        ip: "",
+        response: "",
+    });
 }
 
 /// Record an action with an explicit source IP (login, where the IP is computed
 /// from the connection / proxy headers). Falls back to the context IP if empty.
 pub fn record_ip(actor: &str, action: &str, target: &str, ok: bool, detail: &str, ip: &str) {
-    write_entry(actor, action, target, ok, detail, ip, "");
+    write_entry(EntryArgs {
+        actor,
+        action,
+        target,
+        ok,
+        detail,
+        ip,
+        response: "",
+    });
 }
 
 /// Record a channel op (docker/nginx/mysql) including a sanitized response.
 pub fn record_op(actor: &str, action: &str, target: &str, ok: bool, detail: &str, response: &str) {
-    write_entry(actor, action, target, ok, detail, "", response);
+    write_entry(EntryArgs {
+        actor,
+        action,
+        target,
+        ok,
+        detail,
+        ip: "",
+        response,
+    });
 }
 
-fn write_entry(
-    actor: &str,
-    action: &str,
-    target: &str,
-    ok: bool,
-    detail: &str,
-    ip: &str,
-    response: &str,
-) {
-    let ip = if ip.is_empty() {
+fn write_entry(a: EntryArgs) {
+    let ip = if a.ip.is_empty() {
         ctx_ip()
     } else {
-        ip.to_string()
+        a.ip.to_string()
     };
     let entry = Entry {
         ts: now_secs(),
-        actor: if actor.is_empty() {
+        actor: if a.actor.is_empty() {
             "?".into()
         } else {
-            clip(actor, 64)
+            clip(a.actor, 64)
         },
-        action: clip(action, 64),
-        target: clip(target, 96),
-        ok,
-        detail: clip(detail, 240),
+        action: clip(a.action, 64),
+        target: clip(a.target, 96),
+        ok: a.ok,
+        detail: clip(a.detail, 240),
         ip: clip(&ip, 64),
         headers: clip(&ctx_headers(), 2000),
-        response: clip(response, 4000),
+        response: clip(a.response, 4000),
     };
     let line = match serde_json::to_string(&entry) {
         Ok(s) => s,

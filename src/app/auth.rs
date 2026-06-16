@@ -35,42 +35,49 @@ pub(crate) enum LoginOutcome {
     RateLimited,
 }
 
-/// Orchestrate one login attempt. `username` binds the minted session; `source`
-/// keys the rate limiter. Side effects (record/clear failures, consume the
-/// challenge, mint the session) are confined here so the policy is in one place.
+/// One login attempt's request inputs. `username` binds the minted session;
+/// `source` keys the rate limiter; `nonce`/`proof`/`code` carry the challenge
+/// response. Bundled to keep [`verify_login`] within the param limit.
+pub(crate) struct LoginAttempt<'a> {
+    pub(crate) username: &'a str,
+    pub(crate) source: &'a str,
+    pub(crate) nonce: &'a str,
+    pub(crate) proof: &'a str,
+    pub(crate) code: &'a str,
+}
+
+/// Orchestrate one login attempt. Side effects (record/clear failures, consume
+/// the challenge, mint the session) are confined here so the policy is in one
+/// place.
 pub(crate) fn verify_login(
     auth: &AuthState,
-    username: &str,
-    source: &str,
     creds: &LoginCreds,
-    nonce: &str,
-    proof: &str,
-    code: &str,
+    attempt: &LoginAttempt,
 ) -> LoginOutcome {
-    if !auth.login_allowed(source) {
+    if !auth.login_allowed(attempt.source) {
         return LoginOutcome::RateLimited;
     }
     // Account must exist, the challenge must be valid+unused, and the proof must
     // match — evaluated in that order so a single-use nonce is only consumed for
     // a real account.
     let pw_ok = !creds.exp_hash.is_empty()
-        && auth.consume_challenge(nonce)
-        && proof_matches(nonce, &creds.exp_hash, proof);
+        && auth.consume_challenge(attempt.nonce)
+        && proof_matches(attempt.nonce, &creds.exp_hash, attempt.proof);
     if !pw_ok {
-        auth.record_failure(source);
+        auth.record_failure(attempt.source);
         return LoginOutcome::BadCredentials;
     }
     if creds.totp_enabled {
-        if code.trim().is_empty() {
+        if attempt.code.trim().is_empty() {
             return LoginOutcome::NeedTotp;
         }
-        if !crate::infra::totp::verify(&creds.totp_secret, code) {
-            auth.record_failure(source);
+        if !crate::infra::totp::verify(&creds.totp_secret, attempt.code) {
+            auth.record_failure(attempt.source);
             return LoginOutcome::BadTotp;
         }
     }
-    auth.clear_failures(source);
-    let token = auth.issue(username);
+    auth.clear_failures(attempt.source);
+    let token = auth.issue(attempt.username);
     LoginOutcome::Ok {
         token,
         must_setup: creds.must_setup,
@@ -99,12 +106,29 @@ mod tests {
         }
     }
 
+    /// Terse builder for a `LoginAttempt` in tests.
+    fn att<'a>(
+        username: &'a str,
+        source: &'a str,
+        nonce: &'a str,
+        proof: &'a str,
+        code: &'a str,
+    ) -> LoginAttempt<'a> {
+        LoginAttempt {
+            username,
+            source,
+            nonce,
+            proof,
+            code,
+        }
+    }
+
     #[test]
     fn good_password_no_totp_issues_session() {
         let auth = AuthState::new();
         let n = auth.issue_challenge();
         let p = proof_for(&n, "deadbeefverifier");
-        match verify_login(&auth, "alice", "1.1.1.1", &creds(false), &n, &p, "") {
+        match verify_login(&auth, &creds(false), &att("alice", "1.1.1.1", &n, &p, "")) {
             LoginOutcome::Ok { token, .. } => assert!(auth.valid(&token)),
             _ => panic!("expected Ok"),
         }
@@ -115,7 +139,11 @@ mod tests {
         let auth = AuthState::new();
         let n = auth.issue_challenge();
         assert!(matches!(
-            verify_login(&auth, "alice", "1.1.1.1", &creds(false), &n, "bogus", ""),
+            verify_login(
+                &auth,
+                &creds(false),
+                &att("alice", "1.1.1.1", &n, "bogus", "")
+            ),
             LoginOutcome::BadCredentials
         ));
     }
@@ -132,7 +160,7 @@ mod tests {
         };
         let p = proof_for(&n, "");
         assert!(matches!(
-            verify_login(&auth, "ghost", "1.1.1.1", &absent, &n, &p, ""),
+            verify_login(&auth, &absent, &att("ghost", "1.1.1.1", &n, &p, "")),
             LoginOutcome::BadCredentials
         ));
     }
@@ -143,7 +171,7 @@ mod tests {
         let n = auth.issue_challenge();
         let p = proof_for(&n, "deadbeefverifier");
         assert!(matches!(
-            verify_login(&auth, "alice", "1.1.1.1", &creds(true), &n, &p, ""),
+            verify_login(&auth, &creds(true), &att("alice", "1.1.1.1", &n, &p, "")),
             LoginOutcome::NeedTotp
         ));
     }

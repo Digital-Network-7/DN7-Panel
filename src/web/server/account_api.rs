@@ -117,11 +117,13 @@ pub(crate) async fn put_password(
     match crate::app::account::change_password(
         &env,
         &who,
-        &req.pw_salt,
-        &req.pw_hash,
-        &req.old_verifier,
-        &req.password,
-        keep.as_deref(),
+        crate::app::account::PasswordChange {
+            salt: &req.pw_salt,
+            hash: &req.pw_hash,
+            old_verifier: &req.old_verifier,
+            plaintext: &req.password,
+            keep_token: keep.as_deref(),
+        },
     )
     .await
     {
