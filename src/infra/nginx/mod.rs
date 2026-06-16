@@ -64,12 +64,12 @@ pub(crate) use crate::domain::nginx::{HttpTuning, WebGlobal};
 // Detached operation registry (setup + cert issuance) — see `opreg` submodule.
 // ---------------------------------------------------------------------------
 mod opreg;
-use opreg::{new_op_id, op_create, op_dismiss, op_finish, op_log, op_push, ops_snapshot, pmsg};
 use crate::domain::nginx::{
     norm_scheme, primary_host, valid_access_name, valid_auth_username, valid_cert_name,
     valid_client_address, valid_container_name, valid_host_token, valid_location_path, valid_port,
     valid_root_segment, valid_server_name, NginxError,
 };
+use opreg::{new_op_id, op_create, op_dismiss, op_finish, op_log, op_push, ops_snapshot, pmsg};
 
 /// Build the transitional `anyhow` error for a typed [`NginxError`]: prefixes
 /// the semantic code with the `ERR_CODE:` transport marker the `op_err_body`
@@ -100,7 +100,7 @@ use confgen::*;
 use detect::*;
 use htpasswd::*;
 use setup::*;
-pub use sites::*;
+pub(crate) use sites::*;
 use state::*;
 use store::*;
 

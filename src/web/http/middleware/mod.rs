@@ -16,7 +16,11 @@ pub(crate) use gate::*;
 /// `'unsafe-inline'` for the bundled inline styles. HSTS is sent only over
 /// HTTPS (browsers ignore it over HTTP, and sending it could strand an
 /// HTTP-only deployment).
-pub(crate) async fn security_headers(State(state): State<Shared>, req: Request, next: Next) -> Response {
+pub(crate) async fn security_headers(
+    State(state): State<Shared>,
+    req: Request,
+    next: Next,
+) -> Response {
     let https = state
         .settings
         .lock()

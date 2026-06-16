@@ -1,7 +1,9 @@
 //! Detached operation registry for the Nginx module (host setup + certificate
 //! issuance) — a thin wrapper over the shared [`crate::infra::support::op_registry`]. These ops
 //! have no reliable progress percentage, so they report indeterminate.
-use crate::infra::support::op_registry::{indeterminate_pct, opreg_forwarders, Dismiss, OpRegistry};
+use crate::infra::support::op_registry::{
+    indeterminate_pct, opreg_forwarders, Dismiss, OpRegistry,
+};
 use std::sync::OnceLock;
 
 pub(super) use crate::infra::support::op_registry::pmsg;

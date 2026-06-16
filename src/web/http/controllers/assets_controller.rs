@@ -7,7 +7,10 @@ use super::super::*;
 
 pub(crate) async fn index_page() -> Html<String> {
     let b = branding::load();
-    Html(branding::render_index(include_str!("../../ui/index.html"), &b))
+    Html(branding::render_index(
+        include_str!("../../ui/index.html"),
+        &b,
+    ))
 }
 
 /// Serve an embedded UI asset (css/js) under `/ui/...`. These are non-secret

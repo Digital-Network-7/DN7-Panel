@@ -25,7 +25,10 @@ pub(crate) async fn procs(State(state): State<Shared>, headers: header::HeaderMa
 }
 
 /// Basic panel identity (version + hostname) for the console footer/topbar.
-pub(crate) async fn panel_info(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
+pub(crate) async fn panel_info(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+) -> Response {
     if let Some(r) = require_auth(&state, &headers) {
         return r;
     }
