@@ -138,3 +138,58 @@ pub(crate) fn valid_size_value(s: &str) -> bool {
             && matches!(unit, "" | "k" | "K" | "m" | "M" | "g" | "G")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Most validators are also exercised from the infra nginx tests; these keep
+    // domain-local coverage with the rule, and cover the two that had none
+    // (`valid_size_value`, `norm_scheme`).
+
+    #[test]
+    fn size_value_accepts_bounded_units_only() {
+        assert!(valid_size_value("0"));
+        assert!(valid_size_value("1m"));
+        assert!(valid_size_value("512k"));
+        assert!(valid_size_value("2G"));
+        assert!(valid_size_value(" 100M ")); // trimmed
+                                             // No digits, bad unit, empty, oversized, or injection attempts.
+        assert!(!valid_size_value(""));
+        assert!(!valid_size_value("m"));
+        assert!(!valid_size_value("50x"));
+        assert!(!valid_size_value("1mb")); // multi-char unit
+        assert!(!valid_size_value("1.5m")); // no decimals
+        assert!(!valid_size_value("10 m")); // inner space
+        assert!(!valid_size_value("999999999999m")); // > 12 chars
+        assert!(!valid_size_value("1m;rm")); // metacharacters
+    }
+
+    #[test]
+    fn norm_scheme_only_https_or_http() {
+        assert_eq!(norm_scheme(Some("https")), "https");
+        assert_eq!(norm_scheme(Some(" https ")), "https"); // trimmed
+        assert_eq!(norm_scheme(Some("http")), "http");
+        assert_eq!(norm_scheme(Some("HTTPS")), "http"); // case-sensitive → default
+        assert_eq!(norm_scheme(Some("ftp")), "http");
+        assert_eq!(norm_scheme(None), "http");
+    }
+
+    #[test]
+    fn location_path_must_be_rooted_and_clean() {
+        assert!(valid_location_path("/"));
+        assert!(valid_location_path("/api/v1"));
+        assert!(!valid_location_path("api")); // not rooted
+        assert!(!valid_location_path("/a b")); // space
+        assert!(!valid_location_path("/a;b")); // metacharacter
+    }
+
+    #[test]
+    fn redirect_url_http_only_no_whitespace() {
+        assert!(valid_redirect_url("https://example.com/x"));
+        assert!(valid_redirect_url("http://a.test"));
+        assert!(!valid_redirect_url("ftp://x"));
+        assert!(!valid_redirect_url("https://a b.com"));
+        assert!(!valid_redirect_url("javascript:alert(1)"));
+    }
+}
