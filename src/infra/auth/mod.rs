@@ -16,12 +16,14 @@ mod challenge;
 mod rate;
 mod session;
 mod state;
+mod stepup;
 mod ticket;
 mod totp_guard;
 
 use challenge::ChallengeStore;
 use rate::RateLimiter;
 use session::SessionStore;
+use stepup::StepUpStore;
 use ticket::TicketStore;
 use totp_guard::TotpGuard;
 

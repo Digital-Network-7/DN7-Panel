@@ -86,6 +86,70 @@ pub(crate) fn verify_login(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Step-up re-authentication (high-risk operations)
+// ---------------------------------------------------------------------------
+
+/// The already-authenticated caller's stored credentials, resolved by the web
+/// boundary for a step-up re-auth. Same shape as [`LoginCreds`] minus the
+/// first-time-setup flag (step-up never bootstraps an account).
+pub(crate) struct ReauthCreds {
+    pub(crate) exp_hash: String,
+    pub(crate) totp_secret: String,
+    pub(crate) totp_enabled: bool,
+}
+
+/// Result of a step-up attempt. Unlike login this mints **no** session — on
+/// success the caller issues a short-lived step-up token instead.
+pub(crate) enum ReauthOutcome {
+    /// Password (and TOTP, if enabled) re-verified.
+    Ok,
+    /// Password verified but the account has 2FA and no code was supplied.
+    NeedTotp,
+    /// Wrong password / replayed-or-expired challenge.
+    BadCredentials,
+    /// Password ok but the TOTP code was wrong.
+    BadTotp,
+    /// The source exceeded the failure cap within the window.
+    RateLimited,
+}
+
+/// Re-verify the caller's password (challenge-response) and TOTP for a high-risk
+/// action. Mirrors [`verify_login`]'s checks — single-use challenge, constant-
+/// time proof, single-use TOTP, per-source rate limiting — but issues no
+/// session: the caller is already authenticated and only needs a fresh proof of
+/// presence before the step-up token is minted.
+pub(crate) fn verify_reauth(
+    auth: &AuthState,
+    creds: &ReauthCreds,
+    source: &str,
+    nonce: &str,
+    proof: &str,
+    code: &str,
+) -> ReauthOutcome {
+    if !auth.login_allowed(source) {
+        return ReauthOutcome::RateLimited;
+    }
+    let pw_ok = !creds.exp_hash.is_empty()
+        && auth.consume_challenge(nonce)
+        && proof_matches(nonce, &creds.exp_hash, proof);
+    if !pw_ok {
+        auth.record_failure(source);
+        return ReauthOutcome::BadCredentials;
+    }
+    if creds.totp_enabled {
+        if code.trim().is_empty() {
+            return ReauthOutcome::NeedTotp;
+        }
+        if !auth.verify_totp_single_use(&creds.totp_secret, code) {
+            auth.record_failure(source);
+            return ReauthOutcome::BadTotp;
+        }
+    }
+    auth.clear_failures(source);
+    ReauthOutcome::Ok
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,6 +198,46 @@ mod tests {
             LoginOutcome::Ok { token, .. } => assert!(auth.valid(&token)),
             _ => panic!("expected Ok"),
         }
+    }
+
+    fn reauth_creds(enabled: bool) -> ReauthCreds {
+        ReauthCreds {
+            exp_hash: "deadbeefverifier".to_string(),
+            totp_secret: "SECRET".to_string(),
+            totp_enabled: enabled,
+        }
+    }
+
+    #[test]
+    fn reauth_good_password_ok() {
+        let auth = AuthState::new();
+        let n = auth.issue_challenge();
+        let p = proof_for(&n, "deadbeefverifier");
+        assert!(matches!(
+            verify_reauth(&auth, &reauth_creds(false), "1.1.1.1", &n, &p, ""),
+            ReauthOutcome::Ok
+        ));
+    }
+
+    #[test]
+    fn reauth_wrong_password_is_bad_credentials() {
+        let auth = AuthState::new();
+        let n = auth.issue_challenge();
+        assert!(matches!(
+            verify_reauth(&auth, &reauth_creds(false), "1.1.1.1", &n, "bogus", ""),
+            ReauthOutcome::BadCredentials
+        ));
+    }
+
+    #[test]
+    fn reauth_totp_enabled_without_code_asks_for_it() {
+        let auth = AuthState::new();
+        let n = auth.issue_challenge();
+        let p = proof_for(&n, "deadbeefverifier");
+        assert!(matches!(
+            verify_reauth(&auth, &reauth_creds(true), "1.1.1.1", &n, &p, ""),
+            ReauthOutcome::NeedTotp
+        ));
     }
 
     #[test]

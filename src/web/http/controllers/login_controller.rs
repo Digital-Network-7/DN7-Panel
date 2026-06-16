@@ -198,3 +198,65 @@ pub(crate) async fn mint_ticket(
     Json(json!({ "ok": true, "data": { "ticket": state.auth.issue_ticket(&acct.username) } }))
         .into_response()
 }
+
+// ---------------------------------------------------------------------------
+// Step-up re-authentication (high-risk operations)
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+pub(crate) struct StepUpReq {
+    #[serde(default)]
+    nonce: String,
+    #[serde(default)]
+    proof: String,
+    #[serde(default)]
+    code: String,
+}
+
+/// POST /api/stepup — re-authenticate the **current** account (challenge-
+/// response password proof + TOTP when enabled) and, on success, mint a short-
+/// lived single-use step-up token. The high-risk endpoints (self-update,
+/// settings change, privileged-container exec) require this token via
+/// `require_stepup` on top of the normal session, so a stolen/abandoned session
+/// alone can't trigger an irreversible action. Reuses the login proof flow: the
+/// client fetches a challenge for its own account, then posts
+/// `sha256(nonce ":" verifier)`.
+pub(crate) async fn stepup(
+    State(state): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: header::HeaderMap,
+    Json(req): Json<StepUpReq>,
+) -> Response {
+    let acct = match current_account(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let source = {
+        let s = state.settings_guard();
+        client_ip(peer.ip(), &headers, &SecurityPolicy::new(&s)).to_string()
+    };
+    let la = resolve_login_account(&state, &acct.username);
+    let creds = crate::app::auth::ReauthCreds {
+        exp_hash: la.exp_hash,
+        totp_secret: la.totp_secret,
+        totp_enabled: la.totp_enabled,
+    };
+    use crate::app::auth::{verify_reauth, ReauthOutcome};
+    match verify_reauth(
+        &state.auth,
+        &creds,
+        &source,
+        &req.nonce,
+        &req.proof,
+        &req.code,
+    ) {
+        ReauthOutcome::RateLimited => api_err(StatusCode::TOO_MANY_REQUESTS, "auth.rate_limited"),
+        ReauthOutcome::BadCredentials => api_err(StatusCode::UNAUTHORIZED, "auth.bad_credentials"),
+        ReauthOutcome::NeedTotp => Json(json!({ "ok": false, "need_totp": true })).into_response(),
+        ReauthOutcome::BadTotp => api_err(StatusCode::UNAUTHORIZED, "auth.bad_totp"),
+        ReauthOutcome::Ok => {
+            let token = state.auth.issue_stepup(&acct.username);
+            Json(json!({ "ok": true, "data": { "token": token } })).into_response()
+        }
+    }
+}

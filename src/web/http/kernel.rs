@@ -270,3 +270,31 @@ pub(crate) fn actor_name(state: &Shared, headers: &header::HeaderMap) -> String 
         .map(|a| a.username)
         .unwrap_or_default()
 }
+
+/// The step-up token a high-risk request carries to prove a fresh re-auth,
+/// read from the `X-DN7-Stepup` header (or, for WebSocket upgrades that can't
+/// set headers, supplied by the caller from a query param).
+pub(crate) fn stepup_token(headers: &header::HeaderMap) -> String {
+    headers
+        .get("x-dn7-stepup")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Require a fresh step-up (re-auth) grant for `account` **in addition** to the
+/// session, for the highest-blast-radius operations (self-update, panel-access
+/// changes, privileged-container exec). The token is single-use and bound to
+/// the account, so a stolen session alone can't trigger these. Returns
+/// `Some(response)` to short-circuit when the grant is missing/expired/foreign.
+pub(crate) fn require_stepup(
+    state: &Shared,
+    headers: &header::HeaderMap,
+    account: &str,
+) -> Option<Response> {
+    if state.auth.consume_stepup(&stepup_token(headers), account) {
+        None
+    } else {
+        Some(api_err(StatusCode::FORBIDDEN, "auth.stepup_required"))
+    }
+}

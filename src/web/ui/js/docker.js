@@ -245,6 +245,28 @@ function buildStatusControls(holder, reload) {
   mkHoverPanel(holder, items);
 }
 
+// Resolve the WebSocket path for a container terminal, minting a fresh ticket
+// per (re)connect. For a privileged / host-namespaced container (exec into
+// which grants effective host root) it first runs a step-up re-auth and rides
+// the resulting single-use token in the `stepup` query param; the common,
+// non-privileged case stays frictionless. Re-evaluated on every reconnect, so a
+// privileged session re-prompts (its step-up token is single-use).
+async function ctnTermPath(id) {
+  let stepupQ = '';
+  let priv = false;
+  try {
+    const b = await api('/api/container/privileged', { method: 'POST', body: JSON.stringify({ container: id }) });
+    priv = !!(b.data && b.data.privileged);
+  } catch (_) { /* probe failed → treat as non-privileged; the WS gate is authoritative */ }
+  if (priv) {
+    const tok = await stepUp(tr('stepup.msg_exec'));
+    if (!tok) throw new Error(tr('stepup.cancelled'));
+    stepupQ = '&stepup=' + encodeURIComponent(tok);
+  }
+  const t = await ticket();
+  return `/api/container/terminal?ticket=${encodeURIComponent(t)}&container=${encodeURIComponent(id)}${stepupQ}`;
+}
+
 function buildContainerActions(holder, reload) {
   const id = holder.dataset.id, name = holder.dataset.name, hasShell = holder.dataset.shell === '1';
   const state = holder.dataset.state, running = state === 'running';
@@ -254,7 +276,7 @@ function buildContainerActions(holder, reload) {
   // logs belong to their own pages. Only safe read-only observe actions show
   // here — Terminal, Files, and an Advanced menu carrying Monitor.
   if (managed) {
-    if (running && hasShell) mk(tr('dk.terminal'), '', () => openTerminalModal(tr('dk.ctn_term') + name, () => ticket().then((t) => `/api/container/terminal?ticket=${encodeURIComponent(t)}&container=${encodeURIComponent(id)}`)));
+    if (running && hasShell) mk(tr('dk.terminal'), '', () => openTerminalModal(tr('dk.ctn_term') + name, () => ctnTermPath(id)));
     if (running) mk(tr('dk.files'), 'sec', () => openFileBrowser(tr('dk.ctn_files') + name, id));
     const mitems = [];
     if (running) mitems.push({ label: tr('dk.monitor'), fn: () => dkMonitor(id, name) });
@@ -267,7 +289,7 @@ function buildContainerActions(holder, reload) {
   }
   // Outermost: terminal, files, advanced (logs/networks moved into Advanced /
   // the create-edit tabs respectively).
-  if (running && hasShell) mk(tr('dk.terminal'), '', () => openTerminalModal(tr('dk.ctn_term') + name, () => ticket().then((t) => `/api/container/terminal?ticket=${encodeURIComponent(t)}&container=${encodeURIComponent(id)}`)));
+  if (running && hasShell) mk(tr('dk.terminal'), '', () => openTerminalModal(tr('dk.ctn_term') + name, () => ctnTermPath(id)));
   if (running) mk(tr('dk.files'), 'sec', () => openFileBrowser(tr('dk.ctn_files') + name, id));
   // Advanced menu (the button itself does nothing; items show on hover).
   const adv = el('button', { class: 'btn sm sec' }, tr('dk.advanced') + ' ▾');

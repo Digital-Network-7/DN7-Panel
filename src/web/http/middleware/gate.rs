@@ -33,21 +33,29 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
         .map(|ci| ci.0.ip());
     // Resolve all security decisions under one brief settings lock via the
     // policy view (allow-list verdict, entry token/path, cookie Secure attr).
-    let (allow_active, ip_ok, entry_token, entry_path, secure) = match state.settings.lock() {
-        Ok(s) => {
-            let pol = SecurityPolicy::new(&s);
-            let eff = peer.map(|p| client_ip(p, req.headers(), &pol));
-            (
-                pol.allow_list_active(),
-                eff.map(|ip| pol.ip_allowed(ip)),
-                pol.entry_token(),
-                pol.entry_path(),
-                pol.cookie_secure_attr(),
-            )
-        }
-        // Poisoned lock: behave as the permissive default (no allow-list, gate
-        // disabled) rather than locking everyone out.
-        Err(_) => (false, None, None, "/".to_string(), ""),
+    let (allow_active, ip_ok, entry_token, entry_path, secure) = {
+        // A poisoned lock means a thread panicked while holding it. The settings
+        // it guards are only ever *read* here (a snapshot for security
+        // decisions) and aren't left half-written by a panic, so recovering the
+        // guard and proceeding with the real settings is both correct and
+        // strictly safer than the old behaviour — which fell back to "no
+        // allow-list, entry gate disabled" (fail-open), silently dropping every
+        // security control exactly when something had already gone wrong.
+        let s = state.settings.lock().unwrap_or_else(|poison| {
+            tracing::warn!(
+                "settings lock poisoned; recovering to keep the allow-list + entry gate enforced"
+            );
+            poison.into_inner()
+        });
+        let pol = SecurityPolicy::new(&s);
+        let eff = peer.map(|p| client_ip(p, req.headers(), &pol));
+        (
+            pol.allow_list_active(),
+            eff.map(|ip| pol.ip_allowed(ip)),
+            pol.entry_token(),
+            pol.entry_path(),
+            pol.cookie_secure_attr(),
+        )
     };
     // Authorized-IP allow list (when configured). Loopback is always allowed.
     if allow_active {

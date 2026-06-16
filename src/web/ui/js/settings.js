@@ -102,7 +102,11 @@ function renderSettings(v) {
     };
     $('setSave').onclick = async () => {
       const m = $('setMsg');
-      if (!await confirmDanger(tr('set.save_restart_confirm'))) return;
+      // Step-up re-auth doubles as the confirmation here: changing the panel's
+      // access/security settings (bind exposure, port, HTTPS, entry path,
+      // authorized IPs, owner password) requires re-entering the password.
+      const tok = await stepUp(tr('stepup.msg_settings'));
+      if (!tok) return;
       const body = {
         port: Number($('setPort').value),
         entry_path: $('setEntry').value.trim() || '/',
@@ -112,7 +116,7 @@ function renderSettings(v) {
         public_access: $('setPublic').checked,
       };
       try {
-        await SettingsApi.save(body);
+        await SettingsApi.save(body, { 'X-DN7-Stepup': tok });
         if ($('setSave')._dirtyReset) $('setSave')._dirtyReset();
         // Settings are persisted; now restart so a changed port/bind/HTTPS
         // takes effect. The panel exits and the supervisor respawns it; the UI

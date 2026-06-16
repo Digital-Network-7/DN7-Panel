@@ -22,6 +22,7 @@ pub(crate) fn build_router(state: Shared) -> Router {
         // Authenticated API.
         .route("/api/logout", post(logout))
         .route("/api/ticket", post(mint_ticket))
+        .route("/api/stepup", post(stepup))
         .route("/api/me", get(me))
         .route("/api/profile", post(put_profile))
         .route("/api/password", post(put_password))
@@ -52,6 +53,7 @@ pub(crate) fn build_router(state: Shared) -> Router {
         .route("/api/mysql", post(mysql_op))
         .route("/api/terminal", get(terminal_ws))
         .route("/api/container/terminal", get(container_terminal_ws))
+        .route("/api/container/privileged", post(container_privileged))
         .route("/api/files/list", post(files_list))
         .route("/api/files/mkdir", post(files_mkdir))
         .route("/api/files/delete", post(files_delete))

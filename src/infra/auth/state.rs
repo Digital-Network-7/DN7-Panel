@@ -24,11 +24,19 @@ pub(crate) const CHALLENGE_TTL: Duration = Duration::from_secs(120);
 /// and would otherwise leak into the URL (history, proxy logs, screenshots).
 pub(crate) const TICKET_TTL: Duration = Duration::from_secs(30);
 
+/// Step-up (re-auth) token lifetime. Short — it's minted right before the
+/// high-risk action it authorizes and consumed immediately after.
+pub(crate) const STEPUP_TTL: Duration = Duration::from_secs(120);
+
 /// Hard caps on outstanding challenges/tickets. The challenge endpoint is
 /// public (pre-auth), so without a ceiling a flood could exhaust memory; at the
 /// cap the oldest entries are evicted to make room.
 pub(crate) const MAX_CHALLENGES: usize = 4096;
 pub(crate) const MAX_TICKETS: usize = 4096;
+
+/// Hard cap on outstanding step-up tokens (authenticated callers only, so a
+/// lower ceiling than the public challenge/ticket stores is plenty).
+pub(crate) const MAX_STEPUPS: usize = 1024;
 
 /// Web-console auth façade: bearer sessions, login challenges, one-time tickets
 /// and a per-source login rate limiter, each behind its own focused store.
@@ -39,6 +47,7 @@ pub struct AuthState {
     tickets: TicketStore,
     rate: RateLimiter,
     totp: TotpGuard,
+    stepups: StepUpStore,
 }
 
 impl AuthState {
@@ -88,6 +97,7 @@ impl AuthState {
     pub fn revoke_user(&self, user: &str, keep: Option<&str>) {
         self.sessions.revoke_user(user, keep);
         self.tickets.revoke_user(user);
+        self.stepups.revoke_user(user);
     }
 
     /// Whether `source` is currently allowed to attempt a login.
@@ -142,6 +152,19 @@ impl AuthState {
         self.tickets.consume(ticket)
     }
 
+    /// Mint a single-use step-up token bound to `user`, issued after a fresh
+    /// re-authentication and consumed by a high-risk endpoint (self-update /
+    /// settings change / privileged-container exec).
+    pub fn issue_stepup(&self, user: &str) -> String {
+        self.stepups.issue(user)
+    }
+
+    /// Consume a step-up token: true only if present, unexpired, and bound to
+    /// `user`. Removed on use (single-use).
+    pub fn consume_stepup(&self, token: &str, user: &str) -> bool {
+        self.stepups.consume(token, user)
+    }
+
     /// Prune expired entries across every store. Idempotent and cheap; the
     /// server calls this on a timer so memory doesn't rely solely on the
     /// prune-on-insert paths.
@@ -150,6 +173,7 @@ impl AuthState {
         self.challenges.sweep();
         self.tickets.sweep();
         self.rate.sweep();
+        self.stepups.sweep();
     }
 }
 

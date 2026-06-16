@@ -71,10 +71,18 @@ pub(crate) async fn put_settings(
     headers: header::HeaderMap,
     Json(req): Json<SettingsReq>,
 ) -> Response {
-    if let Err(r) = require_super(&state, &headers) {
+    // Console settings include the panel's network exposure (public-access
+    // bind, port, HTTPS, entry path, authorized IPs) and the owner credentials
+    // — super only, plus a fresh step-up re-auth so a stolen session can't
+    // quietly widen access or change the password.
+    let acct = match require_super(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if let Some(r) = require_stepup(&state, &headers, &acct.username) {
         return r;
     }
-    let actor = actor_name(&state, &headers);
+    let actor = acct.username;
     let (saved, outcome) = {
         let mut s = state.settings_guard();
         match apply_settings_update(&mut s, req) {

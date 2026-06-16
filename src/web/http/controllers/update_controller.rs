@@ -110,8 +110,14 @@ pub(crate) async fn update_apply(
     headers: header::HeaderMap,
 ) -> Response {
     // Replacing the running root binary is the highest-blast-radius op — super
-    // only (the signature + anti-rollback gates still apply on top).
-    if let Err(r) = require_super(&state, &headers) {
+    // only (the signature + anti-rollback gates still apply on top), and it
+    // additionally requires a fresh step-up re-auth so a stolen session can't
+    // push a new binary on its own.
+    let acct = match require_super(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if let Some(r) = require_stepup(&state, &headers, &acct.username) {
         return r;
     }
     if crate::platform::update::in_progress() {

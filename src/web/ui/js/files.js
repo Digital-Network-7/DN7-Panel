@@ -48,7 +48,7 @@ function fileBrowser(mount, container, startPath, rootPath) {
         const acts = el('div', { class: 'actions', style: 'margin-left:10px' });
         if (e.is_dir) { row.querySelector('.nm').onclick = () => { path = full; load(); }; }
         else { const dl = el('button', { class: 'btn sm sec' }, tr('files.download')); dl.onclick = () => downloadFile(full, container); acts.appendChild(dl); }
-        const del = el('button', { class: 'btn sm danger' }, tr('files.delete')); del.onclick = async () => { if (await confirmDanger(tr('files.confirm_del', { name: e.name }))) api('/api/files/delete', { method: 'POST', body: JSON.stringify(Object.assign({ path: full }, scope())) }).then(() => { toast(tr('common.deleted'), 'ok'); load(); }).catch((er) => toast(er.message, 'err')); };
+        const del = el('button', { class: 'btn sm danger' }, tr('files.delete')); del.onclick = async () => { const msg = e.is_dir ? tr('files.confirm_del_dir', { name: e.name }) : tr('files.confirm_del', { name: e.name }); if (await confirmDanger(msg)) api('/api/files/delete', { method: 'POST', body: JSON.stringify(Object.assign({ path: full }, scope())) }).then(() => { toast(tr('common.deleted'), 'ok'); load(); }).catch((er) => toast(er.message, 'err')); };
         acts.appendChild(del); row.appendChild(acts); list.appendChild(row);
       });
     }).catch((e) => { $('fbList').innerHTML = `<div class="empty err">${esc(e.message)}</div>`; });

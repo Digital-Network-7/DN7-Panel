@@ -55,13 +55,17 @@ pub(crate) async fn handle_terminal(socket: WebSocket, login_user: Option<String
     }
 }
 
-/// WS query for a container terminal: one-time ticket + container ref.
+/// WS query for a container terminal: one-time ticket + container ref, plus an
+/// optional step-up token required only when the target is a privileged /
+/// host-namespaced container (exec into which grants effective host root).
 #[derive(serde::Deserialize)]
 pub(crate) struct ContainerWsAuth {
     #[serde(default)]
     ticket: String,
     #[serde(default)]
     container: String,
+    #[serde(default)]
+    stepup: String,
 }
 
 pub(crate) async fn container_terminal_ws(
@@ -90,13 +94,48 @@ pub(crate) async fn container_terminal_ws(
     // A privileged / host-namespaced container grants effective host root via
     // exec, the same escalation the super-only create guardrail blocks. Restrict
     // exec into such a container to the super-admin so a non-super admin can't
-    // side-step that guardrail through an already-running container.
-    if !acct.is_super && crate::app::docker::container_is_privileged(&container).await {
-        return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+    // side-step that guardrail through an already-running container — and
+    // additionally require a fresh step-up re-auth (the highest-risk exec path),
+    // matching self-update / settings. The step-up token rides the query string
+    // because a WS upgrade can't carry the `X-DN7-Stepup` header from a browser.
+    if crate::app::docker::container_is_privileged(&container).await {
+        if !acct.is_super {
+            return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
+        }
+        if !state.auth.consume_stepup(&q.stepup, &acct.username) {
+            return api_err(StatusCode::FORBIDDEN, "auth.stepup_required");
+        }
     }
     ws.on_upgrade(move |socket| async move {
         if let Err(e) = crate::web::terminal::run_web_container_exec(socket, &container).await {
             tracing::debug!("web container terminal ended: {e}");
         }
     })
+}
+
+/// Query for the privileged-container probe.
+#[derive(serde::Deserialize)]
+pub(crate) struct ContainerPrivQuery {
+    #[serde(default)]
+    container: String,
+}
+
+/// POST /api/container/privileged — does exec into this container grant
+/// effective host root (privileged mode / host namespace)? The UI uses the
+/// answer to decide whether opening a container terminal needs a step-up
+/// re-auth first (so the common, non-privileged case stays frictionless).
+/// Admin only; the authoritative gate still lives in `container_terminal_ws`.
+pub(crate) async fn container_privileged(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(q): Json<ContainerPrivQuery>,
+) -> Response {
+    if let Err(r) = require_admin(&state, &headers) {
+        return r;
+    }
+    if q.container.is_empty() {
+        return api_err(StatusCode::BAD_REQUEST, "terminal.missing_container");
+    }
+    let privileged = crate::app::docker::container_is_privileged(&q.container).await;
+    Json(json!({ "ok": true, "data": { "privileged": privileged } })).into_response()
 }

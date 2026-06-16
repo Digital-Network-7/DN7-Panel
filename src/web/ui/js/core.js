@@ -135,6 +135,67 @@ function toast(msg, kind) {
 }
 function confirmDanger(msg) { return new Promise((res) => { modal(tr('common.confirm'), `<p style="margin:0 0 18px">${esc(msg)}</p><div class="row" style="justify-content:flex-end"><button class="btn sec" id="cdNo">${tr('common.cancel')}</button><button class="btn danger" id="cdYes">${tr('common.ok')}</button></div>`, (close) => { $('cdNo').onclick = () => { close(); res(false); }; $('cdYes').onclick = () => { close(); res(true); }; }); }); }
 
+// Step-up re-authentication for the highest-risk actions (self-update, panel
+// access/settings changes, exec into a privileged container). Prompts for the
+// current account's password (and a 2FA code if the server asks), exchanges it
+// for a single-use step-up token via /api/stepup using the same challenge-
+// response proof as login (the cleartext password never crosses the wire), and
+// resolves to that token. Resolves to null if the user cancels. The caller
+// attaches the token to the privileged request — header `X-DN7-Stepup` for HTTP
+// calls, a `stepup` query param for the (header-less) WebSocket exec upgrade.
+// Uses raw fetch (not api()) so the `need_totp` reply can reveal the 2FA field
+// instead of being thrown as an error.
+function stepUp(message) {
+  return new Promise((resolve) => {
+    const username = (Auth.me && Auth.me.username) || '';
+    const body = `
+      ${message ? `<p class="mut" style="margin:0 0 14px;font-size:13px;line-height:1.5">${esc(message)}</p>` : ''}
+      <label class="lbl">${tr('stepup.password')}</label>
+      <input id="suPw" class="field" type="password" autocomplete="current-password" />
+      <div id="suCodeWrap" class="hidden" style="margin-top:12px">
+        <label class="lbl">${tr('tfa.code')}</label>
+        <input id="suCode" class="field" inputmode="numeric" autocomplete="one-time-code" maxlength="6" />
+      </div>
+      <p class="err" id="suErr" style="margin-top:10px"></p>
+      <div class="row" style="justify-content:flex-end;gap:10px;margin-top:4px">
+        <button class="btn sec" id="suNo">${tr('common.cancel')}</button>
+        <button class="btn danger" id="suGo">${tr('stepup.confirm')}</button>
+      </div>`;
+    let settled = false;
+    modal(tr('stepup.title'), body, (close) => {
+      const err = $('suErr');
+      const finish = (val) => { if (settled) return; settled = true; close(); resolve(val); };
+      $('suNo').onclick = () => finish(null);
+      const submit = () => {
+        const pw = $('suPw').value;
+        const code = $('suCode') ? $('suCode').value.trim() : '';
+        if (!pw) { err.textContent = tr('stepup.need_pw'); return; }
+        err.textContent = ''; $('suGo').disabled = true;
+        fetch('/api/login/challenge?username=' + encodeURIComponent(username))
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(tr('login.err_conn')))))
+          .then((c) => {
+            if (!c || !c.nonce) throw new Error(tr('login.err_conn'));
+            const verifier = sha256Hex((c.salt || '') + ':' + pw);
+            const payload = { nonce: c.nonce, proof: sha256Hex(c.nonce + ':' + verifier), code };
+            return fetch('/api/stepup', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify(payload) });
+          })
+          .then(async (r) => {
+            const txt = await r.text(); let b; try { b = JSON.parse(txt); } catch (_) { b = txt; }
+            if (b && b.need_totp) { $('suCodeWrap').classList.remove('hidden'); const ci = $('suCode'); if (ci) ci.focus(); err.textContent = tr('stepup.need_code'); $('suGo').disabled = false; return; }
+            if (!r.ok || (b && b.ok === false)) throw new Error(srvMsg(b) || ('HTTP ' + r.status));
+            finish((b && b.data && b.data.token) || null);
+          })
+          .catch((e) => { err.textContent = e.message; $('suGo').disabled = false; });
+      };
+      $('suGo').onclick = submit;
+      $('suPw').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') submit(); });
+      const cc = $('suCode'); if (cc) cc.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') submit(); });
+      setTimeout(() => $('suPw').focus(), 30);
+    });
+  });
+}
+
+
 // ---- Modal ----
 function modal(title, bodyHtml, onMount, big) {
   const root = $('modalRoot');

@@ -122,16 +122,23 @@ function loadChangelog() {
 }
 
 function applyUpdate() {
-  const btn = $('uApply'); if (btn) { btn.disabled = true; btn.textContent = tr('upd.starting'); }
-  resetUpdProg();
-  api('/api/update/apply', { method: 'POST' }).then((b) => {
-    if (b.data && b.data.started === false) toast(tr('upd.in_progress'));
-    // Show the progress immediately (indeterminate until the first byte count),
-    // so a fast download still gives visible feedback.
-    setUpdBar(0, 'indet');
-    updTxt(tr('upd.starting'));
-    pollUpdStatus();
-  }).catch((e) => { toast(e.message, 'err'); if (btn) { btn.disabled = false; btn.textContent = tr('upd.retry'); } });
+  const btn = $('uApply');
+  // Applying an update replaces the running binary and restarts the panel —
+  // require a fresh step-up re-auth (also serves as the confirmation) so a
+  // stolen/idle session can't push a new build on its own.
+  stepUp(tr('stepup.msg_update')).then((tok) => {
+    if (!tok) return;
+    if (btn) { btn.disabled = true; btn.textContent = tr('upd.starting'); }
+    resetUpdProg();
+    api('/api/update/apply', { method: 'POST', headers: { 'X-DN7-Stepup': tok } }).then((b) => {
+      if (b.data && b.data.started === false) toast(tr('upd.in_progress'));
+      // Show the progress immediately (indeterminate until the first byte count),
+      // so a fast download still gives visible feedback.
+      setUpdBar(0, 'indet');
+      updTxt(tr('upd.starting'));
+      pollUpdStatus();
+    }).catch((e) => { toast(e.message, 'err'); if (btn) { btn.disabled = false; btn.textContent = tr('upd.retry'); } });
+  });
 }
 
 // Progress is presented in three phases mapped onto one bar:
