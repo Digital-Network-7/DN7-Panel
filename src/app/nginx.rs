@@ -14,12 +14,6 @@
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 
-/// Parse the capability request DTO (opaque to the app — only passed through to
-/// the infra use-case). Mirrors the previous `infra::nginx::web_dispatch` parse.
-fn parse_req(body: &Value) -> Result<crate::contracts::nginx::Req> {
-    serde_json::from_value(body.clone()).map_err(|e| anyhow!("bad nginx request: {e}"))
-}
-
 /// Run one nginx capability request. `body` is the capability JSON command
 /// already authenticated/authorized by the web boundary.
 pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
@@ -55,8 +49,16 @@ pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
             Ok(json!({ "reloaded": true }))
         }
         "setup" => crate::infra::nginx::op_setup(),
-        "add_site" => crate::infra::nginx::op_add_site(&parse_req(body)?).await,
-        "update_site" => crate::infra::nginx::op_update_site(&parse_req(body)?).await,
+        "add_site" => {
+            let cmd: crate::contracts::nginx::SiteForm = serde_json::from_value(body.clone())
+                .map_err(|e| anyhow!("bad nginx request: {e}"))?;
+            crate::infra::nginx::op_add_site(&cmd).await
+        }
+        "update_site" => {
+            let cmd: crate::contracts::nginx::SiteForm = serde_json::from_value(body.clone())
+                .map_err(|e| anyhow!("bad nginx request: {e}"))?;
+            crate::infra::nginx::op_update_site(&cmd).await
+        }
         "remove_site" => {
             let cmd = crate::contracts::nginx::RemoveSite {
                 site_id: body

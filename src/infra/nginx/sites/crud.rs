@@ -3,10 +3,10 @@ use super::*;
 
 /// Add a site. For SSL with Let's Encrypt, issuance runs detached (returns an
 /// op_id); otherwise the site is generated + validated synchronously.
-pub(crate) async fn add_site(req: &Req) -> Result<Value> {
+pub(crate) async fn add_site(form: &SiteForm) -> Result<Value> {
     let lo = layout()?;
     cleanup_orphan_confs(&lo);
-    let site = site_from_req(req)?;
+    let site = site_from_req(form)?;
     if server_name_taken(&site.server_name, &site.id) {
         return Err(anyhow!("ERR_CODE:nginx.duplicate_domain"));
     }
@@ -24,8 +24,8 @@ pub(crate) async fn add_site(req: &Req) -> Result<Value> {
                     gen_self_signed(&lo, &site).await?;
                 }
                 "manual" => {
-                    let cert = req.cert_pem.as_deref().unwrap_or("");
-                    let key = req.key_pem.as_deref().unwrap_or("");
+                    let cert = form.cert_pem.as_deref().unwrap_or("");
+                    let key = form.key_pem.as_deref().unwrap_or("");
                     if cert.trim().is_empty() || key.trim().is_empty() {
                         return Err(anyhow!("ERR_CODE:nginx.need_cert_key"));
                     }
@@ -87,9 +87,9 @@ pub(crate) async fn remove_site(cmd: &RemoveSite) -> Result<Value> {
 /// rate limits), an existing cert is reused when the SSL mode/host is unchanged
 /// and a cert is already present; manual mode keeps the stored cert when no new
 /// PEM is supplied.
-pub(crate) async fn update_site(req: &Req) -> Result<Value> {
+pub(crate) async fn update_site(form: &SiteForm) -> Result<Value> {
     let lo = layout()?;
-    let site_id = req
+    let site_id = form
         .site_id
         .as_deref()
         .map(str::trim)
@@ -102,7 +102,7 @@ pub(crate) async fn update_site(req: &Req) -> Result<Value> {
         .cloned()
         .ok_or_else(|| anyhow!("ERR_CODE:nginx.site_not_found"))?;
 
-    let mut site = site_from_req(req)?;
+    let mut site = site_from_req(form)?;
     site.id = old.id.clone();
     if server_name_taken(&site.server_name, &site.id) {
         return Err(anyhow!("ERR_CODE:nginx.duplicate_domain"));
@@ -111,7 +111,7 @@ pub(crate) async fn update_site(req: &Req) -> Result<Value> {
 
     // Prepare the cert (write manual files / regenerate self-signed as needed).
     // A Let's Encrypt (re)issue runs detached, so return its op immediately.
-    if let CertPrep::ReissueLe = prepare_site_cert(&lo, req, &old, &site).await? {
+    if let CertPrep::ReissueLe = prepare_site_cert(&lo, form, &old, &site).await? {
         return start_cert_issue(lo, site).await;
     }
 
@@ -143,7 +143,7 @@ pub(crate) enum CertPrep {
 /// is needed. No-op for non-SSL sites or sites referencing a named cert.
 pub(crate) async fn prepare_site_cert(
     lo: &Layout,
-    req: &Req,
+    form: &SiteForm,
     old: &Site,
     site: &Site,
 ) -> Result<CertPrep> {
@@ -160,8 +160,8 @@ pub(crate) async fn prepare_site_cert(
         && lo.cert_store.join(format!("{}.key", site.id)).exists();
     match site.cert_mode.as_str() {
         "manual" => {
-            let cert = req.cert_pem.as_deref().unwrap_or("");
-            let key = req.key_pem.as_deref().unwrap_or("");
+            let cert = form.cert_pem.as_deref().unwrap_or("");
+            let key = form.key_pem.as_deref().unwrap_or("");
             if !cert.trim().is_empty() && !key.trim().is_empty() {
                 write_cert_files(lo, site, cert, key)?;
             } else if !have {

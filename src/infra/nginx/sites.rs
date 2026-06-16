@@ -54,8 +54,8 @@ pub(crate) fn valid_local_root(p: &str) -> Result<String> {
 }
 
 /// Build a site from the request, validating every field.
-pub(crate) fn site_from_req(req: &Req) -> Result<Site> {
-    let server_name = req
+pub(crate) fn site_from_req(form: &SiteForm) -> Result<Site> {
+    let server_name = form
         .server_name
         .as_deref()
         .map(str::trim)
@@ -65,10 +65,10 @@ pub(crate) fn site_from_req(req: &Req) -> Result<Site> {
     if !valid_server_name(&server_name) {
         return Err(anyhow!("ERR_CODE:nginx.bad_domain"));
     }
-    let kind = req.kind.as_deref().unwrap_or("proxy_host").to_string();
-    let ssl = req.ssl.unwrap_or(false);
-    let cert_mode = req.cert_mode.as_deref().unwrap_or("self").to_string();
-    let cert_name = req
+    let kind = form.kind.as_deref().unwrap_or("proxy_host").to_string();
+    let ssl = form.ssl.unwrap_or(false);
+    let cert_mode = form.cert_mode.as_deref().unwrap_or("self").to_string();
+    let cert_name = form
         .cert_name
         .as_deref()
         .map(str::trim)
@@ -90,35 +90,35 @@ pub(crate) fn site_from_req(req: &Req) -> Result<Site> {
         ssl,
         cert_mode: cert_mode.clone(),
         cert_name: cert_name.clone(),
-        scheme: norm_scheme(req.scheme.as_deref()),
-        cache: req.cache.unwrap_or(false),
-        block_attacks: req.block_attacks.unwrap_or(false),
-        websockets: req.websockets.unwrap_or(true),
-        force_ssl: req.force_ssl.unwrap_or(true),
-        http2: req.http2.unwrap_or(true),
-        hsts: req.hsts.unwrap_or(false),
-        hsts_sub: req.hsts_sub.unwrap_or(false),
-        trust_proxy: req.trust_proxy.unwrap_or(false),
-        trust_proxy_cidrs: sanitize_trusted_cidrs(req.trust_proxy_cidrs.as_deref().unwrap_or(""))?,
+        scheme: norm_scheme(form.scheme.as_deref()),
+        cache: form.cache.unwrap_or(false),
+        block_attacks: form.block_attacks.unwrap_or(false),
+        websockets: form.websockets.unwrap_or(true),
+        force_ssl: form.force_ssl.unwrap_or(true),
+        http2: form.http2.unwrap_or(true),
+        hsts: form.hsts.unwrap_or(false),
+        hsts_sub: form.hsts_sub.unwrap_or(false),
+        trust_proxy: form.trust_proxy.unwrap_or(false),
+        trust_proxy_cidrs: sanitize_trusted_cidrs(form.trust_proxy_cidrs.as_deref().unwrap_or(""))?,
         locations: Vec::new(),
         extra_conf: String::new(),
         access_id: String::new(),
     };
 
-    apply_site_kind(&mut site, req)?;
+    apply_site_kind(&mut site, form)?;
 
     // Validate + normalize any custom path rules.
-    if let Some(locs) = &req.locations {
+    if let Some(locs) = &form.locations {
         site.locations = validate_locations(locs)?;
     }
 
     // Optional raw nginx directives (validated structurally here; nginx -t is
     // the final gate when the conf is written).
-    let extra = req.extra_conf.as_deref().unwrap_or("").trim();
+    let extra = form.extra_conf.as_deref().unwrap_or("").trim();
     validate_extra_conf(extra)?;
     site.extra_conf = extra.to_string();
 
-    site.access_id = resolve_access_ref(req)?;
+    site.access_id = resolve_access_ref(form)?;
 
     if ssl && !matches!(cert_mode.as_str(), "self" | "le" | "manual" | "named") {
         return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
@@ -128,10 +128,10 @@ pub(crate) fn site_from_req(req: &Req) -> Result<Site> {
 
 /// Set the kind-specific destination fields (proxy target / container+port /
 /// static root) on a site from the request, validating each.
-fn apply_site_kind(site: &mut Site, req: &Req) -> Result<()> {
+fn apply_site_kind(site: &mut Site, form: &SiteForm) -> Result<()> {
     match site.kind.as_str() {
         "proxy_host" => {
-            let t = req
+            let t = form
                 .target_url
                 .as_deref()
                 .map(str::trim)
@@ -143,7 +143,7 @@ fn apply_site_kind(site: &mut Site, req: &Req) -> Result<()> {
             site.target_url = t.to_string();
         }
         "proxy_container" => {
-            let c = req
+            let c = form
                 .container
                 .as_deref()
                 .map(str::trim)
@@ -152,7 +152,7 @@ fn apply_site_kind(site: &mut Site, req: &Req) -> Result<()> {
             if !valid_container_name(c) {
                 return Err(anyhow!("ERR_CODE:nginx.bad_container"));
             }
-            let port = req.container_port.unwrap_or(0);
+            let port = form.container_port.unwrap_or(0);
             if !valid_port(port) {
                 return Err(anyhow!("ERR_CODE:nginx.bad_container_port"));
             }
@@ -162,7 +162,7 @@ fn apply_site_kind(site: &mut Site, req: &Req) -> Result<()> {
         "static" => {
             // Two sources: an existing absolute host directory (local_root), or
             // a panel-managed upload dir under <www>/<root>.
-            let local = req
+            let local = form
                 .local_root
                 .as_deref()
                 .map(str::trim)
@@ -170,7 +170,7 @@ fn apply_site_kind(site: &mut Site, req: &Req) -> Result<()> {
             if let Some(p) = local {
                 site.local_root = valid_local_root(p)?;
             } else {
-                let r = req
+                let r = form
                     .root
                     .as_deref()
                     .map(str::trim)
@@ -188,8 +188,8 @@ fn apply_site_kind(site: &mut Site, req: &Req) -> Result<()> {
 }
 
 /// Resolve + validate the optional access-list reference (must exist when set).
-fn resolve_access_ref(req: &Req) -> Result<String> {
-    let access_id = req
+fn resolve_access_ref(form: &SiteForm) -> Result<String> {
+    let access_id = form
         .access_id
         .as_deref()
         .map(str::trim)
