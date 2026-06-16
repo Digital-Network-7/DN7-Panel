@@ -139,7 +139,8 @@ pub(crate) fn certs_manifest_file() -> std::path::PathBuf {
 }
 
 pub(crate) fn load_named_certs() -> Vec<NamedCert> {
-    crate::infra::json_store::load_or_default(&certs_manifest_file())
+    // Cached: read during list/conf generation; the save path busts the cache.
+    crate::infra::json_store::load_or_default_cached(&certs_manifest_file())
 }
 
 pub(crate) fn save_named_certs(certs: &[NamedCert]) -> Result<()> {

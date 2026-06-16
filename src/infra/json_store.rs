@@ -103,6 +103,26 @@ where
     })
 }
 
+/// Cached form of [`load_opt`]: returns `Some(T)` when present + parseable,
+/// `None` when absent. A successful parse (incl. a confirmed-absent file) is
+/// cached; a torn/corrupt read is not, so it self-heals next call. For types
+/// without a `Default` that are read repeatedly during conf generation.
+pub(crate) fn load_opt_cached<T>(path: &Path) -> Option<T>
+where
+    T: DeserializeOwned + Clone + Send + Sync + 'static,
+{
+    cached_load(path, |c| match c {
+        // File present: cache the parse result (Some on success). A parse failure
+        // returns None but is NOT cached, so a fixed file is picked up next call.
+        Some(s) => match serde_json::from_str::<T>(&s).ok() {
+            Some(v) => (Some(v), true),
+            None => (None, false),
+        },
+        // File absent: a stable None worth caching (busted on our own writes).
+        None => (None, true),
+    })
+}
+
 /// Drop any cached entry for `path`. Called by the save helpers so an
 /// **in-process** write is reflected immediately — without this the cache would
 /// rely on (mtime,len) changing, and a same-length rewrite (e.g. a panel-user
@@ -163,6 +183,23 @@ mod tests {
         assert_eq!(load_or_default_cached::<Vec<i64>>(&p), Vec::<i64>::new());
         std::fs::write(&p, "[7,7]").unwrap();
         assert_eq!(load_or_default_cached::<Vec<i64>>(&p), vec![7, 7]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn load_opt_cached_present_absent_and_corrupt() {
+        let p = std::env::temp_dir().join(format!("dn7-optcache-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        // Absent → None (cached).
+        assert_eq!(load_opt_cached::<Vec<i64>>(&p), None);
+        // Present → Some, picked up on a length change (busts the cache).
+        std::fs::write(&p, "[1,2]").unwrap();
+        assert_eq!(load_opt_cached::<Vec<i64>>(&p), Some(vec![1, 2]));
+        // Corrupt → None and NOT cached, so a later valid write self-heals.
+        std::fs::write(&p, "{ broken").unwrap();
+        assert_eq!(load_opt_cached::<Vec<i64>>(&p), None);
+        std::fs::write(&p, "[3]").unwrap();
+        assert_eq!(load_opt_cached::<Vec<i64>>(&p), Some(vec![3]));
         let _ = std::fs::remove_file(&p);
     }
 

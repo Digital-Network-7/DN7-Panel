@@ -1,4 +1,6 @@
-//! Setup: install host nginx / create docker nginx container (split from nginx.rs).
+//! Setup: install + configure host nginx via the system package manager
+//! (split from nginx.rs). DN7 Panel manages the host's own nginx — it does not
+//! run nginx in a container.
 use super::*;
 
 // Validation (no raw config; everything is form-driven and checked).
@@ -8,7 +10,7 @@ use super::*;
 // the `validate` submodule.
 
 // ---------------------------------------------------------------------------
-// Setup: install host nginx OR create the docker nginx container. Detached.
+// Setup: install + enable host nginx via the system package manager. Detached.
 // ---------------------------------------------------------------------------
 
 pub(crate) fn start_setup() -> Result<Value> {

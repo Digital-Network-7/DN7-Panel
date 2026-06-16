@@ -7,9 +7,9 @@
 //! version, port mapping, data volume, and the at-rest-encrypted root password.
 //! A user's own, hand-run MySQL is never listed or modified.
 //!
-//! Exposed to the web console via `web_dispatch` — a request/response JSON
-//! protocol backed by the local Docker daemon (bollard). There is no backend
-//! relay.
+//! Reached from the web console via `app::mysql::dispatch` (web → app → infra) —
+//! a request/response JSON protocol backed by the local Docker daemon (bollard).
+//! There is no backend relay.
 //!
 //! Requests (client -> panel):
 //!   {"id","op":"info"}                                  docker present? + engines/versions

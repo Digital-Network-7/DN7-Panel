@@ -55,7 +55,7 @@ src/
 **web/** — delivery (the only layer allowed to `use axum`).
 - 可做:DTO 解析、粗粒度 authn/路由门禁(是否登录、是否管理员)、响应映射、中间件(gate/CSP/audit scope)。
 - **不做能力级业务决策、不直接判断领域规则**(handler 里不得出现 `if role == "admin"` 之类的细粒度授权,或 `if site.trust_proxy && ...` 之类的领域分支——这些归 app/domain)。细粒度授权一律调用 app/domain 暴露的授权判定接口。
-- `web/state.rs` 只承载 facade,不再堆共享对象。
+- web 的 `Shared`/`WebState` facade(定义于 `web/server.rs`)只承载 facade(auth/settings/collector/cfg + 访问器),不堆共享对象。
 
 **platform/** — host runtime/lifecycle only. 不写业务编排。
 

@@ -3,8 +3,8 @@
 //! A small axum HTTP server bound to `0.0.0.0:<port>` (default 1080) that
 //! exposes the panel's existing capabilities (monitoring, terminal, Docker,
 //! Nginx, MySQL, file transfer, processes) directly on the host — no backend
-//! round-trip. It reuses the same per-capability JSON dispatchers the backend
-//! relay uses (`docker::web_dispatch`, etc.) and the same PTY/file code.
+//! round-trip. Each capability request is routed web → `app::<cap>::dispatch`
+//! → `infra::<cap>`, sharing the same PTY/file code.
 //!
 //! SECURITY MODEL (per product decision): the console binds to all interfaces
 //! over plain HTTP and authenticates with an auto-generated random password.

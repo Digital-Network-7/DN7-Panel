@@ -75,8 +75,10 @@ pub(crate) async fn write_site_conf(
         ));
     }
 
-    std::fs::create_dir_all(&lo.confd)?;
-    std::fs::write(conf_path(lo, &site.id), conf)?;
+    // Async fs so the conf write doesn't block the tokio worker (this runs from
+    // every nginx admin handler).
+    tokio::fs::create_dir_all(&lo.confd).await?;
+    tokio::fs::write(conf_path(lo, &site.id), conf).await?;
     Ok(())
 }
 
@@ -124,8 +126,10 @@ pub(crate) async fn write_unavailable_conf(lo: &Layout, site: &Site) -> Result<(
         ));
     }
 
-    std::fs::create_dir_all(&lo.confd)?;
-    std::fs::write(conf_path(lo, &site.id), conf)?;
+    // Async fs so the conf write doesn't block the tokio worker (this runs from
+    // every nginx admin handler).
+    tokio::fs::create_dir_all(&lo.confd).await?;
+    tokio::fs::write(conf_path(lo, &site.id), conf).await?;
     Ok(())
 }
 

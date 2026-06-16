@@ -1,7 +1,8 @@
 //! On-box Docker management for the web console.
 //!
 //! A request/response JSON protocol backed by the local Docker daemon (bollard,
-//! no `docker` CLI), invoked directly by `web::server` via `web_dispatch`.
+//! no `docker` CLI). Reached from the web boundary via `app::docker::dispatch`
+//! (web → app → infra); this module owns the authoritative per-op match.
 //!
 //! Every request carries an `id`. Operations are a
 //! fixed whitelist (no arbitrary command pass-through); user-supplied values
