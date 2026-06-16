@@ -13,26 +13,31 @@ pub(crate) use run::*;
 /// **only for the super-admin**, who opts in by explicitly requesting them. A
 /// non-super caller requesting either is rejected before the container is built.
 /// The bind-mount deny-list is enforced unconditionally in `spec_binds`.
+///
+/// The *rule* (what counts as a host-escape) lives in `domain::docker`; this
+/// adapter only supplies the request's facts, applies the super-admin decision,
+/// and maps the verdict to the transitional `ERR_CODE:` channel.
 pub(crate) fn enforce_create_policy(req: &Req, is_super: bool) -> Result<()> {
     if is_super {
         return Ok(());
     }
-    if req.privileged.unwrap_or(false) {
-        return Err(anyhow!("ERR_CODE:docker.privileged_requires_super"));
-    }
-    // Inspect every requested network attachment (the multi-net `networks` list
-    // and the single `network` field) for a host/container namespace.
-    let host_net = req
+    // Every requested network attachment (the multi-net `networks` list + the
+    // single `network` field).
+    let net_modes = req
         .networks
         .iter()
         .flatten()
-        .map(|a| a.network.trim())
-        .chain(req.network.as_deref().map(str::trim))
-        .any(crate::domain::docker::network_mode_privileged);
-    if host_net {
-        return Err(anyhow!("ERR_CODE:docker.host_network_requires_super"));
+        .map(|a| a.network.as_str())
+        .chain(req.network.as_deref());
+    match crate::domain::docker::create_escalation(req.privileged.unwrap_or(false), net_modes) {
+        Some(crate::domain::docker::CreateEscalation::Privileged) => {
+            Err(anyhow!("ERR_CODE:docker.privileged_requires_super"))
+        }
+        Some(crate::domain::docker::CreateEscalation::HostNetwork) => {
+            Err(anyhow!("ERR_CODE:docker.host_network_requires_super"))
+        }
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// Build a bollard create config from a validated request. Every user value is
