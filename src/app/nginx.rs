@@ -67,10 +67,34 @@ pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
             crate::infra::nginx::op_remove_site(&cmd).await
         }
         "create_cert" => crate::infra::nginx::op_create_cert(&parse_req(body)?).await,
-        "renew_cert" => crate::infra::nginx::op_renew_cert(&parse_req(body)?).await,
-        "delete_cert" => crate::infra::nginx::op_delete_cert(&parse_req(body)?).await,
+        "renew_cert" => {
+            let cmd = crate::contracts::nginx::RenewCert {
+                cert_name: body
+                    .get("cert_name")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            };
+            crate::infra::nginx::op_renew_cert(&cmd).await
+        }
+        "delete_cert" => {
+            let cmd = crate::contracts::nginx::DeleteCert {
+                cert_name: body
+                    .get("cert_name")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            };
+            crate::infra::nginx::op_delete_cert(&cmd).await
+        }
         "save_access" => crate::infra::nginx::op_save_access(&parse_req(body)?).await,
-        "delete_access" => crate::infra::nginx::op_delete_access(&parse_req(body)?).await,
+        "delete_access" => {
+            let cmd = crate::contracts::nginx::DeleteAccess {
+                access_id: body
+                    .get("access_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            };
+            crate::infra::nginx::op_delete_access(&cmd).await
+        }
         other => Err(anyhow!("unsupported op: {other}")),
     }
 }

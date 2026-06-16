@@ -151,8 +151,8 @@ fn build_access_users(req: &Req, old: Option<&AccessList>) -> Result<Vec<AccessU
 }
 
 /// Delete an access list (refused while a site still uses it).
-pub(crate) async fn delete_access_op(req: &Req) -> Result<Value> {
-    let id = req
+pub(crate) async fn delete_access_op(cmd: &DeleteAccess) -> Result<Value> {
+    let id = cmd
         .access_id
         .as_deref()
         .map(str::trim)

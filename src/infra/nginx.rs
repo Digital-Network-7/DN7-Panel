@@ -40,6 +40,7 @@ pub(crate) use crate::contracts::nginx::RemoveSite;
 /// external-protocol source of truth); re-exported here so the nginx submodules
 /// keep referring to `Req` via `use super::*` unchanged.
 pub(crate) use crate::contracts::nginx::Req;
+pub(crate) use crate::contracts::nginx::{DeleteAccess, DeleteCert, RenewCert};
 
 /// A managed site (domain entity), re-exported from `domain::nginx` so the
 /// nginx submodules keep referring to `Site`/`Location` unchanged.
@@ -166,17 +167,17 @@ pub(crate) async fn op_remove_site(cmd: &RemoveSite) -> Result<Value> {
 pub(crate) async fn op_create_cert(req: &Req) -> Result<Value> {
     create_cert(req).await
 }
-pub(crate) async fn op_renew_cert(req: &Req) -> Result<Value> {
-    renew_cert(req).await
+pub(crate) async fn op_renew_cert(cmd: &RenewCert) -> Result<Value> {
+    renew_cert(cmd).await
 }
-pub(crate) async fn op_delete_cert(req: &Req) -> Result<Value> {
-    delete_cert(req).await
+pub(crate) async fn op_delete_cert(cmd: &DeleteCert) -> Result<Value> {
+    delete_cert(cmd).await
 }
 pub(crate) async fn op_save_access(req: &Req) -> Result<Value> {
     save_access_op(req).await
 }
-pub(crate) async fn op_delete_access(req: &Req) -> Result<Value> {
-    delete_access_op(req).await
+pub(crate) async fn op_delete_access(cmd: &DeleteAccess) -> Result<Value> {
+    delete_access_op(cmd).await
 }
 pub(crate) async fn op_reload() -> Result<()> {
     reload().await

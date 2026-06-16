@@ -126,9 +126,9 @@ fn write_manual_cert(lo: &Layout, req: &Req, name: &str) -> Result<()> {
 
 /// Renew a named cert in place: re-issue (LE) or regenerate (self-signed).
 /// Manual certs have no automated renewal.
-pub(crate) async fn renew_cert(req: &Req) -> Result<Value> {
+pub(crate) async fn renew_cert(cmd: &RenewCert) -> Result<Value> {
     let lo = layout()?;
-    let name = req
+    let name = cmd
         .cert_name
         .as_deref()
         .map(str::trim)
@@ -159,9 +159,9 @@ pub(crate) async fn renew_cert(req: &Req) -> Result<Value> {
 }
 
 /// Delete a standalone named certificate. Refuses while a site still uses it.
-pub(crate) async fn delete_cert(req: &Req) -> Result<Value> {
+pub(crate) async fn delete_cert(cmd: &DeleteCert) -> Result<Value> {
     let lo = layout()?;
-    let name = req
+    let name = cmd
         .cert_name
         .as_deref()
         .map(str::trim)

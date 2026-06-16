@@ -145,3 +145,18 @@ pub(crate) struct AccessUserInput {
 pub(crate) struct RemoveSite {
     pub(crate) site_id: Option<String>,
 }
+
+/// `renew_cert`: re-issue / regenerate a standalone named cert.
+pub(crate) struct RenewCert {
+    pub(crate) cert_name: Option<String>,
+}
+
+/// `delete_cert`: remove a standalone named cert (refused while in use).
+pub(crate) struct DeleteCert {
+    pub(crate) cert_name: Option<String>,
+}
+
+/// `delete_access`: remove an access list (refused while in use).
+pub(crate) struct DeleteAccess {
+    pub(crate) access_id: Option<String>,
+}
