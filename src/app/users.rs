@@ -12,6 +12,7 @@
 //! enforce access), and every admin-only capability (docker/nginx/mysql/update/
 //! branding/user-management) is denied for them server-side.
 
+use crate::app::ports::users::UsersEnv;
 use crate::domain::Error;
 use crate::infra::system;
 
@@ -47,6 +48,39 @@ pub fn find(username: &str) -> Option<PanelUser> {
     load().into_iter().find(|u| u.username == username)
 }
 
+/// The live [`UsersEnv`]: real `useradd`/`userdel` over `infra::system` and the
+/// `users.json` store under `USERS_LOCK`. The public `create`/`delete` wrappers
+/// run the generic use-cases against this; tests swap in an in-memory fake.
+struct LiveUsersEnv;
+
+impl UsersEnv for LiveUsersEnv {
+    async fn provision(
+        &self,
+        username: &str,
+        full_name: &str,
+        admin: bool,
+        password: &str,
+    ) -> anyhow::Result<()> {
+        system::provision(username, full_name, admin, password).await
+    }
+
+    async fn remove(&self, username: &str) -> anyhow::Result<()> {
+        system::remove(username).await
+    }
+
+    fn getpwnam(&self, username: &str) -> Option<(u32, String)> {
+        system::getpwnam(username)
+    }
+
+    fn mutate(&self, f: &mut dyn FnMut(&mut Vec<PanelUser>) -> Result<()>) -> Result<()> {
+        mutate(|users| f(users))
+    }
+
+    fn exists(&self, username: &str) -> bool {
+        find(username).is_some()
+    }
+}
+
 /// A Linux username: lowercase start, then lowercase/digits/_/-; 1..=32 chars.
 /// Conservative (NAME_REGEX-style) so it can't smuggle shell/flag characters.
 /// Validators live in the domain layer; re-exported so existing call sites
@@ -70,16 +104,28 @@ pub struct NewUser<'a> {
 }
 
 pub async fn create(req: &NewUser<'_>) -> Result<PanelUser> {
+    create_with(&LiveUsersEnv, req).await
+}
+
+/// Create a panel user against `env` (the live infra, or a test fake). Order:
+/// validate → fast-fail existence → provision the OS account → persist, with a
+/// re-check under the store lock to close the create-vs-create race.
+async fn create_with(env: &impl UsersEnv, req: &NewUser<'_>) -> Result<PanelUser> {
     validate_new_user(req)?;
     // Fast-fail before any system-account side effects; re-checked under the
     // mutation lock below to close the create-vs-create race.
-    if find(req.username).is_some() {
+    if env.exists(req.username) {
         return Err(Error::UserExists);
     }
-    provision_system_account(req)
-        .await
-        .map_err(|e| Error::Persist(e.to_string()))?;
-    let (uid, _home) = system::getpwnam(req.username).unwrap_or((0, String::new()));
+    env.provision(
+        req.username,
+        req.full_name,
+        req.role == "admin",
+        req.password,
+    )
+    .await
+    .map_err(|e| Error::Persist(e.to_string()))?;
+    let (uid, _home) = env.getpwnam(req.username).unwrap_or((0, String::new()));
     let user = PanelUser {
         username: req.username.to_string(),
         pw_salt: req.pw_salt.to_string(),
@@ -93,7 +139,9 @@ pub async fn create(req: &NewUser<'_>) -> Result<PanelUser> {
         uid,
     };
     let u = user.clone();
-    mutate(move |users| {
+    let mut pushed = Some(u);
+    env.mutate(&mut |users| {
+        let u = pushed.take().ok_or(Error::UserExists)?;
         if users.iter().any(|x| x.username == u.username) {
             return Err(Error::UserExists);
         }
@@ -123,29 +171,22 @@ fn validate_new_user(req: &NewUser<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Provision the backing system account for a new panel user (delegates the OS
-/// side to `system_account`). Returns the infra `anyhow` error; the caller wraps
-/// it into `Error::Persist`.
-async fn provision_system_account(req: &NewUser<'_>) -> anyhow::Result<()> {
-    system::provision(
-        req.username,
-        req.full_name,
-        req.role == "admin",
-        req.password,
-    )
-    .await
-}
-
 /// Delete a panel user and remove the backing system account (with its home).
 pub async fn delete(username: &str) -> Result<()> {
-    if find(username).is_none() {
+    delete_with(&LiveUsersEnv, username).await
+}
+
+/// Delete a panel user against `env`. Order: existence check → remove the OS
+/// account → drop from the store.
+async fn delete_with(env: &impl UsersEnv, username: &str) -> Result<()> {
+    if !env.exists(username) {
         return Err(Error::UserNotFound);
     }
     // Remove the OS account + home (best-effort: keep going if already gone).
-    system::remove(username)
+    env.remove(username)
         .await
         .map_err(|e| Error::Persist(e.to_string()))?;
-    mutate(|users| {
+    env.mutate(&mut |users| {
         users.retain(|u| u.username != username);
         Ok(())
     })
@@ -161,4 +202,174 @@ pub fn update<F: FnOnce(&mut PanelUser)>(username: &str, f: F) -> Result<()> {
         f(u);
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// In-memory [`UsersEnv`] fake: records the OS side effects and holds the
+    /// store in a RefCell so the create/delete orchestration can be exercised
+    /// without touching the OS or disk.
+    #[derive(Default)]
+    struct FakeEnv {
+        users: RefCell<Vec<PanelUser>>,
+        provisioned: RefCell<Vec<String>>,
+        removed: RefCell<Vec<String>>,
+        /// When set, provision() fails (simulates a useradd error).
+        fail_provision: bool,
+        /// Extra username to inject into the store right before the locked
+        /// re-check, to simulate a concurrent create winning the race.
+        race_inject: Option<String>,
+    }
+
+    impl UsersEnv for FakeEnv {
+        async fn provision(&self, u: &str, _f: &str, _a: bool, _p: &str) -> anyhow::Result<()> {
+            if self.fail_provision {
+                anyhow::bail!("useradd failed");
+            }
+            self.provisioned.borrow_mut().push(u.to_string());
+            Ok(())
+        }
+        async fn remove(&self, u: &str) -> anyhow::Result<()> {
+            self.removed.borrow_mut().push(u.to_string());
+            Ok(())
+        }
+        fn getpwnam(&self, _u: &str) -> Option<(u32, String)> {
+            Some((1001, "/home/x".into()))
+        }
+        fn mutate(&self, f: &mut dyn FnMut(&mut Vec<PanelUser>) -> Result<()>) -> Result<()> {
+            let mut users = self.users.borrow_mut();
+            if let Some(name) = &self.race_inject {
+                if !users.iter().any(|u| &u.username == name) {
+                    users.push(mk_user(name));
+                }
+            }
+            f(&mut users)
+        }
+        fn exists(&self, u: &str) -> bool {
+            self.users.borrow().iter().any(|x| x.username == u)
+        }
+    }
+
+    fn mk_user(name: &str) -> PanelUser {
+        PanelUser {
+            username: name.into(),
+            pw_salt: "0".repeat(32),
+            pw_hash: "a".repeat(64),
+            role: "user".into(),
+            full_name: String::new(),
+            nickname: String::new(),
+            avatar: String::new(),
+            totp_secret: String::new(),
+            totp_enabled: false,
+            uid: 0,
+        }
+    }
+
+    /// Build a valid request with owned salt/hash held by the caller's bindings.
+    fn fixtures() -> (String, String) {
+        ("0".repeat(32), "a".repeat(64))
+    }
+    fn req<'a>(username: &'a str, role: &'a str, salt: &'a str, hash: &'a str) -> NewUser<'a> {
+        NewUser {
+            username,
+            role,
+            full_name: "Test User",
+            pw_salt: salt,
+            pw_hash: hash,
+            password: "s3cret-pw",
+        }
+    }
+
+    #[tokio::test]
+    async fn create_happy_path_provisions_and_persists() {
+        let env = FakeEnv::default();
+        let (s, h) = fixtures();
+        let u = create_with(&env, &req("alice", "admin", &s, &h))
+            .await
+            .unwrap();
+        assert_eq!(u.username, "alice");
+        assert_eq!(u.role, "admin");
+        assert_eq!(env.provisioned.borrow().as_slice(), ["alice"]);
+        assert_eq!(env.users.borrow().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_rejects_invalid_before_side_effects() {
+        let env = FakeEnv::default();
+        let (s, h) = fixtures();
+        // Bad username → UsernameInvalid, and no OS provisioning happened.
+        let e = create_with(&env, &req("Bad Name", "user", &s, &h))
+            .await
+            .unwrap_err();
+        assert!(matches!(e, Error::UsernameInvalid));
+        assert!(env.provisioned.borrow().is_empty());
+        // Bad role.
+        let e = create_with(&env, &req("ok", "wheel", &s, &h))
+            .await
+            .unwrap_err();
+        assert!(matches!(e, Error::RoleInvalid));
+    }
+
+    #[tokio::test]
+    async fn create_fast_fails_on_existing_user() {
+        let env = FakeEnv::default();
+        env.users.borrow_mut().push(mk_user("alice"));
+        let (s, h) = fixtures();
+        let e = create_with(&env, &req("alice", "user", &s, &h))
+            .await
+            .unwrap_err();
+        assert!(matches!(e, Error::UserExists));
+        assert!(env.provisioned.borrow().is_empty()); // never provisioned
+    }
+
+    #[tokio::test]
+    async fn create_loses_race_rechecks_under_lock() {
+        // Passes the fast-fail check, provisions, then a concurrent create wins
+        // (injected into the store) → the locked re-check rejects with UserExists.
+        let env = FakeEnv {
+            race_inject: Some("alice".into()),
+            ..Default::default()
+        };
+        let (s, h) = fixtures();
+        let e = create_with(&env, &req("alice", "user", &s, &h))
+            .await
+            .unwrap_err();
+        assert!(matches!(e, Error::UserExists));
+        assert_eq!(env.provisioned.borrow().as_slice(), ["alice"]); // OS side ran
+        assert_eq!(env.users.borrow().len(), 1); // only the racing one
+    }
+
+    #[tokio::test]
+    async fn create_surfaces_provision_failure() {
+        let env = FakeEnv {
+            fail_provision: true,
+            ..Default::default()
+        };
+        let (s, h) = fixtures();
+        let e = create_with(&env, &req("alice", "user", &s, &h))
+            .await
+            .unwrap_err();
+        assert!(matches!(e, Error::Persist(_)));
+        assert!(env.users.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_removes_os_account_and_store_entry() {
+        let env = FakeEnv::default();
+        env.users.borrow_mut().push(mk_user("alice"));
+        delete_with(&env, "alice").await.unwrap();
+        assert_eq!(env.removed.borrow().as_slice(), ["alice"]);
+        assert!(env.users.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_missing_user_errors_before_os_call() {
+        let env = FakeEnv::default();
+        let e = delete_with(&env, "ghost").await.unwrap_err();
+        assert!(matches!(e, Error::UserNotFound));
+        assert!(env.removed.borrow().is_empty());
+    }
 }
