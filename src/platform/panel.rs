@@ -38,6 +38,11 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     // Auto-renew Let's Encrypt / self-signed certs before they expire.
     crate::infra::nginx::spawn_cert_renewal();
 
+    // Periodically re-resolve proxy_container upstreams so a site whose backing
+    // container's IP drifted (recreate) heals, and one whose container vanished
+    // out-of-band fails closed (503) instead of proxying a recycled IP.
+    crate::infra::nginx::spawn_upstream_resync();
+
     // Background self-update checker (GitHub + dn7.cn). Applies automatically
     // only when auto-update is enabled in settings; otherwise just keeps the
     // "update available" hint warm.
