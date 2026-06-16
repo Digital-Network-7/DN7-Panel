@@ -123,9 +123,9 @@ fn layers_respect_dependency_rules() {
 /// was split into a directory keeps a precise whitelist (e.g. only
 /// `nginx/model.rs`, not every `model.rs`).
 const DOMAIN_SERDE_WHITELIST: &[&str] = &[
-    "core/identity.rs",
-    "core/settings.rs",
-    "core/mysql.rs",
+    "core/identity/model.rs",
+    "core/settings/model.rs",
+    "core/mysql/catalog.rs",
     "core/nginx/model.rs",
 ];
 
