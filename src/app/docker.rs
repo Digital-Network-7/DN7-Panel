@@ -39,3 +39,12 @@ pub(crate) async fn dispatch(body: &Value, is_super: bool) -> Result<Value> {
         _ => crate::infra::docker::run_op(&req, is_super).await,
     }
 }
+
+/// Whether `container` is privileged / host-namespaced — a `docker exec` into it
+/// is effectively host root. The web layer uses this to gate the container
+/// terminal on the super-admin (a non-super admin may exec into ordinary
+/// containers, but not host-escape ones). Fails closed: an inspect error or a
+/// missing daemon resolves to `true`.
+pub(crate) async fn container_is_privileged(container: &str) -> bool {
+    crate::infra::docker::container_is_privileged(container).await
+}

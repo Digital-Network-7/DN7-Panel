@@ -79,13 +79,20 @@ pub(crate) async fn container_terminal_ws(
         Some(u) => u,
         None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
     };
-    match resolve_account(&state, &user) {
-        Some(a) if a.is_admin => {}
+    let acct = match resolve_account(&state, &user) {
+        Some(a) if a.is_admin => a,
         _ => return api_err(StatusCode::FORBIDDEN, "auth.forbidden"),
-    }
+    };
     let container = q.container.clone();
     if container.is_empty() {
         return api_err(StatusCode::BAD_REQUEST, "terminal.missing_container");
+    }
+    // A privileged / host-namespaced container grants effective host root via
+    // exec, the same escalation the super-only create guardrail blocks. Restrict
+    // exec into such a container to the super-admin so a non-super admin can't
+    // side-step that guardrail through an already-running container.
+    if !acct.is_super && crate::app::docker::container_is_privileged(&container).await {
+        return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
     }
     ws.on_upgrade(move |socket| async move {
         if let Err(e) = crate::web::terminal::run_web_container_exec(socket, &container).await {

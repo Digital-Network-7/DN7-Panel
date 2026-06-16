@@ -231,7 +231,9 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
     }
 
     fn verify_totp(&self, secret: &str, code: &str) -> bool {
-        crate::infra::totp::verify(secret, code)
+        // Single-use: enable/disable 2FA accept a code only once within its
+        // window, matching the login path (no replay of an observed code).
+        self.state.auth.verify_totp_single_use(secret, code)
     }
 
     fn audit(&self, username: &str, action: &str) {

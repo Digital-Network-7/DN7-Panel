@@ -61,27 +61,32 @@ fn hotp(secret: &[u8], counter: u64) -> Option<u32> {
 }
 
 /// Verify a user-entered code against the secret, allowing ±1 step of clock
-/// skew. `code` may contain spaces; only the digits matter.
+/// skew, returning only whether it matched. Most callers should prefer
+/// [`crate::infra::auth::AuthState::verify_totp_single_use`], which also rejects
+/// replays; this bare check is kept for tests and any non-replayable use.
+#[cfg(test)]
 pub fn verify(secret_b32: &str, code: &str) -> bool {
+    matched_step(secret_b32, code).is_some()
+}
+
+/// Like [`verify`], but returns *which* time step the code matched (the TOTP
+/// counter) instead of a bool. The caller can record the consumed step to reject
+/// replays of the same code within its ±1 validity window. Returns `None` when
+/// the code is malformed or doesn't match any accepted step.
+pub fn matched_step(secret_b32: &str, code: &str) -> Option<u64> {
     let code: String = code.chars().filter(|c| c.is_ascii_digit()).collect();
     if code.len() != DIGITS as usize {
-        return false;
+        return None;
     }
-    let want: u32 = match code.parse() {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
+    let want: u32 = code.parse().ok()?;
     let secret = match b32_decode(secret_b32) {
         Some(s) if !s.is_empty() => s,
-        _ => return false,
+        _ => return None,
     };
     let t = now_secs() / STEP;
-    for c in [t.wrapping_sub(1), t, t + 1] {
-        if hotp(&secret, c) == Some(want) {
-            return true;
-        }
-    }
-    false
+    [t.wrapping_sub(1), t, t + 1]
+        .into_iter()
+        .find(|&c| hotp(&secret, c) == Some(want))
 }
 
 /// Build the `otpauth://` provisioning URI for authenticator apps.
