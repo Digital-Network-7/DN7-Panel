@@ -152,8 +152,8 @@ pub(crate) fn op_log_value(op_id: &str) -> Value {
     op_log(op_id)
 }
 
-pub(crate) fn op_setup(req: &Req) -> Result<Value> {
-    start_setup(req)
+pub(crate) fn op_setup() -> Result<Value> {
+    start_setup()
 }
 pub(crate) async fn op_add_site(req: &Req) -> Result<Value> {
     add_site(req).await

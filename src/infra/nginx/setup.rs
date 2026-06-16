@@ -11,8 +11,7 @@ use super::*;
 // Setup: install host nginx OR create the docker nginx container. Detached.
 // ---------------------------------------------------------------------------
 
-pub(crate) fn start_setup(req: &Req) -> Result<Value> {
-    let _ = req;
+pub(crate) fn start_setup() -> Result<Value> {
     const SETUP_OP: &str = "setup";
     if opreg::op_running(SETUP_OP) {
         return Ok(json!({ "op_id": SETUP_OP, "already_running": true }));
