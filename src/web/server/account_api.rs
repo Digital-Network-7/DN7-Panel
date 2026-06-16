@@ -75,7 +75,7 @@ pub(crate) async fn put_profile(
             }
         });
         if let Err(e) = res {
-            return Json(op_err_body(e)).into_response();
+            return map_domain_err(e);
         }
         if let Some(f) = &req.full_name {
             let _ = crate::infra::system::set_full_name(&a.username, &clip(f, 64)).await;
@@ -172,11 +172,11 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
             };
             settings::save(&saved).map_err(|e| crate::domain::Error::Persist(e.to_string()))
         } else {
+            // app::users::update already returns domain::Error.
             crate::app::users::update(&who.username, |u| {
                 u.pw_salt = salt.to_string();
                 u.pw_hash = hash.to_string();
             })
-            .map_err(|e| crate::domain::Error::Persist(e.to_string()))
         }
     }
 
@@ -209,7 +209,7 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
         secret: &str,
         enabled: bool,
     ) -> Result<(), crate::domain::Error> {
-        let res = if who.is_super {
+        if who.is_super {
             let saved = {
                 let mut s = self
                     .state
@@ -220,14 +220,14 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
                 s.totp_enabled = enabled;
                 s.clone()
             };
-            settings::save(&saved)
+            settings::save(&saved).map_err(|e| crate::domain::Error::Persist(e.to_string()))
         } else {
+            // app::users::update already returns domain::Error.
             crate::app::users::update(&who.username, |u| {
                 u.totp_secret = secret.to_string();
                 u.totp_enabled = enabled;
             })
-        };
-        res.map_err(|e| crate::domain::Error::Persist(e.to_string()))
+        }
     }
 
     fn verify_totp(&self, secret: &str, code: &str) -> bool {

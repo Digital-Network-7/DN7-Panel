@@ -19,4 +19,12 @@ pub(crate) enum Error {
     Persist(String),
     /// A new password must differ from the auto-generated default.
     PasswordIsDefault,
+    /// A panel/system username didn't satisfy the charset/length rules.
+    UsernameInvalid,
+    /// A panel-user role wasn't one of the accepted values.
+    RoleInvalid,
+    /// A user with that name already exists.
+    UserExists,
+    /// No user with that name was found.
+    UserNotFound,
 }

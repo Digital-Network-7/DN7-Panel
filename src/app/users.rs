@@ -12,9 +12,13 @@
 //! enforce access), and every admin-only capability (docker/nginx/mysql/update/
 //! branding/user-management) is denied for them server-side.
 
-use anyhow::{anyhow, Result};
-
+use crate::domain::Error;
 use crate::infra::system;
+
+/// Result alias for the user use-cases — semantic [`Error`], mapped to a wire
+/// code at the single web boundary (`map_domain_err`), consistent with
+/// `app::account`.
+type Result<T> = std::result::Result<T, Error>;
 
 /// The panel-user entity lives in the domain layer; re-exported so call sites
 /// (`crate::app::users::PanelUser`) stay stable while this module keeps the
@@ -35,7 +39,7 @@ fn mutate<T>(f: impl FnOnce(&mut Vec<PanelUser>) -> Result<T>) -> Result<T> {
     let _guard = USERS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut users = load();
     let out = f(&mut users)?;
-    save(&users)?;
+    save(&users).map_err(|e| Error::Persist(e.to_string()))?;
     Ok(out)
 }
 
@@ -70,9 +74,11 @@ pub async fn create(req: &NewUser<'_>) -> Result<PanelUser> {
     // Fast-fail before any system-account side effects; re-checked under the
     // mutation lock below to close the create-vs-create race.
     if find(req.username).is_some() {
-        return Err(anyhow!("ERR_CODE:users.exists"));
+        return Err(Error::UserExists);
     }
-    provision_system_account(req).await?;
+    provision_system_account(req)
+        .await
+        .map_err(|e| Error::Persist(e.to_string()))?;
     let (uid, _home) = system::getpwnam(req.username).unwrap_or((0, String::new()));
     let user = PanelUser {
         username: req.username.to_string(),
@@ -89,7 +95,7 @@ pub async fn create(req: &NewUser<'_>) -> Result<PanelUser> {
     let u = user.clone();
     mutate(move |users| {
         if users.iter().any(|x| x.username == u.username) {
-            return Err(anyhow!("ERR_CODE:users.exists"));
+            return Err(Error::UserExists);
         }
         users.push(u);
         Ok(())
@@ -101,25 +107,26 @@ pub async fn create(req: &NewUser<'_>) -> Result<PanelUser> {
 /// salt/hash) before any system-account side effects.
 fn validate_new_user(req: &NewUser<'_>) -> Result<()> {
     if !valid_username(req.username) {
-        return Err(anyhow!("ERR_CODE:users.bad_username"));
+        return Err(Error::UsernameInvalid);
     }
     if !matches!(req.role, "admin" | "user") {
-        return Err(anyhow!("ERR_CODE:users.bad_role"));
+        return Err(Error::RoleInvalid);
     }
     if !valid_pw_format(req.pw_salt, req.pw_hash) {
-        return Err(anyhow!("ERR_CODE:settings.pw_format"));
+        return Err(Error::PasswordMalformed);
     }
     // The plaintext is used to set the backing OS password via `chpasswd`;
     // reject control chars that could forge an extra record (see valid_os_secret).
     if !valid_os_secret(req.password) {
-        return Err(anyhow!("ERR_CODE:settings.pw_format"));
+        return Err(Error::PasswordMalformed);
     }
     Ok(())
 }
 
 /// Provision the backing system account for a new panel user (delegates the OS
-/// side to `system_account`).
-async fn provision_system_account(req: &NewUser<'_>) -> Result<()> {
+/// side to `system_account`). Returns the infra `anyhow` error; the caller wraps
+/// it into `Error::Persist`.
+async fn provision_system_account(req: &NewUser<'_>) -> anyhow::Result<()> {
     system::provision(
         req.username,
         req.full_name,
@@ -132,10 +139,12 @@ async fn provision_system_account(req: &NewUser<'_>) -> Result<()> {
 /// Delete a panel user and remove the backing system account (with its home).
 pub async fn delete(username: &str) -> Result<()> {
     if find(username).is_none() {
-        return Err(anyhow!("ERR_CODE:users.not_found"));
+        return Err(Error::UserNotFound);
     }
     // Remove the OS account + home (best-effort: keep going if already gone).
-    system::remove(username).await?;
+    system::remove(username)
+        .await
+        .map_err(|e| Error::Persist(e.to_string()))?;
     mutate(|users| {
         users.retain(|u| u.username != username);
         Ok(())
@@ -148,7 +157,7 @@ pub fn update<F: FnOnce(&mut PanelUser)>(username: &str, f: F) -> Result<()> {
         let u = users
             .iter_mut()
             .find(|u| u.username == username)
-            .ok_or_else(|| anyhow!("ERR_CODE:users.not_found"))?;
+            .ok_or(Error::UserNotFound)?;
         f(u);
         Ok(())
     })

@@ -56,7 +56,7 @@ pub(crate) async fn users_create(
         Err(r) => return r,
     };
     if !matches!(req.role.as_str(), "admin" | "user") {
-        return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.bad_role"))).into_response();
+        return map_domain_err(crate::domain::Error::RoleInvalid);
     }
     // May only create an account strictly lower in privilege than oneself
     // (owner → admin/user; admin → user only).
@@ -71,7 +71,7 @@ pub(crate) async fn users_create(
             .unwrap_or_else(|p| p.into_inner())
             .username
     {
-        return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.exists"))).into_response();
+        return map_domain_err(crate::domain::Error::UserExists);
     }
     match crate::app::users::create(&crate::app::users::NewUser {
         username: &req.username,
@@ -93,9 +93,9 @@ pub(crate) async fn users_create(
                 "user.create",
                 &req.username,
                 false,
-                &e.to_string(),
+                &format!("{e:?}"),
             );
-            Json(op_err_body(e)).into_response()
+            map_domain_err(e)
         }
     }
 }
@@ -133,9 +133,7 @@ pub(crate) async fn users_update(
     let actor_lvl = account_level(&actor);
     let target = match crate::app::users::find(&req.username) {
         Some(t) => t,
-        None => {
-            return Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.not_found"))).into_response()
-        }
+        None => return map_domain_err(crate::domain::Error::UserNotFound),
     };
     // Only manage accounts strictly below your own privilege.
     if !accounts::can_manage(actor_lvl, role_level(&target.role)) {
@@ -167,7 +165,7 @@ pub(crate) async fn users_update(
         }
     });
     if let Err(e) = res {
-        return Json(op_err_body(e)).into_response();
+        return map_domain_err(e);
     }
     if let Some(f) = &req.full_name {
         let _ = crate::infra::system::set_full_name(&req.username, f.trim()).await;
@@ -197,7 +195,7 @@ async fn apply_role_change(
 ) -> Result<(), Response> {
     let Some(role) = &req.role else { return Ok(()) };
     if !matches!(role.as_str(), "admin" | "user") {
-        return Err(Json(op_err_body(anyhow::anyhow!("ERR_CODE:users.bad_role"))).into_response());
+        return Err(map_domain_err(crate::domain::Error::RoleInvalid));
     }
     if !accounts::can_manage(actor_lvl, role_level(role)) {
         return Err(api_err(StatusCode::FORBIDDEN, "auth.forbidden"));
@@ -266,9 +264,9 @@ pub(crate) async fn users_delete(
                 "user.delete",
                 &req.username,
                 false,
-                &e.to_string(),
+                &format!("{e:?}"),
             );
-            Json(op_err_body(e)).into_response()
+            map_domain_err(e)
         }
     }
 }

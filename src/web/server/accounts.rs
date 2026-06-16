@@ -31,6 +31,10 @@ pub(crate) fn map_domain_err(e: crate::domain::Error) -> Response {
         OldPasswordWrong => api_err(StatusCode::BAD_REQUEST, "settings.bad_old_password"),
         TotpInvalid => api_err(StatusCode::BAD_REQUEST, "auth.bad_totp"),
         PasswordIsDefault => api_err(StatusCode::BAD_REQUEST, "settings.pw_is_default"),
+        UsernameInvalid => api_err(StatusCode::BAD_REQUEST, "users.bad_username"),
+        RoleInvalid => api_err(StatusCode::BAD_REQUEST, "users.bad_role"),
+        UserExists => api_err(StatusCode::CONFLICT, "users.exists"),
+        UserNotFound => api_err(StatusCode::NOT_FOUND, "users.not_found"),
         Persist(detail) => api_err_detail(
             StatusCode::INTERNAL_SERVER_ERROR,
             "common.save_failed",
@@ -54,10 +58,12 @@ pub(crate) fn write_totp(
         drop(s);
         settings::save(&saved)
     } else {
+        // This helper returns anyhow; convert the domain error at the boundary.
         crate::app::users::update(&a.username, |u| {
             u.totp_secret = secret.to_string();
             u.totp_enabled = enabled;
         })
+        .map_err(|e| anyhow::anyhow!("{e:?}"))
     }
 }
 
