@@ -11,7 +11,8 @@ fn path() -> std::path::PathBuf {
 }
 
 pub(crate) fn load() -> Vec<PanelUser> {
-    crate::infra::json_store::load_or_default(&path())
+    // Cached (mtime+len-validated): read on every authenticated request.
+    crate::infra::json_store::load_or_default_cached(&path())
 }
 
 pub(crate) fn save(users: &[PanelUser]) -> Result<()> {

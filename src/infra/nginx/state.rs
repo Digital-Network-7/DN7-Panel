@@ -64,7 +64,8 @@ pub(crate) fn state_lock() -> &'static tokio::sync::Mutex<()> {
 }
 
 pub(crate) fn load_sites() -> Vec<Site> {
-    crate::infra::json_store::load_or_default(&sites_file())
+    // Cached (mtime+len-validated): read repeatedly during conf generation.
+    crate::infra::json_store::load_or_default_cached(&sites_file())
 }
 
 pub(crate) fn save_sites(sites: &[Site]) -> Result<()> {

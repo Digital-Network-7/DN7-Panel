@@ -18,7 +18,8 @@ pub(crate) fn websettings_file() -> std::path::PathBuf {
 }
 
 pub(crate) fn load_access() -> Vec<AccessList> {
-    crate::infra::json_store::load_or_default(&access_file())
+    // Cached (mtime+len-validated): read during conf generation + access checks.
+    crate::infra::json_store::load_or_default_cached(&access_file())
 }
 pub(crate) fn save_access(lists: &[AccessList]) -> Result<()> {
     crate::infra::json_store::save_pretty(&access_file(), lists)
