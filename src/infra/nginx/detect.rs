@@ -252,10 +252,9 @@ pub(crate) async fn list_dirs(path_arg: Option<&str>) -> Result<Value> {
     let base = if raw.is_empty() { "/" } else { raw };
     let path = std::path::Path::new(base);
     if !path.is_absolute() {
-        return Err(anyhow!("ERR_CODE:nginx.local_root_abs"));
+        return Err(nginx_err(NginxError::LocalRootAbs));
     }
-    let canon =
-        std::fs::canonicalize(path).map_err(|_| anyhow!("ERR_CODE:nginx.local_root_missing"))?;
+    let canon = std::fs::canonicalize(path).map_err(|_| nginx_err(NginxError::LocalRootMissing))?;
     let mut dirs: Vec<String> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&canon) {
         for ent in rd.flatten() {

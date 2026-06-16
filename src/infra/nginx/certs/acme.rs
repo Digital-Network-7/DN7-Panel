@@ -93,7 +93,7 @@ where
             _ => {
                 tries += 1;
                 if tries > 40 {
-                    return Err(anyhow!("ERR_CODE:nginx.le_verify_timeout"));
+                    return Err(nginx_err(NginxError::LeVerifyTimeout));
                 }
             }
         }
@@ -122,7 +122,7 @@ pub(crate) async fn acme_collect_http01(
             .challenges
             .iter()
             .find(|c| c.r#type == ChallengeType::Http01)
-            .ok_or_else(|| anyhow!("ERR_CODE:nginx.le_no_http01"))?;
+            .ok_or_else(|| nginx_err(NginxError::LeNoHttp01))?;
         let key_auth = order.key_authorization(challenge);
         to_serve.push((challenge.token.clone(), key_auth.as_str().to_string()));
         ready_urls.push(challenge.url.clone());
@@ -227,5 +227,5 @@ pub(crate) async fn wait_for_cert(order: &mut instant_acme::Order) -> Result<Str
             Err(e) => return Err(anyhow!("下载证书失败：{e}")),
         }
     }
-    Err(anyhow!("ERR_CODE:nginx.le_issue_timeout"))
+    Err(nginx_err(NginxError::LeIssueTimeout))
 }

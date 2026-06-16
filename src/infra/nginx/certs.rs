@@ -137,7 +137,7 @@ pub(crate) async fn start_cert_issue(lo: Layout, site: Site) -> Result<Value> {
 pub(crate) async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
     let host = primary_host(&site.server_name);
     if host.is_empty() || host == "_" || host.contains('*') {
-        return Err(anyhow!("ERR_CODE:nginx.le_need_domain_specific"));
+        return Err(nginx_err(NginxError::LeNeedDomainSpecific));
     }
 
     // Pin this site's conf id for the issuance window so a concurrent
@@ -254,7 +254,7 @@ pub(crate) async fn issue_le_named(
 ) -> Result<()> {
     let host = primary_host(domain);
     if host.is_empty() || host == "_" || host.contains('*') {
-        return Err(anyhow!("ERR_CODE:nginx.le_need_domain_specific"));
+        return Err(nginx_err(NginxError::LeNeedDomainSpecific));
     }
 
     // Steps 1-5: serve the HTTP-01 challenge from a temporary conf for this

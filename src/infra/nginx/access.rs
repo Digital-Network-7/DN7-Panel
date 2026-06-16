@@ -50,10 +50,10 @@ pub(crate) async fn save_access_op(cmd: &SaveAccess) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_access_name"))?
+        .ok_or_else(|| nginx_err(NginxError::NeedAccessName))?
         .to_string();
     if !valid_access_name(&name) {
-        return Err(anyhow!("ERR_CODE:nginx.bad_access_name"));
+        return Err(nginx_err(NginxError::BadAccessName));
     }
     let satisfy = match cmd.satisfy.as_deref().unwrap_or("any") {
         "all" => "all",
@@ -110,7 +110,7 @@ fn build_access_clients(cmd: &SaveAccess) -> Result<Vec<AccessClient>> {
             "allow"
         };
         if !valid_client_address(&c.address) {
-            return Err(anyhow!("ERR_CODE:nginx.bad_client_addr"));
+            return Err(nginx_err(NginxError::BadClientAddr));
         }
         clients.push(AccessClient {
             directive: dir.to_string(),
@@ -131,20 +131,20 @@ fn build_access_users(cmd: &SaveAccess, old: Option<&AccessList>) -> Result<Vec<
             continue;
         }
         if !valid_auth_username(&username) {
-            return Err(anyhow!("ERR_CODE:nginx.bad_auth_user"));
+            return Err(nginx_err(NginxError::BadAuthUser));
         }
         if !seen.insert(username.clone()) {
-            return Err(anyhow!("ERR_CODE:nginx.dup_auth_user"));
+            return Err(nginx_err(NginxError::DupAuthUser));
         }
         let hash = if !u.password.is_empty() {
             if u.password.len() > 128 {
-                return Err(anyhow!("ERR_CODE:nginx.bad_auth_pw"));
+                return Err(nginx_err(NginxError::BadAuthPw));
             }
             htpasswd_hash(&u.password)
         } else {
             old.and_then(|o| o.users.iter().find(|x| x.username == username))
                 .map(|x| x.hash.clone())
-                .ok_or_else(|| anyhow!("ERR_CODE:nginx.need_auth_pw"))?
+                .ok_or_else(|| nginx_err(NginxError::NeedAuthPw))?
         };
         users.push(AccessUser { username, hash });
     }
@@ -159,7 +159,7 @@ pub(crate) async fn delete_access_op(cmd: &DeleteAccess) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("ERR_CODE:nginx.missing_access_id"))?;
+        .ok_or_else(|| nginx_err(NginxError::MissingAccessId))?;
     let in_use = sites_using_access();
     if let Some(sites) = in_use.get(id) {
         if !sites.is_empty() {
@@ -170,7 +170,7 @@ pub(crate) async fn delete_access_op(cmd: &DeleteAccess) -> Result<Value> {
     let before = lists.len();
     lists.retain(|a| a.id != id);
     if lists.len() == before {
-        return Err(anyhow!("ERR_CODE:nginx.access_not_found"));
+        return Err(nginx_err(NginxError::AccessNotFound));
     }
     save_access(&lists)?;
     let _ = std::fs::remove_file(htpasswd_path(id));
