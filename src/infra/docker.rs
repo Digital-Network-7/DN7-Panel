@@ -225,6 +225,7 @@ mod validate;
 mod volumes;
 use crate::domain::docker::{net_driver_allowed, restart_allowed};
 pub use backups::*;
+pub(crate) use containers::container_is_privileged;
 use containers::*;
 use create::*;
 use images::*;

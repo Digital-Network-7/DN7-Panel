@@ -71,7 +71,9 @@ pub(crate) fn verify_login(
         if attempt.code.trim().is_empty() {
             return LoginOutcome::NeedTotp;
         }
-        if !crate::infra::totp::verify(&creds.totp_secret, attempt.code) {
+        // Single-use TOTP: rejects a replay of the same code within its validity
+        // window (an observed code can't be reused to log in again).
+        if !auth.verify_totp_single_use(&creds.totp_secret, attempt.code) {
             auth.record_failure(attempt.source);
             return LoginOutcome::BadTotp;
         }
@@ -174,5 +176,87 @@ mod tests {
             verify_login(&auth, &creds(true), &att("alice", "1.1.1.1", &n, &p, "")),
             LoginOutcome::NeedTotp
         ));
+    }
+
+    #[test]
+    fn totp_code_is_single_use_across_logins() {
+        use crate::infra::totp;
+        let auth = AuthState::new();
+        let secret = totp::gen_secret();
+        // A live code for the current step.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let step = now / 30;
+        // Derive the code the same way totp does, via a successful verify probe:
+        // brute a 6-digit code is impractical, so instead assert single-use by
+        // running two logins with the same code string and checking the second
+        // is rejected. We obtain a valid code by trying the registry's own guard.
+        // Build a known code: re-create it from the secret using a tiny HOTP.
+        let code = live_code(&secret, step);
+
+        let mk = |code: &str| {
+            let n = auth.issue_challenge();
+            let p = proof_for(&n, "deadbeefverifier");
+            let creds = LoginCreds {
+                exp_hash: "deadbeefverifier".to_string(),
+                totp_secret: secret.clone(),
+                totp_enabled: true,
+                must_setup: false,
+            };
+            // att borrows; clone code into owned strings first.
+            let nonce = n.clone();
+            let proof = p.clone();
+            let attempt = LoginAttempt {
+                username: "alice",
+                source: "1.1.1.1",
+                nonce: &nonce,
+                proof: &proof,
+                code,
+            };
+            matches!(
+                verify_login(&auth, &creds, &attempt),
+                LoginOutcome::Ok { .. }
+            )
+        };
+
+        assert!(mk(&code), "first use of a fresh code logs in");
+        assert!(!mk(&code), "replay of the same code is rejected");
+    }
+
+    /// Minimal HOTP to derive the expected TOTP code for a step (test helper).
+    fn live_code(secret_b32: &str, step: u64) -> String {
+        use hmac::{Hmac, Mac};
+        use sha1::Sha1;
+        // base32 decode (RFC 4648, no padding).
+        const B32: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        let mut bits = 0u32;
+        let mut nbits = 0u32;
+        let mut bytes = Vec::new();
+        for c in secret_b32
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '=')
+        {
+            let v = B32
+                .iter()
+                .position(|&b| b == c.to_ascii_uppercase() as u8)
+                .unwrap() as u32;
+            bits = (bits << 5) | v;
+            nbits += 5;
+            if nbits >= 8 {
+                nbits -= 8;
+                bytes.push((bits >> nbits) as u8);
+            }
+        }
+        let mut mac = Hmac::<Sha1>::new_from_slice(&bytes).unwrap();
+        mac.update(&step.to_be_bytes());
+        let tag = mac.finalize().into_bytes();
+        let off = (tag[19] & 0x0f) as usize;
+        let bin = ((tag[off] as u32 & 0x7f) << 24)
+            | ((tag[off + 1] as u32) << 16)
+            | ((tag[off + 2] as u32) << 8)
+            | (tag[off + 3] as u32);
+        format!("{:06}", bin % 1_000_000)
     }
 }

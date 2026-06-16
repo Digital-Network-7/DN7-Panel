@@ -191,6 +191,39 @@ pub(crate) async fn container_has_shell(dkr: &Docker, id: &str) -> bool {
 
 /// Inspect one container for the detail page: identity, state, restart policy,
 /// created time, and shell availability.
+/// Whether a running container is privileged or shares the host network/PID
+/// namespace — i.e. a `docker exec` into it grants effective host root. Used to
+/// gate the container terminal / exec on the super-admin (mirrors the super-only
+/// create guardrail). Inspect failure is treated as "privileged" (fail closed):
+/// if we can't prove a container is safe, don't expose it to a non-super admin.
+pub(crate) async fn container_is_privileged(reference: &str) -> bool {
+    let dkr = match dkr() {
+        Ok(d) => d,
+        Err(_) => return true,
+    };
+    let c = match dkr.inspect_container(reference, None).await {
+        Ok(c) => c,
+        Err(_) => return true,
+    };
+    let Some(h) = c.host_config.as_ref() else {
+        return true;
+    };
+    if h.privileged.unwrap_or(false) {
+        return true;
+    }
+    // Host/container network namespace (host-net shares the host's stack).
+    if let Some(mode) = h.network_mode.as_deref() {
+        if crate::domain::docker::network_mode_privileged(mode) {
+            return true;
+        }
+    }
+    // Host PID namespace = visibility/signal reach into host processes.
+    if h.pid_mode.as_deref() == Some("host") {
+        return true;
+    }
+    false
+}
+
 pub(crate) async fn inspect_container(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
     let dkr = dkr()?;

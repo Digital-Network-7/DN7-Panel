@@ -19,15 +19,23 @@ mod challenge;
 mod rate;
 mod session;
 mod ticket;
+mod totp_guard;
 
 use challenge::ChallengeStore;
 use rate::RateLimiter;
 use session::SessionStore;
 use ticket::TicketStore;
+use totp_guard::TotpGuard;
 
 /// Session lifetime. Plaintext transport already limits the value of a long
 /// session, so keep it modest; the console refreshes on activity client-side.
 const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
+
+/// Absolute session lifetime, independent of activity. A session is hard-expired
+/// once it's older than this even if continuously used, so a leaked bearer token
+/// can't be kept alive indefinitely by polling. The sliding [`SESSION_TTL`]
+/// still applies on top (idle sessions expire sooner).
+const SESSION_ABS_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// Login failure window + cap (per source key).
 const FAIL_WINDOW: Duration = Duration::from_secs(300);
@@ -55,6 +63,7 @@ pub struct AuthState {
     challenges: ChallengeStore,
     tickets: TicketStore,
     rate: RateLimiter,
+    totp: TotpGuard,
 }
 
 impl AuthState {
@@ -132,6 +141,18 @@ impl AuthState {
         self.challenges.consume(nonce)
     }
 
+    /// Verify a TOTP `code` against `secret` **and** enforce single use: a code
+    /// is accepted only once within its ±1-step validity window. A replay of the
+    /// same (or an earlier) code for the same secret is rejected even though it
+    /// would still satisfy the bare RFC 6238 check. Use this everywhere a code is
+    /// accepted as a second factor (login, enable/disable 2FA).
+    pub fn verify_totp_single_use(&self, secret: &str, code: &str) -> bool {
+        match crate::infra::totp::matched_step(secret, code) {
+            Some(step) => self.totp.consume(secret, step),
+            None => false,
+        }
+    }
+
     /// Mint a one-time ticket (hex) bound to `user`, authorizing a single
     /// WebSocket upgrade or download. The ticket — not the long-lived session
     /// token — travels in the URL, so a leaked URL exposes only a 30-second,
@@ -161,13 +182,21 @@ impl AuthState {
 // Shared session record + persistence (used by the `session` submodule)
 // ---------------------------------------------------------------------------
 
-/// A persisted session: the owning account + last-access (unix secs, sliding).
+/// A persisted session: the owning account, last-access (unix secs, sliding),
+/// and issued-at (unix secs, fixed) for the absolute lifetime cap.
 /// The map/file key is `sha256(token)` (see `token_key`), never the raw token.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct SessionRec {
     #[serde(default)]
     user: String,
     last: u64,
+    /// When the session was first minted. Sessions are hard-expired at
+    /// `issued + SESSION_ABS_TTL` regardless of activity, so a leaked token
+    /// can't be kept alive forever by polling. Defaults to 0 for records written
+    /// by older builds (treated as "issued at epoch" → they age out promptly,
+    /// which is the safe direction).
+    #[serde(default)]
+    issued: u64,
 }
 
 fn sessions_path() -> std::path::PathBuf {
