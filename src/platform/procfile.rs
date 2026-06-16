@@ -125,6 +125,15 @@ impl LockGuard {
     pub fn release(&self) {
         let _ = fs2::FileExt::unlock(&self._file);
     }
+
+    /// Re-acquire the flock on the same fd after a [`release`](Self::release).
+    /// Used to recover the single-instance guard when a re-exec fails and the
+    /// supervisor must keep running — otherwise it would carry on holding no
+    /// lock, letting a second supervisor start. Returns true if the lock is held
+    /// again; false if another process grabbed it in the meantime.
+    pub fn reacquire(&self) -> bool {
+        fs2::FileExt::try_lock_exclusive(&self._file).is_ok()
+    }
 }
 
 /// Try to acquire an exclusive, non-blocking lock for a role. Returns None if

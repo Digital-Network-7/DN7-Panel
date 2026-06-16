@@ -19,6 +19,13 @@ use serde_json::{json, Map, Value};
 /// Max progress lines retained per op (the tail; bounds memory on long pulls).
 const MAX_LINES: usize = 400;
 
+/// Max *finished* (done/error) ops retained per registry. Finished ops are
+/// otherwise only removed by a client `dismiss`, so a panel that runs many
+/// pulls/installs/backups without the console open would accumulate them (each
+/// holding up to `MAX_LINES` lines) forever. On `finish` we evict the oldest
+/// finished ops beyond this cap. Running ops are never pruned.
+const MAX_FINISHED_OPS: usize = 100;
+
 /// Whether [`OpRegistry::dismiss`] may forget a still-running op.
 #[derive(Clone, Copy)]
 pub(crate) enum Dismiss {
@@ -37,12 +44,17 @@ struct OpRecord {
     lines: Vec<String>,
     /// Extra result fields merged into the op's JSON (e.g. `result_image`).
     extra: Map<String, Value>,
+    /// Monotonic order in which this op finished (0 while running). Used to evict
+    /// the oldest finished ops once `MAX_FINISHED_OPS` is exceeded.
+    done_seq: u64,
 }
 
 /// A process-global registry of detached operations for one subsystem.
 pub(crate) struct OpRegistry {
     prefix: &'static str,
     counter: AtomicU64,
+    /// Monotonic finish counter (assigned to `OpRecord::done_seq` on finish).
+    done_counter: AtomicU64,
     ops: Mutex<HashMap<String, OpRecord>>,
     /// Progress estimator (0..=100, or -1 for indeterminate).
     pct: fn(&[String], &str) -> i64,
@@ -58,6 +70,7 @@ impl OpRegistry {
         Self {
             prefix,
             counter: AtomicU64::new(1),
+            done_counter: AtomicU64::new(1),
             ops: Mutex::new(HashMap::new()),
             pct,
             dismiss,
@@ -84,6 +97,7 @@ impl OpRegistry {
                     error: String::new(),
                     lines: Vec::new(),
                     extra: Map::new(),
+                    done_seq: 0,
                 },
             );
         }
@@ -111,10 +125,32 @@ impl OpRegistry {
             if let Some(o) = m.get_mut(id) {
                 o.status = status.to_string();
                 o.error = error.to_string();
+                o.done_seq = self.done_counter.fetch_add(1, Ordering::Relaxed);
                 if let Value::Object(map) = extra {
                     o.extra = map;
                 }
             }
+            self.prune_finished(&mut m);
+        }
+    }
+
+    /// Evict the oldest finished ops once more than `MAX_FINISHED_OPS` are
+    /// retained, so completed ops can't accumulate unboundedly when the console
+    /// never dismisses them. Running ops are kept regardless of count.
+    fn prune_finished(&self, m: &mut HashMap<String, OpRecord>) {
+        let mut finished: Vec<(u64, String)> = m
+            .iter()
+            .filter(|(_, o)| o.status != "running")
+            .map(|(id, o)| (o.done_seq, id.clone()))
+            .collect();
+        if finished.len() <= MAX_FINISHED_OPS {
+            return;
+        }
+        // Oldest first; drop everything past the cap.
+        finished.sort_by_key(|(seq, _)| *seq);
+        let drop_n = finished.len() - MAX_FINISHED_OPS;
+        for (_, id) in finished.into_iter().take(drop_n) {
+            m.remove(&id);
         }
     }
 
@@ -263,4 +299,32 @@ pub(crate) fn pull_pct(lines: &[String], status: &str) -> i64 {
     let sum: f64 = layers.values().sum();
     let pct = (sum / layers.len() as f64) * 100.0;
     pct.clamp(1.0, 99.0) as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finished_ops_are_pruned_but_running_kept() {
+        let reg = OpRegistry::new("t", indeterminate_pct, Dismiss::Any);
+        // Create one long-running op that must survive pruning.
+        reg.create("t-run", "pull", "img");
+        // Finish many more than the cap.
+        let total = MAX_FINISHED_OPS + 50;
+        for i in 0..total {
+            let id = format!("t{i}");
+            reg.create(&id, "pull", "img");
+            reg.finish(&id, "done", "", json!({}));
+        }
+        let m = reg.ops.lock().unwrap();
+        let finished = m.values().filter(|o| o.status != "running").count();
+        let running = m.values().filter(|o| o.status == "running").count();
+        assert_eq!(finished, MAX_FINISHED_OPS, "finished ops capped");
+        assert_eq!(running, 1, "running op never pruned");
+        assert!(m.contains_key("t-run"));
+        // The most recent finished op is retained; the oldest is gone.
+        assert!(m.contains_key(&format!("t{}", total - 1)));
+        assert!(!m.contains_key("t0"));
+    }
 }

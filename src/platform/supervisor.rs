@@ -143,7 +143,16 @@ async fn supervise_loop(
                     tracing::info!("panel exited for self-update; re-exec'ing supervisor now");
                     lock.release();
                     reexec_supervisor();
-                    // reexec only returns on failure; fall through to restart.
+                    // reexec only returns on FAILURE. We already released our
+                    // single-instance lock for the (expected) exec, so re-acquire
+                    // it before carrying on — otherwise the supervisor would run
+                    // unprotected and a second one could start. If another process
+                    // took it meanwhile, exit and let that one own the role.
+                    if !lock.reacquire() {
+                        tracing::error!("re-exec failed and role lock lost; exiting");
+                        return Ok(());
+                    }
+                    tracing::warn!("re-exec failed; continuing on current binary");
                 }
                 tokio::time::sleep(Duration::from_secs(cfg.restart_backoff_secs)).await;
             }
@@ -158,7 +167,13 @@ async fn supervise_loop(
                     let _ = c.wait().await;
                     lock.release();
                     reexec_supervisor();
-                    // reexec only returns on failure; keep going if so.
+                    // reexec only returns on failure; re-acquire the lock we just
+                    // released so we don't run unprotected. Exit if it's gone.
+                    if !lock.reacquire() {
+                        tracing::error!("re-exec failed and role lock lost; exiting");
+                        return Ok(());
+                    }
+                    tracing::warn!("re-exec failed; continuing on current binary");
                     child = None;
                 }
             }
