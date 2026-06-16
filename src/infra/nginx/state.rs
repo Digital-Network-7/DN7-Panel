@@ -63,6 +63,48 @@ pub(crate) fn state_lock() -> &'static tokio::sync::Mutex<()> {
     L.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
+/// Conf ids with an in-flight Let's Encrypt issuance. During issuance a site's
+/// `dn7-<id>.conf` (serving the HTTP-01 challenge) exists *before* the site is
+/// persisted to sites.json, so a concurrent `cleanup_orphan_confs` would treat
+/// it as an orphan and delete it — making validation 404 and the issuance fail.
+/// Ids registered here are skipped by cleanup until issuance finishes.
+fn issuing_ids() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static S: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// RAII guard: marks `conf_id` as issuing for its lifetime, unmarking on drop so
+/// an early return / error can't leave the id pinned forever.
+pub(crate) struct IssuingGuard(String);
+
+impl IssuingGuard {
+    pub(crate) fn new(conf_id: &str) -> Self {
+        issuing_ids()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(conf_id.to_string());
+        IssuingGuard(conf_id.to_string())
+    }
+}
+
+impl Drop for IssuingGuard {
+    fn drop(&mut self) {
+        issuing_ids()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.0);
+    }
+}
+
+/// Whether `conf_id` currently has an in-flight issuance (cleanup must skip it).
+pub(crate) fn is_issuing(conf_id: &str) -> bool {
+    issuing_ids()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .contains(conf_id)
+}
+
 pub(crate) fn load_sites() -> Vec<Site> {
     // Cached (mtime+len-validated): read repeatedly during conf generation.
     crate::infra::json_store::load_or_default_cached(&sites_file())

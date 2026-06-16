@@ -51,22 +51,35 @@ pub(crate) async fn container_ip(target: &str) -> Option<String> {
 }
 
 /// In **host mode**, find the host port that publishes the container's
-/// `container_port` (so the host's nginx can proxy to `127.0.0.1:<host_port>`,
-/// which is stable across container restarts — unlike the container IP). Returns
-/// None when that port isn't published to the host.
+/// `container_port` on the **loopback interface** (so the host's nginx can proxy
+/// to `127.0.0.1:<host_port>`, stable across container restarts — unlike the
+/// container IP). Returns None when the port isn't published, or is published
+/// only on a specific *external* interface that loopback can't reach (the caller
+/// then falls back to the container IP).
 pub(crate) async fn published_host_port(target: &str, container_port: i64) -> Option<u16> {
     let dkr = crate::infra::docker::dkr().ok()?;
     let inspect = dkr.inspect_container(target, None).await.ok()?;
     let ports = inspect.network_settings.and_then(|n| n.ports)?;
-    // Docker keys ports like "3000/tcp" -> [{HostIp, HostPort}, ...].
+    // Docker keys ports like "3000/tcp" -> [{HostIp, HostPort}, ...]. Only the
+    // TCP binding is usable for an HTTP reverse proxy; ignore UDP.
     let key_tcp = format!("{container_port}/tcp");
-    let key_udp = format!("{container_port}/udp");
     for (key, binds) in ports {
-        if key != key_tcp && key != key_udp {
+        if key != key_tcp {
             continue;
         }
         if let Some(binds) = binds {
             for b in binds {
+                // A binding to a specific external IP (e.g. 1.2.3.4) is NOT
+                // reachable from the host's nginx via 127.0.0.1, so only accept
+                // wildcard / loopback HostIps. Empty == 0.0.0.0 (all interfaces).
+                let host_ip = b.host_ip.as_deref().unwrap_or("");
+                let loopback_reachable = matches!(
+                    host_ip,
+                    "" | "0.0.0.0" | "127.0.0.1" | "::" | "::1" | "[::]"
+                );
+                if !loopback_reachable {
+                    continue;
+                }
                 if let Some(hp) = b.host_port.and_then(|p| p.parse::<u16>().ok()) {
                     return Some(hp);
                 }

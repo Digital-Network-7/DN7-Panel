@@ -140,6 +140,11 @@ pub(crate) async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()
         return Err(anyhow!("ERR_CODE:nginx.le_need_domain_specific"));
     }
 
+    // Pin this site's conf id for the issuance window so a concurrent
+    // cleanup_orphan_confs (the site isn't in sites.json yet) can't delete the
+    // challenge block out from under HTTP-01 validation.
+    let _issuing = IssuingGuard::new(&site.id);
+
     // Steps 1-5: serve the HTTP-01 challenge inline from the site's HTTP conf
     // (no webroot — so it works regardless of file perms / SELinux), then run
     // the ACME dance. The `serve` callback writes the conf + reloads once the
@@ -158,19 +163,26 @@ pub(crate) async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()
 
     // Persist the issued chain + key into the certificate library (a named
     // cert), so the cert shows up under SSL certificate management and is
-    // covered by the named-cert auto-renewal loop.
-    let mut certs = load_named_certs();
-    let cert_name = unique_le_cert_name(&certs, &host, &site.id);
-    std::fs::create_dir_all(&lo.cert_store)?;
-    std::fs::write(named_crt_file(lo, &cert_name), cert_chain_pem)?;
-    write_key_file(&named_key_file(lo, &cert_name), &key_pem)?;
-    certs.retain(|c| c.name != cert_name);
-    certs.push(NamedCert {
-        name: cert_name.clone(),
-        domain: host.clone(),
-        cert_mode: "le".to_string(),
-    });
-    save_named_certs(&certs)?;
+    // covered by the named-cert auto-renewal loop. Scope the manifest RMW under
+    // state_lock (lost-update guard vs. operator cert ops / the renewal loop),
+    // then DROP it before attach_named_cert_to_site (which re-acquires the same
+    // non-reentrant lock for the sites RMW).
+    let cert_name = {
+        let _state = state_lock().lock().await;
+        let mut certs = load_named_certs();
+        let cert_name = unique_le_cert_name(&certs, &host, &site.id);
+        std::fs::create_dir_all(&lo.cert_store)?;
+        std::fs::write(named_crt_file(lo, &cert_name), cert_chain_pem)?;
+        write_key_file(&named_key_file(lo, &cert_name), &key_pem)?;
+        certs.retain(|c| c.name != cert_name);
+        certs.push(NamedCert {
+            name: cert_name.clone(),
+            domain: host.clone(),
+            cert_mode: "le".to_string(),
+        });
+        save_named_certs(&certs)?;
+        cert_name
+    };
 
     // Point the site at the library cert and rewrite with SSL + reload.
     op_push(op_id, &pmsg("ng.enable_https", &[]));
@@ -249,6 +261,9 @@ pub(crate) async fn issue_le_named(
     // domain (challenges answered inline — no webroot), then run the ACME dance.
     op_push(op_id, &pmsg("ng.prep_http", &[]));
     let conf_id = format!("acme-{name}");
+    // Pin the temp challenge conf for the issuance window so cleanup can't
+    // delete it mid-validation.
+    let _issuing = IssuingGuard::new(&conf_id);
     let conf_file = conf_path(lo, &conf_id);
     let dance = {
         let lo2 = lo.clone();
@@ -273,16 +288,20 @@ pub(crate) async fn issue_le_named(
 
     let (cert_chain_pem, key_pem) = dance?;
 
-    // Persist into the named cert store + manifest.
+    // Persist into the named cert store + manifest (serialized vs. operator cert
+    // ops / the renewal loop — lost-update guard on certs.json).
     std::fs::write(named_crt_file(lo, name), cert_chain_pem)?;
     write_key_file(&named_key_file(lo, name), &key_pem)?;
-    let mut certs = load_named_certs();
-    certs.retain(|c| c.name != name);
-    certs.push(NamedCert {
-        name: name.to_string(),
-        domain: domain.to_string(),
-        cert_mode: "le".to_string(),
-    });
-    save_named_certs(&certs)?;
+    {
+        let _state = state_lock().lock().await;
+        let mut certs = load_named_certs();
+        certs.retain(|c| c.name != name);
+        certs.push(NamedCert {
+            name: name.to_string(),
+            domain: domain.to_string(),
+            cert_mode: "le".to_string(),
+        });
+        save_named_certs(&certs)?;
+    }
     Ok(())
 }

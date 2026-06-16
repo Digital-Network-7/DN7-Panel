@@ -342,22 +342,50 @@ pub(crate) fn cleanup_orphan_confs(lo: &Layout) {
             .strip_prefix("dn7-")
             .and_then(|s| s.strip_suffix(".conf"))
         {
-            if !live.contains(id) {
+            // Skip a conf whose site has an in-flight LE issuance: it isn't in
+            // sites.json yet but its challenge block must survive validation.
+            if !live.contains(id) && !is_issuing(id) {
                 let _ = std::fs::remove_file(entry.path());
             }
-        } else if name.starts_with("acme-") && name.ends_with(".conf") {
-            let _ = std::fs::remove_file(entry.path());
+        } else if let Some(id) = name
+            .strip_prefix("acme-")
+            .and_then(|s| s.strip_suffix(".conf"))
+        {
+            // Named-cert challenge conf — disposable, but not while its issuance
+            // is still running (keyed by the conf id `acme-<name>`).
+            if !is_issuing(&format!("acme-{id}")) {
+                let _ = std::fs::remove_file(entry.path());
+            }
         }
     }
 }
 
-/// True if another managed site (≠ `exclude_id`) already uses `server_name` —
-/// two server blocks with the same name on :80 conflict (nginx serves the
-/// first-loaded one), which silently breaks the other site + its HTTP-01.
+/// True if another managed site (≠ `exclude_id`) already serves any of the
+/// hostnames in `server_name`. A `server_name` may list several space-separated
+/// hosts, so an exact full-string compare misses partial overlap: sites
+/// `"a.com b.com"` and `"b.com c.com"` both claim `b.com` on :80, where nginx
+/// silently serves whichever block loads first and breaks the other site (and
+/// its HTTP-01). Compare per host, case-insensitively.
 pub(crate) fn server_name_taken(server_name: &str, exclude_id: &str) -> bool {
-    load_sites()
-        .iter()
-        .any(|s| s.id != exclude_id && s.server_name == server_name)
+    let wanted: std::collections::HashSet<String> = host_tokens(server_name);
+    if wanted.is_empty() {
+        return false;
+    }
+    load_sites().iter().any(|s| {
+        s.id != exclude_id
+            && host_tokens(&s.server_name)
+                .iter()
+                .any(|h| wanted.contains(h))
+    })
+}
+
+/// Split a `server_name` field into its individual lowercase hostnames.
+pub(crate) fn host_tokens(server_name: &str) -> std::collections::HashSet<String> {
+    server_name
+        .split_whitespace()
+        .map(|h| h.trim().to_ascii_lowercase())
+        .filter(|h| !h.is_empty())
+        .collect()
 }
 
 /// Regenerate every managed site's conf from the *current* template and reload
