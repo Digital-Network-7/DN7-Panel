@@ -26,7 +26,8 @@ pub(crate) fn trim_msg(s: &str) -> Option<String> {
     Some(s.chars().take(500).collect())
 }
 
-/// Run a shell script (used for docker exec into the nginx container, etc).
+/// Run a shell script on the host (used for the package-manager install steps
+/// and port-listener detection).
 pub(crate) async fn sh(script: &str) -> Result<(bool, String, String)> {
     run("sh", &["-c", script]).await
 }

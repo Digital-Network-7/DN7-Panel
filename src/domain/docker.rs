@@ -50,6 +50,35 @@ pub(crate) fn network_mode_privileged(mode: &str) -> bool {
     mode == "host" || mode.starts_with("container:")
 }
 
+/// A host-escape capability a container-create request asked for. Both forms
+/// grant effective host access, so both are reserved to the super-admin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CreateEscalation {
+    /// `privileged: true` — full host device + capability access.
+    Privileged,
+    /// `--network host` / `container:<id>` — shares a host/peer network stack.
+    HostNetwork,
+}
+
+/// The pure create-authorization rule: given whether the request asked for
+/// privileged mode and the set of requested network modes, return the
+/// host-escape capability it needs (if any). A request that needs an escalation
+/// is allowed only for the super-admin — the *decision* (who may do it) belongs
+/// to the app layer; this is just the rule (what counts as an escalation).
+/// `privileged` is checked first so the message names the strongest signal.
+pub(crate) fn create_escalation<'a>(
+    privileged: bool,
+    network_modes: impl Iterator<Item = &'a str>,
+) -> Option<CreateEscalation> {
+    if privileged {
+        return Some(CreateEscalation::Privileged);
+    }
+    if network_modes.map(str::trim).any(network_mode_privileged) {
+        return Some(CreateEscalation::HostNetwork);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +135,33 @@ mod tests {
         assert!(!network_mode_privileged("bridge"));
         assert!(!network_mode_privileged("none"));
         assert!(!network_mode_privileged("my-net"));
+    }
+
+    #[test]
+    fn create_escalation_rule() {
+        // No escalation: not privileged, only isolated networks.
+        assert_eq!(
+            create_escalation(false, ["bridge", "my-net"].into_iter()),
+            None
+        );
+        // Privileged wins (named first).
+        assert_eq!(
+            create_escalation(true, ["bridge"].into_iter()),
+            Some(CreateEscalation::Privileged)
+        );
+        // Host/container network namespace triggers HostNetwork.
+        assert_eq!(
+            create_escalation(false, ["host"].into_iter()),
+            Some(CreateEscalation::HostNetwork)
+        );
+        assert_eq!(
+            create_escalation(false, ["bridge", "container:abc"].into_iter()),
+            Some(CreateEscalation::HostNetwork)
+        );
+        // Whitespace is trimmed before the check.
+        assert_eq!(
+            create_escalation(false, [" host "].into_iter()),
+            Some(CreateEscalation::HostNetwork)
+        );
     }
 }
