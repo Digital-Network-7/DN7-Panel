@@ -8,4 +8,5 @@
 //! out of both the handlers and the infra adapters, so it can evolve in one
 //! place. Capabilities are migrated here incrementally (nginx first).
 
+pub(crate) mod mysql;
 pub(crate) mod nginx;

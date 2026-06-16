@@ -45,7 +45,6 @@ use anyhow::{anyhow, Result};
 use bollard::Docker;
 use futures::StreamExt;
 use rand::Rng;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 /// Label marking a DN7 Panel-managed MySQL/MariaDB container.
@@ -70,85 +69,10 @@ fn dkr() -> Result<Docker> {
     })
 }
 
-#[derive(Debug, Deserialize)]
-struct Req {
-    #[serde(default)]
-    #[allow(dead_code)]
-    id: i64,
-    op: String,
-    /// instance id (start/stop/remove/...)
-    #[serde(default)]
-    inst: Option<String>,
-    /// engine "mysql" | "mariadb" (install)
-    #[serde(default)]
-    engine: Option<String>,
-    /// image version tag (install / switch_version)
-    #[serde(default)]
-    version: Option<String>,
-    /// host port to publish 3306 on (install / change_port)
-    #[serde(default)]
-    port: Option<i64>,
-    /// whether to publish the port to the host (install / change_port)
-    #[serde(default)]
-    expose: Option<bool>,
-    /// keep the data volume on remove (default false = delete data too)
-    #[serde(default)]
-    keep_data: Option<bool>,
-    /// op id (op_log / dismiss_op)
-    #[serde(default)]
-    op_id: Option<String>,
-    /// account management: username / host / password / privileges / database
-    #[serde(default)]
-    username: Option<String>,
-    #[serde(default)]
-    host: Option<String>,
-    #[serde(default)]
-    password: Option<String>,
-    #[serde(default)]
-    database: Option<String>,
-    /// privilege scope: "all" (read+write) | "ro" (read-only) | "custom" later
-    #[serde(default)]
-    privilege: Option<String>,
-    /// table browsing / column editing.
-    #[serde(default)]
-    table: Option<String>,
-    #[serde(default)]
-    column: Option<String>,
-    #[serde(default)]
-    new_name: Option<String>,
-    /// SQL column type, e.g. "VARCHAR(255)" (modify_column).
-    #[serde(default)]
-    col_type: Option<String>,
-    #[serde(default)]
-    col_null: Option<bool>,
-    #[serde(default)]
-    col_default: Option<String>,
-    /// row-preview limit (table_rows).
-    #[serde(default)]
-    limit: Option<i64>,
-    /// database character set + collation (create_database).
-    #[serde(default)]
-    charset: Option<String>,
-    #[serde(default)]
-    collation: Option<String>,
-    /// account authentication plugin (create_user); empty = engine default.
-    #[serde(default)]
-    auth_plugin: Option<String>,
-    /// account resource limits (create_user); 0 = unlimited.
-    #[serde(default)]
-    max_queries: Option<i64>,
-    #[serde(default)]
-    max_connections: Option<i64>,
-    #[serde(default)]
-    max_user_connections: Option<i64>,
-    /// require an encrypted (SSL/TLS) connection for the account (create_user).
-    #[serde(default)]
-    require_ssl: Option<bool>,
-    /// grant/revoke on the cPanel-style `<user>\_%` database prefix instead of a
-    /// single database (grant / revoke).
-    #[serde(default)]
-    prefix: Option<bool>,
-}
+/// The mysql capability request DTO now lives in the `contracts` layer (the
+/// external-protocol source of truth); re-exported here so the mysql dispatcher
+/// + submodules keep referring to `Req` unchanged.
+pub(crate) use crate::contracts::mysql::Req;
 
 /// Persisted per-instance manifest entity (`<data>/mysql/<id>.json`), now in
 /// the domain layer; re-exported so the mysql submodules reference `Manifest`
