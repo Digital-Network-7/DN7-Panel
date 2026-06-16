@@ -11,6 +11,10 @@ use std::pin::Pin;
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
 
+// The sensitive-path guards normalize first via the shared domain rule (a raw
+// prefix match is bypassable by `//etc`, `/./etc`, `/srv/../etc`).
+use crate::domain::path::normalize_lexical;
+
 /// A chunked byte stream used for streaming downloads (no full-file buffering).
 pub type ByteStream = Pin<Box<dyn futures::Stream<Item = std::io::Result<Bytes>> + Send>>;
 
@@ -53,28 +57,6 @@ fn is_protected_host_mutation(path: &str) -> bool {
     }
     const TREES: &[&str] = &["/etc", "/root", "/boot", "/proc", "/sys", "/dev"];
     TREES.iter().any(|t| norm.starts_with(&format!("{t}/")))
-}
-
-/// Lexically normalize a path: resolve `.` and `..` segments, collapse repeated
-/// and trailing separators. Purely textual — no filesystem or symlink
-/// resolution — so it's safe to use for container paths too. `..` can never
-/// climb above the root. Always returns an absolute path; "/" for the root.
-fn normalize_lexical(path: &str) -> String {
-    let mut out: Vec<&str> = Vec::new();
-    for seg in path.trim().split('/') {
-        match seg {
-            "" | "." => {} // leading/repeated '/', trailing '/', or '.'
-            ".." => {
-                out.pop();
-            }
-            s => out.push(s),
-        }
-    }
-    if out.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{}", out.join("/"))
-    }
 }
 
 // ---------------------------------------------------------------------------

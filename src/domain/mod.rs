@@ -11,6 +11,7 @@ pub(crate) mod error;
 pub(crate) mod identity;
 pub(crate) mod mysql;
 pub(crate) mod nginx;
+pub(crate) mod path;
 pub(crate) mod settings;
 
 pub(crate) use error::Error;

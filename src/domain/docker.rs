@@ -23,9 +23,11 @@ pub(crate) fn net_driver_allowed(d: &str) -> bool {
 /// sensitive trees so a `/etc/shadow` or `/root/.ssh` mount can't slip through.
 /// Pure (no I/O) so it's unit-testable and lives with the other create policies.
 pub(crate) fn host_bind_denied(path: &str) -> bool {
-    // Normalize a trailing slash; keep root as "/".
-    let p = path.trim_end_matches('/');
-    let p = if p.is_empty() { "/" } else { p };
+    // Normalize FIRST: the daemon resolves `//`, `/./`, `/..` before mounting,
+    // so a raw prefix match is trivially bypassed (e.g. `//var/run/docker.sock`,
+    // `/srv/../etc/shadow`). Collapse to the canonical path the daemon will use.
+    let p = crate::domain::path::normalize_lexical(path);
+    let p = p.as_str();
     // The docker socket = instant host-root escape (not under a denied tree).
     if matches!(p, "/var/run/docker.sock" | "/run/docker.sock") {
         return true;
@@ -78,6 +80,23 @@ mod tests {
         assert!(!host_bind_denied("/home/app/files"));
         assert!(!host_bind_denied("/var/lib/myapp"));
         assert!(!host_bind_denied("/etcd")); // not under /etc
+    }
+
+    #[test]
+    fn bind_deny_resists_non_normalized_bypass() {
+        // The daemon resolves these to a sensitive target before mounting; the
+        // guard must too (regression: raw prefix-match let them through).
+        assert!(host_bind_denied("//var/run/docker.sock"));
+        assert!(host_bind_denied("/var/run/../run/docker.sock"));
+        assert!(host_bind_denied("/./etc/shadow"));
+        assert!(host_bind_denied("//etc/shadow"));
+        assert!(host_bind_denied("/srv/../etc/shadow"));
+        assert!(host_bind_denied("/opt/../../root/.ssh"));
+        assert!(host_bind_denied("/etc/")); // trailing slash
+        assert!(host_bind_denied("/etc/./ssh"));
+        // Still allows legit paths after normalization.
+        assert!(!host_bind_denied("/opt/../opt/data"));
+        assert!(!host_bind_denied("/srv/./www"));
     }
 
     #[test]
