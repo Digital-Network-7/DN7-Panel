@@ -54,6 +54,9 @@ pub(crate) async fn create_cert(cmd: &CreateCert) -> Result<Value> {
     if !matches!(mode, "self" | "le" | "manual") {
         return Err(anyhow!("ERR_CODE:nginx.unknown_cert_mode"));
     }
+    // Serialize the manifest read-modify-write against the background renewal
+    // loop and other cert ops (lost-update guard on certs.json).
+    let _state = state_lock().lock().await;
     let mut certs = load_named_certs();
     let (domain, name) = derive_cert_name(cmd, &certs)?;
 
@@ -173,6 +176,8 @@ pub(crate) async fn delete_cert(cmd: &DeleteCert) -> Result<Value> {
             return Err(anyhow!("证书仍被站点使用：{}", sites.join("、")));
         }
     }
+    // Serialize the manifest RMW against the renewal loop / other cert ops.
+    let _state = state_lock().lock().await;
     let mut certs = load_named_certs();
     let before = certs.len();
     certs.retain(|c| c.name != name);

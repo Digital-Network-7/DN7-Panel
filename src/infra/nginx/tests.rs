@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn host_tokens_split_and_overlap_detect() {
+    // Tokenized, lowercased, whitespace-split.
+    let a = host_tokens("A.com  b.com");
+    assert!(a.contains("a.com"));
+    assert!(a.contains("b.com"));
+    // Per-host overlap: two multi-host server_names sharing one host overlap.
+    let b = host_tokens("b.com c.com");
+    assert!(a.iter().any(|h| b.contains(h)), "b.com overlaps");
+    // No overlap when fully disjoint.
+    let c = host_tokens("x.com y.com");
+    assert!(!a.iter().any(|h| c.contains(h)));
+    // Empty input → no tokens.
+    assert!(host_tokens("   ").is_empty());
+}
+
+#[test]
+fn issuing_guard_marks_and_unmarks() {
+    assert!(!is_issuing("dn7-test-issue-xyz"));
+    {
+        let _g = IssuingGuard::new("dn7-test-issue-xyz");
+        assert!(is_issuing("dn7-test-issue-xyz"));
+    }
+    // Dropped → unmarked, so cleanup may reclaim the conf again.
+    assert!(!is_issuing("dn7-test-issue-xyz"));
+}
+
+#[test]
 fn server_name_validation() {
     assert!(valid_server_name("example.com"));
     assert!(valid_server_name("a.example.com www.example.com"));
