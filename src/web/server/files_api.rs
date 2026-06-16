@@ -134,14 +134,11 @@ pub(crate) async fn files_list(
         Ok(a) => a,
         Err(r) => return r,
     };
-    match crate::app::files::list(
-        acct.is_admin,
-        acct.system_user.as_deref(),
-        &req.path,
-        ctn_ref(&req),
-    )
-    .await
-    {
+    let caller = crate::app::files::Caller {
+        is_admin: acct.is_admin,
+        system_user: acct.system_user.as_deref(),
+    };
+    match crate::app::files::list(&caller, &req.path, ctn_ref(&req)).await {
         Ok(data) => Json(json!({ "ok": true, "data": data })).into_response(),
         Err(e) => fs_err_response(e),
     }
@@ -156,13 +153,11 @@ pub(crate) async fn files_mkdir(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let res = crate::app::files::mkdir(
-        acct.is_admin,
-        acct.system_user.as_deref(),
-        &req.path,
-        ctn_ref(&req),
-    )
-    .await;
+    let caller = crate::app::files::Caller {
+        is_admin: acct.is_admin,
+        system_user: acct.system_user.as_deref(),
+    };
+    let res = crate::app::files::mkdir(&caller, &req.path, ctn_ref(&req)).await;
     audit::record(
         &acct.username,
         "files.mkdir",
@@ -185,13 +180,11 @@ pub(crate) async fn files_delete(
         Ok(a) => a,
         Err(r) => return r,
     };
-    let res = crate::app::files::delete(
-        acct.is_admin,
-        acct.system_user.as_deref(),
-        &req.path,
-        ctn_ref(&req),
-    )
-    .await;
+    let caller = crate::app::files::Caller {
+        is_admin: acct.is_admin,
+        system_user: acct.system_user.as_deref(),
+    };
+    let res = crate::app::files::delete(&caller, &req.path, ctn_ref(&req)).await;
     audit::record(
         &acct.username,
         "files.delete",
@@ -237,9 +230,11 @@ pub(crate) async fn files_download(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let res =
-        crate::app::files::read_stream(acct.is_admin, acct.system_user.as_deref(), &q.path, ctn)
-            .await;
+    let caller = crate::app::files::Caller {
+        is_admin: acct.is_admin,
+        system_user: acct.system_user.as_deref(),
+    };
+    let res = crate::app::files::read_stream(&caller, &q.path, ctn).await;
     match res {
         Ok((name, stream)) => {
             // Keep the permit alive for the lifetime of the response stream.
@@ -407,14 +402,11 @@ pub(crate) async fn files_upload(
         Ok(t) => t,
         Err(r) => return r,
     };
-    let res = crate::app::files::write_file(
-        acct.is_admin,
-        acct.system_user.as_deref(),
-        &q.path,
-        ctn,
-        &tmp,
-    )
-    .await;
+    let caller = crate::app::files::Caller {
+        is_admin: acct.is_admin,
+        system_user: acct.system_user.as_deref(),
+    };
+    let res = crate::app::files::write_file(&caller, &q.path, ctn, &tmp).await;
     let _ = tokio::fs::remove_file(&tmp).await;
     audit::record(
         &acct.username,

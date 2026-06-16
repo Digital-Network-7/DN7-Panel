@@ -281,7 +281,7 @@ pub(crate) async fn restore_backup(
 
     // Read the config snapshot and recreate the container from the loaded image.
     op_push(op_id, &pmsg("dk.bk_recreating", &[]));
-    recreate_from_snapshot(&dir, file, name, &loaded_image, is_super).await
+    recreate_from_snapshot(file, name, &loaded_image, is_super).await
 }
 
 /// `docker load` a backup tarball and return the repo:tag it recorded
@@ -314,12 +314,13 @@ async fn load_backup_image(dkr: &Docker, tar_gz: &std::path::Path) -> Result<Str
 /// loaded image, and recreate the container under `name` (replacing any
 /// existing one with that name).
 async fn recreate_from_snapshot(
-    dir: &std::path::Path,
     file: &str,
     name: &str,
     loaded_image: &str,
     is_super: bool,
 ) -> Result<()> {
+    // `dir` is derivable from `name` (one fewer param to thread).
+    let dir = backups_root().join(name);
     let json_path = dir.join(file.replace(".tar.gz", ".json"));
     let mut body: Value = match std::fs::read(&json_path) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({})),

@@ -18,30 +18,40 @@ pub(crate) enum FsError {
     Op(anyhow::Error),
 }
 
-/// Container ops are admin-only.
-fn guard_container(is_admin: bool) -> Result<(), FsError> {
-    if is_admin {
-        Ok(())
-    } else {
-        Err(FsError::Forbidden)
+/// The caller's file-access identity: whether they're an admin (container ops
+/// are admin-only) and the system user host ops run as (None = the panel's own
+/// uid, i.e. the super-admin). Bundled so it threads through every entry as one
+/// argument instead of a repeated `(is_admin, system_user)` pair.
+pub(crate) struct Caller<'a> {
+    pub(crate) is_admin: bool,
+    pub(crate) system_user: Option<&'a str>,
+}
+
+impl Caller<'_> {
+    /// Container ops are admin-only.
+    fn guard_container(&self) -> Result<(), FsError> {
+        if self.is_admin {
+            Ok(())
+        } else {
+            Err(FsError::Forbidden)
+        }
     }
 }
 
 /// List a directory (host as the caller's user, or a container — admin only).
 pub(crate) async fn list(
-    is_admin: bool,
-    system_user: Option<&str>,
+    caller: &Caller<'_>,
     path: &str,
     container: Option<&str>,
 ) -> Result<Value, FsError> {
     match container {
         Some(c) => {
-            guard_container(is_admin)?;
+            caller.guard_container()?;
             crate::infra::file::web_ctn_list(c, path)
                 .await
                 .map_err(FsError::Op)
         }
-        None => crate::infra::file::web_host_list(path, system_user)
+        None => crate::infra::file::web_host_list(path, caller.system_user)
             .await
             .map_err(FsError::Op),
     }
@@ -49,19 +59,18 @@ pub(crate) async fn list(
 
 /// Create a directory.
 pub(crate) async fn mkdir(
-    is_admin: bool,
-    system_user: Option<&str>,
+    caller: &Caller<'_>,
     path: &str,
     container: Option<&str>,
 ) -> Result<(), FsError> {
     match container {
         Some(c) => {
-            guard_container(is_admin)?;
+            caller.guard_container()?;
             crate::infra::file::web_ctn_mkdir(c, path)
                 .await
                 .map_err(FsError::Op)
         }
-        None => crate::infra::file::web_host_mkdir(path, system_user)
+        None => crate::infra::file::web_host_mkdir(path, caller.system_user)
             .await
             .map_err(FsError::Op),
     }
@@ -69,19 +78,18 @@ pub(crate) async fn mkdir(
 
 /// Delete a path.
 pub(crate) async fn delete(
-    is_admin: bool,
-    system_user: Option<&str>,
+    caller: &Caller<'_>,
     path: &str,
     container: Option<&str>,
 ) -> Result<(), FsError> {
     match container {
         Some(c) => {
-            guard_container(is_admin)?;
+            caller.guard_container()?;
             crate::infra::file::web_ctn_delete(c, path)
                 .await
                 .map_err(FsError::Op)
         }
-        None => crate::infra::file::web_host_delete(path, system_user)
+        None => crate::infra::file::web_host_delete(path, caller.system_user)
             .await
             .map_err(FsError::Op),
     }
@@ -89,20 +97,19 @@ pub(crate) async fn delete(
 
 /// Write an already-streamed temp file into place (host or container).
 pub(crate) async fn write_file(
-    is_admin: bool,
-    system_user: Option<&str>,
+    caller: &Caller<'_>,
     path: &str,
     container: Option<&str>,
     tmp: &std::path::Path,
 ) -> Result<(), FsError> {
     match container {
         Some(c) => {
-            guard_container(is_admin)?;
+            caller.guard_container()?;
             crate::infra::file::web_ctn_write_file(c, path, tmp)
                 .await
                 .map_err(FsError::Op)
         }
-        None => crate::infra::file::web_host_write_file(path, tmp, system_user)
+        None => crate::infra::file::web_host_write_file(path, tmp, caller.system_user)
             .await
             .map_err(FsError::Op),
     }
@@ -111,19 +118,18 @@ pub(crate) async fn write_file(
 /// Open a download stream + suggested filename (host as the caller's user, or a
 /// container — admin only). The web boundary wraps the stream in an HTTP body.
 pub(crate) async fn read_stream(
-    is_admin: bool,
-    system_user: Option<&str>,
+    caller: &Caller<'_>,
     path: &str,
     container: Option<&str>,
 ) -> Result<(String, crate::infra::file::ByteStream), FsError> {
     match container {
         Some(c) => {
-            guard_container(is_admin)?;
+            caller.guard_container()?;
             crate::infra::file::web_ctn_read_stream(c, path)
                 .await
                 .map_err(FsError::Op)
         }
-        None => crate::infra::file::web_host_read_stream(path, system_user)
+        None => crate::infra::file::web_host_read_stream(path, caller.system_user)
             .await
             .map_err(FsError::Op),
     }
