@@ -47,9 +47,23 @@ use serde_json::{json, Value};
 /// Connect to the local Docker daemon via its unix socket (or the platform
 /// default). Replaces shelling out to the `docker` CLI — works as long as the
 /// daemon socket is reachable, with no `docker` binary required on PATH.
+///
+/// The connected `Docker` is memoized in a `OnceLock` and handed out by clone
+/// (the handle is internally an `Arc`, so clones share one connection pool).
+/// Without this every op rebuilt a fresh hyper client + pool, defeating
+/// keep-alive across the ~46 call sites. The first *successful* connect is
+/// cached; a connect failure is not, so a later call retries once the daemon
+/// is up. `connect_with_defaults` only sets up the client (it doesn't perform a
+/// round-trip), so caching it can't pin a dead socket.
 pub fn dkr() -> Result<Docker> {
-    Docker::connect_with_defaults()
-        .map_err(|e| anyhow!("无法连接 Docker 守护进程：{e}（请确认 Docker 已安装并运行）"))
+    static CLIENT: std::sync::OnceLock<Docker> = std::sync::OnceLock::new();
+    if let Some(d) = CLIENT.get() {
+        return Ok(d.clone());
+    }
+    let d = Docker::connect_with_defaults()
+        .map_err(|e| anyhow!("无法连接 Docker 守护进程：{e}（请确认 Docker 已安装并运行）"))?;
+    // Race-tolerant: if another thread set it first, keep the existing one.
+    Ok(CLIENT.get_or_init(|| d).clone())
 }
 
 #[derive(Debug, Deserialize)]

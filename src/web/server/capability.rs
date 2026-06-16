@@ -5,45 +5,53 @@ use super::*;
 // Capability dispatch (docker / nginx / mysql) — same JSON protocol as relays
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn dispatch(
-    state: &Shared,
-    headers: &header::HeaderMap,
-    chan: &str,
-    body: Value,
-    f: impl std::future::Future<Output = anyhow::Result<Value>>,
-) -> Response {
-    // Docker / Nginx / MySQL management are root-level capabilities — admin only.
-    let acct = match require_admin(state, headers) {
-        Ok(a) => a,
-        Err(r) => return r,
-    };
+/// The audit-relevant facts about a capability request, extracted from the body
+/// before the op future is built — so `dispatch` never has to clone the whole
+/// request `Value` (the future borrows it) just to read the op + target.
+pub(crate) struct OpMeta {
+    pub(crate) op: String,
+    pub(crate) target: String,
+}
+
+/// Extract `{op, target}` from a request body for audit logging. `target` is the
+/// first present of the per-capability identity fields.
+pub(crate) fn op_meta(body: &Value) -> OpMeta {
     let op = body
         .get("op")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let target = body
+        .get("inst")
+        .or_else(|| body.get("name"))
+        .or_else(|| body.get("domain"))
+        .or_else(|| body.get("container"))
+        .or_else(|| body.get("database"))
+        .or_else(|| body.get("ref"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    OpMeta { op, target }
+}
+
+pub(crate) async fn dispatch(
+    acct: &Account,
+    chan: &str,
+    meta: OpMeta,
+    f: impl std::future::Future<Output = anyhow::Result<Value>>,
+) -> Response {
     let res = f.await;
     // Record state-changing operations only (skip reads/polls to keep the log
     // meaningful and small).
-    if !is_read_op(&op) {
-        let target = body
-            .get("inst")
-            .or_else(|| body.get("name"))
-            .or_else(|| body.get("domain"))
-            .or_else(|| body.get("container"))
-            .or_else(|| body.get("database"))
-            .or_else(|| body.get("ref"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+    if !is_read_op(&meta.op) {
         let (detail, response) = match &res {
             Ok(v) => (String::new(), redact_response(v)),
             Err(e) => (e.to_string(), String::new()),
         };
         audit::record_op(
             &acct.username,
-            &format!("{chan}.{op}"),
-            &target,
+            &format!("{chan}.{}", meta.op),
+            &meta.target,
             res.is_ok(),
             &detail,
             &response,
@@ -104,14 +112,17 @@ pub(crate) async fn docker_op(
     headers: header::HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    // Resolve the caller's authz level for the create guardrail (privileged /
-    // host-network are super-only). If they're not even an admin the inner
-    // dispatch's require_admin rejects before the future is polled.
-    let is_super = require_admin(&state, &headers)
-        .map(|a| a.is_super)
-        .unwrap_or(false);
-    let fut = crate::app::docker::dispatch(&body, is_super);
-    dispatch(&state, &headers, "docker", body.clone(), fut).await
+    // Docker management is admin-only — resolve the account ONCE here (it carries
+    // the is_super level the create guardrail needs) and hand it to dispatch,
+    // instead of re-resolving (which re-locked the session + cloned the user
+    // list) inside dispatch.
+    let acct = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let meta = op_meta(&body);
+    let fut = crate::app::docker::dispatch(&body, acct.is_super);
+    dispatch(&acct, "docker", meta, fut).await
 }
 
 pub(crate) async fn nginx_op(
@@ -119,8 +130,13 @@ pub(crate) async fn nginx_op(
     headers: header::HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    let acct = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let meta = op_meta(&body);
     let fut = crate::app::nginx::dispatch(&body);
-    dispatch(&state, &headers, "nginx", body.clone(), fut).await
+    dispatch(&acct, "nginx", meta, fut).await
 }
 
 pub(crate) async fn mysql_op(
@@ -128,13 +144,35 @@ pub(crate) async fn mysql_op(
     headers: header::HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    let acct = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let meta = op_meta(&body);
     let fut = crate::app::mysql::dispatch(&body);
-    dispatch(&state, &headers, "mysql", body.clone(), fut).await
+    dispatch(&acct, "mysql", meta, fut).await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_read_op;
+    use super::{is_read_op, op_meta};
+    use serde_json::json;
+
+    #[test]
+    fn op_meta_extracts_op_and_first_target_field() {
+        // `op` is read verbatim; `target` is the first present identity field
+        // in priority order (inst > name > domain > container > database > ref).
+        let m = op_meta(&json!({ "op": "create", "container": "c1", "ref": "r9" }));
+        assert_eq!(m.op, "create");
+        assert_eq!(m.target, "c1");
+        // Falls through to `ref` when the higher-priority fields are absent.
+        let m = op_meta(&json!({ "op": "remove", "ref": "r9" }));
+        assert_eq!(m.target, "r9");
+        // Missing op/target → empty strings (no panic).
+        let m = op_meta(&json!({}));
+        assert_eq!(m.op, "");
+        assert_eq!(m.target, "");
+    }
 
     #[test]
     fn read_ops_are_not_audited() {
