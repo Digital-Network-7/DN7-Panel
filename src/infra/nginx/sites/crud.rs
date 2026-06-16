@@ -4,6 +4,7 @@ use super::*;
 /// Add a site. For SSL with Let's Encrypt, issuance runs detached (returns an
 /// op_id); otherwise the site is generated + validated synchronously.
 pub(crate) async fn add_site(form: &SiteForm) -> Result<Value> {
+    let _state = state_lock().lock().await; // serialize sites RMW (no lost update)
     let lo = layout()?;
     cleanup_orphan_confs(&lo);
     let site = site_from_req(form)?;
@@ -56,6 +57,7 @@ pub(crate) async fn add_site(form: &SiteForm) -> Result<Value> {
 }
 
 pub(crate) async fn remove_site(cmd: &RemoveSite) -> Result<Value> {
+    let _state = state_lock().lock().await; // serialize sites RMW (no lost update)
     let lo = layout()?;
     let site_id = cmd
         .site_id
@@ -88,6 +90,7 @@ pub(crate) async fn remove_site(cmd: &RemoveSite) -> Result<Value> {
 /// and a cert is already present; manual mode keeps the stored cert when no new
 /// PEM is supplied.
 pub(crate) async fn update_site(form: &SiteForm) -> Result<Value> {
+    let _state = state_lock().lock().await; // serialize sites RMW (no lost update)
     let lo = layout()?;
     let site_id = form
         .site_id

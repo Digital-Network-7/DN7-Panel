@@ -43,6 +43,7 @@ pub(crate) async fn list_access() -> Result<Value> {
 
 /// Create (no access_id) or update (existing access_id) an access list.
 pub(crate) async fn save_access_op(cmd: &SaveAccess) -> Result<Value> {
+    let _state = state_lock().lock().await; // serialize access RMW (no lost update)
     let _ = layout()?; // require setup
     let name = cmd
         .name
@@ -152,6 +153,7 @@ fn build_access_users(cmd: &SaveAccess, old: Option<&AccessList>) -> Result<Vec<
 
 /// Delete an access list (refused while a site still uses it).
 pub(crate) async fn delete_access_op(cmd: &DeleteAccess) -> Result<Value> {
+    let _state = state_lock().lock().await; // serialize access RMW (no lost update)
     let id = cmd
         .access_id
         .as_deref()

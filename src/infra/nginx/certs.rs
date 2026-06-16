@@ -201,6 +201,7 @@ fn unique_le_cert_name(certs: &[NamedCert], host: &str, site_id: &str) -> String
 /// Point `site` at a named cert, then rewrite its conf with SSL on, reload, and
 /// persist the updated site.
 async fn attach_named_cert_to_site(lo: &Layout, site: &Site, cert_name: String) -> Result<()> {
+    let _state = state_lock().lock().await; // serialize sites RMW (no lost update)
     let mut site = site.clone();
     site.cert_mode = "named".to_string();
     site.cert_name = cert_name;

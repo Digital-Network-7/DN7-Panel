@@ -52,6 +52,17 @@ pub(crate) fn mark_setup() -> Result<()> {
     Ok(())
 }
 
+/// Serializes nginx state read-modify-write ops (the sites + access manifests)
+/// so two concurrent admin requests can't clobber each other's writes (lost
+/// update) or interleave a load/save around the await-heavy validate+reload.
+/// A tokio Mutex (it's held across `.await`); nginx ops are admin-only and
+/// low-frequency, so the serialization cost is negligible. **Non-reentrant** —
+/// a locked op must not call another locked op while holding the guard.
+pub(crate) fn state_lock() -> &'static tokio::sync::Mutex<()> {
+    static L: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    L.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 pub(crate) fn load_sites() -> Vec<Site> {
     crate::infra::json_store::load_or_default(&sites_file())
 }
