@@ -53,10 +53,10 @@ function attachPathSuggest(input) {
     }).catch(() => {});
   };
   const debounced = () => { clearTimeout(timer); timer = setTimeout(query, 180); };
+  const onScroll = () => { if (box) place(); };
   input.addEventListener('input', debounced);
-  input.addEventListener('focus', debounced);
-  input.addEventListener('blur', () => setTimeout(hide, 150));
-  window.addEventListener('scroll', () => { if (box) place(); }, true);
+  input.addEventListener('focus', () => { window.addEventListener('scroll', onScroll, true); debounced(); });
+  input.addEventListener('blur', () => setTimeout(() => { hide(); window.removeEventListener('scroll', onScroll, true); }, 150));
 }
 
 // Docker engine + API version chips shown in each list tab's header (in place
@@ -361,4 +361,3 @@ function dkLogs(id, name) {
     op('docker', { op: 'logs', ref: id, tail: 400 }).then((d) => { $('dkLogWrap').innerHTML = '<pre class="out" id="dkLogOut" style="max-height:64vh"></pre>'; $('dkLogOut').textContent = d.logs || tr('dk.empty_log'); $('dkLogOut').scrollTop = $('dkLogOut').scrollHeight; }).catch((e) => { $('dkLogWrap').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
   });
 }
-

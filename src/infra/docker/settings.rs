@@ -79,10 +79,8 @@ pub(crate) fn load_dk_settings() -> DockerSettings {
 }
 pub(crate) fn save_dk_settings(s: &DockerSettings) -> Result<()> {
     let p = dk_settings_path();
-    if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d)?;
-    }
-    std::fs::write(&p, serde_json::to_string_pretty(s)?)?;
+    let data = serde_json::to_string_pretty(s)?;
+    crate::platform::paths::write_public(&p, data.as_bytes())?;
     Ok(())
 }
 

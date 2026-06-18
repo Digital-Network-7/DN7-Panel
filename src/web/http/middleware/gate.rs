@@ -11,17 +11,34 @@ pub(crate) async fn entry_gate(State(state): State<Shared>, req: Request, next: 
     // Capture the client IP + sanitized request headers for the audit log, and
     // bind them as a per-request context so any audit record made while handling
     // this request can attach them (no per-handler plumbing).
-    let client_ip = req
-        .extensions()
-        .get::<axum::extract::ConnectInfo<SocketAddr>>()
-        .map(|ci| ci.0.ip().to_string())
-        .unwrap_or_default();
+    let client_ip = audit_client_ip(&state, &req);
     let headers_str = sanitize_headers(req.headers());
     let ctx = audit::RequestCtx {
         ip: client_ip,
         headers: headers_str,
     };
     audit::scope(ctx, entry_gate_inner(state, req, next)).await
+}
+
+/// The effective source IP stored on audit records. This must use the same
+/// proxy-aware policy as login / rate limiting; otherwise requests through a
+/// same-host reverse proxy are logged as 127.0.0.1 while login is logged as the
+/// real client.
+pub(crate) fn audit_client_ip(state: &Shared, req: &Request) -> String {
+    let peer = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip());
+    let Some(peer) = peer else {
+        return String::new();
+    };
+    let s = state.settings.lock().unwrap_or_else(|poison| {
+        tracing::warn!(
+            "settings lock poisoned; recovering to keep audit client IP policy enforced"
+        );
+        poison.into_inner()
+    });
+    client_ip(peer, req.headers(), &SecurityPolicy::new(&s)).to_string()
 }
 
 /// The actual gate logic (allow list + safe-entry path), run inside the audit
@@ -226,5 +243,35 @@ mod tests {
                 "field {ptr} should be redacted"
             );
         }
+    }
+
+    #[test]
+    fn audit_client_ip_uses_forwarded_headers_from_loopback_proxy() {
+        use axum::http::Request as HttpRequest;
+
+        let cfg = crate::platform::config::PanelConfig::from_env();
+        let settings = serde_json::from_value(serde_json::json!({
+            "port": 1080,
+            "entry_path": "/",
+            "trusted_proxies": [],
+        }))
+        .unwrap();
+        let state = std::sync::Arc::new(WebState {
+            auth: crate::infra::auth::AuthState::new(),
+            settings: std::sync::Mutex::new(settings),
+            collector: Mutex::new(crate::infra::metrics::Collector::new()),
+            cfg,
+        });
+        let mut req = HttpRequest::builder()
+            .uri("/api/nginx")
+            .header("x-real-ip", "113.233.101.139")
+            .header("x-forwarded-for", "113.233.101.139")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:50123".parse::<SocketAddr>().unwrap(),
+        ));
+
+        assert_eq!(audit_client_ip(&state, &req), "113.233.101.139");
     }
 }

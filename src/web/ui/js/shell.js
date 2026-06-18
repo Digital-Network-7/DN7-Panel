@@ -81,6 +81,7 @@ function setUser(name, avatar) {
 function stopTab() {
   if (S.timer) { clearInterval(S.timer); S.timer = null; }
   if (S.ws) { try { S.ws.close(); } catch (e) {} S.ws = null; }
+  if (window._dashCleanup) { try { window._dashCleanup(); } catch (e) {} window._dashCleanup = null; }
   if (window._termCleanup) { try { window._termCleanup(); } catch (e) {} window._termCleanup = null; }
   if (window._modalTermCleanup) { try { window._modalTermCleanup(); } catch (e) {} window._modalTermCleanup = null; }
   // Close any open modal (and its live sockets) when leaving a tab.

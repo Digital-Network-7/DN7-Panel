@@ -69,7 +69,11 @@ pub(crate) fn is_read_op(op: &str) -> bool {
         op,
         "" | "info"
             | "list"
+            | "list_access"
+            | "list_containers"
+            | "list_named_certs"
             | "list_ops"
+            | "list_sites"
             | "op_log"
             | "status"
             | "ps"
@@ -178,7 +182,17 @@ mod tests {
     fn read_ops_are_not_audited() {
         // A representative sample of read/poll ops that must NOT be logged.
         for op in [
-            "", "info", "list", "list_ops", "op_log", "status", "stats", "logs",
+            "",
+            "info",
+            "list",
+            "list_access",
+            "list_named_certs",
+            "list_sites",
+            "list_ops",
+            "op_log",
+            "status",
+            "stats",
+            "logs",
         ] {
             assert!(is_read_op(op), "{op} should be a read op");
         }

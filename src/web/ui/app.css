@@ -229,6 +229,10 @@
   .dash .histcard .hist-body { position:relative; flex:1 1 auto; min-height:200px; }
   .dash .histcard .hist-body canvas { position:absolute; inset:0; display:block; width:100%; height:100%; }
   .dash .histcard .hist-empty { position:absolute; inset:0; align-items:center; justify-content:center; }
+  .dash .histcard .hist-tip { position:absolute; z-index:3; pointer-events:none; min-width:156px; max-width:230px; padding:9px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); box-shadow:0 14px 34px rgba(15,23,42,.18); color:var(--fg); font-size:12px; line-height:1.45; }
+  .dash .histcard .hist-tip b { display:block; margin-bottom:5px; font-size:11.5px; color:var(--mut); font-weight:500; }
+  .dash .histcard .hist-tip span { display:flex; align-items:center; gap:7px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .dash .histcard .hist-tip i { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
   /* Network stat card: left/right split (上行 amber, 下行 blue). */
   .netcard .netsplit { display:flex; gap:10px; margin-top:2px; }
   .netcard .netcell { flex:1; min-width:0; }

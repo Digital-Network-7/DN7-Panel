@@ -129,14 +129,8 @@ pub(crate) fn ensure_panel_cert() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     let cert = params.self_signed(&kp)?;
     let cpem = cert.pem();
     let kpem = kp.serialize_pem();
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(&crt, &cpem)?;
-    std::fs::write(&key, &kpem)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600));
-    }
+    crate::platform::paths::write_public(&crt, cpem.as_bytes())?;
+    crate::platform::paths::write_private(&key, kpem.as_bytes())?;
     Ok((cpem.into_bytes(), kpem.into_bytes()))
 }
 

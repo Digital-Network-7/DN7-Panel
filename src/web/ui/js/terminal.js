@@ -79,12 +79,20 @@ function openTerminalModal(title, pathProvider) {
   const cleanup = mountTerminal(panel.querySelector('#mvterm'), panel.querySelector('#mtStatus'), pathProvider);
   // Use a panel-local cleanup hook (so a tab switch closes it too via stopTab).
   window._termCleanup = null;
-  window._modalTermCleanup = () => { cleanup(); mask.remove(); };
-  const close = () => { cleanup(); mask.remove(); window._modalTermCleanup = null; };
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKey, true);
+    cleanup();
+    mask.remove();
+    window._modalTermCleanup = null;
+  };
+  window._modalTermCleanup = close;
   panel.querySelector('.term-x').addEventListener('click', close);
   // Click on the dark backdrop (outside the panel) closes it.
   mask.addEventListener('mousedown', (e) => { if (e.target === mask) close(); });
   // Esc closes the terminal panel.
-  const onKey = (e) => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey, true); } };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
   document.addEventListener('keydown', onKey, true);
 }
