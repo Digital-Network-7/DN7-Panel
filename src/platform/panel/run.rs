@@ -25,8 +25,9 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     crate::platform::procfile::write_version(&cfg.data_dir);
     guardian::spawn(cfg.clone());
 
-    // On-box web management console (default on, port 1080). Runs in its own
-    // task; no-op when disabled in settings.
+    // On-box web management console. It seeds `<data>/web.json` on first run
+    // (random high port + safe-entry path), then serves from the persisted
+    // settings in its own tasks.
     crate::web::spawn(cfg.clone());
 
     // Heal any site configs written by an older build (e.g. the legacy

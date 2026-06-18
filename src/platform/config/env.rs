@@ -4,8 +4,8 @@ use std::path::PathBuf;
 /// Runtime configuration shared by both roles (supervisor + panel).
 ///
 /// DN7 Panel is a standalone on-box management console: there is no backend
-/// connection. The only remote interaction is the (currently untriggered)
-/// self-update download, which uses `update_url`.
+/// connection. The only remote interaction is the self-update checker/download,
+/// which uses the configured DN7 mirror or GitHub release source.
 #[derive(Clone, Debug)]
 pub struct PanelConfig {
     /// Transient process-state directory (`<base>/run`): pid/heartbeat/lock.
@@ -20,8 +20,8 @@ pub struct PanelConfig {
     pub supervise_interval_secs: u64,
     /// Supervisor: minimum delay between panel restarts (seconds).
     pub restart_backoff_secs: u64,
-    /// Local web management: TCP port to bind (default 1080). The bind address
-    /// is 0.0.0.0 so it's reachable off-box (per product decision).
+    /// Local web management fallback port. Fresh web settings currently generate
+    /// and persist a random high port; after that `<data>/web.json` wins.
     pub web_port: u16,
     /// GitHub `owner/repo` that publishes the release binaries. Used by the
     /// self-update GitHub source (release assets are addressed deterministically
@@ -55,9 +55,9 @@ impl PanelConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(2);
-        // Local web console. Default port 1080. Env vars set the initial
-        // defaults; the web module persists user changes in `<data>/web.json`
-        // which take precedence at runtime.
+        // Local web console fallback. The web module persists user changes in
+        // `<data>/web.json`, and a fresh install currently generates a random
+        // high port rather than binding this value directly.
         let web_port = env::var("DN7_WEB_PORT")
             .ok()
             .and_then(|v| v.parse().ok())

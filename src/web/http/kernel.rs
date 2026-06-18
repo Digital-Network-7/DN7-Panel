@@ -33,8 +33,8 @@ impl WebState {
     }
 }
 
-/// Start the web console in a background task (no-op when disabled). Returns
-/// immediately; the server runs for the process lifetime.
+/// Start the web console in a background task. Returns immediately; the server
+/// runs for the process lifetime.
 pub fn spawn(cfg: PanelConfig) {
     let (s, _fresh) = settings::load_or_init(cfg.web_port);
     let port = s.port;

@@ -16,6 +16,12 @@
 - **自管理。** 自动安装到稳定路径，设置冗余开机自启，守护化运行，并通过双半部 supervisor 机制自愈。
 - **机上运行，无需后端。** 控制台直接在本机完成认证并操作主机；敏感信息使用与机器绑定的密钥加密。
 
+## 适用场景与取舍
+
+DN7 Panel 面向单机或少量节点运维场景：使用控制台的人，也应当是这台机器的可信管理员。它的优势是部署简单、无需外部控制平面，并且可以在一个嵌入式 UI 中直接管理 Docker、Nginx、MySQL/MariaDB、文件和终端。
+
+相应地，它也不是多租户 SaaS 控制面。许多能力会以宿主机管理员权限执行，爆炸半径较高。控制台默认监听所有网卡，但首次启动会生成随机高端口、随机安全入口路径和只显示一次的随机密码。面向公网主机时，建议初始化后关闭“Allow public access”，通过 SSH 隧道或配置好的反向代理访问。
+
 ## 运行角色
 
 程序会根据启动参数以两种角色之一运行：
@@ -50,11 +56,21 @@ sudo ./dn7-panel
 
 随后程序会**转入后台运行**，日志追加写入 `/var/dn7/panel/log/dn7-panel.log`（超过约 5 MiB 时会原地裁剪）。如需调试，可传入 `--foreground` / `-f`，或设置 `DN7_FOREGROUND=1` 以前台方式保持附着。
 
-首次启动时自动生成的管理员密码只会在启动横幅中**打印一次**。如果忘记密码，可使用 `dn7-panel reset`（仅安装所有者或 root）重新生成。
+启动横幅会把生成的访问地址、账号和密码**打印一次**。首次端口是随机高端口，登录页还会带一个随机安全入口路径（例如 `/abcd12`）。如果忘记密码，可使用 `dn7-panel reset`（仅安装所有者或 root）重新生成。
+
+常用 CLI 命令（仅安装所有者或 root 可执行管理类命令）：
+
+```bash
+dn7-panel reset              # 重置控制台账号与密码
+dn7-panel port [N]           # 设置指定端口；省略 N 时生成随机端口
+dn7-panel access [/path]     # 设置安全入口路径；省略时生成随机路径
+dn7-panel version            # 输出当前二进制版本
+dn7-panel help               # 查看命令帮助
+```
 
 ## 机上 Web 控制台
 
-控制台通过明文 HTTP 提供服务（默认端口 **1080**），初始密码为自动生成的随机值。登录过程带有限速，并使用 challenge-response 机制，因此密码不会以明文形式在链路上传输；设置页中还可启用自签名 HTTPS 与 TOTP 双因素认证。
+控制台通过明文 HTTP 在生成的端口提供服务，并使用自动生成的随机密码和安全入口路径。登录过程带有限速，并使用 challenge-response 机制，因此密码不会以明文形式在链路上传输；设置页中还可启用自签名 HTTPS 与 TOTP 双因素认证。
 
 > **暴露面。** 默认情况下控制台会绑定到 `0.0.0.0`（即任意网络均可访问）。设置中的 **“Allow public access”**（设置 → 通用）可以让它只绑定到回环地址 `127.0.0.1`。这通常更安全，建议通过 **Nginx 反向代理（域名）** 或 **SSH 隧道** 来访问面板。
 
@@ -95,18 +111,19 @@ sudo ./dn7-panel
 
 ## 配置
 
-可参考 [`.env.example`](../.env.example)。所有配置项均为可选；控制台自身设置页会将配置持久化到 `<data>/web.json`（权限 0600），并在运行时优先于环境变量生效。
+大多数运行配置由控制台自身持久化。Web 控制台设置保存在 `<data>/web.json`（权限 0600），更新偏好保存在 `<data>/update.json`（权限 0600），初始化后优先于环境变量生效。环境变量只作为启动默认值或调试开关；项目没有 `.env` 加载器。
 
 | 变量 | 默认值 | 说明 |
 |-----|---------|-------|
-| `DN7_WEB_ENABLED` | `1` | 是否启用机上 Web 控制台（设为 `0` / `false` 可禁用） |
-| `DN7_WEB_PORT` | `1080` | Web 控制台 TCP 端口（初始默认值） |
-| `DN7_RUNTIME_DIR` | `/var/dn7/panel` | `data/run/log` 的基础目录 |
+| `DN7_RUNTIME_DIR` | `/var/dn7/panel` | `data/run/log` 的基础目录，主要用于特殊部署或测试 |
 | `DN7_HEARTBEAT_TIMEOUT_SECS` | `15` | 对端存活判定超时阈值 |
 | `DN7_SUPERVISE_INTERVAL_SECS` | `3` | supervisor 检查子进程的轮询间隔 |
 | `DN7_RESTART_BACKOFF_SECS` | `2` | panel 重启前的退避延迟 |
 | `DN7_FOREGROUND` | — | 设为 `1` 时以前台方式运行（不守护化） |
-| `DN7_UPDATE_URL` | `https://api.teaops.dn7.cn` | 自更新源地址 |
+| `DN7_GITHUB_REPO` | `Digital-Network-7/DN7-Panel` | GitHub 更新源使用的 release 仓库 |
+| `DN7_SITE_URL` | `https://dn7.cn` | 默认更新源使用的 Digital Network 7 镜像/API 地址 |
+| `DN7_WEB_PORT` | 会被解析，通常无需设置 | 运行时配置兜底；当前首次初始化会生成并持久化随机高端口，建议用 `dn7-panel port` 或设置页修改 |
+| `RUST_LOG` | `info,dn7_panel=info` | 前台/日志输出的 tracing 过滤器 |
 
 ## 安全模型
 

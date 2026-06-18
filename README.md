@@ -28,6 +28,21 @@ runtime dependencies.
 - **On-box, no backend.** The console authenticates locally and acts on the
   host directly; secrets are encrypted with a machine-bound key.
 
+## Fit and trade-offs
+
+DN7 Panel is designed for single-host or small-node operations where the person
+using the console is also trusted to administer the machine. Its strengths are
+simple deployment, no external control plane, and direct access to Docker,
+Nginx, MySQL/MariaDB, files, and a terminal from one embedded UI.
+
+That also defines its limits. It is not a multi-tenant SaaS control plane, and
+it deliberately has a high local blast radius: many features operate with host
+administrator privileges. The default console listener is reachable on all
+interfaces, protected by a random port, a random safe-entry path, and a random
+password shown once. For internet-facing hosts, the recommended posture is to
+disable public access after setup and reach it through an SSH tunnel or a
+properly configured reverse proxy.
+
 ## Roles
 
 The binary runs as one of two roles, chosen by argv:
@@ -81,15 +96,27 @@ It then **detaches into the background**, appending logs to
 `/var/dn7/panel/log/dn7-panel.log` (trimmed in place once past ~5 MiB). Pass
 `--foreground` / `-f` (or `DN7_FOREGROUND=1`) to stay attached for debugging.
 
-The auto-generated admin password is printed **once** in the launch banner.
-Forgot it? `dn7-panel reset` (install owner / root only) regenerates it.
+The launch banner prints the generated console URL, username, and password
+**once**. The first-run port is a random high port, and the login page is behind
+a random safe-entry path such as `/abcd12`. Forgot the password? `dn7-panel
+reset` (install owner / root only) regenerates it.
+
+Useful owner/root-only CLI commands:
+
+```bash
+dn7-panel reset              # reset the console account + password
+dn7-panel port [N]           # set a specific port, or omit N for a random one
+dn7-panel access [/path]     # set the safe-entry path, or omit for a random one
+dn7-panel version            # print the compiled version
+dn7-panel help               # show command help
+```
 
 ## On-box web console
 
-Served over plain HTTP (default port **1080**) with an auto-generated random
-password. Login is rate-limited and uses a challenge-response, so the password
-never crosses the wire in cleartext; optional self-signed HTTPS and TOTP 2FA are
-available in settings.
+Served over plain HTTP on the generated port with an auto-generated random
+password and safe-entry path. Login is rate-limited and uses a
+challenge-response, so the password never crosses the wire in cleartext;
+optional self-signed HTTPS and TOTP 2FA are available in settings.
 
 > **Exposure.** By default the console binds `0.0.0.0` (reachable from any
 > network). The **"Allow public access"** setting (Settings → General) lets you
@@ -141,19 +168,23 @@ Capabilities:
 
 ## Configuration
 
-See `.env.example`. All settings are optional; the console's own settings page
-persists to `<data>/web.json` (0600) and takes precedence at runtime.
+Most operational settings are persisted by the console itself. Web-console
+settings live in `<data>/web.json` (0600), update preferences in
+`<data>/update.json` (0600), and they take precedence after the first
+initialization. Environment variables are optional startup defaults or debug
+knobs; there is no `.env` loader.
 
 | Var | Default | Notes |
 |-----|---------|-------|
-| `DN7_WEB_ENABLED` | `1` | serve the on-box web console (`0`/`false` to disable) |
-| `DN7_WEB_PORT` | `1080` | web console TCP port (initial default) |
-| `DN7_RUNTIME_DIR` | `/var/dn7/panel` | base dir for `data/run/log` |
+| `DN7_RUNTIME_DIR` | `/var/dn7/panel` | base dir for `data/run/log`; mainly for special deployments/tests |
 | `DN7_HEARTBEAT_TIMEOUT_SECS` | `15` | peer liveness threshold |
 | `DN7_SUPERVISE_INTERVAL_SECS` | `3` | supervisor child-check interval |
 | `DN7_RESTART_BACKOFF_SECS` | `2` | delay between panel restarts |
 | `DN7_FOREGROUND` | — | set `1` to stay attached (no daemonize) |
-| `DN7_UPDATE_URL` | `https://api.teaops.dn7.cn` | self-update source |
+| `DN7_GITHUB_REPO` | `Digital-Network-7/DN7-Panel` | GitHub release repository used by the GitHub update source |
+| `DN7_SITE_URL` | `https://dn7.cn` | Digital Network 7 mirror/API base used by the default update source |
+| `DN7_WEB_PORT` | parsed, rarely needed | runtime config fallback; current first-run web settings generate and persist a random high port, so prefer `dn7-panel port` or Settings |
+| `RUST_LOG` | `info,dn7_panel=info` | tracing filter for foreground/log output |
 
 ## Security model
 
