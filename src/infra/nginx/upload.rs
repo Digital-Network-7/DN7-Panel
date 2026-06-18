@@ -5,6 +5,13 @@ use super::*;
 // console's "static" site type. Writes into <www_store>/<root>/.
 // ---------------------------------------------------------------------------
 
+/// Static-site ZIP extraction limits. The upload body itself is capped at the
+/// HTTP boundary, but compressed archives can expand far beyond that cap or
+/// contain huge file counts. Keep both bounded while still allowing ordinary
+/// static bundles.
+pub(crate) const MAX_STATIC_ZIP_FILES: usize = 20_000;
+pub(crate) const MAX_STATIC_ZIP_UNPACKED: u64 = 512 * 1024 * 1024;
+
 /// Inputs for a static-site content upload (bundled to keep the entrypoints
 /// within the param-count limit and make the call site self-documenting).
 /// `mode` is "zip" (extract `temp` as a ZIP) or "file" (write it at `rel`);
@@ -126,6 +133,7 @@ pub(crate) fn extract_zip_from<R: std::io::Read + std::io::Seek>(
 ) -> Result<usize> {
     let mut zip = zip::ZipArchive::new(reader).map_err(|e| anyhow!("无法读取 ZIP：{e}"))?;
     let mut count = 0usize;
+    let mut written = 0u64;
     for i in 0..zip.len() {
         let mut entry = zip
             .by_index(i)
@@ -151,9 +159,49 @@ pub(crate) fn extract_zip_from<R: std::io::Read + std::io::Seek>(
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        if count >= MAX_STATIC_ZIP_FILES {
+            return Err(anyhow!(
+                "ZIP 文件数量超过限制（最多 {MAX_STATIC_ZIP_FILES} 个文件）"
+            ));
+        }
+        let declared = entry.size();
+        if written.saturating_add(declared) > MAX_STATIC_ZIP_UNPACKED {
+            return Err(anyhow!("ZIP 解压后体积超过限制（最多 512 MiB）"));
+        }
         let mut out = std::fs::File::create(&target)?;
-        std::io::copy(&mut entry, &mut out)?;
+        let copied = match copy_zip_entry_limited(
+            &mut entry,
+            &mut out,
+            MAX_STATIC_ZIP_UNPACKED.saturating_sub(written),
+        ) {
+            Ok(n) => n,
+            Err(e) => {
+                let _ = std::fs::remove_file(&target);
+                return Err(e);
+            }
+        };
+        written += copied;
         count += 1;
     }
     Ok(count)
+}
+
+pub(crate) fn copy_zip_entry_limited<R: std::io::Read, W: std::io::Write>(
+    reader: &mut R,
+    writer: &mut W,
+    limit: u64,
+) -> Result<u64> {
+    let mut total = 0u64;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            return Ok(total);
+        }
+        total = total.saturating_add(n as u64);
+        if total > limit {
+            return Err(anyhow!("ZIP 解压后体积超过限制（最多 512 MiB）"));
+        }
+        writer.write_all(&buf[..n])?;
+    }
 }

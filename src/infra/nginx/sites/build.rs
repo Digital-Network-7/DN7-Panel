@@ -39,12 +39,25 @@ pub(crate) fn valid_local_root(p: &str) -> Result<String> {
     if !canon.is_dir() {
         return Err(nginx_err(NginxError::LocalRootNotDir));
     }
-    let s = canon.to_string_lossy().to_string();
-    const DENY: [&str; 6] = ["/", "/etc", "/root", "/proc", "/sys", "/boot"];
-    if DENY.iter().any(|d| s == *d) {
+    if local_root_denied(&canon) {
         return Err(nginx_err(NginxError::LocalRootDenied));
     }
-    Ok(s)
+    Ok(canon.to_string_lossy().to_string())
+}
+
+/// Sensitive host trees must never be exposed as a static document root. This
+/// is a read-side counterpart to the file manager's host-mutation guard: serving
+/// `/etc/nginx`, `/root/.ssh`, `/proc/...`, etc. would leak host internals even
+/// though the path is read-only.
+pub(crate) fn local_root_denied(path: &std::path::Path) -> bool {
+    if path == std::path::Path::new("/") {
+        return true;
+    }
+    const TREES: [&str; 6] = ["/etc", "/root", "/proc", "/sys", "/boot", "/dev"];
+    TREES.iter().any(|t| {
+        let tree = std::path::Path::new(t);
+        path == tree || path.starts_with(tree)
+    })
 }
 
 /// Build a site from the request, validating every field.

@@ -169,20 +169,44 @@ function updateStickyShadows(wrap) {
   wrap.classList.toggle('scl', wrap.scrollLeft > 1);
   wrap.classList.toggle('scr', wrap.scrollLeft + wrap.clientWidth < wrap.scrollWidth - 1);
 }
+function stickyShadowWraps() {
+  if (!wireStickyShadows._wraps) wireStickyShadows._wraps = new Set();
+  return wireStickyShadows._wraps;
+}
+function cleanupStickyShadowWraps() {
+  const wraps = stickyShadowWraps();
+  wraps.forEach((w) => {
+    if (!document.body.contains(w)) {
+      if (wireStickyShadows._ro) wireStickyShadows._ro.unobserve(w);
+      wraps.delete(w);
+    }
+  });
+}
 function wireStickyShadows(wrap) {
   if (!wrap) return;
   const upd = () => updateStickyShadows(wrap);
   wrap.addEventListener('scroll', upd, { passive: true });
+  cleanupStickyShadowWraps();
+  stickyShadowWraps().add(wrap);
   // Recompute on viewport resize — a wider window may stop the table from
   // overflowing (so the right shadow must hide) and vice-versa. Bind the window
   // listener once and re-resolve the current wrapper each time to avoid leaks.
   if (!wireStickyShadows._bound) {
     wireStickyShadows._bound = true;
-    window.addEventListener('resize', () => document.querySelectorAll('.tablewrap').forEach(updateStickyShadows));
+    window.addEventListener('resize', () => {
+      cleanupStickyShadowWraps();
+      stickyShadowWraps().forEach(updateStickyShadows);
+    });
   }
   // Also react to layout changes that don't fire window resize (sidebar toggle).
   if (window.ResizeObserver) {
-    new ResizeObserver(upd).observe(wrap);
+    if (!wireStickyShadows._ro) {
+      wireStickyShadows._ro = new ResizeObserver((entries) => {
+        cleanupStickyShadowWraps();
+        entries.forEach((e) => updateStickyShadows(e.target));
+      });
+    }
+    wireStickyShadows._ro.observe(wrap);
   }
   upd();
   setTimeout(upd, 60);

@@ -59,6 +59,19 @@ fn container_and_root_validation() {
 }
 
 #[test]
+fn local_static_root_denies_sensitive_trees() {
+    assert!(local_root_denied(std::path::Path::new("/")));
+    assert!(local_root_denied(std::path::Path::new("/etc")));
+    assert!(local_root_denied(std::path::Path::new("/etc/nginx")));
+    assert!(local_root_denied(std::path::Path::new("/root/.ssh")));
+    assert!(local_root_denied(std::path::Path::new("/proc/self")));
+    assert!(!local_root_denied(std::path::Path::new("/var/www")));
+    assert!(!local_root_denied(std::path::Path::new(
+        "/usr/share/nginx/html"
+    )));
+}
+
+#[test]
 fn cert_name_validation() {
     assert!(valid_cert_name("mysite-2026"));
     assert!(valid_cert_name("a.b_c"));
@@ -249,6 +262,18 @@ fn sanitize_rel_rejects_traversal() {
         sanitize_rel("./x/./y.js").unwrap(),
         std::path::PathBuf::from("x/y.js")
     );
+}
+
+#[test]
+fn zip_entry_copy_enforces_unpacked_limit() {
+    let mut src = std::io::Cursor::new(vec![1u8; 16]);
+    let mut out = Vec::new();
+    assert_eq!(copy_zip_entry_limited(&mut src, &mut out, 16).unwrap(), 16);
+    assert_eq!(out.len(), 16);
+
+    let mut src = std::io::Cursor::new(vec![1u8; 17]);
+    let mut out = Vec::new();
+    assert!(copy_zip_entry_limited(&mut src, &mut out, 16).is_err());
 }
 
 #[test]
