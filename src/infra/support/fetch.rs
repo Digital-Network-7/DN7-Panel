@@ -261,6 +261,11 @@ fn strip_and_verify(data: &mut Vec<u8>) -> Result<()> {
     Ok(())
 }
 
+/// Hard ceiling on a self-update binary download. The body is buffered fully in
+/// memory (and the panel runs as root), so without a cap a compromised/MITM'd
+/// mirror could OOM-DoS the host via an oversized or unbounded response.
+const MAX_BINARY_BYTES: u64 = 256 * 1024 * 1024; // 256 MiB
+
 /// Stream a response body into a Vec, reporting download percent via callback.
 async fn download_streaming<F: Fn(u64)>(
     resp: reqwest::Response,
@@ -268,6 +273,14 @@ async fn download_streaming<F: Fn(u64)>(
 ) -> Result<Vec<u8>> {
     use futures::StreamExt;
     let total = resp.content_length();
+    // Reject an oversized declared length up front (before allocating).
+    if total.is_some_and(|t| t > MAX_BINARY_BYTES) {
+        return Err(anyhow!(
+            "download too large: declared {} bytes exceeds the {} byte limit",
+            total.unwrap(),
+            MAX_BINARY_BYTES
+        ));
+    }
     let mut bytes: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
     let mut got: u64 = 0;
     let mut last_pct: u64 = 0;
@@ -276,8 +289,15 @@ async fn download_streaming<F: Fn(u64)>(
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| anyhow!("download stream error: {e}"))?;
-        bytes.extend_from_slice(&chunk);
         got += chunk.len() as u64;
+        // Abort an unbounded/chunked body that runs past the cap (no Content-Length).
+        if got > MAX_BINARY_BYTES {
+            return Err(anyhow!(
+                "download exceeded the {} byte limit — aborting",
+                MAX_BINARY_BYTES
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
         crate::platform::update::set_bytes(got, total.unwrap_or(0));
         if let Some(total) = total.filter(|t| *t > 0) {
             let pct = (got * 100 / total).min(100);

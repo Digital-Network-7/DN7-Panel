@@ -148,7 +148,15 @@ pub(crate) fn extract_zip_from<R: std::io::Read + std::io::Seek>(
                 Some(p) => p,
                 None => continue,
             };
+            // Count directory entries against the same cap, else a ZIP of
+            // millions of empty dirs is an uncounted inode/directory bomb.
+            if count >= MAX_STATIC_ZIP_FILES {
+                return Err(anyhow!(
+                    "ZIP 文件数量超过限制（最多 {MAX_STATIC_ZIP_FILES} 个文件）"
+                ));
+            }
             std::fs::create_dir_all(dest.join(safe))?;
+            count += 1;
             continue;
         }
         let safe = match sanitize_rel(&name) {

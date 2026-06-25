@@ -337,6 +337,14 @@ fn spec_binds(req: &Req) -> Result<Vec<String>> {
             if crate::core::docker::host_bind_denied(host) {
                 return Err(docker_err(DockerError::BindHostPathDenied));
             }
+            // The deny-list above is lexical; also resolve symlinks so a host
+            // symlink under an allowed path (e.g. `/srv/data -> /etc`) can't mount
+            // the protected target. Re-check the canonical form when it exists.
+            if let Ok(canon) = std::fs::canonicalize(host) {
+                if crate::core::docker::host_bind_denied(&canon.to_string_lossy()) {
+                    return Err(docker_err(DockerError::BindHostPathDenied));
+                }
+            }
         } else {
             validate_name(host)?;
         }

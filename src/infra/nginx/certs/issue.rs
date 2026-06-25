@@ -282,12 +282,14 @@ pub(crate) async fn issue_le_named(
 
     let (cert_chain_pem, key_pem) = dance?;
 
-    // Persist into the named cert store + manifest (serialized vs. operator cert
-    // ops / the renewal loop — lost-update guard on certs.json).
-    std::fs::write(named_crt_file(lo, name), cert_chain_pem)?;
-    write_key_file(&named_key_file(lo, name), &key_pem)?;
+    // Persist into the named cert store + manifest under one lock (serialized vs.
+    // operator cert ops / the renewal loop). The PEM file writes are inside the
+    // critical section too, so a concurrent reader/renewer never sees the files
+    // present without the matching manifest entry (or vice versa).
     {
         let _state = state_lock().lock().await;
+        std::fs::write(named_crt_file(lo, name), cert_chain_pem)?;
+        write_key_file(&named_key_file(lo, name), &key_pem)?;
         let mut certs = load_named_certs();
         certs.retain(|c| c.name != name);
         certs.push(NamedCert {

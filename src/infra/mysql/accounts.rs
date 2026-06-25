@@ -100,7 +100,9 @@ pub(crate) async fn create_user(req: &Req) -> Result<Value> {
     if !valid_ident(host, true) {
         return Err(mysql_err(MysqlError::BadHost));
     }
-    if pwd.is_empty() || pwd.len() > 128 {
+    // Minimum 6 chars (matches the root-password rule in provision/install.rs);
+    // also covers the empty case.
+    if pwd.len() < 6 || pwd.len() > 128 {
         return Err(mysql_err(MysqlError::BadPassword));
     }
 

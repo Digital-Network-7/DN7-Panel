@@ -10,3 +10,5 @@ data/
 *.heartbeat
 *.lock
 .DS_Store
+# Locally-pulled upstream nginx source (reference only; not part of the project).
+/nginx/

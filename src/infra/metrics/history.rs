@@ -148,7 +148,19 @@ fn persist() {
         let st = store().lock().unwrap_or_else(|e| e.into_inner());
         serde_json::to_string(&*st).unwrap_or_else(|_| "{}".into())
     };
-    let _ = crate::platform::paths::write_public(&p, data.as_bytes());
+    // The write does a blocking fsync + rename; offload it to the blocking pool
+    // so it never stalls an async runtime worker. (Inline when no runtime, e.g.
+    // tests.)
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) => {
+            h.spawn_blocking(move || {
+                let _ = crate::platform::paths::write_public(&p, data.as_bytes());
+            });
+        }
+        Err(_) => {
+            let _ = crate::platform::paths::write_public(&p, data.as_bytes());
+        }
+    }
 }
 
 fn now_secs() -> i64 {
@@ -163,6 +175,10 @@ fn now_secs() -> i64 {
 pub fn start() {
     static STARTED: OnceLock<()> = OnceLock::new();
     STARTED.get_or_init(|| {
+        // Warm the store on the boot thread so the blocking on-disk load happens
+        // here (once, at startup) rather than lazily on the first request that
+        // reads the history.
+        store();
         tokio::spawn(run());
     });
 }

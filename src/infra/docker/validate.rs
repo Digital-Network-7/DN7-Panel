@@ -88,11 +88,15 @@ pub(crate) fn validate_path(s: &str) -> Result<()> {
         return Err(docker_err(DockerError::PathNotAbsolute));
     }
     // Disallow characters that could break out of a single argv entry or look
-    // like injection; container/host paths in practice don't need them.
+    // like injection; container/host paths in practice don't need them. `:` , `,`
+    // and whitespace are also rejected: a path is fed into the daemon bind string
+    // `src:dst[:opts]`, so a `:`/`,` in either field would smuggle extra mount
+    // options (rw, propagation rshared, SELinux relabel z/Z) the UI never offered.
     let bad = s.chars().any(|c| {
         matches!(
             c,
             ';' | '|' | '&' | '$' | '`' | '\n' | '\r' | '"' | '\'' | '\\' | '<' | '>' | '*'
+                | ':' | ',' | ' ' | '\t'
         )
     });
     if bad {

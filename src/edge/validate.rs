@@ -8,38 +8,20 @@
 //! location prefix must be well-formed. A failure here aborts the reload before
 //! the [`super::store::publish`] swap, so the live config is untouched.
 
-use super::config::{DefaultRoute, RouteKind, RuntimeConfig};
+use super::config::{DefaultRoute, RouteKind, RuntimeConfig, ServerRoute};
 
 /// Validate a freshly-built [`RuntimeConfig`]. Returns an `nginx -t`-style error
 /// string on the first problem, or `Ok(())` when the table is safe to publish.
 pub(crate) fn validate(cfg: &RuntimeConfig) -> Result<(), String> {
-    // Every TLS-serving host must have a certificate to present, else the
-    // handshake would fail for that SNI (the `listen 443 ssl` with no cert that
-    // `nginx -t` rejects). `build` degrades cert-less sites to plain HTTP, so by
-    // here `ssl == true` should always resolve — assert it to fail closed.
+    // Exact-host routes: resolve the cert against the host itself.
     for (host, route) in &cfg.hosts {
-        if route.ssl && cfg.certs.resolve(Some(host)).is_none() {
-            return Err(format!(
-                "site \"{}\": listen 443 ssl is set but no certificate resolves for {host}",
-                route.id
-            ));
-        }
-        for loc in &route.locations {
-            if !loc.path.starts_with('/') {
-                return Err(format!(
-                    "site \"{}\": location \"{}\" must start with '/'",
-                    route.id, loc.path
-                ));
-            }
-        }
-        if let RouteKind::Static(s) = &route.kind {
-            if !s.root.is_absolute() {
-                return Err(format!(
-                    "site \"{}\": static root must be an absolute path",
-                    route.id
-                ));
-            }
-        }
+        check_route(cfg, route, host)?;
+    }
+    // Wildcard routes get the same checks — they were previously skipped. The
+    // stored suffix is `.example.com`, so a synthesized matching host resolves
+    // the wildcard cert the same way a real request would.
+    for (suffix, route) in &cfg.wildcards {
+        check_route(cfg, route, &format!("wildcard-check{suffix}"))?;
     }
 
     if let DefaultRoute::Redirect(url) = &cfg.default_site {
@@ -48,5 +30,35 @@ pub(crate) fn validate(cfg: &RuntimeConfig) -> Result<(), String> {
         }
     }
 
+    Ok(())
+}
+
+/// The per-route semantic checks (`nginx -t`-equivalent): a TLS-serving route
+/// must have a cert that resolves (`cert_host` is the host to test resolution
+/// for), every location prefix must start with `/`, and a static root must be
+/// absolute.
+fn check_route(cfg: &RuntimeConfig, route: &ServerRoute, cert_host: &str) -> Result<(), String> {
+    if route.ssl && cfg.certs.resolve(Some(cert_host)).is_none() {
+        return Err(format!(
+            "site \"{}\": listen 443 ssl is set but no certificate resolves for {cert_host}",
+            route.id
+        ));
+    }
+    for loc in &route.locations {
+        if !loc.path.starts_with('/') {
+            return Err(format!(
+                "site \"{}\": location \"{}\" must start with '/'",
+                route.id, loc.path
+            ));
+        }
+    }
+    if let RouteKind::Static(s) = &route.kind {
+        if !s.root.is_absolute() {
+            return Err(format!(
+                "site \"{}\": static root must be an absolute path",
+                route.id
+            ));
+        }
+    }
     Ok(())
 }

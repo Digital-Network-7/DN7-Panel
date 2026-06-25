@@ -182,6 +182,15 @@ pub async fn web_host_write_file(dest: &str, temp: &Path, as_user: Option<&str>)
     if resolves_into_protected(dest).await {
         return Err(anyhow!("该系统目录受保护，禁止写入"));
     }
+    // A symlinked *final component* would let a pre-planted link redirect this
+    // root write outside the intended path (e.g. a dangling `x -> /etc/cron.d/y`,
+    // whose missing target makes `resolves_into_protected` above miss it). No-follow
+    // lstat the destination and refuse any symlink leaf — `fs::copy` follows it.
+    if let Ok(md) = tokio::fs::symlink_metadata(dest).await {
+        if md.file_type().is_symlink() {
+            return Err(anyhow!("目标为符号链接，禁止写入"));
+        }
+    }
     tokio::fs::copy(temp, dest).await?; // chunked copy, bounded memory
     Ok(())
 }

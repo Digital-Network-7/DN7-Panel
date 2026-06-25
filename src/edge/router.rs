@@ -203,9 +203,9 @@ fn default_response(default: &DefaultRoute, host: &str, path: &str, query: &str)
             Ok(code) => response::status(code),
             Err(_) => response::status(http::StatusCode::BAD_REQUEST),
         },
-        // 301 to the operator's fixed URL. We forward the original path+query
-        // only when the configured target has none of its own, matching the
-        // common "redirect the whole vhost" intent without double-appending.
+        // 301 the whole vhost to the operator's fixed URL verbatim; the original
+        // request path/query are intentionally dropped (the configured target is
+        // the canonical destination).
         DefaultRoute::Redirect(url) => {
             let _ = (host, path, query);
             response::redirect(url)

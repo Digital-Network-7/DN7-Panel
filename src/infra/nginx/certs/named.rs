@@ -170,14 +170,16 @@ pub(crate) async fn delete_cert(cmd: &DeleteCert) -> Result<Value> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| nginx_err(NginxError::MissingCertName))?;
+    // Hold the lock across the usage check AND the delete, so a concurrent
+    // add_site/update_site can't start referencing the cert between the "in use?"
+    // check and its removal (TOCTOU → orphaned live-site cert).
+    let _state = state_lock().lock().await;
     let in_use = sites_using_certs();
     if let Some(sites) = in_use.get(name) {
         if !sites.is_empty() {
             return Err(anyhow!("证书仍被站点使用：{}", sites.join("、")));
         }
     }
-    // Serialize the manifest RMW against the renewal loop / other cert ops.
-    let _state = state_lock().lock().await;
     let mut certs = load_named_certs();
     let before = certs.len();
     certs.retain(|c| c.name != name);

@@ -248,10 +248,20 @@ async fn serve_file(
         return serve_range(builder, file_path, start, end, len, head_only).await;
     }
 
+    if wants_gzip && head_only {
+        // HEAD on a gzip-eligible file: advertise that a GET would be gzipped,
+        // but don't read+compress the whole file just to discard the body. The
+        // compressed length is unknown without compressing, so omit it (a HEAD
+        // Content-Length is optional and a wrong one would be worse).
+        let headers = builder.headers_mut().expect("builder has headers");
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+        return builder.body(response::empty()).expect("response builds");
+    }
     if wants_gzip {
         // The compressible types are text/json/svg/js — small enough to buffer,
         // and gzip needs the whole input anyway. Read it, compress, send a
-        // fully-buffered body with the compressed length.
+        // fully-buffered body with the compressed length. (HEAD handled above.)
         match tokio::fs::read(file_path).await {
             Ok(raw) => match gzip(&raw, tuning.gzip_comp_level) {
                 Some(compressed) => {
@@ -260,12 +270,9 @@ async fn serve_file(
                     headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
                     headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
                     headers.insert(header::CONTENT_LENGTH, HeaderValue::from(clen));
-                    let body = if head_only {
-                        response::empty()
-                    } else {
-                        response::full(Bytes::from(compressed))
-                    };
-                    return builder.body(body).expect("response builds");
+                    return builder
+                        .body(response::full(Bytes::from(compressed)))
+                        .expect("response builds");
                 }
                 None => { /* fall through to the uncompressed path on encoder error */ }
             },

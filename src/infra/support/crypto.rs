@@ -117,17 +117,11 @@ fn persisted_random_key() -> Option<Vec<u8>> {
     }
 }
 
-/// Encrypt a plaintext value for at-rest storage. Returns `nonce_hex:cipher_hex`.
-/// On the (unlikely) event of an encryption failure, returns the plaintext
-/// unchanged so the token is never lost — `maybe_decrypt` reads it back as-is.
-pub fn encrypt(plaintext: &str) -> String {
-    match try_encrypt(&machine_key(), plaintext) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!("token encryption failed ({e}); storing plaintext");
-            plaintext.to_string()
-        }
-    }
+/// Encrypt a plaintext value for at-rest storage. Returns `nonce_hex:cipher_hex`,
+/// or an error — a secret is NEVER silently stored as plaintext (the previous
+/// plaintext fallback could quietly persist a root DB password in the clear).
+pub fn encrypt(plaintext: &str) -> Result<String, String> {
+    try_encrypt(&machine_key(), plaintext)
 }
 
 /// Decrypt a stored value. A value without a `:` separator is treated as a
@@ -233,7 +227,7 @@ mod tests {
     fn maybe_decrypt_round_trips_real_ciphertext() {
         // encrypt() uses the live machine key; maybe_decrypt() must read it back.
         let token = "deadbeef".repeat(16);
-        let enc = encrypt(&token);
+        let enc = encrypt(&token).unwrap();
         assert!(enc.contains(':'));
         assert_eq!(maybe_decrypt(&enc).unwrap(), token);
     }

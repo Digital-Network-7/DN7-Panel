@@ -86,7 +86,8 @@ pub(crate) async fn reset_password(req: &Req) -> Result<Value> {
             out.trim().chars().take(200).collect::<String>()
         ));
     }
-    m.root_enc = crate::infra::support::crypto::encrypt(&new);
+    m.root_enc = crate::infra::support::crypto::encrypt(&new)
+        .map_err(|e| anyhow!("加密 root 密码失败：{e}"))?;
     save_manifest(&m)?;
     Ok(json!({ "password": new }))
 }

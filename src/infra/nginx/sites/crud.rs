@@ -109,6 +109,15 @@ pub(crate) async fn update_site(form: &SiteForm) -> Result<Value> {
         return Err(nginx_err(NginxError::DuplicateDomain));
     }
 
+    // Snapshot the existing per-site cert files BEFORE prepare_site_cert may
+    // overwrite them (manual/self modes write <id>.crt/.key), so a failed reload
+    // can restore the cert to match the rolled-back manifest — otherwise the old
+    // site config would be left pointing at the new cert material.
+    let crt_path = lo.cert_store.join(format!("{}.crt", site.id));
+    let key_path = lo.cert_store.join(format!("{}.key", site.id));
+    let crt_bak = std::fs::read_to_string(&crt_path).ok();
+    let key_bak = std::fs::read_to_string(&key_path).ok();
+
     // Prepare the cert (write manual files / regenerate self-signed as needed).
     // A Let's Encrypt (re)issue runs detached, so return its op immediately.
     if let CertPrep::ReissueLe = prepare_site_cert(&lo, form, &old, &site).await? {
@@ -124,6 +133,23 @@ pub(crate) async fn update_site(form: &SiteForm) -> Result<Value> {
         sites.retain(|s| s.id != old.id);
         sites.push(old.clone());
         save_sites(&sites)?;
+        // Restore (or remove) the per-site cert files to match the old manifest.
+        match &crt_bak {
+            Some(pem) => {
+                let _ = std::fs::write(&crt_path, pem);
+            }
+            None => {
+                let _ = std::fs::remove_file(&crt_path);
+            }
+        }
+        match &key_bak {
+            Some(pem) => {
+                let _ = write_key_file(&key_path, pem);
+            }
+            None => {
+                let _ = std::fs::remove_file(&key_path);
+            }
+        }
         let _ = validate_and_reload(&lo).await;
         return Err(e);
     }
