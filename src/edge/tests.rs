@@ -875,18 +875,16 @@ mod edge_tests {
     /// Drive `url` (with a `Host` header) using the external `oha` load tool — a
     /// SEPARATE process, so the load generator never competes with the edge for
     /// its own runtime threads. Returns oha's full text report.
-    async fn run_oha(url: &str, host: &str, conc: usize, dur: &str) -> String {
+    async fn run_oha(url: &str, host: &str, conc: usize, dur: &str, insecure: bool) -> String {
+        let conc_s = conc.to_string();
+        let host_h = format!("Host: {host}");
+        let mut args: Vec<&str> = vec!["--no-tui", "-c", &conc_s, "-z", dur, "-H", &host_h];
+        if insecure {
+            args.push("--insecure"); // self-signed cert in the TLS benchmark
+        }
+        args.push(url);
         let out = tokio::process::Command::new("oha")
-            .args([
-                "--no-tui",
-                "-c",
-                &conc.to_string(),
-                "-z",
-                dur,
-                "-H",
-                &format!("Host: {host}"),
-                url,
-            ])
+            .args(&args)
             .output()
             .await
             .expect("run oha (is it installed?)");
@@ -919,9 +917,96 @@ mod edge_tests {
         let url = format!("http://{edge}/");
 
         println!("\n========== REVERSE-PROXY path · concurrency={conc} · {dur} ==========");
-        println!("{}", run_oha(&url, "proxy.example.test", conc, &dur).await);
+        println!("{}", run_oha(&url, "proxy.example.test", conc, &dur, false).await);
 
         println!("========== STATIC path · concurrency={conc} · {dur} ==========");
-        println!("{}", run_oha(&url, "static.example.test", conc, &dur).await);
+        println!("{}", run_oha(&url, "static.example.test", conc, &dur, false).await);
+    }
+
+    /// Write a self-signed cert as the catch-all `default.crt`/`default.key` in
+    /// `cert_dir`, so the edge's SNI resolver presents it for any host (the TLS
+    /// benchmark drives it with `oha --insecure`).
+    fn write_default_cert(cert_dir: &std::path::Path) {
+        std::fs::create_dir_all(cert_dir).unwrap();
+        // Same rcgen API the panel's own self-signed path uses (certs/issue.rs).
+        let params = rcgen::CertificateParams::new(vec![
+            "localhost".to_string(),
+            "proxy.example.test".to_string(),
+            "static.example.test".to_string(),
+        ])
+        .unwrap();
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key_pair).unwrap();
+        std::fs::write(cert_dir.join("default.crt"), cert.pem()).unwrap();
+        std::fs::write(cert_dir.join("default.key"), key_pair.serialize_pem()).unwrap();
+    }
+
+    /// Like `publish_full_config`, but writes a default cert into `cert_dir` so
+    /// the TLS listener has a certificate to present.
+    fn publish_tls_config(upstream: std::net::SocketAddr, www: &std::path::Path, cert_dir: &std::path::Path) {
+        std::fs::create_dir_all(www).unwrap();
+        std::fs::write(www.join("index.html"), "STATIC-OK").unwrap();
+        write_default_cert(cert_dir);
+
+        let mut proxy = base_site("p", "proxy.example.test", "proxy_host");
+        proxy.target_url = upstream.to_string();
+        proxy.force_ssl = false;
+
+        let mut stat = base_site("s", "static.example.test", "static");
+        stat.local_root = www.to_string_lossy().to_string();
+        stat.force_ssl = false;
+
+        let input = ReloadInput {
+            sites: vec![proxy, stat],
+            access: Vec::new(),
+            default_site: DefaultSite::default(),
+            tuning: HttpTuning::default(),
+            cert_dir: cert_dir.to_path_buf(),
+            www_dir: unique_tmp("tls-www-base"),
+        };
+        let cfg = build::build_runtime(&input).expect("tls config builds");
+        store::publish(std::sync::Arc::new(cfg));
+    }
+
+    /// Bind the edge TLS listener on an ephemeral loopback port and start serving.
+    async fn spawn_edge_tls() -> std::net::SocketAddr {
+        // The proxy's HTTPS upstream client (built lazily) resolves the rustls
+        // process-default provider; install ring so it can't panic. Idempotent.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let acceptor =
+            tokio_rustls::TlsAcceptor::from(super::super::tls::server_config().unwrap());
+        tokio::spawn(super::super::listener::serve_tls(listener, acceptor));
+        addr
+    }
+
+    /// TLS high-concurrency benchmark — same clean topology as the plain run but
+    /// terminating TLS (rustls/ring). Measures the handshake + record-layer cost
+    /// at high concurrency. Run explicitly:
+    ///   EDGE_BENCH_CONCURRENCY=10000 EDGE_BENCH_DURATION=10s \
+    ///     cargo test --release --bin dn7-panel edge_oha_tls -- --ignored --nocapture
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "external oha TLS load test; run with --ignored --nocapture"]
+    async fn edge_oha_tls_high_concurrency() {
+        let _g = serial().lock().await;
+        let upstream = spawn_upstream_dedicated(4);
+        let www = unique_tmp("oha-tls-static");
+        let cert_dir = unique_tmp("oha-tls-certs");
+        publish_tls_config(upstream, &www, &cert_dir);
+        let edge = spawn_edge_tls().await;
+
+        let conc: usize = std::env::var("EDGE_BENCH_CONCURRENCY")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10_000);
+        let dur = std::env::var("EDGE_BENCH_DURATION").unwrap_or_else(|_| "10s".into());
+        let url = format!("https://{edge}/");
+
+        println!("\n========== TLS REVERSE-PROXY · concurrency={conc} · {dur} ==========");
+        println!("{}", run_oha(&url, "proxy.example.test", conc, &dur, true).await);
+
+        println!("========== TLS STATIC · concurrency={conc} · {dur} ==========");
+        println!("{}", run_oha(&url, "static.example.test", conc, &dur, true).await);
     }
 }

@@ -185,7 +185,10 @@ pub(crate) async fn serve_plain(listener: tokio::net::TcpListener) -> anyhow::Re
 /// Accept loop for the TLS :443 listener. Each connection completes its own
 /// handshake inside its task so a slow/incomplete TLS client can't stall the
 /// accept loop for everyone else.
-async fn serve_tls(listener: tokio::net::TcpListener, acceptor: TlsAcceptor) -> anyhow::Result<()> {
+pub(crate) async fn serve_tls(
+    listener: tokio::net::TcpListener,
+    acceptor: TlsAcceptor,
+) -> anyhow::Result<()> {
     let limiter = conn_limiter();
     loop {
         let permit = limiter
