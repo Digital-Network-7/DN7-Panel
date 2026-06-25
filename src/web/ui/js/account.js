@@ -106,15 +106,15 @@ function changePassword() {
         .then((c) => {
           const cur = c.salt || '';
           const salt = randHex(16);
-          // Old-password proof: derive with the CURRENT account's salt + KDF,
-          // then bind the one-time nonce. New password: stretch with newKdf().
-          const oldVerifier = deriveVerifier(cur, oldPw, c.kdf);
+          // Old-password proof: the verifier under the CURRENT account's salt+KDF
+          // (a hash, not the plaintext), checked server-side against the stored
+          // Argon2id credential. New password: stretch with newKdf().
           const body = {
             pw_salt: salt,
             pw_hash: deriveVerifier(salt, pw, newKdf()),
             pw_kdf: newKdf(),
             nonce: c.nonce,
-            old_verifier: sha256Hex(c.nonce + ':' + oldVerifier),
+            old_verifier: deriveVerifier(cur, oldPw, c.kdf),
           };
           // Non-owner accounts sync their OS password to the panel password.
           if (!(Auth.me && Auth.me.is_super)) body.password = pw;

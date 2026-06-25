@@ -7,7 +7,7 @@
 //! minting all live here (over the `infra::auth` stores + `infra::totp`), so the
 //! policy isn't split across delivery (`login`/`gate`) and infra.
 
-use crate::infra::auth::{proof_matches, AuthState};
+use crate::infra::auth::{verify_verifier, AuthState};
 
 /// An account's login facts, resolved by the web boundary from the console
 /// settings (super-admin) or the user store (panel users). `exp_hash` is the
@@ -24,7 +24,13 @@ pub(crate) struct LoginCreds {
 /// (and, where appropriate, an audit record).
 pub(crate) enum LoginOutcome {
     /// Password (and TOTP, if enabled) verified; a fresh session was minted.
-    Ok { token: String, must_setup: bool },
+    /// `rehash` carries an Argon2id hash to persist when the stored credential
+    /// was a legacy raw verifier (transparent at-rest migration).
+    Ok {
+        token: String,
+        must_setup: bool,
+        rehash: Option<String>,
+    },
     /// Password verified, but the account has 2FA and no code was supplied.
     NeedTotp,
     /// Wrong password / unknown account / replayed-or-expired challenge.
@@ -36,13 +42,15 @@ pub(crate) enum LoginOutcome {
 }
 
 /// One login attempt's request inputs. `username` binds the minted session;
-/// `source` keys the rate limiter; `nonce`/`proof`/`code` carry the challenge
-/// response. Bundled to keep [`verify_login`] within the param limit.
+/// `source` keys the rate limiter; `nonce` is a one-time anti-replay token and
+/// `verifier` is the client-computed verifier (`deriveVerifier(salt, pw, kdf)` —
+/// a hash, never the plaintext) checked against the stored Argon2id credential.
+/// Bundled to keep [`verify_login`] within the param limit.
 pub(crate) struct LoginAttempt<'a> {
     pub(crate) username: &'a str,
     pub(crate) source: &'a str,
     pub(crate) nonce: &'a str,
-    pub(crate) proof: &'a str,
+    pub(crate) verifier: &'a str,
     pub(crate) code: &'a str,
 }
 
@@ -65,12 +73,13 @@ pub(crate) fn verify_login(
     if account_exists && !auth.account_login_allowed(attempt.username) {
         return LoginOutcome::RateLimited;
     }
-    // Account must exist, the challenge must be valid+unused, and the proof must
-    // match — evaluated in that order so a single-use nonce is only consumed for
-    // a real account.
-    let pw_ok = account_exists
-        && auth.consume_challenge(attempt.nonce)
-        && proof_matches(attempt.nonce, &creds.exp_hash, attempt.proof);
+    // One-time nonce (anti-replay of the exact request), consumed only for a real
+    // account. The verifier check runs unconditionally so a stale nonce / missing
+    // account isn't distinguishable from a wrong password by timing (the empty
+    // path burns Argon2 time against a dummy).
+    let nonce_ok = account_exists && auth.consume_challenge(attempt.nonce);
+    let verdict = verify_verifier(&creds.exp_hash, attempt.verifier);
+    let pw_ok = nonce_ok && verdict.ok;
     if !pw_ok {
         auth.record_failure(attempt.source);
         if account_exists {
@@ -96,6 +105,7 @@ pub(crate) fn verify_login(
     LoginOutcome::Ok {
         token,
         must_setup: creds.must_setup,
+        rehash: verdict.rehash,
     }
 }
 
@@ -137,16 +147,17 @@ pub(crate) fn verify_reauth(
     creds: &ReauthCreds,
     source: &str,
     nonce: &str,
-    proof: &str,
+    verifier: &str,
     code: &str,
 ) -> ReauthOutcome {
     if !auth.login_allowed(source) {
         return ReauthOutcome::RateLimited;
     }
-    let pw_ok = !creds.exp_hash.is_empty()
-        && auth.consume_challenge(nonce)
-        && proof_matches(nonce, &creds.exp_hash, proof);
-    if !pw_ok {
+    // Same shape as login: one-time nonce + verifier check. No rehash handling —
+    // the caller is already authenticated, so its account was migrated at login.
+    let nonce_ok = !creds.exp_hash.is_empty() && auth.consume_challenge(nonce);
+    let verdict = verify_verifier(&creds.exp_hash, verifier);
+    if !(nonce_ok && verdict.ok) {
         auth.record_failure(source);
         return ReauthOutcome::BadCredentials;
     }
@@ -167,14 +178,9 @@ pub(crate) fn verify_reauth(
 mod tests {
     use super::*;
 
-    fn proof_for(nonce: &str, verifier: &str) -> String {
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(nonce.as_bytes());
-        h.update(b":");
-        h.update(verifier.as_bytes());
-        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
-    }
+    /// The stored credential in these tests is a legacy raw verifier, so the
+    /// presented verifier that matches is the stored string itself.
+    const VERIFIER: &str = "deadbeefverifier";
 
     fn creds(enabled: bool) -> LoginCreds {
         LoginCreds {
@@ -190,14 +196,14 @@ mod tests {
         username: &'a str,
         source: &'a str,
         nonce: &'a str,
-        proof: &'a str,
+        verifier: &'a str,
         code: &'a str,
     ) -> LoginAttempt<'a> {
         LoginAttempt {
             username,
             source,
             nonce,
-            proof,
+            verifier,
             code,
         }
     }
@@ -206,8 +212,7 @@ mod tests {
     fn good_password_no_totp_issues_session() {
         let auth = AuthState::new();
         let n = auth.issue_challenge();
-        let p = proof_for(&n, "deadbeefverifier");
-        match verify_login(&auth, &creds(false), &att("alice", "1.1.1.1", &n, &p, "")) {
+        match verify_login(&auth, &creds(false), &att("alice", "1.1.1.1", &n, VERIFIER, "")) {
             LoginOutcome::Ok { token, .. } => assert!(auth.valid(&token)),
             _ => panic!("expected Ok"),
         }
@@ -225,9 +230,8 @@ mod tests {
     fn reauth_good_password_ok() {
         let auth = AuthState::new();
         let n = auth.issue_challenge();
-        let p = proof_for(&n, "deadbeefverifier");
         assert!(matches!(
-            verify_reauth(&auth, &reauth_creds(false), "1.1.1.1", &n, &p, ""),
+            verify_reauth(&auth, &reauth_creds(false), "1.1.1.1", &n, VERIFIER, ""),
             ReauthOutcome::Ok
         ));
     }
@@ -246,9 +250,8 @@ mod tests {
     fn reauth_totp_enabled_without_code_asks_for_it() {
         let auth = AuthState::new();
         let n = auth.issue_challenge();
-        let p = proof_for(&n, "deadbeefverifier");
         assert!(matches!(
-            verify_reauth(&auth, &reauth_creds(true), "1.1.1.1", &n, &p, ""),
+            verify_reauth(&auth, &reauth_creds(true), "1.1.1.1", &n, VERIFIER, ""),
             ReauthOutcome::NeedTotp
         ));
     }
@@ -277,9 +280,8 @@ mod tests {
             totp_enabled: false,
             must_setup: false,
         };
-        let p = proof_for(&n, "");
         assert!(matches!(
-            verify_login(&auth, &absent, &att("ghost", "1.1.1.1", &n, &p, "")),
+            verify_login(&auth, &absent, &att("ghost", "1.1.1.1", &n, "anything", "")),
             LoginOutcome::BadCredentials
         ));
     }
@@ -288,9 +290,8 @@ mod tests {
     fn totp_enabled_without_code_asks_for_it() {
         let auth = AuthState::new();
         let n = auth.issue_challenge();
-        let p = proof_for(&n, "deadbeefverifier");
         assert!(matches!(
-            verify_login(&auth, &creds(true), &att("alice", "1.1.1.1", &n, &p, "")),
+            verify_login(&auth, &creds(true), &att("alice", "1.1.1.1", &n, VERIFIER, "")),
             LoginOutcome::NeedTotp
         ));
     }
@@ -315,21 +316,17 @@ mod tests {
 
         let mk = |code: &str| {
             let n = auth.issue_challenge();
-            let p = proof_for(&n, "deadbeefverifier");
             let creds = LoginCreds {
-                exp_hash: "deadbeefverifier".to_string(),
+                exp_hash: VERIFIER.to_string(),
                 totp_secret: secret.clone(),
                 totp_enabled: true,
                 must_setup: false,
             };
-            // att borrows; clone code into owned strings first.
-            let nonce = n;
-            let proof = p;
             let attempt = LoginAttempt {
                 username: "alice",
                 source: "1.1.1.1",
-                nonce: &nonce,
-                proof: &proof,
+                nonce: &n,
+                verifier: VERIFIER,
                 code,
             };
             matches!(

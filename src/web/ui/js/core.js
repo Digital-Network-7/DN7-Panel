@@ -205,7 +205,7 @@ function stepUp(message) {
           .then((c) => {
             if (!c || !c.nonce) throw new Error(tr('login.err_conn'));
             const verifier = deriveVerifier(c.salt, pw, c.kdf);
-            const payload = { nonce: c.nonce, proof: sha256Hex(c.nonce + ':' + verifier), code };
+            const payload = { nonce: c.nonce, verifier, code };
             return fetch('/api/stepup', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify(payload) });
           })
           .then(async (r) => {

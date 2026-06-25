@@ -18,10 +18,12 @@ pub(crate) struct PasswordChange<'a> {
     /// KDF scheme the new `hash` was computed with (e.g. "s256:30000"); stored so
     /// login recomputes the same verifier.
     pub(crate) kdf: &'a str,
-    /// One-time challenge nonce the `old_verifier` proof is bound to.
+    /// One-time anti-replay token for the exact request (consumed server-side).
     pub(crate) nonce: &'a str,
-    /// `sha256(nonce ":" current_verifier)` — proves knowledge of the current
-    /// password, bound to a single-use nonce so it can't be replayed.
+    /// The client-computed `deriveVerifier(salt, current_pw, kdf)` (a hash, not
+    /// plaintext), checked against the stored Argon2id/legacy credential. It is
+    /// NOT cryptographically bound to the nonce — request-freshness comes from
+    /// consuming the one-time `nonce`, and confidentiality from the channel.
     pub(crate) old_verifier: &'a str,
     pub(crate) plaintext: &'a str,
     pub(crate) keep_token: Option<&'a str>,
@@ -44,11 +46,10 @@ pub(crate) async fn change_password(
         return Err(Error::PasswordMalformed);
     }
     let current = env.current_verifier(who);
-    // Bind a single-use challenge nonce into the current-password proof (as the
-    // login path does) so a captured `old_verifier` can't be replayed. Consume
-    // the nonce first so a wrong proof still burns it.
+    // Consume a one-time nonce (anti-replay of the exact request), then check the
+    // presented verifier against the stored credential (Argon2id / legacy).
     let nonce_ok = env.consume_challenge(ch.nonce);
-    if current.is_empty() || !nonce_ok || !env.verify_proof(ch.nonce, &current, ch.old_verifier) {
+    if current.is_empty() || !nonce_ok || !env.verify_current(&current, ch.old_verifier) {
         return Err(Error::OldPasswordWrong);
     }
     env.save_password(who, ch.salt, &ch.hash.to_lowercase(), ch.kdf)?;
@@ -123,10 +124,11 @@ mod tests {
         fn consume_challenge(&self, _nonce: &str) -> bool {
             self.nonce_ok
         }
-        // Models the real nonce-bound proof check: a non-empty verifier and a
-        // proof that matches it (case-insensitively, as the real hex compare is).
-        fn verify_proof(&self, _nonce: &str, verifier: &str, proof: &str) -> bool {
-            !verifier.is_empty() && proof.eq_ignore_ascii_case(verifier)
+        // Models the real verifier check: a non-empty stored credential and a
+        // presented verifier that matches it (case-insensitively, mirroring the
+        // real hex/Argon2 compare).
+        fn verify_current(&self, stored: &str, verifier: &str) -> bool {
+            !stored.is_empty() && verifier.eq_ignore_ascii_case(stored)
         }
         fn save_password(
             &self,

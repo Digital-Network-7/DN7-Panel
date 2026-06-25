@@ -102,12 +102,12 @@ pub(crate) struct PasswordReq {
     /// recomputes the same verifier.
     #[serde(default)]
     pw_kdf: String,
-    /// One-time challenge nonce (from `/api/login/challenge`) the `old_verifier`
-    /// proof is bound to, so it can't be replayed.
+    /// One-time anti-replay token (from `/api/login/challenge`), consumed
+    /// server-side so the exact request can't be replayed.
     #[serde(default)]
     nonce: String,
-    /// `sha256_hex(nonce ":" sha256_hex(current_salt ":" old_password))` — proves
-    /// the caller knows their current password, bound to a single-use nonce.
+    /// The client-computed `deriveVerifier(current_salt, old_password, kdf)` (a
+    /// hash, not plaintext), checked against the stored Argon2id credential.
     #[serde(default)]
     old_verifier: String,
     /// Plaintext new password (system users only) — used to sync the OS
@@ -176,8 +176,8 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
         self.state.auth.consume_challenge(nonce)
     }
 
-    fn verify_proof(&self, nonce: &str, verifier: &str, proof: &str) -> bool {
-        crate::infra::auth::proof_matches(nonce, verifier, proof)
+    fn verify_current(&self, stored: &str, verifier: &str) -> bool {
+        crate::infra::auth::verify_verifier(stored, verifier).ok
     }
 
     fn save_password(
@@ -187,6 +187,10 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
         hash: &str,
         kdf: &str,
     ) -> Result<(), crate::core::Error> {
+        // Store Argon2id(verifier), not the verifier itself, so the at-rest value
+        // can't be replayed as a login credential.
+        let stored = crate::infra::auth::hash_verifier(hash)
+            .ok_or_else(|| crate::core::Error::Persist("密码哈希失败".into()))?;
         if who.is_super {
             let saved = {
                 let mut s = self
@@ -194,7 +198,7 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
                     .settings
                     .lock()
                     .unwrap_or_else(|p| p.into_inner());
-                s.set_password_hashed(salt, hash, kdf);
+                s.set_password_hashed(salt, &stored, kdf);
                 s.clone()
             };
             settings::save(&saved).map_err(|e| crate::core::Error::Persist(e.to_string()))
@@ -202,7 +206,7 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
             // app::users::update already returns core::Error.
             crate::app::users::update(&who.username, |u| {
                 u.pw_salt = salt.to_string();
-                u.pw_hash = hash.to_string();
+                u.pw_hash = stored.clone();
                 u.pw_kdf = kdf.to_string();
             })
         }

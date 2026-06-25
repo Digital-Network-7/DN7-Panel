@@ -128,10 +128,14 @@ async fn create_with(env: &impl UsersEnv, req: &NewUser<'_>) -> Result<PanelUser
     .await
     .map_err(|e| Error::Persist(e.to_string()))?;
     let (uid, _home) = env.getpwnam(req.username).unwrap_or((0, String::new()));
+    // Store Argon2id(verifier), not the client verifier itself, so a leaked user
+    // file can't be replayed as a login.
+    let pw_hash = crate::infra::auth::hash_verifier(&req.pw_hash.to_lowercase())
+        .ok_or_else(|| Error::Persist("密码哈希失败".to_string()))?;
     let user = PanelUser {
         username: req.username.to_string(),
         pw_salt: req.pw_salt.to_string(),
-        pw_hash: req.pw_hash.to_lowercase(),
+        pw_hash,
         pw_kdf: req.pw_kdf.to_string(),
         role: req.role.to_string(),
         full_name: req.full_name.to_string(),

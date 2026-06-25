@@ -9,14 +9,15 @@ use super::super::*;
 pub(crate) struct LoginReq {
     #[serde(default)]
     username: String,
-    /// Challenge-response: the nonce from `/api/login/challenge` and the proof
-    /// `sha256_hex(nonce ":" verifier)`, where `verifier = sha256_hex(salt ":"
-    /// password)` (the value the server stores). The cleartext password never
-    /// crosses the wire, and the server holds only the irreversible verifier.
+    /// `nonce` is the one-time anti-replay token from `/api/login/challenge`;
+    /// `verifier` is the client-computed `deriveVerifier(salt, password, kdf)`
+    /// (a hash — the cleartext password never crosses the wire). The server
+    /// checks it against the stored Argon2id credential, so a leaked data file
+    /// can't be replayed as a login.
     #[serde(default)]
     nonce: String,
     #[serde(default)]
-    proof: String,
+    verifier: String,
     /// Optional TOTP code (required when the account has 2FA enabled).
     #[serde(default)]
     code: String,
@@ -100,7 +101,7 @@ pub(crate) async fn login(
             username: &req.username,
             source: &source,
             nonce: &req.nonce,
-            proof: &req.proof,
+            verifier: &req.verifier,
             code: &req.code,
         },
     ) {
@@ -124,7 +125,18 @@ pub(crate) async fn login(
             audit::record_ip(&req.username, "auth.login", "", false, "bad_totp", &source);
             api_err(StatusCode::UNAUTHORIZED, "auth.bad_totp")
         }
-        LoginOutcome::Ok { token, must_setup } => {
+        LoginOutcome::Ok {
+            token,
+            must_setup,
+            rehash,
+        } => {
+            // Transparent at-rest migration: a legacy raw verifier just got
+            // re-hashed with Argon2id; persist it to the account's store. Pass the
+            // verifier that was just used so the write can re-check, under the
+            // lock, that the stored value is still that same legacy verifier.
+            if let Some(new_hash) = rehash {
+                migrate_stored_hash(&state, &req.username, &req.verifier, &new_hash);
+            }
             audit::record_ip(&req.username, "auth.login", "", true, "", &source);
             Json(json!({ "ok": true, "token": token, "must_setup": must_setup })).into_response()
         }
@@ -170,6 +182,37 @@ fn resolve_login_account(state: &Shared, username: &str) -> LoginAccount {
             must_setup: false,
         },
     }
+}
+
+/// Persist a freshly-migrated Argon2id verifier hash for `username`, replacing
+/// the legacy raw verifier in place (salt + KDF unchanged).
+///
+/// Guarded compare-and-swap: `verifier` is the legacy value the login just
+/// verified, and `new_hash` is `Argon2id(verifier)`. Under the store lock we
+/// re-read the current credential and overwrite ONLY when it is still that same
+/// legacy verifier — so a password change/reset that raced this migration (which
+/// rewrites pw_salt/pw_kdf/pw_hash together) is never clobbered. Skipping is
+/// harmless: migration is a pure optimization and re-runs on a future login.
+fn migrate_stored_hash(state: &Shared, username: &str, verifier: &str, new_hash: &str) {
+    use crate::infra::auth::password_matches;
+    let still_legacy = |stored: &str| !stored.starts_with("$argon2") && password_matches(stored, verifier);
+    {
+        let mut su = state.settings.lock().unwrap_or_else(|p| p.into_inner());
+        if username == su.username {
+            if still_legacy(&su.pw_hash) {
+                su.pw_hash = new_hash.to_string();
+                let snapshot = su.clone();
+                drop(su);
+                let _ = crate::web::settings::save(&snapshot);
+            }
+            return;
+        }
+    }
+    let _ = crate::app::users::update(username, |u| {
+        if still_legacy(&u.pw_hash) {
+            u.pw_hash = new_hash.to_string();
+        }
+    });
 }
 
 pub(crate) async fn logout(State(state): State<Shared>, headers: header::HeaderMap) -> Response {
@@ -222,8 +265,10 @@ pub(crate) async fn mint_ticket(
 pub(crate) struct StepUpReq {
     #[serde(default)]
     nonce: String,
+    /// Client-computed `deriveVerifier(salt, password, kdf)` — checked against the
+    /// stored Argon2id credential (the plaintext never crosses the wire).
     #[serde(default)]
-    proof: String,
+    verifier: String,
     #[serde(default)]
     code: String,
 }
@@ -233,9 +278,10 @@ pub(crate) struct StepUpReq {
 /// lived single-use step-up token. The high-risk endpoints (self-update,
 /// settings change, privileged-container exec) require this token via
 /// `require_stepup` on top of the normal session, so a stolen/abandoned session
-/// alone can't trigger an irreversible action. Reuses the login proof flow: the
-/// client fetches a challenge for its own account, then posts
-/// `sha256(nonce ":" verifier)`.
+/// alone can't trigger an irreversible action. Reuses the login flow: the client
+/// fetches a challenge for its own account, then posts a one-time `nonce` plus
+/// the raw `verifier` (a hash, not the plaintext), checked against the stored
+/// Argon2id credential.
 pub(crate) async fn stepup(
     State(state): State<Shared>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -262,7 +308,7 @@ pub(crate) async fn stepup(
         &creds,
         &source,
         &req.nonce,
-        &req.proof,
+        &req.verifier,
         &req.code,
     ) {
         ReauthOutcome::RateLimited => api_err(StatusCode::TOO_MANY_REQUESTS, "auth.rate_limited"),

@@ -14,13 +14,15 @@ pub(crate) trait AccountEnv {
     /// The account's currently stored password verifier (empty if none).
     fn current_verifier(&self, who: &Principal) -> String;
 
-    /// Consume a one-time login challenge nonce (true if it was valid + unused).
-    /// Used to bind the current-password proof to a single-use nonce so a
-    /// captured proof can't be replayed.
+    /// Consume a one-time challenge nonce (true if it was valid + unused). The
+    /// current-password proof carries this nonce so the exact request can't be
+    /// trivially replayed.
     fn consume_challenge(&self, nonce: &str) -> bool;
 
-    /// Whether `proof` equals the expected `sha256(nonce ":" verifier)`.
-    fn verify_proof(&self, nonce: &str, verifier: &str, proof: &str) -> bool;
+    /// Whether the presented `verifier` (the client-computed
+    /// `deriveVerifier(salt, pw, kdf)`) matches the account's `stored` credential
+    /// — Argon2id verify, or constant-time compare for a legacy raw verifier.
+    fn verify_current(&self, stored: &str, verifier: &str) -> bool;
 
     /// Persist a new password verifier (salt + hash + KDF scheme) for the account.
     fn save_password(&self, who: &Principal, salt: &str, hash: &str, kdf: &str)

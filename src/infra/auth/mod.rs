@@ -19,6 +19,7 @@ mod state;
 mod stepup;
 mod ticket;
 mod totp_guard;
+mod verifier;
 
 use challenge::ChallengeStore;
 use rate::RateLimiter;
@@ -28,3 +29,4 @@ use ticket::TicketStore;
 use totp_guard::TotpGuard;
 
 pub(crate) use state::*;
+pub(crate) use verifier::{hash_verifier, verify_verifier};

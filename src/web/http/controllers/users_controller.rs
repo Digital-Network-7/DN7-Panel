@@ -237,7 +237,11 @@ fn parse_pw_update(req: &UpdateUserReq) -> Result<Option<(String, String, String
         }
     }
     let kdf = req.pw_kdf.clone().unwrap_or_default();
-    Ok(Some((salt, hash.to_lowercase(), kdf)))
+    // Store Argon2id(verifier), not the raw verifier, so a leaked file can't be
+    // replayed as a login.
+    let stored = crate::infra::auth::hash_verifier(&hash.to_lowercase())
+        .ok_or_else(|| map_core_err(crate::core::Error::Persist("密码哈希失败".into())))?;
+    Ok(Some((salt, stored, kdf)))
 }
 
 #[derive(serde::Deserialize)]

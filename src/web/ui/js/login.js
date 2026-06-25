@@ -6,16 +6,16 @@ function doLogin() {
   const password = $('pw').value;
   const code = $('loginCode') ? $('loginCode').value.trim() : '';
   $('loginErr').textContent = '';
-  // Challenge-response: fetch a one-time nonce + the account's salt + KDF scheme,
-  // then send sha256(nonce ":" deriveVerifier(salt, password, kdf)). The cleartext
-  // password never travels over the wire. A TOTP code is added when the account
-  // requires 2FA.
+  // Fetch a one-time nonce + the account's salt + KDF scheme, then send
+  // deriveVerifier(salt, password, kdf) — a hash, never the cleartext password.
+  // The server checks it against the stored Argon2id credential. A TOTP code is
+  // added when the account requires 2FA.
   fetch('/api/login/challenge?username=' + encodeURIComponent(username))
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error('challenge'))))
     .then((c) => {
       if (!c || !c.nonce) throw new Error('challenge');
       const verifier = deriveVerifier(c.salt, password, c.kdf);
-      const body = { username, nonce: c.nonce, proof: sha256Hex(c.nonce + ':' + verifier), code };
+      const body = { username, nonce: c.nonce, verifier, code };
       return fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     })
     .then(async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok && !b.need_totp) throw new Error(srvMsg(b) || tr('login.err_fail')); return b; })

@@ -17,6 +17,10 @@ fs2 = "0.4"
 portable-pty = "0.9"
 aes-gcm = "0.10"
 sha2 = "0.10"
+# Argon2id for the at-rest password verifier (server hashes the client-sent
+# verifier so the stored value can't be replayed as a login credential). Pure
+# Rust (blake2 + password-hash), musl-static safe — no aws-lc / C.
+argon2 = "0.5"
 rand = "0.8"
 daemonize = "0.5"
 tracing = "0.1"

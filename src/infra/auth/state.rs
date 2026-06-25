@@ -281,21 +281,6 @@ pub fn password_matches(expected: &str, given: &str) -> bool {
     diff == 0
 }
 
-/// Verify a challenge-response login proof: the client sends
-/// `sha256_hex(nonce + ":" + password)`. We recompute it from the known
-/// password and compare (constant-time). This keeps the cleartext password off
-/// the (plaintext-HTTP) wire; the nonce is single-use so a captured proof can't
-/// be replayed.
-pub fn proof_matches(nonce: &str, password: &str, proof: &str) -> bool {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(nonce.as_bytes());
-    h.update(b":");
-    h.update(password.as_bytes());
-    let expected = hex_lower(&h.finalize());
-    password_matches(&expected, &proof.trim().to_lowercase())
-}
-
 pub(crate) fn hex_lower(bytes: &[u8]) -> String {
     const HEX: &[u8] = b"0123456789abcdef";
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -316,23 +301,6 @@ mod tests {
         assert!(!password_matches("hunter2", "hunter3"));
         assert!(!password_matches("hunter2", "hunter22"));
         assert!(!password_matches("", "x"));
-    }
-
-    #[test]
-    fn proof_roundtrip() {
-        use sha2::{Digest, Sha256};
-        let nonce = "abc123";
-        let pw = "hunter2";
-        let mut h = Sha256::new();
-        h.update(nonce.as_bytes());
-        h.update(b":");
-        h.update(pw.as_bytes());
-        let proof = super::hex_lower(&h.finalize());
-        assert!(proof_matches(nonce, pw, &proof));
-        // Uppercase proof still matches (we lowercase before compare).
-        assert!(proof_matches(nonce, pw, &proof.to_uppercase()));
-        assert!(!proof_matches(nonce, "wrong", &proof));
-        assert!(!proof_matches("othernonce", pw, &proof));
     }
 
     #[test]

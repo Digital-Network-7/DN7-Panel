@@ -231,15 +231,21 @@ fn apply_password_change(s: &mut WebSettings, req: &SettingsReq) -> Result<bool,
     if !crate::app::users::valid_pw_format(&salt, &hash) {
         return Err(map_core_err(crate::core::Error::PasswordMalformed));
     }
-    // pw_check = sha256(current salt ":" new password) must NOT equal the stored
-    // default hash, proving the new password differs from the default.
+    // pw_check is the new password's verifier under the CURRENT salt+KDF; the new
+    // password must differ from the default, i.e. it must NOT validate against the
+    // stored default credential (works whether that's a legacy raw verifier or an
+    // Argon2id hash).
     if was_default {
-        let chk = req.pw_check.clone().unwrap_or_default().to_lowercase();
-        if chk.is_empty() || chk == cur_hash {
+        let chk = req.pw_check.clone().unwrap_or_default();
+        if chk.is_empty() || crate::infra::auth::verify_verifier(&cur_hash, &chk).ok {
             return Err(map_core_err(crate::core::Error::PasswordIsDefault));
         }
     }
     let kdf = req.pw_kdf.clone().unwrap_or_default();
-    s.set_password_hashed(&salt, &hash.to_lowercase(), &kdf);
+    // Store Argon2id(verifier), not the raw verifier, so a leaked file can't be
+    // replayed as a login.
+    let stored = crate::infra::auth::hash_verifier(&hash.to_lowercase())
+        .ok_or_else(|| map_core_err(crate::core::Error::Persist("密码哈希失败".into())))?;
+    s.set_password_hashed(&salt, &stored, &kdf);
     Ok(true)
 }
