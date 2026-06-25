@@ -439,7 +439,7 @@ pub(crate) struct StaticUploadQuery {
     clear: Option<String>,
 }
 
-pub(crate) async fn nginx_static_upload(
+pub(crate) async fn website_static_upload(
     State(state): State<Shared>,
     headers: header::HeaderMap,
     Query(q): Query<StaticUploadQuery>,
@@ -456,7 +456,7 @@ pub(crate) async fn nginx_static_upload(
     };
     let mode = q.mode.as_deref().unwrap_or("zip");
     let clear = q.clear.as_deref() == Some("1");
-    let res = crate::infra::nginx::web_static_upload(crate::infra::nginx::StaticUpload {
+    let res = crate::infra::website::web_static_upload(crate::infra::website::StaticUpload {
         root: &q.root,
         mode,
         rel: q.rel.as_deref(),
@@ -467,7 +467,7 @@ pub(crate) async fn nginx_static_upload(
     let _ = tokio::fs::remove_file(&tmp).await;
     audit::record(
         &acct.username,
-        "nginx.static_upload",
+        "website.static_upload",
         &q.root,
         res.is_ok(),
         &res.as_ref()

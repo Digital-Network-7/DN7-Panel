@@ -11,7 +11,7 @@
 
 A small, single static Rust binary that turns a Linux host into a fully managed
 node via an **on-box web console** — monitoring, a web terminal, and Docker /
-Nginx / MySQL / file management — with no backend, no panel token, and no
+Website / MySQL / file management — with no backend, no panel token, and no
 runtime dependencies.
 
 > Part of the [Digital Network 7](https://dn7.cn) suite ·
@@ -33,7 +33,7 @@ runtime dependencies.
 DN7 Panel is designed for single-host or small-node operations where the person
 using the console is also trusted to administer the machine. Its strengths are
 simple deployment, no external control plane, and direct access to Docker,
-Nginx, MySQL/MariaDB, files, and a terminal from one embedded UI.
+Website, MySQL/MariaDB, files, and a terminal from one embedded UI.
 
 That also defines its limits. It is not a multi-tenant SaaS control plane, and
 it deliberately has a high local blast radius: many features operate with host
@@ -132,7 +132,7 @@ Capabilities:
   (`docker exec`).
 - **Docker** — images (pull, create), containers (lifecycle, logs, networks,
   in-container terminal, file transfer), networks, volumes, backups.
-- **Nginx** — Docker-mode setup, sites (proxy-host / proxy-container / static),
+- **Website** — Docker-mode setup, sites (proxy-host / proxy-container / static),
   custom path rules, HTTPS via Let's Encrypt / self-signed / manual / a named
   cert store, access lists, reload.
 - **MySQL** — one DN7-provisioned MySQL/MariaDB instance: lifecycle, connection

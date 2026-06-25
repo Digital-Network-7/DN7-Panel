@@ -23,7 +23,7 @@ mod edge_tests {
     use super::super::store;
     use super::super::validate;
 
-    use crate::core::nginx::{
+    use crate::core::website::{
         AccessClient, AccessList, AccessUser, DefaultSite, HttpTuning, Location, Site,
     };
 
@@ -406,11 +406,11 @@ mod edge_tests {
         // `openssl passwd -apr1 -salt abcd1234 secret-pw`.
         let hash = "$apr1$abcd1234$oftWSoe5k1oxqcJ5vs93v/";
         assert!(
-            crate::infra::nginx::verify_htpasswd_hash(hash, "secret-pw"),
+            crate::infra::website::verify_htpasswd_hash(hash, "secret-pw"),
             "the right password must verify against its apr1 hash"
         );
         assert!(
-            !crate::infra::nginx::verify_htpasswd_hash(hash, "wrong-pw"),
+            !crate::infra::website::verify_htpasswd_hash(hash, "wrong-pw"),
             "a wrong password must fail apr1 verification"
         );
     }

@@ -7,7 +7,7 @@
 //!   * idles forever (the console serves requests in its own tasks).
 //!
 //! The web console reuses the per-capability dispatchers directly on the host
-//! (`docker::web_dispatch`, `nginx::web_dispatch`, …) — no relay, no token.
+//! (`docker::web_dispatch`, `website::web_dispatch`, …) — no relay, no token.
 
 use std::time::Duration;
 
@@ -34,22 +34,22 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     // When the website capability has been set up, load the current manifests
     // into its route table and bind the listeners in its own tasks.
     tokio::spawn(async {
-        crate::infra::nginx::edge_autostart().await;
+        crate::infra::website::edge_autostart().await;
     });
 
     // Rebuild the edge route table from the persisted manifests once at startup
     // (re-resolving any drifted proxy_container upstreams).
     tokio::spawn(async {
-        crate::infra::nginx::resync_confs().await;
+        crate::infra::website::resync_confs().await;
     });
 
     // Auto-renew Let's Encrypt / self-signed certs before they expire.
-    crate::infra::nginx::spawn_cert_renewal();
+    crate::infra::website::spawn_cert_renewal();
 
     // Periodically re-resolve proxy_container upstreams so a site whose backing
     // container's IP drifted (recreate) heals, and one whose container vanished
     // out-of-band fails closed (503) instead of proxying a recycled IP.
-    crate::infra::nginx::spawn_upstream_resync();
+    crate::infra::website::spawn_upstream_resync();
 
     // Background self-update checker (GitHub + dn7.cn). Applies automatically
     // only when auto-update is enabled in settings; otherwise just keeps the

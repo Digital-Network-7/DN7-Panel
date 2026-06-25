@@ -6,7 +6,7 @@
 //! `Location` / `AccessClient` are domain entities (contracts may reference
 //! domain base types); `AccessUserInput` is transport-only and lives here.
 
-use crate::core::nginx::{AccessClient, Location};
+use crate::core::website::{AccessClient, Location};
 use serde::Deserialize;
 
 /// New/changed access-list user input from the client (password is plaintext,

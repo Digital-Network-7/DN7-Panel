@@ -1,16 +1,16 @@
 // =========================================================================
-// Nginx management (presented as the "Website" section)
+// Website management
 // =========================================================================
 // Active Website sub-tab: 'hosts' | 'access' | 'certs' | 'settings'.
 let ngTab = 'hosts';
-function renderNginx(v) {
+function renderWebsite(v) {
   v.innerHTML = `<div style="padding:8px">${loading(tr('ng.detecting'))}</div>`;
-  if (getJob('nginx:setup')) {
+  if (getJob('website:setup')) {
     v.innerHTML = `<div class="card"><h3>${tr('ng.initializing')}</h3><div id="ngSetupJob"></div></div>`;
-    reattachJob($('ngSetupJob'), 'nginx:setup', { onDone: () => setTimeout(() => renderNginx(v), 800) });
+    reattachJob($('ngSetupJob'), 'website:setup', { onDone: () => setTimeout(() => renderWebsite(v), 800) });
     return;
   }
-  op('nginx', { op: 'info' }).then((info) => {
+  op('website', { op: 'info' }).then((info) => {
     if (!info.managed) {
       v.innerHTML = `<div class="card"><h3>${tr('ng.init_title')}</h3>
         <p class="mut">${tr('ng.init_hint')}</p>
@@ -18,7 +18,7 @@ function renderNginx(v) {
           <button class="btn" id="ngSetup">${tr('ng.init_btn')}</button>
         </div>
         <div class="hidden" id="ngSetupJob"></div></div>`;
-      $('ngSetup').onclick = () => { $('ngSetup').disabled = true; $('ngSetupJob').classList.remove('hidden'); op('nginx', { op: 'setup' }).then((r) => renderJob($('ngSetupJob'), 'nginx', r.op_id, 'nginx:setup', { onDone: () => { toast(tr('ng.init_done'), 'ok'); setTimeout(() => renderNginx(v), 600); }, onError: () => { $('ngSetup').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ngSetup').disabled = false; }); };
+      $('ngSetup').onclick = () => { $('ngSetup').disabled = true; $('ngSetupJob').classList.remove('hidden'); op('website', { op: 'setup' }).then((r) => renderJob($('ngSetupJob'), 'website', r.op_id, 'website:setup', { onDone: () => { toast(tr('ng.init_done'), 'ok'); setTimeout(() => renderWebsite(v), 600); }, onError: () => { $('ngSetup').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ngSetup').disabled = false; }); };
       return;
     }
     const banner = info.port_conflict ? portConflictCard(info) : '';
@@ -73,8 +73,8 @@ function wireForceStart(v) {
   btn.onclick = async () => {
     if (!(await confirmDanger(tr('ng.force_confirm')))) return;
     btn.disabled = true;
-    op('nginx', { op: 'force_start' })
-      .then(() => { toast(tr('ng.force_done'), 'ok'); setTimeout(() => renderNginx(v), 600); })
+    op('website', { op: 'force_start' })
+      .then(() => { toast(tr('ng.force_done'), 'ok'); setTimeout(() => renderWebsite(v), 600); })
       .catch((e) => { toast(e.message, 'err'); btn.disabled = false; });
   };
 }
@@ -85,7 +85,7 @@ function ngHostsTab(v) {
   body.innerHTML = `<div class="row" style="margin-bottom:14px"><span class="chip on">${tr('ng.running')}</span><span class="sp" style="flex:1"></span><button class="btn sm" id="ngAdd">${tr('ng.add_site')}</button><button class="btn sec sm" id="ngRef">${tr('ng.refresh')}</button></div><div id="ngSites">${loading()}</div>`;
   $('ngRef').onclick = () => ngHostsTab(v);
   $('ngAdd').onclick = () => ngAddSite(() => ngHostsTab(v));
-  Promise.all([op('nginx', { op: 'list_sites' }), op('nginx', { op: 'list_named_certs' }), op('nginx', { op: 'list_access' })]).then(([d, cd, ad]) => {
+  Promise.all([op('website', { op: 'list_sites' }), op('website', { op: 'list_named_certs' }), op('website', { op: 'list_access' })]).then(([d, cd, ad]) => {
     const sites = d.sites || [];
     const modes = {};
     (cd.certs || []).forEach((c) => { modes[c.name] = c.cert_mode; });
@@ -102,7 +102,7 @@ function ngHostsTab(v) {
     });
     $('ngSites').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
     document.querySelectorAll('#ngSites [data-edit]').forEach((b) => b.onclick = () => { const s = sites.find((x) => String(x.id) === b.dataset.edit); if (s) ngAddSite(() => ngHostsTab(v), s); });
-    document.querySelectorAll('#ngSites [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('ng.confirm_rm_site'))) op('nginx', { op: 'remove_site', site_id: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); ngHostsTab(v); }).catch((e) => toast(e.message, 'err')); });
+    document.querySelectorAll('#ngSites [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('ng.confirm_rm_site'))) op('website', { op: 'remove_site', site_id: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); ngHostsTab(v); }).catch((e) => toast(e.message, 'err')); });
   }).catch((e) => { $('ngSites').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
 function kindLabel(k) { return { proxy_host: tr('ng.kind_proxy_host'), proxy_container: tr('ng.kind_proxy_container'), static: tr('ng.kind_static') }[k] || k; }
@@ -225,7 +225,7 @@ function ngAddSite(reload, site) {
     };
     const loadCertList = () => {
       $('nsCertList').innerHTML = loading();
-      op('nginx', { op: 'list_named_certs' }).then((d) => {
+      op('website', { op: 'list_named_certs' }).then((d) => {
         domainCerts = (d.certs || []).filter((c) => c.has_cert);
         renderCertList();
       }).catch(() => { domainCerts = []; renderCertList(); });
@@ -241,7 +241,7 @@ function ngAddSite(reload, site) {
       if (!opts) opts = `<option value="">${tr('ng.no_running_ctn')}</option>`;
       return opts;
     };
-    op('nginx', { op: 'list_containers' }).then((d) => {
+    op('website', { op: 'list_containers' }).then((d) => {
       containers = d.containers || [];
       if ($('nsKind').value === 'proxy_container') { kindFields(); prefillKind(); }
       // Refresh any location-rule container pickers built before the list arrived.
@@ -249,7 +249,7 @@ function ngAddSite(reload, site) {
     }).catch(() => {});
 
     // Populate the Access list dropdown (assign an access list to this host).
-    op('nginx', { op: 'list_access' }).then((d) => {
+    op('website', { op: 'list_access' }).then((d) => {
       const sel = $('nsAccess'); if (!sel) return;
       (d.access || []).forEach((a) => { const o = document.createElement('option'); o.value = a.id; o.textContent = a.name; sel.appendChild(o); });
       if (editing && site.access_id) sel.value = site.access_id;
@@ -438,8 +438,8 @@ function ngAddSite(reload, site) {
       try {
         if (k === 'static' && staticSource === 'upload' && staticUpload.mode) { $('nsJob').innerHTML = `<div class="mut">${tr('ng.uploading')}</div>`; await uploadStatic(body.root, staticUpload); }
       } catch (e) { toast(tr('ng.upload_failed') + '：' + e.message, 'err'); $('nsJob').innerHTML = ''; $('nsGo').disabled = false; return; }
-      op('nginx', body).then((r) => {
-        if (r.op_id) renderJob($('nsJob'), 'nginx', r.op_id, '', { onDone: () => { toast(okMsg, 'ok'); close(); reload(); }, onError: () => { $('nsGo').disabled = false; } });
+      op('website', body).then((r) => {
+        if (r.op_id) renderJob($('nsJob'), 'website', r.op_id, '', { onDone: () => { toast(okMsg, 'ok'); close(); reload(); }, onError: () => { $('nsGo').disabled = false; } });
         else { toast(okMsg, 'ok'); close(); reload(); }
       }).catch((e) => { toast(e.message, 'err'); $('nsJob').innerHTML = ''; $('nsGo').disabled = false; });
     };
@@ -452,7 +452,7 @@ function ngAddSite(reload, site) {
 async function uploadStatic(root, su) {
   if (su.mode === 'zip' && su.zip) {
     const qs = `root=${encodeURIComponent(root)}&mode=zip&clear=1`;
-    const r = await fetch('/api/nginx/static-upload?' + qs, { method: 'POST', headers: authHeaders(), body: su.zip });
+    const r = await fetch('/api/website/static-upload?' + qs, { method: 'POST', headers: authHeaders(), body: su.zip });
     const b = await r.json().catch(() => ({}));
     if (!r.ok || b.ok === false) throw new Error(b.error || tr('ng.upload_failed'));
     return;
@@ -464,7 +464,7 @@ async function uploadStatic(root, su) {
       const slash = rel.indexOf('/');
       if (slash > 0) rel = rel.slice(slash + 1);
       const qs = `root=${encodeURIComponent(root)}&mode=file&rel=${encodeURIComponent(rel)}` + (i === 0 ? '&clear=1' : '');
-      const r = await fetch('/api/nginx/static-upload?' + qs, { method: 'POST', headers: authHeaders(), body: f });
+      const r = await fetch('/api/website/static-upload?' + qs, { method: 'POST', headers: authHeaders(), body: f });
       const b = await r.json().catch(() => ({}));
       if (!r.ok || b.ok === false) throw new Error(b.error || (tr('ng.upload_failed') + '：' + rel));
     }

@@ -62,7 +62,7 @@ fn web_static_upload_blocking(up: &StaticUpload) -> Result<usize> {
     } = *up;
     let lo = layout()?;
     if !valid_root_segment(root) {
-        return Err(nginx_err(NginxError::BadStaticDir));
+        return Err(website_err(WebsiteError::BadStaticDir));
     }
     let dest = lo.www_store.join(root);
     std::fs::create_dir_all(&dest)?;
@@ -85,8 +85,8 @@ fn web_static_upload_blocking(up: &StaticUpload) -> Result<usize> {
             extract_zip_from(f, &dest)
         }
         "file" => {
-            let rel = rel.ok_or_else(|| nginx_err(NginxError::MissingFilePath))?;
-            let safe = sanitize_rel(rel).ok_or_else(|| nginx_err(NginxError::BadFilePath))?;
+            let rel = rel.ok_or_else(|| website_err(WebsiteError::MissingFilePath))?;
+            let safe = sanitize_rel(rel).ok_or_else(|| website_err(WebsiteError::BadFilePath))?;
             let target = dest.join(&safe);
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -94,7 +94,7 @@ fn web_static_upload_blocking(up: &StaticUpload) -> Result<usize> {
             std::fs::copy(temp, &target)?; // streamed copy, bounded memory
             Ok(1)
         }
-        _ => Err(nginx_err(NginxError::UnknownUploadMode)),
+        _ => Err(website_err(WebsiteError::UnknownUploadMode)),
     }
 }
 

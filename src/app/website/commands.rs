@@ -5,7 +5,7 @@
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
-use crate::contracts::nginx::{
+use crate::contracts::website::{
     CreateCert, DeleteAccess, DeleteCert, RemoveSite, RenewCert, SaveAccess, SiteForm,
 };
 

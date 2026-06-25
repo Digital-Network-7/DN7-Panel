@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 publish = false
-description = "DN7 Panel - on-box server management console (Docker, Nginx, MySQL, files, terminal, monitoring)"
+description = "DN7 Panel - on-box server management console (Docker, Website, MySQL, files, terminal, monitoring)"
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "process", "sync", "fs", "signal"] }
@@ -61,11 +61,12 @@ hmac = "0.12"
 sha1 = "0.10"
 # QR code rendering for the 2FA enrollment (otpauth:// URI → SVG). Pure Rust.
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
-# Salted password hashing for nginx Access List HTTP Basic Auth. We emit the
-# Apache apr1 ($apr1$ salted-MD5) format because nginx verifies it internally
-# (ngx_crypt_apr1) — it never calls the host libc crypt(), so it works on every
-# distro. bcrypt $2b$ depends on libxcrypt and returns 500 where the host's
-# crypt() can't parse it. md-5 is pure Rust (RustCrypto), musl-safe.
+# Salted password hashing for the Website Access List HTTP Basic Auth. We emit
+# the Apache apr1 ($apr1$ salted-MD5) format: it's self-contained (the built-in
+# edge verifier checks it in-process, never calling the host libc crypt()), so
+# it works on every distro. bcrypt $2b$ depends on libxcrypt and returns 500
+# where the host's crypt() can't parse it. md-5 is pure Rust (RustCrypto),
+# musl-safe.
 md-5 = "0.10"
 # Optional HTTPS for the panel itself (self-signed). Pin the rustls `ring`
 # provider (already in the tree via reqwest) so the musl-static build stays

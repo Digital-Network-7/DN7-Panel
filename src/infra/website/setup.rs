@@ -19,7 +19,7 @@ pub(crate) fn start_setup() -> Result<Value> {
         return Ok(json!({ "op_id": SETUP_OP, "already_running": true }));
     }
     if !is_root() {
-        return Err(nginx_err(NginxError::NeedRoot));
+        return Err(website_err(WebsiteError::NeedRoot));
     }
 
     op_create(SETUP_OP, "setup", "host");

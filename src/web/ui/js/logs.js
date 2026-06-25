@@ -2,7 +2,7 @@
 // Audit log (Owner only) — privileged-action history from /api/logs
 // =========================================================================
 
-// An action key is "<group>.<op>" (e.g. "nginx.add_site", "auth.login"). The
+// An action key is "<group>.<op>" (e.g. "website.add_site", "auth.login"). The
 // table shows the group and the op in two separate columns:
 //
 //   logGroup(action) → the module/category label  ("Website", "Auth", …)

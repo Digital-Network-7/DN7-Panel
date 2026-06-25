@@ -9,4 +9,4 @@
 //! place. Capabilities are migrated here incrementally (nginx first).
 
 pub(crate) mod mysql;
-pub(crate) mod nginx;
+pub(crate) mod website;

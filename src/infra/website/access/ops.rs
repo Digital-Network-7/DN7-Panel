@@ -46,10 +46,10 @@ pub(crate) async fn save_access_op(cmd: &SaveAccess) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| nginx_err(NginxError::NeedAccessName))?
+        .ok_or_else(|| website_err(WebsiteError::NeedAccessName))?
         .to_string();
     if !valid_access_name(&name) {
-        return Err(nginx_err(NginxError::BadAccessName));
+        return Err(website_err(WebsiteError::BadAccessName));
     }
     let satisfy = match cmd.satisfy.as_deref().unwrap_or("any") {
         "all" => "all",
@@ -106,7 +106,7 @@ fn build_access_clients(cmd: &SaveAccess) -> Result<Vec<AccessClient>> {
             "allow"
         };
         if !valid_client_address(&c.address) {
-            return Err(nginx_err(NginxError::BadClientAddr));
+            return Err(website_err(WebsiteError::BadClientAddr));
         }
         clients.push(AccessClient {
             directive: dir.to_string(),
@@ -127,20 +127,20 @@ fn build_access_users(cmd: &SaveAccess, old: Option<&AccessList>) -> Result<Vec<
             continue;
         }
         if !valid_auth_username(&username) {
-            return Err(nginx_err(NginxError::BadAuthUser));
+            return Err(website_err(WebsiteError::BadAuthUser));
         }
         if !seen.insert(username.clone()) {
-            return Err(nginx_err(NginxError::DupAuthUser));
+            return Err(website_err(WebsiteError::DupAuthUser));
         }
         let hash = if !u.password.is_empty() {
             if u.password.len() > 128 {
-                return Err(nginx_err(NginxError::BadAuthPw));
+                return Err(website_err(WebsiteError::BadAuthPw));
             }
             htpasswd_hash(&u.password)
         } else {
             old.and_then(|o| o.users.iter().find(|x| x.username == username))
                 .map(|x| x.hash.clone())
-                .ok_or_else(|| nginx_err(NginxError::NeedAuthPw))?
+                .ok_or_else(|| website_err(WebsiteError::NeedAuthPw))?
         };
         users.push(AccessUser { username, hash });
     }
@@ -155,7 +155,7 @@ pub(crate) async fn delete_access_op(cmd: &DeleteAccess) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| nginx_err(NginxError::MissingAccessId))?;
+        .ok_or_else(|| website_err(WebsiteError::MissingAccessId))?;
     let in_use = sites_using_access();
     if let Some(sites) = in_use.get(id) {
         if !sites.is_empty() {
@@ -166,7 +166,7 @@ pub(crate) async fn delete_access_op(cmd: &DeleteAccess) -> Result<Value> {
     let before = lists.len();
     lists.retain(|a| a.id != id);
     if lists.len() == before {
-        return Err(nginx_err(NginxError::AccessNotFound));
+        return Err(website_err(WebsiteError::AccessNotFound));
     }
     save_access(&lists)?;
     // The access list is gone from the manifest; rebuild the edge route table so
@@ -183,7 +183,7 @@ pub(crate) fn current_tuning() -> HttpTuning {
 }
 
 /// Persist already-validated tuning and rebuild the edge route table from it.
-/// The validation/merge is owned by `core::nginx::merge_http_tuning`; this is
+/// The validation/merge is owned by `core::website::merge_http_tuning`; this is
 /// the side-effecting adapter. The edge applies tuning from the manifest at
 /// build time, so persisting + reloading is all that's needed.
 pub(crate) async fn apply_tuning(t: &HttpTuning) -> Result<Value> {

@@ -135,7 +135,7 @@ pub(crate) async fn start_cert_issue(lo: Layout, site: Site) -> Result<Value> {
 pub(crate) async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()> {
     let host = primary_host(&site.server_name);
     if host.is_empty() || host == "_" || host.contains('*') {
-        return Err(nginx_err(NginxError::LeNeedDomainSpecific));
+        return Err(website_err(WebsiteError::LeNeedDomainSpecific));
     }
 
     // Serve the HTTP-01 challenge from the edge's in-memory token map: the edge
@@ -253,7 +253,7 @@ pub(crate) async fn issue_le_named(
 ) -> Result<()> {
     let host = primary_host(domain);
     if host.is_empty() || host == "_" || host.contains('*') {
-        return Err(nginx_err(NginxError::LeNeedDomainSpecific));
+        return Err(website_err(WebsiteError::LeNeedDomainSpecific));
     }
 
     // Serve the HTTP-01 challenge from the edge's in-memory token map: the edge

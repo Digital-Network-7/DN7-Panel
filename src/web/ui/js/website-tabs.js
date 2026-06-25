@@ -1,9 +1,9 @@
-// Nginx: cert / access-list / default-site / settings tabs + dir picker (split from nginx.js).
+// Website: cert / access-list / default-site / settings tabs + dir picker (split from website.js).
 // ---- Tab 3: Certificates (standalone named cert library) ----
 // Per-site certificates are managed from each site's Edit dialog (SSL tab).
 function ngCertsTab(v) {
   const body = $('ngBody');
-  const load = () => op('nginx', { op: 'list_named_certs' }).then((d) => {
+  const load = () => op('website', { op: 'list_named_certs' }).then((d) => {
     const certs = d.certs || [];
     let h = `<div class="row" style="margin-bottom:12px"><span class="mut" style="font-size:12.5px;flex:1">${tr('ng.cert_lib_intro')}</span><button class="btn sm" id="ngCertNew">${tr('ng.create_cert')}</button></div><p class="formnote" style="margin-top:0;margin-bottom:12px">${tr('ng.autorenew_note')}</p>`;
     if (!certs.length) { h += `<div class="empty">${tr('ng.cert_lib_empty')}</div>`; }
@@ -19,8 +19,8 @@ function ngCertsTab(v) {
     }
     body.innerHTML = '<div class="tablewrap">' + h + '</div>';
     $('ngCertNew').onclick = () => ngCreateCert(load);
-    document.querySelectorAll('#ngBody [data-renew]').forEach((b) => b.onclick = () => op('nginx', { op: 'renew_cert', cert_name: b.dataset.renew }).then((r) => { toast(r.op_id ? tr('ng.renewing') : tr('ng.renewed'), 'ok'); setTimeout(load, r.op_id ? 4000 : 300); }).catch((e) => toast(e.message, 'err')));
-    document.querySelectorAll('#ngBody [data-del]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('ng.confirm_del_cert', { name: b.dataset.del }))) op('nginx', { op: 'delete_cert', cert_name: b.dataset.del }).then(() => { toast(tr('common.deleted'), 'ok'); load(); }).catch((e) => toast(e.message, 'err')); });
+    document.querySelectorAll('#ngBody [data-renew]').forEach((b) => b.onclick = () => op('website', { op: 'renew_cert', cert_name: b.dataset.renew }).then((r) => { toast(r.op_id ? tr('ng.renewing') : tr('ng.renewed'), 'ok'); setTimeout(load, r.op_id ? 4000 : 300); }).catch((e) => toast(e.message, 'err')));
+    document.querySelectorAll('#ngBody [data-del]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('ng.confirm_del_cert', { name: b.dataset.del }))) op('website', { op: 'delete_cert', cert_name: b.dataset.del }).then(() => { toast(tr('common.deleted'), 'ok'); load(); }).catch((e) => toast(e.message, 'err')); });
   }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
   body.innerHTML = loading();
   load();
@@ -79,8 +79,8 @@ function ngCreateCert(reload) {
         body.key_pem = pem.key;
       }
       $('ccGo').disabled = true; $('ccJob').classList.remove('hidden'); $('ccJob').innerHTML = `<div class="mut">${tr('ng.submitting')}</div>`;
-      op('nginx', body).then((r) => {
-        if (r.op_id) renderJob($('ccJob'), 'nginx', r.op_id, '', { onDone: () => { toast(tr('ng.cert_created'), 'ok'); close(); reload(); }, onError: () => { $('ccGo').disabled = false; } });
+      op('website', body).then((r) => {
+        if (r.op_id) renderJob($('ccJob'), 'website', r.op_id, '', { onDone: () => { toast(tr('ng.cert_created'), 'ok'); close(); reload(); }, onError: () => { $('ccGo').disabled = false; } });
         else { toast(tr('ng.cert_created'), 'ok'); close(); reload(); }
       }).catch((e) => { toast(e.message, 'err'); $('ccJob').innerHTML = ''; $('ccGo').disabled = false; });
     };
@@ -91,7 +91,7 @@ function ngCreateCert(reload) {
 // ---- Tab 2: Access Lists (HTTP Basic Auth + IP allow/deny) ----
 function ngAccessTab(v) {
   const body = $('ngBody');
-  const load = () => op('nginx', { op: 'list_access' }).then((d) => {
+  const load = () => op('website', { op: 'list_access' }).then((d) => {
     const lists = d.access || [];
     let h = `<div class="row" style="margin-bottom:12px"><span class="mut" style="font-size:12.5px;flex:1">${tr('ng.access_intro')}</span><button class="btn sm" id="ngAccNew">${tr('ng.access_new')}</button></div>`;
     if (!lists.length) { h += `<div class="empty">${tr('ng.access_empty')}</div>`; }
@@ -106,7 +106,7 @@ function ngAccessTab(v) {
     body.innerHTML = '<div class="tablewrap">' + h + '</div>';
     $('ngAccNew').onclick = () => ngAccessForm(load, null);
     document.querySelectorAll('#ngBody [data-edit]').forEach((b) => b.onclick = () => { const a = lists.find((x) => x.id === b.dataset.edit); if (a) ngAccessForm(load, a); });
-    document.querySelectorAll('#ngBody [data-del]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('ng.confirm_del_access'))) op('nginx', { op: 'delete_access', access_id: b.dataset.del }).then(() => { toast(tr('common.deleted'), 'ok'); load(); }).catch((e) => toast(e.message, 'err')); });
+    document.querySelectorAll('#ngBody [data-del]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('ng.confirm_del_access'))) op('website', { op: 'delete_access', access_id: b.dataset.del }).then(() => { toast(tr('common.deleted'), 'ok'); load(); }).catch((e) => toast(e.message, 'err')); });
   }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
   body.innerHTML = loading();
   load();
@@ -158,7 +158,7 @@ function ngAccessForm(reload, al) {
       const body = { op: 'save_access', name, satisfy: $('alSatisfy').checked ? 'all' : 'any', pass_auth: $('alPassAuth').checked, users, clients };
       if (editing) body.access_id = al.id;
       $('alGo').disabled = true;
-      op('nginx', body).then(() => { toast(editing ? tr('common.saved') : tr('common.created'), 'ok'); close(); reload(); }).catch((e) => { toast(e.message, 'err'); $('alGo').disabled = false; });
+      op('website', body).then(() => { toast(editing ? tr('common.saved') : tr('common.created'), 'ok'); close(); reload(); }).catch((e) => { toast(e.message, 'err'); $('alGo').disabled = false; });
     };
     bindDirty('alGo');
   });
@@ -168,7 +168,7 @@ function ngAccessForm(reload, al) {
 function ngDefaultTab(v) {
   const body = $('ngBody');
   body.innerHTML = loading();
-  op('nginx', { op: 'get_settings' }).then((d) => {
+  op('website', { op: 'get_settings' }).then((d) => {
     const ds = (d.default_site) || { mode: '404', redirect_url: '' };
     body.innerHTML = `
       <div style="max-width:560px">
@@ -193,7 +193,7 @@ function ngDefaultTab(v) {
       const m = $('ngDsMsg');
       const bodyReq = { op: 'set_default_site', default_mode: $('ngDsMode').value, redirect_url: $('ngDsUrl') ? $('ngDsUrl').value.trim() : '' };
       $('ngDsSave').disabled = true;
-      op('nginx', bodyReq).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); if ($('ngDsSave')._dirtyReset) $('ngDsSave')._dirtyReset(); }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('ngDsSave').disabled = false; });
+      op('website', bodyReq).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); if ($('ngDsSave')._dirtyReset) $('ngDsSave')._dirtyReset(); }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('ngDsSave').disabled = false; });
     };
     bindDirty('ngDsSave', 'ngDsBox');
   }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
@@ -203,7 +203,7 @@ function ngDefaultTab(v) {
 function ngSettingsTab(v) {
   const body = $('ngBody');
   body.innerHTML = loading();
-  op('nginx', { op: 'get_settings' }).then((d) => {
+  op('website', { op: 'get_settings' }).then((d) => {
     const t = d.tuning || {};
     const bktOpts = [32, 64, 128, 256, 512].map((n) => `<option value="${n}"${Number(t.server_names_hash_bucket_size) === n ? ' selected' : ''}>${n}</option>`).join('');
     const lvlOpts = Array.from({ length: 9 }, (_, i) => i + 1).map((n) => `<option value="${n}"${Number(t.gzip_comp_level) === n ? ' selected' : ''}>${n}</option>`).join('');
@@ -242,7 +242,7 @@ function ngSettingsTab(v) {
     const save = (bodyReq) => {
       const m = $('ngTuneMsg');
       $('ngTuneSave').disabled = true;
-      op('nginx', bodyReq).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); if ($('ngTuneSave')._dirtyReset) $('ngTuneSave')._dirtyReset(); }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('ngTuneSave').disabled = false; });
+      op('website', bodyReq).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); if ($('ngTuneSave')._dirtyReset) $('ngTuneSave')._dirtyReset(); }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('ngTuneSave').disabled = false; });
     };
     $('ngTuneSave').onclick = () => save(collect());
     $('ngTuneDefault').onclick = () => {
@@ -256,7 +256,7 @@ function ngSettingsTab(v) {
 }
 
 // Host directory picker (for static sites served from an existing directory).
-// Navigates the host filesystem via the nginx `list_dirs` op (admin-gated).
+// Navigates the host filesystem via the website `list_dirs` op (admin-gated).
 function ngDirPicker(onPick) {
   modal(tr('ng.pick_dir_title'), `
     <div class="mono mut" id="dpPath" style="font-size:12px;margin-bottom:8px;word-break:break-all">/</div>
@@ -266,7 +266,7 @@ function ngDirPicker(onPick) {
     let parent = null;
     const load = (p) => {
       $('dpList').innerHTML = loading();
-      op('nginx', { op: 'list_dirs', path: p }).then((d) => {
+      op('website', { op: 'list_dirs', path: p }).then((d) => {
         cur = d.path || '/';
         parent = d.parent || null;
         $('dpPath').textContent = cur;

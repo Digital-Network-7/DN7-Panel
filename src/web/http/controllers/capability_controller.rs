@@ -129,7 +129,7 @@ pub(crate) async fn docker_op(
     dispatch(&acct, "docker", meta, fut).await
 }
 
-pub(crate) async fn nginx_op(
+pub(crate) async fn website_op(
     State(state): State<Shared>,
     headers: header::HeaderMap,
     Json(body): Json<Value>,
@@ -139,8 +139,8 @@ pub(crate) async fn nginx_op(
         Err(r) => return r,
     };
     let meta = op_meta(&body);
-    let fut = crate::app::nginx::dispatch(&body);
-    dispatch(&acct, "nginx", meta, fut).await
+    let fut = crate::app::website::dispatch(&body);
+    dispatch(&acct, "website", meta, fut).await
 }
 
 pub(crate) async fn mysql_op(

@@ -7,11 +7,11 @@
 //! bridge shared across the nginx submodules.
 use super::*;
 
-/// Build the transitional `anyhow` error for a typed [`NginxError`]: prefixes
+/// Build the transitional `anyhow` error for a typed [`WebsiteError`]: prefixes
 /// the semantic code with the `ERR_CODE:` transport marker the `op_err_body`
 /// web boundary parses into the wire `code`. The marker lives here (infra), not
 /// in the domain enum, per §2/§4.
-pub(crate) fn nginx_err(e: NginxError) -> anyhow::Error {
+pub(crate) fn website_err(e: WebsiteError) -> anyhow::Error {
     anyhow!("ERR_CODE:{}", e.code())
 }
 
@@ -19,8 +19,8 @@ pub(crate) fn nginx_err(e: NginxError) -> anyhow::Error {
 /// `app::nginx`): persisted default-site + http tuning, plus whether each has
 /// been configured. Pure read — no nginx reload.
 pub(crate) fn web_settings_state() -> (
-    crate::core::nginx::WebGlobal,
-    crate::core::nginx::HttpTuning,
+    crate::core::website::WebGlobal,
+    crate::core::website::HttpTuning,
     bool,
     bool,
 ) {
@@ -34,7 +34,7 @@ pub(crate) fn web_settings_state() -> (
 
 /// Read-only managed-site list for the `list_sites` use-case (owned by
 /// `app::nginx`). Pure read — manifests only, no nginx contact.
-pub(crate) fn sites_snapshot() -> Vec<crate::core::nginx::Site> {
+pub(crate) fn sites_snapshot() -> Vec<crate::core::website::Site> {
     load_sites()
 }
 
@@ -104,7 +104,7 @@ pub(crate) fn op_dismiss_registry(op_id: &str) {
 /// is still occupied afterwards.
 pub(crate) async fn force_start() -> Result<Value> {
     if !is_root() {
-        return Err(nginx_err(NginxError::NeedRoot));
+        return Err(website_err(WebsiteError::NeedRoot));
     }
     // The ports currently in conflict (fall back to the well-known pair).
     let ports = crate::edge::port_conflict().unwrap_or_else(|| vec![80, 443]);
@@ -153,7 +153,7 @@ pub(crate) struct Layout {
 
 pub(crate) fn layout() -> Result<Layout> {
     if !is_setup() {
-        return Err(nginx_err(NginxError::NotSetup));
+        return Err(website_err(WebsiteError::NotSetup));
     }
     std::fs::create_dir_all(certs_dir())?;
     std::fs::create_dir_all(www_dir())?;

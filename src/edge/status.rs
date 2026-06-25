@@ -1,5 +1,5 @@
 //! The edge server's run state, so the control plane (and the UI through
-//! `nginx_info`) can tell whether the listeners are up — or stuck on a port
+//! `website_info`) can tell whether the listeners are up — or stuck on a port
 //! conflict the operator must resolve (a foreign process holds :80/:443).
 
 use std::sync::{Mutex, OnceLock};

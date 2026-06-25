@@ -5,7 +5,7 @@ use super::*;
 /// table from it — rolling back the manifest if the new model is rejected. The
 /// edge's default (catch-all) server is built from `WebGlobal` in `build_runtime`,
 /// so persisting + reloading is all that's needed. The validation/build of the
-/// entity is owned by `core::nginx::build_default_site`.
+/// entity is owned by `core::website::build_default_site`.
 pub(crate) async fn apply_default_site(g: &WebGlobal) -> Result<Value> {
     let lo = layout()?;
     let prev = load_webglobal();

@@ -3,7 +3,7 @@
 //! the panel used to inject into the :80 server block during Let's Encrypt
 //! issuance.
 //!
-//! The existing ACME client (`infra::nginx::certs`, instant-acme) computes the
+//! The existing ACME client (`infra::website::certs`, instant-acme) computes the
 //! token→keyAuthorization pair; during issuance it registers the pair here
 //! ([`insert`]) and the router answers the validation request from this map
 //! ([`serve`]), then [`remove`]s it. This is strictly simpler than the old

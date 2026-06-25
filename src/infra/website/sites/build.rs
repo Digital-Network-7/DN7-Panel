@@ -23,7 +23,7 @@ pub(crate) fn sanitize_trusted_cidrs(input: &str) -> Result<String> {
             t.parse::<std::net::IpAddr>().is_ok()
         };
         if !valid {
-            return Err(nginx_err(NginxError::BadTrustCidr));
+            return Err(website_err(WebsiteError::BadTrustCidr));
         }
         out.push(t.to_string());
     }
@@ -33,14 +33,14 @@ pub(crate) fn sanitize_trusted_cidrs(input: &str) -> Result<String> {
 pub(crate) fn valid_local_root(p: &str) -> Result<String> {
     let path = std::path::Path::new(p);
     if !path.is_absolute() {
-        return Err(nginx_err(NginxError::LocalRootAbs));
+        return Err(website_err(WebsiteError::LocalRootAbs));
     }
-    let canon = std::fs::canonicalize(path).map_err(|_| nginx_err(NginxError::LocalRootMissing))?;
+    let canon = std::fs::canonicalize(path).map_err(|_| website_err(WebsiteError::LocalRootMissing))?;
     if !canon.is_dir() {
-        return Err(nginx_err(NginxError::LocalRootNotDir));
+        return Err(website_err(WebsiteError::LocalRootNotDir));
     }
     if local_root_denied(&canon) {
-        return Err(nginx_err(NginxError::LocalRootDenied));
+        return Err(website_err(WebsiteError::LocalRootDenied));
     }
     Ok(canon.to_string_lossy().to_string())
 }
@@ -67,10 +67,10 @@ pub(crate) fn site_from_req(form: &SiteForm) -> Result<Site> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| nginx_err(NginxError::NeedDomain))?
+        .ok_or_else(|| website_err(WebsiteError::NeedDomain))?
         .to_string();
     if !valid_server_name(&server_name) {
-        return Err(nginx_err(NginxError::BadDomain));
+        return Err(website_err(WebsiteError::BadDomain));
     }
     let kind = form.kind.as_deref().unwrap_or("proxy_host").to_string();
     let ssl = form.ssl.unwrap_or(false);
@@ -82,7 +82,7 @@ pub(crate) fn site_from_req(form: &SiteForm) -> Result<Site> {
         .unwrap_or("")
         .to_string();
     if !cert_name.is_empty() && !valid_cert_name(&cert_name) {
-        return Err(nginx_err(NginxError::BadCertName));
+        return Err(website_err(WebsiteError::BadCertName));
     }
 
     let mut site = Site {
@@ -129,7 +129,7 @@ pub(crate) fn site_from_req(form: &SiteForm) -> Result<Site> {
     site.access_id = resolve_access_ref(form)?;
 
     if ssl && !matches!(cert_mode.as_str(), "self" | "le" | "manual" | "named") {
-        return Err(nginx_err(NginxError::UnknownCertMode));
+        return Err(website_err(WebsiteError::UnknownCertMode));
     }
     Ok(site)
 }
@@ -141,7 +141,7 @@ fn apply_site_kind(site: &mut Site, form: &SiteForm) -> Result<()> {
         "proxy_host" => apply_proxy_host(site, form),
         "proxy_container" => apply_proxy_container(site, form),
         "static" => apply_static(site, form),
-        _ => Err(nginx_err(NginxError::UnknownSiteKind)),
+        _ => Err(website_err(WebsiteError::UnknownSiteKind)),
     }
 }
 
@@ -152,9 +152,9 @@ fn apply_proxy_host(site: &mut Site, form: &SiteForm) -> Result<()> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| nginx_err(NginxError::NeedTarget))?;
+        .ok_or_else(|| website_err(WebsiteError::NeedTarget))?;
     if !valid_host_token(t) {
-        return Err(nginx_err(NginxError::BadTarget));
+        return Err(website_err(WebsiteError::BadTarget));
     }
     site.target_url = t.to_string();
     Ok(())
@@ -167,13 +167,13 @@ fn apply_proxy_container(site: &mut Site, form: &SiteForm) -> Result<()> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| nginx_err(NginxError::NeedContainer))?;
+        .ok_or_else(|| website_err(WebsiteError::NeedContainer))?;
     if !valid_container_name(c) {
-        return Err(nginx_err(NginxError::BadContainer));
+        return Err(website_err(WebsiteError::BadContainer));
     }
     let port = form.container_port.unwrap_or(0);
     if !valid_port(port) {
-        return Err(nginx_err(NginxError::BadContainerPort));
+        return Err(website_err(WebsiteError::BadContainerPort));
     }
     site.container = c.to_string();
     site.container_port = port;
@@ -196,9 +196,9 @@ fn apply_static(site: &mut Site, form: &SiteForm) -> Result<()> {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| nginx_err(NginxError::NeedStaticDir))?;
+            .ok_or_else(|| website_err(WebsiteError::NeedStaticDir))?;
         if !valid_root_segment(r) {
-            return Err(nginx_err(NginxError::BadStaticDirName));
+            return Err(website_err(WebsiteError::BadStaticDirName));
         }
         site.root = r.to_string();
     }
@@ -214,7 +214,7 @@ fn resolve_access_ref(form: &SiteForm) -> Result<String> {
         .unwrap_or("")
         .to_string();
     if !access_id.is_empty() && !load_access().iter().any(|a| a.id == access_id) {
-        return Err(nginx_err(NginxError::AccessNotFound));
+        return Err(website_err(WebsiteError::AccessNotFound));
     }
     Ok(access_id)
 }
@@ -228,7 +228,7 @@ pub(crate) fn validate_locations(locs: &[Location]) -> Result<Vec<Location>> {
         }
     }
     if out.len() > 50 {
-        return Err(nginx_err(NginxError::TooManyRules));
+        return Err(website_err(WebsiteError::TooManyRules));
     }
     Ok(out)
 }
@@ -247,10 +247,10 @@ fn validate_one_location(l: &Location) -> Result<Option<Location>> {
             return Err(anyhow!("路径规则需以 / 开头且不含空格等特殊字符：{path}"));
         }
         if !valid_container_name(container) {
-            return Err(nginx_err(NginxError::BadContainer));
+            return Err(website_err(WebsiteError::BadContainer));
         }
         if !valid_port(l.container_port) {
-            return Err(nginx_err(NginxError::BadContainerPort));
+            return Err(website_err(WebsiteError::BadContainerPort));
         }
         Ok(Some(Location {
             path: path.to_string(),
@@ -289,12 +289,12 @@ fn validate_one_location(l: &Location) -> Result<Option<Location>> {
 /// allowlist from it (there is no nginx config parser), so this is the only gate.
 pub(crate) fn validate_extra_conf(s: &str) -> Result<()> {
     if s.len() > 20000 {
-        return Err(nginx_err(NginxError::ExtraConfTooLong));
+        return Err(website_err(WebsiteError::ExtraConfTooLong));
     }
     if s.chars()
         .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
     {
-        return Err(nginx_err(NginxError::ExtraConfBad));
+        return Err(website_err(WebsiteError::ExtraConfBad));
     }
     Ok(())
 }

@@ -52,7 +52,7 @@ pub(crate) async fn create_cert(cmd: &CreateCert) -> Result<Value> {
     let lo = layout()?;
     let mode = cmd.cert_mode.as_deref().unwrap_or("self");
     if !matches!(mode, "self" | "le" | "manual") {
-        return Err(nginx_err(NginxError::UnknownCertMode));
+        return Err(website_err(WebsiteError::UnknownCertMode));
     }
     // Serialize the manifest read-modify-write against the background renewal
     // loop and other cert ops (lost-update guard on certs.json).
@@ -96,20 +96,20 @@ fn derive_cert_name(cmd: &CreateCert, certs: &[NamedCert]) -> Result<(String, St
         .unwrap_or("")
         .to_string();
     if domain.is_empty() {
-        return Err(nginx_err(NginxError::NeedCertDomain));
+        return Err(website_err(WebsiteError::NeedCertDomain));
     }
     if !valid_server_name(&domain) {
-        return Err(nginx_err(NginxError::BadDomain));
+        return Err(website_err(WebsiteError::BadDomain));
     }
     let name = cert_name_from_domain(&domain);
     if !valid_cert_name(&name) {
-        return Err(nginx_err(NginxError::BadCertNameChars));
+        return Err(website_err(WebsiteError::BadCertNameChars));
     }
     if certs
         .iter()
         .any(|c| c.name == name || (!c.domain.is_empty() && c.domain.eq_ignore_ascii_case(&domain)))
     {
-        return Err(nginx_err(NginxError::CertDomainExists));
+        return Err(website_err(WebsiteError::CertDomainExists));
     }
     Ok((domain, name))
 }
@@ -119,7 +119,7 @@ fn write_manual_cert(lo: &Layout, cmd: &CreateCert, name: &str) -> Result<()> {
     let cert = cmd.cert_pem.as_deref().unwrap_or("");
     let key = cmd.key_pem.as_deref().unwrap_or("");
     if cert.trim().is_empty() || key.trim().is_empty() {
-        return Err(nginx_err(NginxError::NeedCertKey));
+        return Err(website_err(WebsiteError::NeedCertKey));
     }
     std::fs::create_dir_all(&lo.cert_store)?;
     std::fs::write(named_crt_file(lo, name), cert)?;
@@ -136,16 +136,16 @@ pub(crate) async fn renew_cert(cmd: &RenewCert) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| nginx_err(NginxError::MissingCertName))?;
+        .ok_or_else(|| website_err(WebsiteError::MissingCertName))?;
     let cert = load_named_certs()
         .into_iter()
         .find(|c| c.name == name)
-        .ok_or_else(|| nginx_err(NginxError::CertNotFound))?;
+        .ok_or_else(|| website_err(WebsiteError::CertNotFound))?;
     match cert.cert_mode.as_str() {
         "le" => start_named_cert_issue(lo, cert.name.clone(), cert.domain.clone()),
         "self" => {
             if cert.domain.is_empty() {
-                return Err(nginx_err(NginxError::NeedCertDomain));
+                return Err(website_err(WebsiteError::NeedCertDomain));
             }
             let host = primary_host(&cert.domain);
             gen_self_signed_to(
@@ -157,7 +157,7 @@ pub(crate) async fn renew_cert(cmd: &RenewCert) -> Result<Value> {
             let _ = validate_and_reload(&lo).await;
             Ok(json!({ "renewed": cert.name }))
         }
-        _ => Err(nginx_err(NginxError::ManualNoRenew)),
+        _ => Err(website_err(WebsiteError::ManualNoRenew)),
     }
 }
 
@@ -169,7 +169,7 @@ pub(crate) async fn delete_cert(cmd: &DeleteCert) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| nginx_err(NginxError::MissingCertName))?;
+        .ok_or_else(|| website_err(WebsiteError::MissingCertName))?;
     // Hold the lock across the usage check AND the delete, so a concurrent
     // add_site/update_site can't start referencing the cert between the "in use?"
     // check and its removal (TOCTOU → orphaned live-site cert).
@@ -184,7 +184,7 @@ pub(crate) async fn delete_cert(cmd: &DeleteCert) -> Result<Value> {
     let before = certs.len();
     certs.retain(|c| c.name != name);
     if certs.len() == before {
-        return Err(nginx_err(NginxError::CertNotFound));
+        return Err(website_err(WebsiteError::CertNotFound));
     }
     let _ = std::fs::remove_file(named_crt_file(&lo, name));
     let _ = std::fs::remove_file(named_key_file(&lo, name));

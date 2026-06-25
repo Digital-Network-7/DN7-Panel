@@ -24,15 +24,15 @@ use tokio::process::Command;
 // Per-op typed commands (from the contracts layer) + persisted domain entities
 // (from core::nginx), re-exported so the nginx submodules reference them via
 // `use super::*` unchanged.
-pub(crate) use crate::contracts::nginx::{
+pub(crate) use crate::contracts::website::{
     CreateCert, DeleteAccess, DeleteCert, RemoveSite, RenewCert, SaveAccess, SiteForm,
 };
-use crate::core::nginx::{
+use crate::core::website::{
     norm_scheme, primary_host, valid_access_name, valid_auth_username, valid_cert_name,
     valid_client_address, valid_container_name, valid_host_token, valid_location_path, valid_port,
-    valid_root_segment, valid_server_name, NginxError,
+    valid_root_segment, valid_server_name, WebsiteError,
 };
-pub(crate) use crate::core::nginx::{
+pub(crate) use crate::core::website::{
     AccessClient, AccessList, AccessUser, HttpTuning, Location, Site, WebGlobal,
 };
 
@@ -63,7 +63,7 @@ pub(crate) use access::list_access;
 pub(crate) use access::{apply_default_site, apply_tuning, current_tuning};
 pub(crate) use api::*;
 pub(crate) use certs::list_named_certs;
-pub(crate) use detect::{list_dirs, list_running_containers, nginx_info};
+pub(crate) use detect::{list_dirs, list_running_containers, website_info};
 pub(crate) use sites::*;
 pub use upload::*;
 

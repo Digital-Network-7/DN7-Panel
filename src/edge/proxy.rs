@@ -291,7 +291,7 @@ async fn resolve_container_cached(name: &str, port: i64) -> Option<String> {
     // request tasks.
     let resolved = tokio::time::timeout(
         CONTAINER_RESOLVE_TIMEOUT,
-        crate::infra::nginx::resolve_container_upstream(name, port),
+        crate::infra::website::resolve_container_upstream(name, port),
     )
     .await;
 

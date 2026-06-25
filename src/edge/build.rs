@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use ipnet::IpNet;
 
-use crate::core::nginx::{AccessList, DefaultSite, HttpTuning, Site};
+use crate::core::website::{AccessList, DefaultSite, HttpTuning, Site};
 
 use super::config::*;
 

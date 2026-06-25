@@ -8,7 +8,7 @@ pub(crate) async fn add_site(form: &SiteForm) -> Result<Value> {
     let lo = layout()?;
     let site = site_from_req(form)?;
     if server_name_taken(&site.server_name, &site.id) {
-        return Err(nginx_err(NginxError::DuplicateDomain));
+        return Err(website_err(WebsiteError::DuplicateDomain));
     }
 
     // Prepare certs.
@@ -27,7 +27,7 @@ pub(crate) async fn add_site(form: &SiteForm) -> Result<Value> {
                     let cert = form.cert_pem.as_deref().unwrap_or("");
                     let key = form.key_pem.as_deref().unwrap_or("");
                     if cert.trim().is_empty() || key.trim().is_empty() {
-                        return Err(nginx_err(NginxError::NeedCertKey));
+                        return Err(website_err(WebsiteError::NeedCertKey));
                     }
                     write_cert_files(&lo, &site, cert, key)?;
                 }
@@ -63,13 +63,13 @@ pub(crate) async fn remove_site(cmd: &RemoveSite) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| nginx_err(NginxError::MissingSiteId))?;
+        .ok_or_else(|| website_err(WebsiteError::MissingSiteId))?;
     let mut sites = load_sites();
     let before = sites.len();
     let removed: Vec<Site> = sites.iter().filter(|s| s.id == site_id).cloned().collect();
     sites.retain(|s| s.id != site_id);
     if sites.len() == before {
-        return Err(nginx_err(NginxError::SiteNotFound));
+        return Err(website_err(WebsiteError::SiteNotFound));
     }
     // Clean up cert files for removed sites (best-effort).
     for s in &removed {
@@ -95,18 +95,18 @@ pub(crate) async fn update_site(form: &SiteForm) -> Result<Value> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| nginx_err(NginxError::MissingSiteId))?;
+        .ok_or_else(|| website_err(WebsiteError::MissingSiteId))?;
     let mut sites = load_sites();
     let old = sites
         .iter()
         .find(|s| s.id == site_id)
         .cloned()
-        .ok_or_else(|| nginx_err(NginxError::SiteNotFound))?;
+        .ok_or_else(|| website_err(WebsiteError::SiteNotFound))?;
 
     let mut site = site_from_req(form)?;
     site.id = old.id.clone();
     if server_name_taken(&site.server_name, &site.id) {
-        return Err(nginx_err(NginxError::DuplicateDomain));
+        return Err(website_err(WebsiteError::DuplicateDomain));
     }
 
     // Snapshot the existing per-site cert files BEFORE prepare_site_cert may
@@ -180,7 +180,7 @@ pub(crate) async fn prepare_site_cert(
     }
     if !site.cert_name.is_empty() {
         if !named_crt_file(lo, &site.cert_name).exists() {
-            return Err(nginx_err(NginxError::CertNotFound));
+            return Err(website_err(WebsiteError::CertNotFound));
         }
         return Ok(CertPrep::Ready);
     }
@@ -193,7 +193,7 @@ pub(crate) async fn prepare_site_cert(
             if !cert.trim().is_empty() && !key.trim().is_empty() {
                 write_cert_files(lo, site, cert, key)?;
             } else if !have {
-                return Err(nginx_err(NginxError::NeedCertKey));
+                return Err(website_err(WebsiteError::NeedCertKey));
             }
         }
         "le" => {

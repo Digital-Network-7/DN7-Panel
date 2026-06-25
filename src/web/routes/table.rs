@@ -49,7 +49,7 @@ pub(crate) fn build_router(state: Shared) -> Router {
         .route("/api/update/changelog", get(update_changelog))
         .route("/api/update/apply", post(update_apply))
         .route("/api/docker", post(docker_op))
-        .route("/api/nginx", post(nginx_op))
+        .route("/api/website", post(website_op))
         .route("/api/mysql", post(mysql_op))
         .route("/api/terminal", get(terminal_ws))
         .route("/api/container/terminal", get(container_terminal_ws))
@@ -61,7 +61,7 @@ pub(crate) fn build_router(state: Shared) -> Router {
         .route("/api/files/upload", post(files_upload))
         .route("/api/docker/download", get(docker_download))
         .route("/api/docker/image-upload", post(docker_image_upload))
-        .route("/api/nginx/static-upload", post(nginx_static_upload))
+        .route("/api/website/static-upload", post(website_static_upload))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             entry_gate,

@@ -243,7 +243,7 @@ fn auth_allowed(access: &AccessControl, headers: &HeaderMap) -> bool {
         .users
         .iter()
         .find(|(u, _)| *u == user)
-        .map(|(_, hash)| crate::infra::nginx::verify_htpasswd_hash(hash, &pass))
+        .map(|(_, hash)| crate::infra::website::verify_htpasswd_hash(hash, &pass))
         .unwrap_or(false)
 }
 

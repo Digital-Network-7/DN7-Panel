@@ -52,7 +52,7 @@ extern "C" {
 /// nginx binary. The JSON keys are unchanged so the UI's setup hint keeps
 /// working; only how they're computed changes: the engine is always present
 /// (it's compiled in) and its "version" is the panel build version.
-pub(crate) async fn nginx_info() -> Result<Value> {
+pub(crate) async fn website_info() -> Result<Value> {
     // The web engine is built into the panel, so it's always present; its
     // version is the panel build version.
     let host_nginx_present = true;
@@ -386,9 +386,9 @@ pub(crate) async fn list_dirs(path_arg: Option<&str>) -> Result<Value> {
     let base = if raw.is_empty() { "/" } else { raw };
     let path = std::path::Path::new(base);
     if !path.is_absolute() {
-        return Err(nginx_err(NginxError::LocalRootAbs));
+        return Err(website_err(WebsiteError::LocalRootAbs));
     }
-    let canon = std::fs::canonicalize(path).map_err(|_| nginx_err(NginxError::LocalRootMissing))?;
+    let canon = std::fs::canonicalize(path).map_err(|_| website_err(WebsiteError::LocalRootMissing))?;
     let mut dirs: Vec<String> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&canon) {
         for ent in rd.flatten() {

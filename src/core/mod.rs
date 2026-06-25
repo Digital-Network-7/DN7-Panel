@@ -11,7 +11,7 @@ pub(crate) mod docker;
 pub(crate) mod error;
 pub(crate) mod identity;
 pub(crate) mod mysql;
-pub(crate) mod nginx;
+pub(crate) mod website;
 pub(crate) mod path;
 pub(crate) mod settings;
 

@@ -263,7 +263,7 @@ mod tests {
             cfg,
         });
         let mut req = HttpRequest::builder()
-            .uri("/api/nginx")
+            .uri("/api/website")
             .header("x-real-ip", "113.233.101.139")
             .header("x-forwarded-for", "113.233.101.139")
             .body(axum::body::Body::empty())
