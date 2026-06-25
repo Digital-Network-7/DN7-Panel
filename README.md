@@ -118,10 +118,10 @@ password and safe-entry path. Login is rate-limited and uses a
 challenge-response, so the password never crosses the wire in cleartext;
 optional self-signed HTTPS and TOTP 2FA are available in settings.
 
-> **Exposure.** By default the console binds `0.0.0.0` (reachable from any
-> network). The **"Allow public access"** setting (Settings → General) lets you
-> bind **loopback only** (`127.0.0.1`) — strongly recommended — and reach the
-> panel through an **Nginx reverse proxy (domain)** or an **SSH tunnel** instead.
+> **Exposure.** By default the console binds **loopback only** (`127.0.0.1`) —
+> reach it from the host or through an **SSH tunnel** / **reverse proxy (domain)**.
+> Enabling **"Allow public access"** (Settings → General) binds all interfaces
+> (`0.0.0.0`); do that only behind HTTPS or on a trusted network.
 
 Capabilities:
 
