@@ -1121,4 +1121,103 @@ mod edge_tests {
             "rss leak suspected: resting rss grew {rss0}KiB → {rss_last}KiB across {cycles} cycles"
         );
     }
+
+    // ---- CPU probe --------------------------------------------------------
+
+    /// Total CPU time (user + system) this process has consumed, in seconds,
+    /// via getrusage(2) — microsecond resolution.
+    fn cpu_time_secs() -> f64 {
+        // SAFETY: getrusage just fills a zeroed rusage we own and returns a
+        // status we ignore.
+        let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::getrusage(libc::RUSAGE_SELF, &mut u);
+        }
+        let tv = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
+        tv(u.ru_utime) + tv(u.ru_stime)
+    }
+
+    /// A `ps` field parsed as f64 (e.g. %cpu).
+    async fn ps_f64(cmd: &str) -> f64 {
+        let out = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .output()
+            .await
+            .expect("run ps probe");
+        String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0.0)
+    }
+
+    /// Pull the `[200]` success count out of an oha report.
+    fn parse_oha_200(report: &str) -> u64 {
+        for line in report.lines() {
+            let l = line.trim();
+            if l.starts_with("[200]") {
+                return l.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+            }
+        }
+        0
+    }
+
+    /// Pull `Requests/sec:` out of an oha report.
+    fn parse_oha_rps(report: &str) -> f64 {
+        for line in report.lines() {
+            if line.contains("Requests/sec:") {
+                return line.split_whitespace().last().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            }
+        }
+        0.0
+    }
+
+    /// Probe CPU cost: idle %CPU, then CPU-seconds consumed under a load burst
+    /// → CPU-µs per request and cores-busy. NOTE: the process also runs the
+    /// colocated test upstream, so these slightly OVERSTATE the edge's own cost.
+    ///   cargo test --release --bin dn7-panel edge_cpu -- --ignored --nocapture
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "CPU probe; run with --ignored --nocapture"]
+    async fn edge_cpu_probe() {
+        let _g = serial().lock().await;
+        let upstream = spawn_upstream_dedicated(2);
+        let www = unique_tmp("cpu-static");
+        publish_full_config(upstream, &www);
+        let edge = spawn_edge().await;
+        let pid = std::process::id();
+
+        let conc: usize = std::env::var("EDGE_BENCH_CONCURRENCY")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1000);
+        let secs = 15.0_f64;
+
+        // Idle: no traffic for a few seconds, then read the instantaneous %CPU.
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        let idle = ps_f64(&format!("ps -o %cpu= -p {pid}")).await;
+        println!("\n[cpu] idle (no traffic): {idle:.1}% of one core (process incl. colocated upstream)");
+
+        // Under load: CPU-time delta over the burst.
+        let t0 = cpu_time_secs();
+        let report = run_oha(
+            &format!("http://{edge}/"),
+            "proxy.example.test",
+            conc,
+            &format!("{secs:.0}s"),
+            false,
+        )
+        .await;
+        let cpu_used = cpu_time_secs() - t0;
+        let reqs = parse_oha_200(&report);
+        let rps = parse_oha_rps(&report);
+        let per_req_us = if reqs > 0 {
+            cpu_used * 1e6 / reqs as f64
+        } else {
+            0.0
+        };
+        println!("[cpu] under load (proxy, concurrency={conc}):");
+        println!("        {rps:.0} req/s · {reqs} reqs served");
+        println!(
+            "        {cpu_used:.1} CPU-seconds consumed → {per_req_us:.1} µs CPU/req → ~{:.1} cores busy",
+            cpu_used / secs
+        );
+        println!("        (these include the colocated upstream — the edge alone is lower)\n");
+    }
 }
