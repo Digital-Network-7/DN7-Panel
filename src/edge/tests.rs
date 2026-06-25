@@ -1316,4 +1316,135 @@ mod edge_tests {
             println!("[hs] → TLS fresh-conn costs {:.1}× the CPU/req of TLS keepalive\n", t_new / t_ka);
         }
     }
+
+    // ---- RSA vs ECDSA handshake cost --------------------------------------
+
+    /// Generate an RSA-2048 self-signed cert (via openssl) as the default cert,
+    /// to contrast with the ECDSA P-256 one `write_default_cert` produces. oha
+    /// runs with `--insecure`, so the cert's name/SAN don't need to match.
+    async fn write_rsa_cert(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        let crt = dir.join("default.crt");
+        let key = dir.join("default.key");
+        let cmd = format!(
+            "openssl req -x509 -newkey rsa:2048 -keyout '{}' -out '{}' -days 365 -nodes -subj '/CN=localhost' 2>/dev/null",
+            key.display(),
+            crt.display()
+        );
+        let status = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .status()
+            .await
+            .expect("run openssl");
+        assert!(
+            status.success() && crt.exists() && key.exists(),
+            "openssl RSA cert generation failed"
+        );
+    }
+
+    /// (Re)publish the TLS config from `cert_dir` (which must already contain
+    /// default.crt/default.key). The TLS listener's SNI resolver reads the store
+    /// live, so this swaps the presented cert without re-binding.
+    fn republish_tls_config(upstream: std::net::SocketAddr, www: &std::path::Path, cert_dir: &std::path::Path) {
+        let mut proxy = base_site("p", "proxy.example.test", "proxy_host");
+        proxy.target_url = upstream.to_string();
+        proxy.force_ssl = false;
+        let mut stat = base_site("s", "static.example.test", "static");
+        stat.local_root = www.to_string_lossy().to_string();
+        stat.force_ssl = false;
+        let input = ReloadInput {
+            sites: vec![proxy, stat],
+            access: Vec::new(),
+            default_site: DefaultSite::default(),
+            tuning: HttpTuning::default(),
+            cert_dir: cert_dir.to_path_buf(),
+            www_dir: unique_tmp("rtls-www"),
+        };
+        let cfg = build::build_runtime(&input).expect("tls config builds");
+        store::publish(std::sync::Arc::new(cfg));
+    }
+
+    /// Measure CPU-µs/request for a TLS run at a fixed rate (returns cpu/req).
+    async fn measure_tls_cpu(url: &str, no_ka: bool, rate: u64, dur: &str) -> f64 {
+        let mut args = vec![
+            "-H".to_string(),
+            "Host: proxy.example.test".to_string(),
+            "-c".to_string(),
+            "50".to_string(),
+            "-q".to_string(),
+            rate.to_string(),
+            "-z".to_string(),
+            dur.to_string(),
+            "--insecure".to_string(),
+        ];
+        if no_ka {
+            args.push("--disable-keepalive".to_string());
+        }
+        args.push(url.to_string());
+        let t0 = cpu_time_secs();
+        let report = oha_raw(args).await;
+        let cpu = cpu_time_secs() - t0;
+        let reqs = parse_oha_200(&report);
+        if reqs > 0 {
+            cpu * 1e6 / reqs as f64
+        } else {
+            0.0
+        }
+    }
+
+    /// The cert-type effect: RSA-2048 vs ECDSA P-256 TLS-handshake CPU cost. The
+    /// server-side RSA private-key operation is far more expensive than ECDSA,
+    /// which is the likely reason an RSA-cert nginx burns cores at a low request
+    /// rate where an ECDSA edge stays cheap. Run:
+    ///   cargo test --release --bin dn7-panel edge_rsa -- --ignored --nocapture
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "RSA-vs-ECDSA handshake experiment; run with --ignored --nocapture"]
+    async fn edge_rsa_vs_ecdsa_handshake() {
+        let _g = serial().lock().await;
+        let upstream = spawn_upstream_dedicated(2);
+        let www = unique_tmp("hsx-static");
+        std::fs::create_dir_all(&www).unwrap();
+        std::fs::write(www.join("index.html"), "OK").unwrap();
+        let dir_ec = unique_tmp("hsx-ec");
+        let dir_rsa = unique_tmp("hsx-rsa");
+        write_default_cert(&dir_ec); // ECDSA P-256 (rcgen default)
+        write_rsa_cert(&dir_rsa).await; // RSA-2048 (openssl)
+        let tls = spawn_edge_tls().await;
+        let url = format!("https://{tls}/");
+
+        let rate: u64 = std::env::var("EDGE_HS_RATE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(300);
+        let dur = "12s";
+        let drain = 25u64;
+        let nap = || tokio::time::sleep(std::time::Duration::from_secs(drain));
+
+        println!("\n[rsa] fixed rate = {rate} req/s · {dur} per run (CPU incl. colocated upstream)\n");
+
+        republish_tls_config(upstream, &www, &dir_ec);
+        nap().await;
+        let ec_ka = measure_tls_cpu(&url, false, rate, dur).await;
+        nap().await;
+        let ec_new = measure_tls_cpu(&url, true, rate, dur).await;
+
+        republish_tls_config(upstream, &www, &dir_rsa);
+        nap().await;
+        let rsa_ka = measure_tls_cpu(&url, false, rate, dur).await;
+        nap().await;
+        let rsa_new = measure_tls_cpu(&url, true, rate, dur).await;
+
+        let hs_ec = ec_new - ec_ka;
+        let hs_rsa = rsa_new - rsa_ka;
+        println!("[rsa] ECDSA P-256: keepalive {ec_ka:>5.0} / fresh {ec_new:>5.0} µs/req → handshake {hs_ec:>5.0} µs/req");
+        println!("[rsa] RSA-2048   : keepalive {rsa_ka:>5.0} / fresh {rsa_new:>5.0} µs/req → handshake {hs_rsa:>5.0} µs/req");
+        println!("[rsa] (each handshake delta includes ~40µs common TCP connect)");
+        if hs_ec > 0.0 {
+            println!(
+                "[rsa] → RSA-2048 handshake costs {:.1}× the CPU of ECDSA P-256\n",
+                hs_rsa / hs_ec
+            );
+        }
+    }
 }
