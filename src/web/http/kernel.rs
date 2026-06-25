@@ -75,8 +75,16 @@ pub(crate) async fn serve(
 ) -> anyhow::Result<()> {
     let app = crate::web::routes::build_router(state);
     // Public access binds all interfaces; otherwise loopback only, so the
-    // console is reachable only via an nginx reverse proxy / SSH tunnel.
+    // console is reachable only locally or via an SSH tunnel / trusted proxy.
     let host = if public { [0, 0, 0, 0] } else { [127, 0, 0, 1] };
+    if public && !https {
+        tracing::warn!(
+            port,
+            "web console is exposed on ALL interfaces over PLAIN HTTP — credentials \
+             and sessions travel in cleartext. Enable HTTPS in Settings, or disable \
+             public access and reach the console via an SSH tunnel."
+        );
+    }
     let addr = SocketAddr::from((host, port));
     bind_and_serve(app, addr, https).await
 }

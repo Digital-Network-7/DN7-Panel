@@ -65,12 +65,24 @@ pub(crate) async fn handle(req: &hyper::Request<Incoming>, root: &StaticRoot, tu
         None => return response::status(StatusCode::NOT_FOUND),
     };
 
-    // `try_files $uri $uri/ =404`: a plain file is served directly; a directory
-    // falls back to its index document; anything else is a 404.
+    // try_files: a plain file is served directly; a directory falls back to its
+    // index document; anything else is a 404.
     let file_path = match pick_file(&resolved).await {
         Some(p) => p,
         None => return response::status(StatusCode::NOT_FOUND),
     };
+
+    // Symlink containment: canonicalize the resolved file and the document root,
+    // and require the real path to stay under the real root. A symlink inside the
+    // root that points outside it is refused (404) — we do NOT follow symlinks
+    // out of the document root.
+    match (
+        tokio::fs::canonicalize(&file_path).await,
+        tokio::fs::canonicalize(&root.root).await,
+    ) {
+        (Ok(real), Ok(root_real)) if real.starts_with(&root_real) => {}
+        _ => return response::status(StatusCode::NOT_FOUND),
+    }
 
     serve_file(req, &file_path, root, tuning, head_only).await
 }

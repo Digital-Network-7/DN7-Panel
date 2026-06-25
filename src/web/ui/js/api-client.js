@@ -21,9 +21,11 @@ function api(path, opts = {}) {
 // Capability op (docker/nginx/mysql): POST {op,...} → data.
 function op(kind, obj) { return api('/api/' + kind, { method: 'POST', body: JSON.stringify(obj) }).then((b) => b.data); }
 
-// Mint a one-time, short-lived ticket for a WebSocket upgrade or a download
-// link — the session token must never travel in a URL (history/proxy logs).
-function ticket() { return api('/api/ticket', { method: 'POST' }).then((b) => b.data.ticket); }
+// Mint a one-time, short-lived ticket SCOPED to a purpose ('terminal' or
+// 'download') for a WebSocket upgrade or a download link — the session token
+// must never travel in a URL (history/proxy logs), and a ticket minted for one
+// purpose can't be replayed against the other.
+function ticket(purpose) { return api('/api/ticket?purpose=' + encodeURIComponent(purpose), { method: 'POST' }).then((b) => b.data.ticket); }
 
 // Authorization header object for raw fetch() calls (file/image/static uploads
 // that send a body the api() JSON wrapper can't). Empty when not signed in.

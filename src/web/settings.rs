@@ -177,7 +177,11 @@ pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
         totp_enabled: false,
         entry_path: gen_entry(),
         https: false,
-        public_access: true,
+        // Secure default: bind to loopback only. A fresh install is reachable
+        // from the host (or via an SSH tunnel); the operator opts into public
+        // exposure (all interfaces) in Settings — ideally with HTTPS on — rather
+        // than a brand-new install sitting on 0.0.0.0 in cleartext by default.
+        public_access: false,
         session_timeout: default_timeout(),
         allow_ips: Vec::new(),
         trusted_proxies: Vec::new(),

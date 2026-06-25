@@ -15,6 +15,10 @@ use crate::core::Error;
 pub(crate) struct PasswordChange<'a> {
     pub(crate) salt: &'a str,
     pub(crate) hash: &'a str,
+    /// One-time challenge nonce the `old_verifier` proof is bound to.
+    pub(crate) nonce: &'a str,
+    /// `sha256(nonce ":" current_verifier)` — proves knowledge of the current
+    /// password, bound to a single-use nonce so it can't be replayed.
     pub(crate) old_verifier: &'a str,
     pub(crate) plaintext: &'a str,
     pub(crate) keep_token: Option<&'a str>,
@@ -37,7 +41,11 @@ pub(crate) async fn change_password(
         return Err(Error::PasswordMalformed);
     }
     let current = env.current_verifier(who);
-    if current.is_empty() || ch.old_verifier.to_lowercase() != current {
+    // Bind a single-use challenge nonce into the current-password proof (as the
+    // login path does) so a captured `old_verifier` can't be replayed. Consume
+    // the nonce first so a wrong proof still burns it.
+    let nonce_ok = env.consume_challenge(ch.nonce);
+    if current.is_empty() || !nonce_ok || !env.verify_proof(ch.nonce, &current, ch.old_verifier) {
         return Err(Error::OldPasswordWrong);
     }
     env.save_password(who, ch.salt, &ch.hash.to_lowercase())?;
@@ -95,6 +103,7 @@ mod tests {
     #[derive(Default)]
     struct FakeEnv {
         verifier: String,
+        nonce_ok: bool,
         totp_secret: String,
         totp_code_ok: bool,
         saved: RefCell<Option<(String, String)>>,
@@ -107,6 +116,14 @@ mod tests {
     impl AccountEnv for FakeEnv {
         fn current_verifier(&self, _who: &Principal) -> String {
             self.verifier.clone()
+        }
+        fn consume_challenge(&self, _nonce: &str) -> bool {
+            self.nonce_ok
+        }
+        // Models the real nonce-bound proof check: a non-empty verifier and a
+        // proof that matches it (case-insensitively, as the real hex compare is).
+        fn verify_proof(&self, _nonce: &str, verifier: &str, proof: &str) -> bool {
+            !verifier.is_empty() && proof.eq_ignore_ascii_case(verifier)
         }
         fn save_password(&self, _who: &Principal, salt: &str, hash: &str) -> Result<(), Error> {
             *self.saved.borrow_mut() = Some((salt.to_string(), hash.to_string()));
@@ -146,7 +163,8 @@ mod tests {
     const SALT: &str = "0123456789abcdef0123456789abcdef";
     const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-    /// Terse builder for a `PasswordChange` in tests.
+    /// Terse builder for a `PasswordChange` in tests. The nonce is a fixed stub;
+    /// whether it's "valid" is controlled by `FakeEnv::nonce_ok`.
     fn pc<'a>(
         salt: &'a str,
         hash: &'a str,
@@ -157,6 +175,7 @@ mod tests {
         PasswordChange {
             salt,
             hash,
+            nonce: "nonce",
             old_verifier,
             plaintext,
             keep_token,
@@ -175,6 +194,7 @@ mod tests {
     async fn rejects_wrong_old_password() {
         let env = FakeEnv {
             verifier: "the-real-verifier".into(),
+            nonce_ok: true,
             ..Default::default()
         };
         let r = change_password(&env, &principal(None), pc(SALT, HASH, "wrong", "", None)).await;
@@ -183,9 +203,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_replayed_or_invalid_nonce() {
+        // Correct proof, but the challenge nonce is invalid/already-consumed.
+        let env = FakeEnv {
+            verifier: "cur".into(),
+            nonce_ok: false,
+            ..Default::default()
+        };
+        let r = change_password(&env, &principal(None), pc(SALT, HASH, "cur", "", None)).await;
+        assert!(matches!(r, Err(Error::OldPasswordWrong)));
+        assert!(env.saved.borrow().is_none());
+    }
+
+    #[tokio::test]
     async fn happy_path_super_admin() {
         let env = FakeEnv {
             verifier: "cur".into(),
+            nonce_ok: true,
             ..Default::default()
         };
         let r = change_password(
@@ -208,6 +242,7 @@ mod tests {
     async fn happy_path_system_user_syncs_os_password() {
         let env = FakeEnv {
             verifier: "cur".into(),
+            nonce_ok: true,
             ..Default::default()
         };
         let who = principal(Some("alice"));

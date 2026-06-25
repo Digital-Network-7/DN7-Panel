@@ -140,7 +140,7 @@ function dkBackups(id, name) {
   }, true);
 }
 function dkBackupDownload(name, file) {
-  ticket().then((t) => {
+  ticket('download').then((t) => {
     const qs = `ticket=${encodeURIComponent(t)}&kind=backup&name=${encodeURIComponent(name)}&backup=${encodeURIComponent(file)}`;
     const a = el('a', { href: '/api/docker/download?' + qs }); document.body.appendChild(a); a.click(); a.remove();
   }).catch((e) => toast(e.message, 'err'));

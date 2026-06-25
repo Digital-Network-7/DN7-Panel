@@ -98,8 +98,12 @@ pub(crate) struct PasswordReq {
     pw_salt: String,
     #[serde(default)]
     pw_hash: String,
-    /// `sha256_hex(current_salt ":" old_password)` — proves the caller knows
-    /// their current password before it can be changed.
+    /// One-time challenge nonce (from `/api/login/challenge`) the `old_verifier`
+    /// proof is bound to, so it can't be replayed.
+    #[serde(default)]
+    nonce: String,
+    /// `sha256_hex(nonce ":" sha256_hex(current_salt ":" old_password))` — proves
+    /// the caller knows their current password, bound to a single-use nonce.
     #[serde(default)]
     old_verifier: String,
     /// Plaintext new password (system users only) — used to sync the OS
@@ -128,6 +132,7 @@ pub(crate) async fn put_password(
         crate::app::account::PasswordChange {
             salt: &req.pw_salt,
             hash: &req.pw_hash,
+            nonce: &req.nonce,
             old_verifier: &req.old_verifier,
             plaintext: &req.password,
             keep_token: keep.as_deref(),
@@ -160,6 +165,14 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
                 .map(|u| u.pw_hash)
                 .unwrap_or_default()
         }
+    }
+
+    fn consume_challenge(&self, nonce: &str) -> bool {
+        self.state.auth.consume_challenge(nonce)
+    }
+
+    fn verify_proof(&self, nonce: &str, verifier: &str, proof: &str) -> bool {
+        crate::infra::auth::proof_matches(nonce, verifier, proof)
     }
 
     fn save_password(

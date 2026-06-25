@@ -57,14 +57,25 @@ pub(crate) fn verify_login(
     if !auth.login_allowed(attempt.source) {
         return LoginOutcome::RateLimited;
     }
+    // Per-account aggregate throttle, layered on the per-source one so a
+    // distributed attacker rotating IPs still hits a limit on the targeted
+    // account. Only meaningful (and only recorded) for an account that exists,
+    // so username enumeration can't grow the limiter's map.
+    let account_exists = !creds.exp_hash.is_empty();
+    if account_exists && !auth.account_login_allowed(attempt.username) {
+        return LoginOutcome::RateLimited;
+    }
     // Account must exist, the challenge must be valid+unused, and the proof must
     // match — evaluated in that order so a single-use nonce is only consumed for
     // a real account.
-    let pw_ok = !creds.exp_hash.is_empty()
+    let pw_ok = account_exists
         && auth.consume_challenge(attempt.nonce)
         && proof_matches(attempt.nonce, &creds.exp_hash, attempt.proof);
     if !pw_ok {
         auth.record_failure(attempt.source);
+        if account_exists {
+            auth.record_account_failure(attempt.username);
+        }
         return LoginOutcome::BadCredentials;
     }
     if creds.totp_enabled {
@@ -75,10 +86,12 @@ pub(crate) fn verify_login(
         // window (an observed code can't be reused to log in again).
         if !auth.verify_totp_single_use(&creds.totp_secret, attempt.code) {
             auth.record_failure(attempt.source);
+            auth.record_account_failure(attempt.username);
             return LoginOutcome::BadTotp;
         }
     }
     auth.clear_failures(attempt.source);
+    auth.clear_account_failures(attempt.username);
     let token = auth.issue(attempt.username);
     LoginOutcome::Ok {
         token,

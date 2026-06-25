@@ -23,11 +23,17 @@ use sha2::{Digest, Sha256};
 /// the same machine fingerprint.
 const KEY_SALT: &[u8] = b"dn7-panel-secret-enc-v1";
 
-/// Derive the machine-bound 32-byte AES key.
+/// The publicly-known fallback used ONLY for decrypt read-back when no stable
+/// host binding exists — never for fresh encryption (see `encrypt`).
+const NO_BINDING: &[u8] = b"dn7-panel-no-machine-id";
+
+/// Derive the machine-bound 32-byte AES key. Falls back to [`NO_BINDING`] only
+/// so an already-stored value can still be read back; `encrypt` refuses to write
+/// a NEW secret in that degraded state.
 fn machine_key() -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(KEY_SALT);
-    hasher.update(machine_fingerprint());
+    hasher.update(machine_fingerprint().unwrap_or_else(|| NO_BINDING.to_vec()));
     let digest = hasher.finalize();
     let mut key = [0u8; 32];
     key.copy_from_slice(&digest);
@@ -43,25 +49,28 @@ fn machine_key() -> [u8; 32] {
 ///      token, so encryption is still deterministic on hosts without a
 ///      machine-id (e.g. some containers).
 ///   4. the hostname              — last resort.
-fn machine_fingerprint() -> Vec<u8> {
+///
+/// Returns `None` when nothing identifying is available (no machine-id, the
+/// random key can't be created, no hostname). The caller must treat `None` as
+/// "no stable binding": `encrypt` refuses to store a new secret in that state
+/// rather than fall back to a publicly-known constant key.
+fn machine_fingerprint() -> Option<Vec<u8>> {
     for path in ["/etc/machine-id", "/var/lib/dbus/machine-id"] {
         if let Ok(s) = std::fs::read_to_string(path) {
             let s = s.trim();
             if !s.is_empty() {
-                return s.as_bytes().to_vec();
+                return Some(s.as_bytes().to_vec());
             }
         }
     }
     if let Some(k) = persisted_random_key() {
-        return k;
+        return Some(k);
     }
     let host = sysinfo::System::host_name().unwrap_or_default();
     if !host.is_empty() {
-        return host.into_bytes();
+        return Some(host.into_bytes());
     }
-    // Truly nothing identifying — use a fixed value so encrypt/decrypt still
-    // round-trips on this host (offers obfuscation but no real binding).
-    b"dn7-panel-no-machine-id".to_vec()
+    None
 }
 
 /// Path of the fallback per-host random key (only used when no machine-id).
@@ -121,6 +130,13 @@ fn persisted_random_key() -> Option<Vec<u8>> {
 /// or an error — a secret is NEVER silently stored as plaintext (the previous
 /// plaintext fallback could quietly persist a root DB password in the clear).
 pub fn encrypt(plaintext: &str) -> Result<String, String> {
+    // Refuse to write a new secret when there's no stable host binding — the key
+    // would derive from a publicly-known constant, offering no real protection.
+    if machine_fingerprint().is_none() {
+        return Err(
+            "无法加密：本机缺少稳定的机器标识（machine-id/随机密钥/主机名均不可用）".into(),
+        );
+    }
     try_encrypt(&machine_key(), plaintext)
 }
 

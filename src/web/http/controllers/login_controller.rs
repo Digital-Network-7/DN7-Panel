@@ -183,19 +183,32 @@ pub(crate) async fn logout(State(state): State<Shared>, headers: header::HeaderM
     Json(json!({ "ok": true })).into_response()
 }
 
-/// POST /api/ticket — mint a one-time, 30-second ticket for a single WebSocket
-/// upgrade or file download. Requires a valid bearer session; the ticket (not
-/// the long-lived token) is what goes in the URL, so a leaked URL exposes only
-/// a short-lived, single-use credential.
+/// Query for `POST /api/ticket`: the purpose the ticket is scoped to.
+#[derive(serde::Deserialize)]
+pub(crate) struct TicketReq {
+    #[serde(default)]
+    purpose: String,
+}
+
+/// POST /api/ticket?purpose=terminal|download — mint a one-time, 30-second ticket
+/// for a single WebSocket upgrade or file download, SCOPED to a purpose so a
+/// leaked ticket can't be reused across features (a download ticket can't open a
+/// terminal). Requires a valid bearer session; the ticket (not the long-lived
+/// token) travels in the URL.
 pub(crate) async fn mint_ticket(
     State(state): State<Shared>,
     headers: header::HeaderMap,
+    Query(q): Query<TicketReq>,
 ) -> Response {
     let acct = match current_account(&state, &headers) {
         Ok(a) => a,
         Err(r) => return r,
     };
-    Json(json!({ "ok": true, "data": { "ticket": state.auth.issue_ticket(&acct.username) } }))
+    // Only the known purposes are mintable.
+    if q.purpose != "terminal" && q.purpose != "download" {
+        return api_err(StatusCode::BAD_REQUEST, "auth.bad_request");
+    }
+    Json(json!({ "ok": true, "data": { "ticket": state.auth.issue_ticket(&acct.username, &q.purpose) } }))
         .into_response()
 }
 

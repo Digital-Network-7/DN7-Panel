@@ -7,7 +7,7 @@ function renderTerm(v) {
   if (!host) return;
   // Pass a path *provider* (fresh one-time ticket per connection) so the
   // terminal can transparently reconnect without a page reload.
-  mountTerminal(host, $('tStatus'), () => ticket().then((t) => `/api/terminal?ticket=${encodeURIComponent(t)}`));
+  mountTerminal(host, $('tStatus'), () => ticket('terminal').then((t) => `/api/terminal?ticket=${encodeURIComponent(t)}`));
 }
 
 // Open a terminal in the given host element against a WS path; returns cleanup.

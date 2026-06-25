@@ -40,7 +40,7 @@ pub(crate) async fn terminal_ws(
     }
     // WebSocket upgrades can't carry an Authorization header from the browser,
     // so a one-time ticket (minted via POST /api/ticket) authorizes the upgrade.
-    let user = match state.auth.consume_ticket(&q.ticket) {
+    let user = match state.auth.consume_ticket(&q.ticket, "terminal") {
         Some(u) => u,
         None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
     };
@@ -79,7 +79,7 @@ pub(crate) async fn container_terminal_ws(
     }
     // Container exec is a Docker capability — admin only. The ticket owner must
     // resolve to an admin account.
-    let user = match state.auth.consume_ticket(&q.ticket) {
+    let user = match state.auth.consume_ticket(&q.ticket, "terminal") {
         Some(u) => u,
         None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
     };

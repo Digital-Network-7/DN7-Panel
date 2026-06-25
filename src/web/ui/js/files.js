@@ -68,7 +68,7 @@ function fileBrowser(mount, container, startPath, rootPath) {
   load();
 }
 function downloadFile(full, container) {
-  ticket().then((t) => {
+  ticket('download').then((t) => {
     const qs = `ticket=${encodeURIComponent(t)}&path=${encodeURIComponent(full)}` + (container ? `&container=${encodeURIComponent(container)}` : '');
     const a = el('a', { href: '/api/files/download?' + qs }); document.body.appendChild(a); a.click(); a.remove();
   }).catch((e) => toast(e.message, 'err'));

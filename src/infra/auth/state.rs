@@ -113,6 +113,26 @@ impl AuthState {
         self.rate.clear(source);
     }
 
+    /// Per-ACCOUNT login throttle (in addition to per-source), so a distributed
+    /// attacker rotating source IPs to stay under the per-IP cap still hits an
+    /// aggregate limit on the account they're targeting. The key is namespaced
+    /// (`u:`) so it can't collide with a source-IP key, and callers only record
+    /// failures for accounts that actually exist — username enumeration can't
+    /// grow the map. (Locking a *known* account under a sustained flood is the
+    /// accepted tradeoff; it auto-clears after FAIL_WINDOW and never blocks a
+    /// different account or a successful login.)
+    pub fn account_login_allowed(&self, user: &str) -> bool {
+        self.rate.allowed(&format!("u:{user}"))
+    }
+
+    pub fn record_account_failure(&self, user: &str) {
+        self.rate.record(&format!("u:{user}"));
+    }
+
+    pub fn clear_account_failures(&self, user: &str) {
+        self.rate.clear(&format!("u:{user}"));
+    }
+
     /// Mint a one-time login challenge nonce (hex). The client proves knowledge
     /// of the password by returning `sha256(nonce:password)` so the cleartext
     /// password never crosses the (plaintext-HTTP) wire.
@@ -142,14 +162,15 @@ impl AuthState {
     /// WebSocket upgrade or download. The ticket — not the long-lived session
     /// token — travels in the URL, so a leaked URL exposes only a 30-second,
     /// single-use credential.
-    pub fn issue_ticket(&self, user: &str) -> String {
-        self.tickets.issue(user)
+    pub fn issue_ticket(&self, user: &str, purpose: &str) -> String {
+        self.tickets.issue(user, purpose)
     }
 
-    /// Consume a one-time ticket: returns the owning account name if present +
-    /// unexpired, then removes it so it can't be replayed.
-    pub fn consume_ticket(&self, ticket: &str) -> Option<String> {
-        self.tickets.consume(ticket)
+    /// Consume a one-time ticket: returns the owning account name if it's present,
+    /// unexpired, AND was issued for `purpose`, then removes it so it can't be
+    /// replayed (including against a different purpose).
+    pub fn consume_ticket(&self, ticket: &str, purpose: &str) -> Option<String> {
+        self.tickets.consume(ticket, purpose)
     }
 
     /// Mint a single-use step-up token bound to `user`, issued after a fresh
@@ -326,11 +347,13 @@ mod tests {
     #[test]
     fn ticket_single_use() {
         let a = AuthState::new();
-        let t = a.issue_ticket("alice");
-        assert_eq!(a.consume_ticket(&t).as_deref(), Some("alice"));
-        assert!(a.consume_ticket(&t).is_none()); // replay rejected
-        assert!(a.consume_ticket("never-issued").is_none());
-        assert!(a.consume_ticket("").is_none());
+        let t = a.issue_ticket("alice", "download");
+        // Wrong purpose is rejected (and consumes nothing).
+        assert!(a.consume_ticket(&t, "terminal").is_none());
+        assert_eq!(a.consume_ticket(&t, "download").as_deref(), Some("alice"));
+        assert!(a.consume_ticket(&t, "download").is_none()); // replay rejected
+        assert!(a.consume_ticket("never-issued", "download").is_none());
+        assert!(a.consume_ticket("", "download").is_none());
     }
 
     #[test]

@@ -287,7 +287,7 @@ async function ctnTermPath(id) {
     if (!tok) throw new Error(tr('stepup.cancelled'));
     stepupQ = '&stepup=' + encodeURIComponent(tok);
   }
-  const t = await ticket();
+  const t = await ticket('terminal');
   return `/api/container/terminal?ticket=${encodeURIComponent(t)}&container=${encodeURIComponent(id)}${stepupQ}`;
 }
 

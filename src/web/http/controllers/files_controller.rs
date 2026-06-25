@@ -215,7 +215,7 @@ pub(crate) async fn files_download(
     Query(q): Query<DownloadQuery>,
 ) -> Response {
     use futures::StreamExt;
-    let user = match state.auth.consume_ticket(&q.ticket) {
+    let user = match state.auth.consume_ticket(&q.ticket, "download") {
         Some(u) => u,
         None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
     };
@@ -283,7 +283,7 @@ pub(crate) async fn docker_download(
     Query(q): Query<DockerDownloadQuery>,
 ) -> Response {
     use futures::StreamExt;
-    let user = match state.auth.consume_ticket(&q.ticket) {
+    let user = match state.auth.consume_ticket(&q.ticket, "download") {
         Some(u) => u,
         None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
     };

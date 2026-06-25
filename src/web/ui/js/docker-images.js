@@ -87,7 +87,7 @@ function dkTagForm(name, existing, info) {
 
 // Trigger an image export (`docker save`) download via a one-time ticket.
 function dkImageDownload(name) {
-  ticket().then((t) => {
+  ticket('download').then((t) => {
     const qs = `ticket=${encodeURIComponent(t)}&kind=image&ref=${encodeURIComponent(name)}`;
     const a = el('a', { href: '/api/docker/download?' + qs }); document.body.appendChild(a); a.click(); a.remove();
   }).catch((e) => toast(e.message, 'err'));

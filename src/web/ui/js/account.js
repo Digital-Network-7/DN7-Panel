@@ -97,14 +97,22 @@ function changePassword() {
       if (!oldPw) { err.textContent = tr('acct.need_old_pw'); return; }
       if (pw.length < 6 || pw.length > 128) { err.textContent = tr('set.pw_len'); return; }
       if (pw !== pw2) { err.textContent = tr('setup.err_mismatch'); return; }
-      // Fetch the current salt: prove the old password (old_verifier) and salt
-      // the new one — neither plaintext ever crosses the wire.
-      fetch('/api/login/challenge')
+      // Fetch a one-time nonce + the account's own salt (pass our username so a
+      // non-super user gets THEIR salt, not the super-admin's): prove the old
+      // password, bound to the nonce so the proof can't be replayed, and salt the
+      // new one — neither plaintext ever crosses the wire.
+      fetch('/api/login/challenge?username=' + encodeURIComponent((Auth.me && Auth.me.username) || ''))
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(tr('login.err_conn')))))
         .then((c) => {
           const cur = c.salt || '';
           const salt = randHex(16);
-          const body = { pw_salt: salt, pw_hash: sha256Hex(salt + ':' + pw), old_verifier: sha256Hex(cur + ':' + oldPw) };
+          const oldVerifier = sha256Hex(cur + ':' + oldPw);
+          const body = {
+            pw_salt: salt,
+            pw_hash: sha256Hex(salt + ':' + pw),
+            nonce: c.nonce,
+            old_verifier: sha256Hex(c.nonce + ':' + oldVerifier),
+          };
           // Non-owner accounts sync their OS password to the panel password.
           if (!(Auth.me && Auth.me.is_super)) body.password = pw;
           return AccountApi.changePassword(body);
