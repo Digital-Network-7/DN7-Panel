@@ -1,14 +1,9 @@
 //! HTTP Basic Auth credential domain: the Apache `$apr1$` (salted MD5) hash
-//! algorithm plus writing/hardening the per-access-list `htpasswd` files nginx
-//! reads. Split out of the store so the store stays a pure persistence adapter
-//! and the crypto/file-permission logic lives in one auditable place.
-use super::*;
+//! algorithm used to hash a new password into the stored AccessList model, plus
+//! the verification the edge server's request-time Basic-Auth check uses. The
+//! edge reads the hashes from the model directly — there are no htpasswd files.
 
-pub(crate) fn htpasswd_path(id: &str) -> std::path::PathBuf {
-    std::path::Path::new(HOST_ACCESS_DIR).join(format!("{id}.htpasswd"))
-}
-
-/// Compute a salted password hash for nginx HTTP Basic Auth in the Apache
+/// Compute a salted password hash for HTTP Basic Auth in the Apache
 /// `$apr1$` (salted MD5) format. nginx implements this scheme internally
 /// (`ngx_crypt_apr1`) and never delegates to the host's libc `crypt()`, so it
 /// verifies reliably on every distro. (bcrypt `$2b$` depends on libxcrypt and
@@ -117,106 +112,39 @@ pub(crate) fn apr1_with_salt(password: &str, salt: &str) -> String {
     out
 }
 
-/// Write (or remove) an access list's htpasswd file from its stored hashes.
-pub(crate) fn write_htpasswd(list: &AccessList) -> Result<()> {
-    let path = htpasswd_path(&list.id);
-    // Remove any stale copy left in the panel's private tree by older builds
-    // (that location 500s — the nginx worker can't read it).
-    let _ = std::fs::remove_file(access_dir().join(format!("{}.htpasswd", list.id)));
-    if list.users.is_empty() {
-        let _ = std::fs::remove_file(&path);
-        return Ok(());
+/// Verify a plaintext password against a stored htpasswd hash. Supports the
+/// apr1 (`$apr1$<salt>$<digest>`) format the panel writes (recomputed with the
+/// embedded salt) and the legacy `{SHA}` (`{SHA}base64(sha1(pw))`) format. Any
+/// other/empty format returns false. Used by the in-process edge server's
+/// request-time Basic-Auth check (the runtime counterpart of nginx reading
+/// `auth_basic_user_file`).
+pub(crate) fn verify_htpasswd_hash(hash: &str, password: &str) -> bool {
+    if let Some(rest) = hash.strip_prefix("$apr1$") {
+        // rest == "<salt>$<digest>"; recompute apr1 with the same salt.
+        let salt = rest.split('$').next().unwrap_or("");
+        if salt.is_empty() {
+            return false;
+        }
+        return constant_eq(apr1_with_salt(password, salt).as_bytes(), hash.as_bytes());
     }
-    std::fs::create_dir_all(HOST_ACCESS_DIR)?;
-    // The directory must be traversable by the nginx worker user (it opens the
-    // file at request time), so force 0755 even under a restrictive umask.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(HOST_ACCESS_DIR, std::fs::Permissions::from_mode(0o755));
+    if let Some(b64) = hash.strip_prefix("{SHA}") {
+        use base64::Engine;
+        use sha1::{Digest, Sha1};
+        let want = base64::engine::general_purpose::STANDARD.encode(Sha1::digest(password.as_bytes()));
+        return constant_eq(want.as_bytes(), b64.as_bytes());
     }
-    let mut body = String::new();
-    for u in &list.users {
-        body.push_str(&format!("{}:{}\n", u.username, u.hash));
-    }
-    std::fs::write(&path, body)?;
-    harden_htpasswd_perms(&path);
-    Ok(())
+    false
 }
 
-/// Tighten an htpasswd file to the minimum the nginx worker still needs:
-/// owned by nginx's run-user at 0640 when that user can be determined, else
-/// fall back to 0644 (world-readable) so auth never silently breaks. The hashes
-/// are salted apr1, so even the 0644 fallback isn't trivially crackable.
-pub(crate) fn harden_htpasswd_perms(path: &std::path::Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Some((uid, gid)) = nginx_run_uid_gid() {
-            use std::os::unix::ffi::OsStrExt;
-            if let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) {
-                // SAFETY: `c` is a valid NUL-terminated path; chown just sets
-                // ownership and returns an error code we check.
-                let rc = unsafe { libc::chown(c.as_ptr(), uid, gid) };
-                if rc == 0 {
-                    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o640));
-                    return;
-                }
-            }
-        }
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644));
+/// Length-aware constant-time byte comparison (avoids leaking the hash via
+/// early-exit timing on a per-request auth check).
+fn constant_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
     }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
     }
-}
-
-/// The nginx worker's run-user from `nginx.conf` (`user <name>;`), resolved to
-/// (uid, gid). Workers read auth_basic_user_file, so the htpasswd file must be
-/// readable by this account. Returns None when it can't be determined.
-#[cfg(unix)]
-pub(crate) fn nginx_run_uid_gid() -> Option<(u32, u32)> {
-    let conf = std::fs::read_to_string("/etc/nginx/nginx.conf").ok()?;
-    let mut user = None;
-    for line in conf.lines() {
-        let t = line.trim();
-        if let Some(rest) = t.strip_prefix("user ") {
-            let name = rest
-                .trim()
-                .trim_end_matches(';')
-                .split_whitespace()
-                .next()?;
-            if !name.is_empty() && name != "root" {
-                user = Some(name.to_string());
-            }
-            break;
-        }
-    }
-    let user = user?;
-    let c = std::ffi::CString::new(user).ok()?;
-    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
-    let mut result: *mut libc::passwd = std::ptr::null_mut();
-    let mut buf = vec![0 as libc::c_char; 1024];
-    loop {
-        // SAFETY: reentrant `getpwnam_r` fills `pwd`/`buf`; `result` is `&pwd`
-        // on success or null when the user is unknown. No shared static buffer.
-        let rc = unsafe {
-            libc::getpwnam_r(
-                c.as_ptr(),
-                &mut pwd,
-                buf.as_mut_ptr(),
-                buf.len(),
-                &mut result,
-            )
-        };
-        if rc == libc::ERANGE && buf.len() < 65536 {
-            buf.resize(buf.len() * 2, 0);
-            continue;
-        }
-        if rc != 0 || result.is_null() {
-            return None;
-        }
-        return Some((pwd.pw_uid, pwd.pw_gid));
-    }
+    diff == 0
 }

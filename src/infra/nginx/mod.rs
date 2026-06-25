@@ -1,15 +1,17 @@
-//! Panel-side Nginx management (host-only).
+//! Panel-side website management (the control plane for the built-in web server).
 //!
-//! Manages the **host's own nginx**: DN7 Panel ensures nginx is installed (via
-//! the system package manager) and only ever writes its own
-//! `dn7-<id>.conf` files into `/etc/nginx/conf.d`, never touching the user's
-//! existing configs, reloading via `nginx -s reload`. Certs and static webroots
-//! live under the panel state dir (`/var/dn7/panel/.../nginx/`).
+//! DN7 Panel serves :80/:443 itself with the in-process pure-Rust reverse proxy
+//! in [`crate::edge`]; this module is the control plane that persists the site /
+//! cert / access / tuning manifests and, after every change, rebuilds the edge's
+//! route table from them (the [`api::edge_reload`] chokepoint). There is no
+//! external nginx: no package install, no generated `.conf` files, no
+//! `nginx -s reload`. Certs and static webroots live under the panel state dir
+//! (`/var/dn7/panel/.../nginx/`), which the edge reads directly.
 //!
 //! Pure assembly: the app-facing adapters + shared `Layout`/error helpers live
-//! in `api`; each capability area is a submodule (sites/certs/access/confgen/…).
-//! All shared entities are re-exported from `core::nginx` / `contracts::nginx`
-//! so the submodules reference `Site`/`Layout`/… via `use super::*` unchanged.
+//! in `api`; each capability area is a submodule (sites/certs/access/…). All
+//! shared entities are re-exported from `core::nginx` / `contracts::nginx` so
+//! the submodules reference `Site`/`Layout`/… via `use super::*` unchanged.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,7 +39,6 @@ pub(crate) use crate::core::nginx::{
 mod access;
 mod api;
 mod certs;
-mod confgen;
 mod detect;
 mod htpasswd;
 mod opreg;
@@ -49,7 +50,6 @@ mod upload;
 
 use access::*;
 use certs::*;
-use confgen::*;
 use detect::*;
 use htpasswd::*;
 use opreg::{new_op_id, op_create, op_dismiss, op_finish, op_log, op_push, ops_snapshot, pmsg};
@@ -66,6 +66,11 @@ pub(crate) use certs::list_named_certs;
 pub(crate) use detect::{list_dirs, list_running_containers, nginx_info};
 pub(crate) use sites::*;
 pub use upload::*;
+
+// Surface used by the in-process edge server (`crate::edge`): request-time
+// upstream resolution for `proxy_container` sites, and Basic-Auth verification.
+pub(crate) use access::resolve_container_upstream;
+pub(crate) use htpasswd::verify_htpasswd_hash;
 
 #[cfg(test)]
 mod tests;

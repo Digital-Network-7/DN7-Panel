@@ -17,17 +17,6 @@ fn host_tokens_split_and_overlap_detect() {
 }
 
 #[test]
-fn issuing_guard_marks_and_unmarks() {
-    assert!(!is_issuing("dn7-test-issue-xyz"));
-    {
-        let _g = IssuingGuard::new("dn7-test-issue-xyz");
-        assert!(is_issuing("dn7-test-issue-xyz"));
-    }
-    // Dropped → unmarked, so cleanup may reclaim the conf again.
-    assert!(!is_issuing("dn7-test-issue-xyz"));
-}
-
-#[test]
 fn server_name_validation() {
     assert!(valid_server_name("example.com"));
     assert!(valid_server_name("a.example.com www.example.com"));
@@ -79,167 +68,6 @@ fn cert_name_validation() {
     assert!(!valid_cert_name(".."));
     assert!(!valid_cert_name("a/b"));
     assert!(!valid_cert_name("a b"));
-}
-
-#[test]
-fn with_port_defaults_80() {
-    assert_eq!(with_scheme_port("host", "http"), "host:80");
-    assert_eq!(with_scheme_port("host:8080", "http"), "host:8080");
-    assert_eq!(with_scheme_port("host", "https"), "host:443");
-}
-
-fn lo_test() -> Layout {
-    Layout {
-        confd: std::path::PathBuf::from("/tmp/dn7-test-confd"),
-        cert_ref: "/tmp/dn7-test-certs".into(),
-        www_ref: "/tmp/dn7-test-www".into(),
-        cert_store: std::path::PathBuf::from("/tmp/dn7-test-certs"),
-        www_store: std::path::PathBuf::from("/tmp/dn7-test-www"),
-    }
-}
-
-fn mk_site(kind: &str, ssl: bool) -> Site {
-    Site {
-        id: "s1".into(),
-        server_name: "example.com".into(),
-        kind: kind.into(),
-        target_url: "10.0.0.5:8080".into(),
-        container: "app".into(),
-        container_port: 3000,
-        root: "site1".into(),
-        local_root: String::new(),
-        ssl,
-        cert_mode: "self".into(),
-        cert_name: String::new(),
-        scheme: "http".into(),
-        cache: false,
-        block_attacks: false,
-        websockets: true,
-        force_ssl: true,
-        http2: true,
-        hsts: false,
-        hsts_sub: false,
-        trust_proxy: false,
-        trust_proxy_cidrs: String::new(),
-        locations: Vec::new(),
-        extra_conf: String::new(),
-        access_id: String::new(),
-    }
-}
-
-#[tokio::test]
-async fn renders_proxy_host() {
-    let lo = lo_test();
-    let site = mk_site("proxy_host", false);
-    let body = render_location(&lo, &site, false).await.unwrap();
-    assert!(body.contains("proxy_pass http://10.0.0.5:8080;"));
-    assert!(body.contains("Upgrade $http_upgrade"));
-}
-
-#[tokio::test]
-async fn renders_static_root() {
-    let lo = lo_test();
-    let site = mk_site("static", false);
-    let body = render_location(&lo, &site, false).await.unwrap();
-    assert!(body.contains("root /tmp/dn7-test-www/site1;"));
-}
-
-#[tokio::test]
-async fn renders_https_scheme_and_options() {
-    let lo = lo_test();
-    let mut site = mk_site("proxy_host", false);
-    site.scheme = "https".into();
-    site.cache = true;
-    site.block_attacks = true;
-    site.websockets = false;
-    let body = render_location(&lo, &site, false).await.unwrap();
-    // https upstream, asset-cache location, exploit block, no ws headers.
-    assert!(body.contains("proxy_pass https://10.0.0.5:8080;"));
-    assert!(body.contains("location ~* \\.("));
-    assert!(body.contains("block common exploits"));
-    assert!(!body.contains("Upgrade $http_upgrade"));
-}
-
-#[tokio::test]
-async fn renders_custom_locations() {
-    let lo = lo_test();
-    let mut site = mk_site("proxy_host", false);
-    site.locations = vec![Location {
-        path: "/api".into(),
-        scheme: "http".into(),
-        target: "127.0.0.1:3001".into(),
-        websockets: true,
-        kind: "host".into(),
-        container: String::new(),
-        container_port: 0,
-    }];
-    let body = render_location(&lo, &site, false).await.unwrap();
-    assert!(body.contains("location /api {"));
-    assert!(body.contains("proxy_pass http://127.0.0.1:3001;"));
-}
-
-/// A Layout whose confd/cert_store point at a unique temp dir, so conf-writing
-/// tests don't collide with each other or the host's real nginx tree.
-fn lo_tmp(tag: &str) -> Layout {
-    let base = std::env::temp_dir().join(format!("dn7-test-{tag}"));
-    let confd = base.join("confd");
-    let certs = base.join("certs");
-    let www = base.join("www");
-    std::fs::create_dir_all(&confd).unwrap();
-    std::fs::create_dir_all(&certs).unwrap();
-    Layout {
-        confd,
-        cert_ref: certs.to_string_lossy().into_owned(),
-        www_ref: www.to_string_lossy().into_owned(),
-        cert_store: certs,
-        www_store: www,
-    }
-}
-
-#[tokio::test]
-async fn unavailable_stub_returns_503_and_keeps_server_name() {
-    // A site whose upstream is gone must fail closed (503), never proxy.
-    let lo = lo_tmp("stub-plain");
-    let mut site = mk_site("proxy_container", false);
-    site.id = "stub1".into();
-    site.server_name = "gone.example.com".into();
-    write_unavailable_conf(&lo, &site).await.unwrap();
-    let conf = std::fs::read_to_string(conf_path(&lo, &site.id)).unwrap();
-    assert!(conf.contains("server_name gone.example.com;"));
-    assert!(conf.contains("return 503;"));
-    // The stub must NOT contain a proxy_pass — that's the whole point.
-    assert!(!conf.contains("proxy_pass"));
-}
-
-#[tokio::test]
-async fn unavailable_stub_degrades_to_http_when_cert_missing() {
-    // ssl=true but no cert files on disk → must degrade to plain :80 so the
-    // generated conf still passes `nginx -t` (a `listen 443 ssl` with no cert
-    // would fail and take the whole reload down).
-    let lo = lo_tmp("stub-nocert");
-    let mut site = mk_site("proxy_container", true);
-    site.id = "stub2".into();
-    write_unavailable_conf(&lo, &site).await.unwrap();
-    let conf = std::fs::read_to_string(conf_path(&lo, &site.id)).unwrap();
-    assert!(conf.contains("listen 80;"));
-    assert!(!conf.contains("ssl_certificate"));
-    assert!(conf.contains("return 503;"));
-}
-
-#[tokio::test]
-async fn unavailable_stub_keeps_tls_when_cert_present() {
-    // ssl=true with cert files present → keep TLS + redirect :80 to :443.
-    let lo = lo_tmp("stub-cert");
-    let mut site = mk_site("proxy_container", true);
-    site.id = "stub3".into();
-    std::fs::write(lo.cert_store.join("stub3.crt"), "x").unwrap();
-    std::fs::write(lo.cert_store.join("stub3.key"), "x").unwrap();
-    write_unavailable_conf(&lo, &site).await.unwrap();
-    let conf = std::fs::read_to_string(conf_path(&lo, &site.id)).unwrap();
-    assert!(conf.contains("listen 443 ssl"));
-    assert!(conf.contains("ssl_certificate "));
-    assert!(conf.contains("return 301 https://"));
-    assert!(conf.contains("return 503;"));
 }
 
 #[test]
@@ -324,19 +152,21 @@ fn trusted_cidrs_sanitize() {
 }
 
 #[test]
-fn trusted_proxy_sources_never_trusts_whole_internet() {
-    // No explicit list → private + loopback ranges only, never 0.0.0.0/0.
-    let site = mk_site("proxy_host", true);
-    let def = trusted_proxy_sources(&site);
-    assert!(def.contains(&"127.0.0.0/8".to_string()));
-    assert!(def.contains(&"10.0.0.0/8".to_string()));
-    assert!(def.contains(&"::1/128".to_string()));
-    assert!(!def.iter().any(|c| c == "0.0.0.0/0" || c == "::/0"));
-    // Explicit list is honoured verbatim.
-    let mut site2 = mk_site("proxy_host", true);
-    site2.trust_proxy_cidrs = "203.0.113.5 10.0.0.0/8".into();
+fn ss_pids_parses_port_holders_and_anchors_port() {
+    // Realistic `ss -ltnp` output: nginx (2 workers) on :80 over v4 + v6, and an
+    // unrelated node on :8080. Parsing :80 must collect the nginx PIDs and must
+    // NOT be fooled by `:8080`.
+    let out = "\
+State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process
+LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:((\"nginx\",pid=1234,fd=6),(\"nginx\",pid=1235,fd=6))
+LISTEN 0      511          0.0.0.0:8080      0.0.0.0:*    users:((\"node\",pid=9999,fd=20))
+LISTEN 0      128             [::]:80           [::]:*    users:((\"nginx\",pid=1234,fd=7))
+";
     assert_eq!(
-        trusted_proxy_sources(&site2),
-        vec!["203.0.113.5", "10.0.0.0/8"]
+        ss_pids(out, 80),
+        vec![1234, 1235],
+        "deduped, sorted nginx PIDs on :80"
     );
+    assert_eq!(ss_pids(out, 8080), vec![9999], ":8080 is a distinct port");
+    assert!(ss_pids(out, 443).is_empty(), "nothing on :443");
 }

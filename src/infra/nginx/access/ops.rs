@@ -85,14 +85,14 @@ pub(crate) async fn save_access_op(cmd: &SaveAccess) -> Result<Value> {
         users,
         clients,
     };
-    write_htpasswd(&list)?;
-    // Persist into the manifest (replace or append).
+    // Persist into the manifest (replace or append). The edge reads the basic-auth
+    // hashes from the AccessList model directly — no htpasswd files.
     lists.retain(|a| a.id != id);
     lists.push(list);
     save_access(&lists)?;
 
-    // Rewrite the confs of any sites using this list, then reload.
-    rewrite_sites_using_access(&id).await?;
+    // Rebuild the edge route table so the updated access list takes effect.
+    validate_and_reload(&layout()?).await?;
     Ok(json!({ "id": id }))
 }
 
@@ -169,31 +169,11 @@ pub(crate) async fn delete_access_op(cmd: &DeleteAccess) -> Result<Value> {
         return Err(nginx_err(NginxError::AccessNotFound));
     }
     save_access(&lists)?;
-    let _ = std::fs::remove_file(htpasswd_path(id));
-    let _ = std::fs::remove_file(access_dir().join(format!("{id}.htpasswd")));
+    // The access list is gone from the manifest; rebuild the edge route table so
+    // any site that referenced it (none, since deletion is refused while in use)
+    // and the live config reflect it.
+    let _ = validate_and_reload(&layout()?).await;
     Ok(json!({ "deleted": id }))
-}
-
-/// Rewrite + reload the confs of every site referencing `access_id`.
-pub(crate) async fn rewrite_sites_using_access(access_id: &str) -> Result<()> {
-    let lo = layout()?;
-    let mut touched = false;
-    for site in load_sites() {
-        if site.access_id == access_id {
-            // Skip SSL sites whose cert is missing (keeps nginx -t valid).
-            let mut s = site.clone();
-            degrade_if_cert_missing(&lo, &mut s);
-            if let Err(e) = write_site_conf(&lo, &s, &[]).await {
-                tracing::warn!(site = %s.server_name, "access rewrite failed: {e}");
-            } else {
-                touched = true;
-            }
-        }
-    }
-    if touched {
-        validate_and_reload(&lo).await?;
-    }
-    Ok(())
 }
 
 /// Current persisted http/server tuning (or defaults) — read accessor for the
@@ -202,26 +182,13 @@ pub(crate) fn current_tuning() -> HttpTuning {
     load_tuning_opt().unwrap_or_default()
 }
 
-/// Persist already-validated tuning and re-apply it (rewrite all managed site
-/// confs + the http include), then reload. The validation/merge is owned by
-/// `core::nginx::merge_http_tuning`; this is the side-effecting adapter.
+/// Persist already-validated tuning and rebuild the edge route table from it.
+/// The validation/merge is owned by `core::nginx::merge_http_tuning`; this is
+/// the side-effecting adapter. The edge applies tuning from the manifest at
+/// build time, so persisting + reloading is all that's needed.
 pub(crate) async fn apply_tuning(t: &HttpTuning) -> Result<Value> {
     let lo = layout()?;
     save_tuning(t)?;
-    write_tuning_conf();
-    // Tuning is injected per-server, so rewrite every managed site conf.
-    rewrite_managed_site_confs(&lo).await;
     validate_and_reload(&lo).await?;
     Ok(json!({ "ok": true }))
-}
-
-/// Rewrite every managed site's conf (e.g. after a tuning change, which is
-/// injected per-server). An SSL site whose cert file is missing is degraded to
-/// plain HTTP so one broken site can't fail the whole reload.
-async fn rewrite_managed_site_confs(lo: &Layout) {
-    for site in load_sites() {
-        let mut s = site.clone();
-        degrade_if_cert_missing(lo, &mut s);
-        let _ = write_site_conf(lo, &s, &[]).await;
-    }
 }

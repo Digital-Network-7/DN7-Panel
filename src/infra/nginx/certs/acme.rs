@@ -3,8 +3,8 @@ use super::*;
 
 /// The ACME HTTP-01 issuance dance for `host`. Creates the account and order,
 /// hands the `(token, keyAuthorization)` pairs to `serve` (which makes them
-/// reachable at `http://host/.well-known/acme-challenge/<token>` — e.g. by
-/// writing an nginx conf that answers them inline and reloading), then tells
+/// reachable at `http://host/.well-known/acme-challenge/<token>` — by
+/// registering them in the edge server's in-memory challenge map), then tells
 /// Let's Encrypt to validate, finalizes, and returns the issued
 /// `(chain_pem, key_pem)`.
 pub(crate) async fn acme_http01<F, Fut>(
@@ -184,15 +184,15 @@ pub(crate) async fn self_check_challenge(host: &str, token: &str, expected: &str
                     return Ok(());
                 }
                 last = format!(
-                    "本机校验未通过（HTTP {code}）：{host} 的 80 端口请求没有命中本面板的站点配置。\
-                     通常是有另一段非面板管理的 Nginx 配置抢先处理了该域名，或 nginx.conf 未 include /etc/nginx/conf.d。\
-                     请执行 `nginx -T | grep -n {host}` 排查重复的 server_name，移除冲突配置后重试。",
+                    "本机校验未通过（HTTP {code}）：{host} 的 80 端口请求没有命中本面板内置的 Web 服务器。\
+                     通常是宿主机上另有一个程序（如系统自带的 Nginx/Apache）抢占了 80 端口，\
+                     使校验请求没有到达本面板。请停止/卸载占用 80 端口的其他 Web 服务后重试。",
                     code = status.as_u16()
                 );
             }
             Err(e) => {
                 last = format!(
-                    "无法在本机访问校验路径（{e}）：Nginx 可能未监听 80 端口，或被本机防火墙拦截。"
+                    "无法在本机访问校验路径（{e}）：本面板内置 Web 服务器可能未监听 80 端口，或被本机防火墙拦截。"
                 );
             }
         }

@@ -6,7 +6,6 @@ use super::*;
 pub(crate) async fn add_site(form: &SiteForm) -> Result<Value> {
     let _state = state_lock().lock().await; // serialize sites RMW (no lost update)
     let lo = layout()?;
-    cleanup_orphan_confs(&lo);
     let site = site_from_req(form)?;
     if server_name_taken(&site.server_name, &site.id) {
         return Err(nginx_err(NginxError::DuplicateDomain));
@@ -42,17 +41,17 @@ pub(crate) async fn add_site(form: &SiteForm) -> Result<Value> {
         }
     }
 
-    // Generate + validate.
-    write_site_conf(&lo, &site, &[]).await?;
-    if let Err(e) = validate_and_reload(&lo).await {
-        // Roll back the conf we just wrote.
-        let _ = std::fs::remove_file(conf_path(&lo, &site.id));
-        return Err(e);
-    }
-
+    // Persist the manifest, then rebuild the edge route table from it — rolling
+    // back the manifest if the new model is rejected.
     let mut sites = load_sites();
     sites.push(site.clone());
     save_sites(&sites)?;
+    if let Err(e) = validate_and_reload(&lo).await {
+        sites.retain(|s| s.id != site.id);
+        save_sites(&sites)?;
+        let _ = validate_and_reload(&lo).await;
+        return Err(e);
+    }
     Ok(json!({ "site": site }))
 }
 
@@ -72,7 +71,6 @@ pub(crate) async fn remove_site(cmd: &RemoveSite) -> Result<Value> {
     if sites.len() == before {
         return Err(nginx_err(NginxError::SiteNotFound));
     }
-    let _ = std::fs::remove_file(conf_path(&lo, site_id));
     // Clean up cert files for removed sites (best-effort).
     for s in &removed {
         let _ = std::fs::remove_file(lo.cert_store.join(format!("{}.crt", s.id)));
@@ -110,7 +108,6 @@ pub(crate) async fn update_site(form: &SiteForm) -> Result<Value> {
     if server_name_taken(&site.server_name, &site.id) {
         return Err(nginx_err(NginxError::DuplicateDomain));
     }
-    cleanup_orphan_confs(&lo);
 
     // Prepare the cert (write manual files / regenerate self-signed as needed).
     // A Let's Encrypt (re)issue runs detached, so return its op immediately.
@@ -118,16 +115,18 @@ pub(crate) async fn update_site(form: &SiteForm) -> Result<Value> {
         return start_cert_issue(lo, site).await;
     }
 
-    write_site_conf(&lo, &site, &[]).await?;
-    if let Err(e) = validate_and_reload(&lo).await {
-        // Roll back to the previous configuration.
-        let _ = write_site_conf(&lo, &old, &[]).await;
-        let _ = validate_and_reload(&lo).await;
-        return Err(e);
-    }
+    // Persist the replaced manifest, then rebuild the edge route table from it —
+    // restoring the previous site on failure.
     sites.retain(|s| s.id != site.id);
     sites.push(site.clone());
     save_sites(&sites)?;
+    if let Err(e) = validate_and_reload(&lo).await {
+        sites.retain(|s| s.id != old.id);
+        sites.push(old.clone());
+        save_sites(&sites)?;
+        let _ = validate_and_reload(&lo).await;
+        return Err(e);
+    }
     Ok(json!({ "site": site }))
 }
 

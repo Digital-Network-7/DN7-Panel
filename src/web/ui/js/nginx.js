@@ -12,10 +12,8 @@ function renderNginx(v) {
   }
   op('nginx', { op: 'info' }).then((info) => {
     if (!info.managed) {
-      const ver = info.host_nginx_version ? ' (' + esc(info.host_nginx_version) + ')' : '';
-      const hint = info.host_nginx_present ? tr('ng.hint_present', { ver }) : tr('ng.hint_absent');
       v.innerHTML = `<div class="card"><h3>${tr('ng.init_title')}</h3>
-        <p class="mut">${hint}</p>
+        <p class="mut">${tr('ng.init_hint')}</p>
         <div class="row" style="margin:14px 0">
           <button class="btn" id="ngSetup">${tr('ng.init_btn')}</button>
         </div>
@@ -23,7 +21,8 @@ function renderNginx(v) {
       $('ngSetup').onclick = () => { $('ngSetup').disabled = true; $('ngSetupJob').classList.remove('hidden'); op('nginx', { op: 'setup' }).then((r) => renderJob($('ngSetupJob'), 'nginx', r.op_id, 'nginx:setup', { onDone: () => { toast(tr('ng.init_done'), 'ok'); setTimeout(() => renderNginx(v), 600); }, onError: () => { $('ngSetup').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ngSetup').disabled = false; }); };
       return;
     }
-    v.innerHTML = `
+    const banner = info.port_conflict ? portConflictCard(info) : '';
+    v.innerHTML = banner + `
       <div class="subtabs" id="ngTabs" style="margin-bottom:16px">
         <button data-t="hosts">${tr('ng.tab_hosts')}</button>
         <button data-t="access">${tr('ng.tab_access')}</button>
@@ -32,6 +31,7 @@ function renderNginx(v) {
         <button data-t="settings">${tr('ng.tab_settings')}</button>
       </div>
       <div id="ngBody"></div>`;
+    if (info.port_conflict) wireForceStart(v);
     const tabs = $('ngTabs');
     const sel = (t) => {
       ngTab = t;
@@ -45,6 +45,38 @@ function renderNginx(v) {
     tabs.querySelectorAll('button').forEach((b) => b.onclick = () => sel(b.dataset.t));
     sel(ngTab);
   }).catch((e) => { v.innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; });
+}
+
+// A warning banner shown when the built-in web server couldn't bind :80/:443
+// because another process holds them. Offers a force-start (kills the occupant).
+function portConflictCard(info) {
+  const ports = (info.conflict_ports || []).join('、');
+  const procs = info.conflict_procs || {};
+  const who = Object.keys(procs)
+    .map((p) => `:${p} → ${esc(procs[p] || '?')}`)
+    .join('；');
+  return `<div class="card" id="ngConflict" style="border-color:var(--err,#c0392b);margin-bottom:14px">
+    <h3 class="err">${tr('ng.conflict_title')}</h3>
+    <p class="mut">${tr('ng.conflict_msg', { ports: esc(ports) })}</p>
+    ${who ? `<p class="mut" style="font-size:.9em">${who}</p>` : ''}
+    <div class="row" style="margin-top:10px">
+      <button class="btn danger" id="ngForceStart">${tr('ng.force_start_btn')}</button>
+    </div>
+  </div>`;
+}
+
+// Wire the force-start button: confirm (destructive — it kills processes), then
+// call the op and re-render on success.
+function wireForceStart(v) {
+  const btn = $('ngForceStart');
+  if (!btn) return;
+  btn.onclick = async () => {
+    if (!(await confirmDanger(tr('ng.force_confirm')))) return;
+    btn.disabled = true;
+    op('nginx', { op: 'force_start' })
+      .then(() => { toast(tr('ng.force_done'), 'ok'); setTimeout(() => renderNginx(v), 600); })
+      .catch((e) => { toast(e.message, 'err'); btn.disabled = false; });
+  };
 }
 
 // ---- Tab 1: Proxy Hosts (the managed site list) ----

@@ -7,26 +7,17 @@ pub(crate) fn cert_not_after(pem: &str) -> Option<String> {
     parse_cert_not_after(pem)
 }
 
-/// Reload nginx (`nginx -s reload`).
+/// Rebuild the edge server's route table from the persisted manifests.
 pub(crate) async fn reload() -> Result<()> {
-    let lo = layout()?;
-    validate_and_reload(&lo).await
+    edge_reload().await
 }
 
-/// `nginx -t` then `nginx -s reload`. Errors carry nginx's own message so a bad
-/// generated config is visible.
+/// The reload chokepoint: rebuild + validate + atomically swap the in-process
+/// edge server's route table from the persisted manifests. Returns an
+/// `nginx -t`-style error (without disturbing the live config) when the new
+/// model is invalid. A single function so the ~18 call sites stay unchanged.
 pub(crate) async fn validate_and_reload(_lo: &Layout) -> Result<()> {
-    let (ok, _o, e) = run("nginx", &["-t"]).await?;
-    if !ok {
-        return Err(anyhow!(
-            trim_msg(&e).unwrap_or_else(|| "nginx 配置无效".into())
-        ));
-    }
-    let (ok, _o, e) = run("nginx", &["-s", "reload"]).await?;
-    if !ok {
-        return Err(anyhow!(trim_msg(&e).unwrap_or_else(|| "重载失败".into())));
-    }
-    Ok(())
+    edge_reload().await
 }
 
 /// Resolve a container's first reachable IPv4 address from the Docker daemon
@@ -89,20 +80,7 @@ pub(crate) async fn published_host_port(target: &str, container_port: i64) -> Op
     None
 }
 
-/// Resolve the proxy upstream (`host:port`) for a site:
-///  - **proxy_host**: the user-supplied host[:port] as-is.
-///  - **proxy_container**: the host's nginx can't resolve a container name.
-///    Prefer the published host port (`127.0.0.1:<hostport>`, stable across
-///    restarts); otherwise fall back to the container's bridge IP.
-pub(crate) async fn resolve_upstream(_lo: &Layout, site: &Site) -> Result<String> {
-    match site.kind.as_str() {
-        "proxy_host" => Ok(with_scheme_port(&site.target_url, &site.scheme)),
-        "proxy_container" => resolve_container_upstream(&site.container, site.container_port).await,
-        _ => Ok(String::new()),
-    }
-}
-
-/// Resolve a container's `host:port` upstream for the host nginx: prefer the
+/// Resolve a container's `host:port` upstream for the edge server: prefer the
 /// published host port (`127.0.0.1:<hostport>`, restart-stable), otherwise fall
 /// back to the container's bridge IP.
 pub(crate) async fn resolve_container_upstream(

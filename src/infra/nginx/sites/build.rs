@@ -119,8 +119,9 @@ pub(crate) fn site_from_req(form: &SiteForm) -> Result<Site> {
         site.locations = validate_locations(locs)?;
     }
 
-    // Optional raw nginx directives (validated structurally here; nginx -t is
-    // the final gate when the conf is written).
+    // Optional raw directives (validated structurally here). The built-in edge
+    // server honours an `add_header` allowlist from this field; other directives
+    // are stored but not interpreted (the edge has no nginx config grammar).
     let extra = form.extra_conf.as_deref().unwrap_or("").trim();
     validate_extra_conf(extra)?;
     site.extra_conf = extra.to_string();
@@ -283,9 +284,9 @@ fn validate_one_location(l: &Location) -> Result<Option<Location>> {
     }
 }
 
-/// Structural validation of raw custom nginx directives. The authoritative
-/// syntax check is `nginx -t` (run when the conf is written, with rollback on
-/// failure); here we only reject oversized input and stray control characters.
+/// Structural validation of the raw custom-directive field: reject oversized
+/// input and stray control characters. The edge interprets only an `add_header`
+/// allowlist from it (there is no nginx config parser), so this is the only gate.
 pub(crate) fn validate_extra_conf(s: &str) -> Result<()> {
     if s.len() > 20000 {
         return Err(nginx_err(NginxError::ExtraConfTooLong));
@@ -296,26 +297,6 @@ pub(crate) fn validate_extra_conf(s: &str) -> Result<()> {
         return Err(nginx_err(NginxError::ExtraConfBad));
     }
     Ok(())
-}
-
-/// Indent raw custom directives into the server block. Empty when blank.
-pub(crate) fn render_extra_conf(raw: &str) -> String {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return String::new();
-    }
-    let mut s = String::from("\n    # custom configuration\n");
-    for line in raw.lines() {
-        let line = line.trim_end();
-        if line.is_empty() {
-            s.push('\n');
-        } else {
-            s.push_str("    ");
-            s.push_str(line);
-            s.push('\n');
-        }
-    }
-    s
 }
 
 pub(crate) fn new_site_id() -> String {

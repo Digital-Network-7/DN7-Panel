@@ -4,12 +4,13 @@ use super::*;
 // ---------------------------------------------------------------------------
 // State directory layout (persisted under the panel runtime dir).
 //
-//   <base>/nginx/setup_done    marker that host nginx setup completed
+//   <base>/nginx/setup_done    marker that website (edge) setup completed
 //   <base>/nginx/sites.json    the site manifest
-//   <base>/nginx/certs/        per-site + named certs (nginx reads from here)
-//   <base>/nginx/www/          static webroots (nginx reads from here)
+//   <base>/nginx/certs/        per-site + named certs (the edge reads from here)
+//   <base>/nginx/www/          static webroots (the edge reads from here)
 //
-// Generated conf files go directly into the host's /etc/nginx/conf.d.
+// The edge server builds its route table from these manifests directly — there
+// are no generated nginx config files.
 // ---------------------------------------------------------------------------
 
 pub(crate) fn base_dir() -> std::path::PathBuf {
@@ -28,20 +29,7 @@ pub(crate) fn www_dir() -> std::path::PathBuf {
     base_dir().join("www")
 }
 
-/// Host nginx config drop-in directory.
-pub(crate) const HOST_CONFD: &str = "/etc/nginx/conf.d";
-
-/// Where we write HTTP Basic Auth htpasswd files. This MUST live under
-/// `/etc/nginx` (not the panel's private `/var/dn7/...` tree): the nginx
-/// *worker* opens `auth_basic_user_file` at request time as its run-user
-/// (www-data / nginx), so the file and every parent directory must be
-/// traversable by that account — and on SELinux systems the file needs an
-/// nginx-readable context, which `/etc/nginx/*` already carries. Keeping it
-/// under the panel dir made the worker hit EACCES and return 500 for every
-/// request (correct password or not).
-pub(crate) const HOST_ACCESS_DIR: &str = "/etc/nginx/dn7-access";
-
-/// Whether host nginx setup has been completed (marker file present).
+/// Whether the website (edge server) setup has been completed (marker present).
 pub(crate) fn is_setup() -> bool {
     setup_marker().exists()
 }
@@ -61,48 +49,6 @@ pub(crate) fn mark_setup() -> Result<()> {
 pub(crate) fn state_lock() -> &'static tokio::sync::Mutex<()> {
     static L: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
     L.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
-/// Conf ids with an in-flight Let's Encrypt issuance. During issuance a site's
-/// `dn7-<id>.conf` (serving the HTTP-01 challenge) exists *before* the site is
-/// persisted to sites.json, so a concurrent `cleanup_orphan_confs` would treat
-/// it as an orphan and delete it — making validation 404 and the issuance fail.
-/// Ids registered here are skipped by cleanup until issuance finishes.
-fn issuing_ids() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
-    static S: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-        std::sync::OnceLock::new();
-    S.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
-}
-
-/// RAII guard: marks `conf_id` as issuing for its lifetime, unmarking on drop so
-/// an early return / error can't leave the id pinned forever.
-pub(crate) struct IssuingGuard(String);
-
-impl IssuingGuard {
-    pub(crate) fn new(conf_id: &str) -> Self {
-        issuing_ids()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(conf_id.to_string());
-        IssuingGuard(conf_id.to_string())
-    }
-}
-
-impl Drop for IssuingGuard {
-    fn drop(&mut self) {
-        issuing_ids()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&self.0);
-    }
-}
-
-/// Whether `conf_id` currently has an in-flight issuance (cleanup must skip it).
-pub(crate) fn is_issuing(conf_id: &str) -> bool {
-    issuing_ids()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .contains(conf_id)
 }
 
 pub(crate) fn load_sites() -> Vec<Site> {

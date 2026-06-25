@@ -26,12 +26,6 @@ pub(crate) fn trim_msg(s: &str) -> Option<String> {
     Some(s.chars().take(500).collect())
 }
 
-/// Run a shell script on the host (used for the package-manager install steps
-/// and port-listener detection).
-pub(crate) async fn sh(script: &str) -> Result<(bool, String, String)> {
-    run("sh", &["-c", script]).await
-}
-
 #[cfg(unix)]
 pub(crate) fn is_root() -> bool {
     unsafe { libc_getuid() == 0 }
@@ -47,42 +41,48 @@ extern "C" {
 }
 
 // ---------------------------------------------------------------------------
-// Detection: what's installed / occupying 80+443, and our current managed mode.
+// Detection: our current managed mode + what's occupying 80/443.
 // ---------------------------------------------------------------------------
 
-/// Detect the host nginx binary + whether it (or anything) holds 80/443, plus
-/// whether we've completed setup. Never errors — a clean host reports
-/// everything false so the UI can drive the setup flow.
+/// Report the built-in web server's status: whether setup has completed, the
+/// engine identity, and what (if anything) holds 80/443. Never errors — a clean
+/// host reports `managed: false` so the UI can drive the setup flow.
+///
+/// The web server is now the in-process pure-Rust edge proxy, not an external
+/// nginx binary. The JSON keys are unchanged so the UI's setup hint keeps
+/// working; only how they're computed changes: the engine is always present
+/// (it's compiled in) and its "version" is the panel build version.
 pub(crate) async fn nginx_info() -> Result<Value> {
-    // Host nginx binary + version.
-    let (ok, _o, e) = run("nginx", &["-v"])
-        .await
-        .unwrap_or((false, String::new(), String::new()));
-    // `nginx -v` prints to stderr like "nginx version: nginx/1.24.0".
-    let host_nginx_present = ok;
-    let host_nginx_version = if ok {
-        e.split('/')
-            .nth(1)
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
+    // The web engine is built into the panel, so it's always present; its
+    // version is the panel build version.
+    let host_nginx_present = true;
+    let host_nginx_version = env!("CARGO_PKG_VERSION").to_string();
 
-    // Who's listening on 80 / 443?
+    // Who's listening on 80 / 443? (Surfaced so an operator can see a foreign
+    // process holding a port that would prevent the edge from binding.)
     let p80 = port_listener(80).await;
     let p443 = port_listener(443).await;
 
-    // host nginx "owns" 80/443 if the listener process looks like nginx.
-    let host_owns_ports = p80.contains("nginx") || p443.contains("nginx");
+    // Did the edge fail to bind because a foreign process holds :80/:443? If so,
+    // the UI offers a force-start (which kills the occupant). Describe who's on
+    // each conflicting port so the operator knows what would be killed.
+    let conflict_ports = crate::edge::port_conflict().unwrap_or_default();
+    let mut conflict_procs = serde_json::Map::new();
+    for &p in &conflict_ports {
+        conflict_procs.insert(p.to_string(), json!(port_listener(p).await));
+    }
 
     Ok(json!({
         "managed": is_setup(),                  // setup completed?
+        "built_in": true,                       // the engine is the in-process edge
         "host_nginx_present": host_nginx_present,
         "host_nginx_version": host_nginx_version,
-        "host_owns_ports": host_owns_ports,
+        "host_owns_ports": is_setup() && conflict_ports.is_empty(),
         "port80": p80,                          // listener description ("" if free)
         "port443": p443,
+        "port_conflict": !conflict_ports.is_empty(),
+        "conflict_ports": conflict_ports,
+        "conflict_procs": Value::Object(conflict_procs),
         "is_root": is_root(),
     }))
 }
@@ -189,6 +189,140 @@ pub(crate) fn proc_name_for_inode(inode: u64) -> Option<String> {
     }
     None
 }
+
+/// Find the PIDs holding a LISTEN socket on `port`. Tries `ss` (parsing
+/// `pid=`), then a pure-Rust `/proc` scan so it works without `ss` installed.
+pub(crate) async fn pids_on_port(port: u16) -> Vec<u32> {
+    if let Ok((true, out, _)) = run("ss", &["-ltnp"]).await {
+        let pids = ss_pids(&out, port);
+        if !pids.is_empty() {
+            return pids;
+        }
+    }
+    proc_pids_on_port(port)
+}
+
+/// Parse `ss -ltnp` output for the PIDs listening on `port`. The local-address
+/// column ends with `:<port>` (`0.0.0.0:80`, `[::]:80`), which anchors the match
+/// so `:80` can't be confused with `:8080`.
+pub(crate) fn ss_pids(out: &str, port: u16) -> Vec<u32> {
+    let suffix = format!(":{port}");
+    let mut pids = Vec::new();
+    for line in out.lines() {
+        let on_port = line
+            .split_whitespace()
+            .any(|c| c.contains(':') && c.ends_with(&suffix));
+        if !on_port {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(i) = rest.find("pid=") {
+            rest = &rest[i + 4..];
+            let n: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            if let Ok(p) = n.parse::<u32>() {
+                pids.push(p);
+            }
+        }
+    }
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
+
+/// Pure-Rust fallback: resolve the PIDs holding `port` via `/proc/net/tcp{,6}`
+/// (socket inode) → `/proc/<pid>/fd`.
+pub(crate) fn proc_pids_on_port(port: u16) -> Vec<u32> {
+    let mut pids = Vec::new();
+    for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        if let Some(inode) = listening_inode(path, port) {
+            pids.extend(proc_pids_for_inode(inode));
+        }
+    }
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
+
+/// All PIDs whose `/proc/<pid>/fd` references socket `inode` (forked workers
+/// share the listen fd, so there can be several).
+fn proc_pids_for_inode(inode: u64) -> Vec<u32> {
+    let want = format!("socket:[{inode}]");
+    let mut pids = Vec::new();
+    let entries = match std::fs::read_dir("/proc") {
+        Ok(e) => e,
+        Err(_) => return pids,
+    };
+    for entry in entries.flatten() {
+        let pid = match entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) {
+            Some(p) => p,
+            None => continue,
+        };
+        let fds = match std::fs::read_dir(format!("/proc/{pid}/fd")) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        for fd in fds.flatten() {
+            if let Ok(target) = std::fs::read_link(fd.path()) {
+                if target.to_string_lossy() == want {
+                    pids.push(pid);
+                    break;
+                }
+            }
+        }
+    }
+    pids
+}
+
+/// Force-start: kill every foreign process holding `ports` so the edge can take
+/// over :80/:443. SIGTERM first, then SIGKILL any straggler after a grace
+/// window. Never signals our own process (or pid ≤ 1). Because the edge always
+/// binds with `SO_REUSEPORT`, an `AddrInUse` occupant is by definition NOT our
+/// own edge, so this can't kill a sibling. Returns the PIDs we signalled.
+pub(crate) async fn kill_port_holders(ports: &[u16]) -> Vec<u32> {
+    use std::collections::BTreeSet;
+    let me = std::process::id();
+    let gather = |set: &mut BTreeSet<u32>, found: Vec<u32>| {
+        for pid in found {
+            if pid != me && pid > 1 {
+                set.insert(pid);
+            }
+        }
+    };
+
+    let mut targets = BTreeSet::new();
+    for &port in ports {
+        gather(&mut targets, pids_on_port(port).await);
+    }
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    const SIGTERM: i32 = 15;
+    const SIGKILL: i32 = 9;
+    for &pid in &targets {
+        signal(pid, SIGTERM);
+    }
+    // Grace window, then force-kill anything still holding a conflicting port.
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let mut still = BTreeSet::new();
+    for &port in ports {
+        gather(&mut still, pids_on_port(port).await);
+    }
+    for &pid in &still {
+        signal(pid, SIGKILL);
+    }
+    targets.into_iter().collect()
+}
+
+/// Deliver signal `sig` to `pid` (best-effort; errors are ignored).
+#[cfg(unix)]
+fn signal(pid: u32, sig: i32) {
+    // SAFETY: kill(2) only delivers a signal and returns a status we don't need.
+    unsafe {
+        libc::kill(pid as libc::pid_t, sig as libc::c_int);
+    }
+}
+#[cfg(not(unix))]
+fn signal(_pid: u32, _sig: i32) {}
 
 /// List running containers (name + published port hint) so the proxy form can
 /// offer "forward to container:port" targets. Uses the daemon API (no `docker`

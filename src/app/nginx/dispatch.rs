@@ -41,6 +41,7 @@ pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
             Ok(json!({ "reloaded": true }))
         }
         "setup" => crate::infra::nginx::op_setup(),
+        "force_start" => crate::infra::nginx::force_start().await,
         "add_site" => crate::infra::nginx::op_add_site(&commands::site_form(body)?).await,
         "update_site" => crate::infra::nginx::op_update_site(&commands::site_form(body)?).await,
         "remove_site" => crate::infra::nginx::op_remove_site(&commands::remove_site(body)).await,

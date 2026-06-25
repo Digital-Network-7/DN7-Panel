@@ -216,7 +216,7 @@ pub(crate) async fn run_op(...) -> Result<...> { ... }
 | Knob | Validator | Safe default |
 |------|-----------|--------------|
 | `trust_proxy_cidrs` | `nginx/sites/build::sanitize_trusted_cidrs` | 仅私网 + 回环 |
-| nginx `extra_conf` | `validate_extra_conf` + `nginx -t` + 回滚 | 空(无指令) |
+| `extra_conf` | `validate_extra_conf`(结构校验);内置 edge 仅采纳 `add_header` 白名单 | 空(无指令) |
 | static `local_root` | `valid_local_root`(绝对、存在、deny-list) | 上传托管目录 |
 | `allow_ips` | `settings::normalize_allow_ips` | 空=放行任意;未知 peer 时门禁 fail closed |
 | `public_access`(面板绑定) | 设置项;关闭则绑 `127.0.0.1` 而非 `0.0.0.0` | 开(`0.0.0.0`);建议关并经 nginx/SSH 隧道 |

@@ -1,7 +1,6 @@
 //! Access-list + global website settings store: a pure persistence adapter
-//! (JSON load/save + path helpers + id generation). The auth-file crypto lives
-//! in `htpasswd`, the http-tuning config rendering in `confgen`, and the
-//! size/value validators in `validate`.
+//! (JSON load/save + path helpers + id generation). The auth-hash crypto lives
+//! in `htpasswd` and the size/value validators in `validate`.
 use super::*;
 
 // Access-list store + global website settings.
@@ -9,9 +8,6 @@ use super::*;
 
 pub(crate) fn access_file() -> std::path::PathBuf {
     base_dir().join("access.json")
-}
-pub(crate) fn access_dir() -> std::path::PathBuf {
-    base_dir().join("access")
 }
 pub(crate) fn websettings_file() -> std::path::PathBuf {
     base_dir().join("websettings.json")

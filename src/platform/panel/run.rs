@@ -30,8 +30,15 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     // settings in its own tasks.
     crate::web::spawn(cfg.clone());
 
-    // Heal any site configs written by an older build (e.g. the legacy
-    // `http2 on;` directive) by regenerating them from the current template.
+    // In-process edge server (the pure-Rust reverse proxy that serves :80/:443).
+    // When the website capability has been set up, load the current manifests
+    // into its route table and bind the listeners in its own tasks.
+    tokio::spawn(async {
+        crate::infra::nginx::edge_autostart().await;
+    });
+
+    // Rebuild the edge route table from the persisted manifests once at startup
+    // (re-resolving any drifted proxy_container upstreams).
     tokio::spawn(async {
         crate::infra::nginx::resync_confs().await;
     });

@@ -3,7 +3,7 @@
 //! The application layer (`app::nginx`) owns op routing and parses the
 //! capability commands; this module exposes the infra use-case bodies it
 //! delegates to (read accessors + per-op write adapters), plus the on-disk
-//! `Layout`, the `nginx -t` conf paths, and the typed-error → `ERR_CODE:`
+//! `Layout`, the edge-reload chokepoint, and the typed-error → `ERR_CODE:`
 //! bridge shared across the nginx submodules.
 use super::*;
 
@@ -77,19 +77,78 @@ pub(crate) async fn op_delete_access(cmd: &DeleteAccess) -> Result<Value> {
 pub(crate) async fn op_reload() -> Result<()> {
     reload().await
 }
+
+/// Gather the persisted nginx model and push it into the in-process edge server
+/// (the pure-Rust reverse proxy). This is the bridge the reload chokepoint and
+/// the panel-role startup call use: it builds + validates + atomically swaps the
+/// route table, returning an `nginx -t`-style error (without disturbing the live
+/// config) if the new model is invalid.
+pub(crate) async fn edge_reload() -> Result<()> {
+    let input = crate::edge::ReloadInput {
+        sites: load_sites(),
+        access: load_access(),
+        default_site: load_webglobal().default_site,
+        tuning: current_tuning(),
+        cert_dir: certs_dir(),
+        www_dir: www_dir(),
+    };
+    crate::edge::reload(input).await
+}
 pub(crate) fn op_dismiss_registry(op_id: &str) {
     op_dismiss(op_id);
 }
 
-/// Where generated conf files live, and the paths the running host nginx reads
-/// certs/webroots from. Host-only: nginx reads the same on-disk paths we write.
+/// Force-start the built-in web server when :80/:443 are held by a foreign
+/// process: kill the occupant(s) then re-attempt the bind. Root-only (it signals
+/// other processes). Returns the PIDs killed on success, or an error if a port
+/// is still occupied afterwards.
+pub(crate) async fn force_start() -> Result<Value> {
+    if !is_root() {
+        return Err(nginx_err(NginxError::NeedRoot));
+    }
+    // The ports currently in conflict (fall back to the well-known pair).
+    let ports = crate::edge::port_conflict().unwrap_or_else(|| vec![80, 443]);
+    let killed = kill_port_holders(&ports).await;
+
+    // Re-attempt the bind now the occupants are gone. `spawn()` re-attempts
+    // because the previous conflicted run returned (clearing its guard).
+    crate::edge::spawn();
+    // Give the listener a moment to bind and record its new state.
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+    match crate::edge::port_conflict() {
+        None => Ok(json!({ "started": true, "killed": killed })),
+        Some(still) => Err(anyhow!(
+            "强制启动后端口 {} 仍被占用，请手动停止占用进程后重试",
+            still
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join("、")
+        )),
+    }
+}
+
+/// Start the in-process edge server at panel startup when the nginx capability
+/// has already been set up: load the current manifest into the route table and
+/// bind :80/:443. A no-op before setup (nothing to serve yet); `spawn()` is
+/// idempotent so this is safe to call alongside the setup flow.
+pub(crate) async fn edge_autostart() {
+    if is_setup() {
+        if let Err(e) = edge_reload().await {
+            tracing::error!("edge: initial config load failed: {e:#}");
+        }
+        crate::edge::spawn();
+    }
+}
+
+/// The on-disk directories the edge server reads cert PEMs and static webroots
+/// from. The edge LOADS the same files the cert/upload writers produce; there
+/// are no generated nginx conf files anymore.
 #[derive(Clone)]
 pub(crate) struct Layout {
-    pub(crate) confd: std::path::PathBuf, // where we WRITE conf files (/etc/nginx/conf.d)
-    pub(crate) cert_ref: String,          // dir nginx READS certs from (== cert_store)
-    pub(crate) www_ref: String,           // dir nginx READS webroots from (== www_store)
     pub(crate) cert_store: std::path::PathBuf, // where we WRITE cert files
-    pub(crate) www_store: std::path::PathBuf, // where we WRITE webroots
+    pub(crate) www_store: std::path::PathBuf,  // where we WRITE webroots
 }
 
 pub(crate) fn layout() -> Result<Layout> {
@@ -98,52 +157,8 @@ pub(crate) fn layout() -> Result<Layout> {
     }
     std::fs::create_dir_all(certs_dir())?;
     std::fs::create_dir_all(www_dir())?;
-    ensure_shared_conf();
     Ok(Layout {
-        confd: std::path::PathBuf::from(HOST_CONFD),
-        cert_ref: certs_dir().display().to_string(),
-        www_ref: www_dir().display().to_string(),
         cert_store: certs_dir(),
         www_store: www_dir(),
     })
-}
-
-/// Write the shared http-context `map` once, so proxied sites can set the
-/// WebSocket `Connection` header correctly: a normal request → `close`, a real
-/// upgrade → `upgrade`. (Hardcoding `Connection: upgrade` on every request, as
-/// older builds did, makes some backends abort plain HTTP requests, which the
-/// browser surfaces as ERR_EMPTY_RESPONSE.) Named `00-` so it loads first and
-/// isn't matched by the `dn7-<id>.conf` orphan cleanup.
-pub(crate) fn ensure_shared_conf() {
-    let path = std::path::Path::new(HOST_CONFD).join("00-dn7-maps.conf");
-    let body = "map $http_upgrade $dn7_conn_upgrade {\n    default upgrade;\n    '' close;\n}\n\n\
-                map $http_x_forwarded_proto $dn7_fwd_proto {\n    default $http_x_forwarded_proto;\n    '' $scheme;\n}\n";
-    if std::fs::read_to_string(&path).ok().as_deref() != Some(body) {
-        let _ = std::fs::create_dir_all(HOST_CONFD);
-        let _ = std::fs::write(&path, body);
-    }
-}
-
-pub(crate) fn conf_path(lo: &Layout, site_id: &str) -> std::path::PathBuf {
-    lo.confd.join(format!("dn7-{site_id}.conf"))
-}
-
-/// Whether the cert **and** key a site references are present on disk (the
-/// per-site `<id>.crt/.key` pair, or a referenced standalone named cert). The
-/// single source of truth for "does this SSL site have usable cert material".
-pub(crate) fn cert_present(lo: &Layout, site: &Site) -> bool {
-    if site.cert_name.is_empty() {
-        lo.cert_store.join(format!("{}.crt", site.id)).exists()
-            && lo.cert_store.join(format!("{}.key", site.id)).exists()
-    } else {
-        named_crt_file(lo, &site.cert_name).exists()
-    }
-}
-
-/// Degrade an SSL site to plain HTTP when its cert material is missing, so one
-/// broken site can't fail the whole `nginx -t` reload. No-op for a non-SSL site.
-pub(crate) fn degrade_if_cert_missing(lo: &Layout, site: &mut Site) {
-    if site.ssl && !cert_present(lo, site) {
-        site.ssl = false;
-    }
 }

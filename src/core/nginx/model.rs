@@ -67,8 +67,8 @@ pub(crate) struct Site {
     /// locations"): each forwards a path prefix to a host[:port].
     #[serde(default)]
     pub(crate) locations: Vec<Location>,
-    /// Raw nginx directives, injected verbatim into the serving server block(s).
-    /// Validated by `nginx -t` on save (invalid input rolls back).
+    /// Raw custom directives. The built-in edge server honours an `add_header`
+    /// allowlist from this field; other directives are stored but not applied.
     #[serde(default)]
     pub(crate) extra_conf: String,
     /// Access list id controlling this site (HTTP Basic Auth + IP allow/deny).

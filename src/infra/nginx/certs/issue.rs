@@ -111,10 +111,10 @@ pub(crate) fn set_key_perms(path: &std::path::Path) {
 }
 
 /// Issue a Let's Encrypt cert via the ACME HTTP-01 challenge, detached. The flow:
-///   1. serve the challenge inline from an HTTP conf for the domain,
+///   1. register the challenge token in the edge's in-memory map (it serves :80),
 ///   2. run the ACME order + validation,
 ///   3. install the issued cert into our cert store,
-///   4. rewrite the conf with SSL and reload.
+///   4. attach the named cert to the site and reload the edge route table.
 pub(crate) async fn start_cert_issue(lo: Layout, site: Site) -> Result<Value> {
     let op_id = new_op_id();
     let target = primary_host(&site.server_name);
@@ -138,26 +138,29 @@ pub(crate) async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()
         return Err(nginx_err(NginxError::LeNeedDomainSpecific));
     }
 
-    // Pin this site's conf id for the issuance window so a concurrent
-    // cleanup_orphan_confs (the site isn't in sites.json yet) can't delete the
-    // challenge block out from under HTTP-01 validation.
-    let _issuing = IssuingGuard::new(&site.id);
-
-    // Steps 1-5: serve the HTTP-01 challenge inline from the site's HTTP conf
-    // (no webroot — so it works regardless of file perms / SELinux), then run
-    // the ACME dance. The `serve` callback writes the conf + reloads once the
-    // challenge tokens are known.
+    // Serve the HTTP-01 challenge from the edge's in-memory token map: the edge
+    // already serves :80 and answers `/.well-known/acme-challenge/<token>` from
+    // there, so the `serve` callback only needs to register the tokens — no conf
+    // write, no reload. We capture the tokens so they can be dropped afterwards.
     op_push(op_id, &pmsg("ng.prep_http", &[]));
+    let served_tokens = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let (cert_chain_pem, key_pem) = {
-        let lo2 = lo.clone();
-        let mut http_site = site.clone();
-        http_site.ssl = false;
+        let served = served_tokens.clone();
         acme_http01(op_id, &host, move |chals| async move {
-            write_site_conf(&lo2, &http_site, &chals).await?;
-            validate_and_reload(&lo2).await
+            let mut toks = Vec::new();
+            for (token, keyauth) in &chals {
+                crate::edge::acme_insert(token, keyauth);
+                toks.push(token.clone());
+            }
+            *served.lock().unwrap_or_else(|p| p.into_inner()) = toks;
+            Ok(())
         })
         .await?
     };
+    // Best-effort cleanup of the in-memory challenge tokens.
+    for token in served_tokens.lock().unwrap_or_else(|p| p.into_inner()).iter() {
+        crate::edge::acme_remove(token);
+    }
 
     // Persist the issued chain + key into the certificate library (a named
     // cert), so the cert shows up under SSL certificate management and is
@@ -208,25 +211,23 @@ fn unique_le_cert_name(certs: &[NamedCert], host: &str, site_id: &str) -> String
     name
 }
 
-/// Point `site` at a named cert, then rewrite its conf with SSL on, reload, and
-/// persist the updated site.
+/// Point `site` at a named cert: persist the updated manifest, then rebuild the
+/// edge route table from it (the edge loads the named cert PEM from the store).
 async fn attach_named_cert_to_site(lo: &Layout, site: &Site, cert_name: String) -> Result<()> {
     let _state = state_lock().lock().await; // serialize sites RMW (no lost update)
     let mut site = site.clone();
     site.cert_mode = "named".to_string();
     site.cert_name = cert_name;
-    write_site_conf(lo, &site, &[]).await?;
-    validate_and_reload(lo).await?;
     let mut sites = load_sites();
     sites.retain(|s| s.id != site.id);
     sites.push(site);
     save_sites(&sites)?;
-    Ok(())
+    validate_and_reload(lo).await
 }
 
 /// Issue a standalone Let's Encrypt cert (detached). Serves the HTTP-01
-/// challenge from a temporary HTTP-only conf for `domain`, then writes the
-/// issued chain/key into the named cert store and records the manifest.
+/// challenge from the edge's in-memory token map (it serves :80), then writes
+/// the issued chain/key into the named cert store and records the manifest.
 pub(crate) fn start_named_cert_issue(lo: Layout, name: String, domain: String) -> Result<Value> {
     let op_id = new_op_id();
     let target = primary_host(&domain);
@@ -255,34 +256,29 @@ pub(crate) async fn issue_le_named(
         return Err(nginx_err(NginxError::LeNeedDomainSpecific));
     }
 
-    // Steps 1-5: serve the HTTP-01 challenge from a temporary conf for this
-    // domain (challenges answered inline — no webroot), then run the ACME dance.
+    // Serve the HTTP-01 challenge from the edge's in-memory token map: the edge
+    // already serves :80 and answers `/.well-known/acme-challenge/<token>` from
+    // there, so the callback only registers the tokens — no conf, no reload.
     op_push(op_id, &pmsg("ng.prep_http", &[]));
-    let conf_id = format!("acme-{name}");
-    // Pin the temp challenge conf for the issuance window so cleanup can't
-    // delete it mid-validation.
-    let _issuing = IssuingGuard::new(&conf_id);
-    let conf_file = conf_path(lo, &conf_id);
+    let served_tokens = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let dance = {
-        let lo2 = lo.clone();
-        let host2 = host.clone();
-        let conf_file2 = conf_file.clone();
+        let served = served_tokens.clone();
         acme_http01(op_id, &host, move |chals| async move {
-            let conf = format!(
-                "server {{\n    listen 80;\n    server_name {host2};\n{loc}\
-                 \n    location / {{\n        return 404;\n    }}\n}}\n",
-                loc = acme_challenge_locations(&chals)
-            );
-            std::fs::create_dir_all(&lo2.confd)?;
-            std::fs::write(&conf_file2, conf)?;
-            validate_and_reload(&lo2).await
+            let mut toks = Vec::new();
+            for (token, keyauth) in &chals {
+                crate::edge::acme_insert(token, keyauth);
+                toks.push(token.clone());
+            }
+            *served.lock().unwrap_or_else(|p| p.into_inner()) = toks;
+            Ok(())
         })
         .await
     };
 
-    // Always drop the temporary challenge conf afterwards.
-    let _ = std::fs::remove_file(&conf_file);
-    let _ = validate_and_reload(lo).await;
+    // Best-effort: drop the in-memory challenge tokens afterwards.
+    for token in served_tokens.lock().unwrap_or_else(|p| p.into_inner()).iter() {
+        crate::edge::acme_remove(token);
+    }
 
     let (cert_chain_pem, key_pem) = dance?;
 
