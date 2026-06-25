@@ -100,6 +100,35 @@ function sha256Hex(ascii) {
   return toHex(h0) + toHex(h1) + toHex(h2) + toHex(h3) + toHex(h4) + toHex(h5) + toHex(h6) + toHex(h7);
 }
 
+// Derive the login verifier from the password per the account's KDF scheme,
+// which /api/login/challenge returns as `kdf`. '' or 'sha256' = legacy single
+// salted SHA-256; 's256:N' = N salted-SHA-256 iterations — a key-stretch that
+// makes a leaked verifier N times costlier to brute-force offline. Pure-JS (so
+// it works on insecure origins, where crypto.subtle is unavailable) and
+// deterministic, so the value set at password-change time and the value
+// recomputed at login time always agree.
+function deriveVerifier(salt, password, kdf) {
+  const s = String(salt || '');
+  const pw = String(password);
+  const k = String(kdf || '');
+  if (k.slice(0, 5) === 's256:') {
+    let n = parseInt(k.slice(5), 10);
+    if (!(n > 0)) n = 1;
+    if (n > 5000000) n = 5000000; // sanity clamp against a hostile/garbled value
+    let h = pw;
+    for (let i = 0; i < n; i++) h = sha256Hex(s + ':' + h);
+    return h;
+  }
+  return sha256Hex(s + ':' + pw);
+}
+
+// KDF scheme stamped on every newly-set / changed password. Existing accounts
+// keep their stored scheme (legacy '') and migrate to this the next time their
+// password changes. Stored alongside the salt so login recomputes the same
+// verifier. A function (not a top-level const) so it's reliably shared across
+// the separately-loaded <script> files.
+function newKdf() { return 's256:30000'; }
+
 // Random hex string of `n` bytes (uses the CSPRNG; getRandomValues works on
 // insecure origins too). Used to salt a client-side password hash.
 function randHex(n) {
@@ -175,7 +204,7 @@ function stepUp(message) {
           .then((r) => (r.ok ? r.json() : Promise.reject(new Error(tr('login.err_conn')))))
           .then((c) => {
             if (!c || !c.nonce) throw new Error(tr('login.err_conn'));
-            const verifier = sha256Hex((c.salt || '') + ':' + pw);
+            const verifier = deriveVerifier(c.salt, pw, c.kdf);
             const payload = { nonce: c.nonce, proof: sha256Hex(c.nonce + ':' + verifier), code };
             return fetch('/api/stepup', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify(payload) });
           })

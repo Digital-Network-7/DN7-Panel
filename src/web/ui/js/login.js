@@ -6,14 +6,15 @@ function doLogin() {
   const password = $('pw').value;
   const code = $('loginCode') ? $('loginCode').value.trim() : '';
   $('loginErr').textContent = '';
-  // Challenge-response: fetch a one-time nonce + the account's salt, then send
-  // sha256(nonce ":" sha256(salt ":" password)). The cleartext password never
-  // travels over the wire. A TOTP code is added when the account requires 2FA.
+  // Challenge-response: fetch a one-time nonce + the account's salt + KDF scheme,
+  // then send sha256(nonce ":" deriveVerifier(salt, password, kdf)). The cleartext
+  // password never travels over the wire. A TOTP code is added when the account
+  // requires 2FA.
   fetch('/api/login/challenge?username=' + encodeURIComponent(username))
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error('challenge'))))
     .then((c) => {
       if (!c || !c.nonce) throw new Error('challenge');
-      const verifier = sha256Hex((c.salt || '') + ':' + password);
+      const verifier = deriveVerifier(c.salt, password, c.kdf);
       const body = { username, nonce: c.nonce, proof: sha256Hex(c.nonce + ':' + verifier), code };
       return fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     })
@@ -81,8 +82,12 @@ function forceAccountSetup(currentUser, onDone) {
         const body = {
           username: un,
           pw_salt: salt,
-          pw_hash: sha256Hex(salt + ':' + pw),
-          pw_check: sha256Hex((c.salt || '') + ':' + pw),
+          pw_hash: deriveVerifier(salt, pw, newKdf()),
+          pw_kdf: newKdf(),
+          // pw_check proves the new password differs from the current default —
+          // computed with the CURRENT account's salt + KDF so the server can
+          // compare it to the stored verifier.
+          pw_check: deriveVerifier(c.salt, pw, c.kdf),
         };
         return api('/api/settings', { method: 'POST', body: JSON.stringify(body) });
       })

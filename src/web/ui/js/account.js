@@ -106,10 +106,13 @@ function changePassword() {
         .then((c) => {
           const cur = c.salt || '';
           const salt = randHex(16);
-          const oldVerifier = sha256Hex(cur + ':' + oldPw);
+          // Old-password proof: derive with the CURRENT account's salt + KDF,
+          // then bind the one-time nonce. New password: stretch with newKdf().
+          const oldVerifier = deriveVerifier(cur, oldPw, c.kdf);
           const body = {
             pw_salt: salt,
-            pw_hash: sha256Hex(salt + ':' + pw),
+            pw_hash: deriveVerifier(salt, pw, newKdf()),
+            pw_kdf: newKdf(),
             nonce: c.nonce,
             old_verifier: sha256Hex(c.nonce + ':' + oldVerifier),
           };
@@ -236,7 +239,7 @@ function umCreate(reload) {
       if (pw.length < 6 || pw.length > 128) { err.textContent = tr('set.pw_len'); return; }
       if (pw !== pw2) { err.textContent = tr('setup.err_mismatch'); return; }
       const salt = randHex(16);
-      const body = { username: un, full_name: $('umFull').value, role: $('umRole').value, pw_salt: salt, pw_hash: sha256Hex(salt + ':' + pw), password: pw };
+      const body = { username: un, full_name: $('umFull').value, role: $('umRole').value, pw_salt: salt, pw_hash: deriveVerifier(salt, pw, newKdf()), pw_kdf: newKdf(), password: pw };
       $('umGo').disabled = true; $('umJob').classList.remove('hidden'); $('umJob').innerHTML = `<div class="mut">${tr('um.creating')}</div>`;
       AccountApi.createUser(body)
         .then(() => { toast(tr('um.created'), 'ok'); close(); reload(); })
@@ -266,7 +269,8 @@ function umEdit(u, reload) {
         if (pw.length < 6 || pw.length > 128) { err.textContent = tr('set.pw_len'); return; }
         const salt = randHex(16);
         body.pw_salt = salt;
-        body.pw_hash = sha256Hex(salt + ':' + pw);
+        body.pw_hash = deriveVerifier(salt, pw, newKdf());
+        body.pw_kdf = newKdf();
         body.password = pw; // sync the OS password to the new panel password
       }
       AccountApi.updateUser(body)

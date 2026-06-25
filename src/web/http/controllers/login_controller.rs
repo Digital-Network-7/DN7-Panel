@@ -32,21 +32,23 @@ pub(crate) async fn login_challenge(
     // Return the salt for the requested account so the client can compute the
     // verifier. Unknown accounts get a stable per-username decoy salt (below)
     // so probing a name never reveals whether it exists.
-    let salt = {
+    // The client needs the salt AND the KDF scheme to recompute the same verifier
+    // the password was stored under, so we return both.
+    let (salt, kdf) = {
         let su = state.settings_guard();
         if q.username.is_empty() || q.username == su.username {
-            su.pw_salt.clone()
+            (su.pw_salt.clone(), su.pw_kdf.clone())
         } else if let Some(u) = crate::app::users::find(&q.username) {
-            u.pw_salt
+            (u.pw_salt, u.pw_kdf)
         } else {
             // Unknown account: return a deterministic, per-username pseudo-salt
-            // derived from the install salt. A probe can't tell an existing
-            // account (its real salt) from a missing one (this stable decoy),
-            // so the endpoint no longer leaks account existence.
-            decoy_salt(&su.pw_salt, &q.username)
+            // derived from the install salt, and mirror the install account's KDF
+            // — so a probe can't tell an existing account (its real salt/KDF) from
+            // a missing one (this stable decoy), nor whether it's been migrated.
+            (decoy_salt(&su.pw_salt, &q.username), su.pw_kdf.clone())
         }
     };
-    Json(json!({ "nonce": nonce, "salt": salt })).into_response()
+    Json(json!({ "nonce": nonce, "salt": salt, "kdf": kdf })).into_response()
 }
 
 /// A stable, per-username decoy salt for non-existent accounts, derived from

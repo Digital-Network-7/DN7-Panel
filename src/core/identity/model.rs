@@ -46,6 +46,11 @@ pub(crate) struct PanelUser {
     pub(crate) pw_salt: String,
     #[serde(default)]
     pub(crate) pw_hash: String,
+    /// Key-derivation scheme for `pw_hash` (see `WebSettings::pw_kdf`): empty =
+    /// legacy single `sha256(salt ":" pw)`; "s256:N" = N salted-SHA-256
+    /// iterations. Migrates to "s256:N" when the password is next changed.
+    #[serde(default)]
+    pub(crate) pw_kdf: String,
     /// "admin" (sudo) | "user".
     #[serde(default)]
     pub(crate) role: String,

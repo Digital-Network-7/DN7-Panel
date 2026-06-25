@@ -40,9 +40,13 @@ pub(crate) struct SettingsReq {
     pw_salt: Option<String>,
     #[serde(default)]
     pw_hash: Option<String>,
-    /// `sha256_hex(current_salt ":" new_password)` — lets the server verify the
-    /// new password differs from the current (default) one without ever seeing
-    /// the plaintext. Required when changing the password off the default.
+    /// KDF scheme used to compute `pw_hash` (e.g. "s256:30000"); stored so login
+    /// recomputes the same verifier. Empty = legacy single hash.
+    #[serde(default)]
+    pw_kdf: Option<String>,
+    /// `derive(current_salt, new_password, current_kdf)` — lets the server verify
+    /// the new password differs from the current (default) one without ever
+    /// seeing the plaintext. Required when changing the password off the default.
     #[serde(default)]
     pw_check: Option<String>,
     /// Safe-entry path ("/" disables it). Applied live (no restart).
@@ -235,6 +239,7 @@ fn apply_password_change(s: &mut WebSettings, req: &SettingsReq) -> Result<bool,
             return Err(map_core_err(crate::core::Error::PasswordIsDefault));
         }
     }
-    s.set_password_hashed(&salt, &hash.to_lowercase());
+    let kdf = req.pw_kdf.clone().unwrap_or_default();
+    s.set_password_hashed(&salt, &hash.to_lowercase(), &kdf);
     Ok(true)
 }

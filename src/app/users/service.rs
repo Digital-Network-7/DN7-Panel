@@ -100,6 +100,8 @@ pub struct NewUser<'a> {
     pub full_name: &'a str,
     pub pw_salt: &'a str,
     pub pw_hash: &'a str,
+    /// KDF scheme used to compute `pw_hash` (e.g. "s256:30000"); empty = legacy.
+    pub pw_kdf: &'a str,
     pub password: &'a str,
 }
 
@@ -130,6 +132,7 @@ async fn create_with(env: &impl UsersEnv, req: &NewUser<'_>) -> Result<PanelUser
         username: req.username.to_string(),
         pw_salt: req.pw_salt.to_string(),
         pw_hash: req.pw_hash.to_lowercase(),
+        pw_kdf: req.pw_kdf.to_string(),
         role: req.role.to_string(),
         full_name: req.full_name.to_string(),
         nickname: String::new(),
@@ -258,6 +261,7 @@ mod tests {
             username: name.into(),
             pw_salt: "0".repeat(32),
             pw_hash: "a".repeat(64),
+            pw_kdf: String::new(),
             role: "user".into(),
             full_name: String::new(),
             nickname: String::new(),
@@ -279,6 +283,7 @@ mod tests {
             full_name: "Test User",
             pw_salt: salt,
             pw_hash: hash,
+            pw_kdf: "",
             password: "s3cret-pw",
         }
     }

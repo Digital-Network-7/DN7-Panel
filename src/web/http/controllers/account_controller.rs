@@ -98,6 +98,10 @@ pub(crate) struct PasswordReq {
     pw_salt: String,
     #[serde(default)]
     pw_hash: String,
+    /// KDF scheme used to compute `pw_hash` (e.g. "s256:30000"); stored so login
+    /// recomputes the same verifier.
+    #[serde(default)]
+    pw_kdf: String,
     /// One-time challenge nonce (from `/api/login/challenge`) the `old_verifier`
     /// proof is bound to, so it can't be replayed.
     #[serde(default)]
@@ -132,6 +136,7 @@ pub(crate) async fn put_password(
         crate::app::account::PasswordChange {
             salt: &req.pw_salt,
             hash: &req.pw_hash,
+            kdf: &req.pw_kdf,
             nonce: &req.nonce,
             old_verifier: &req.old_verifier,
             plaintext: &req.password,
@@ -180,6 +185,7 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
         who: &crate::core::identity::Principal,
         salt: &str,
         hash: &str,
+        kdf: &str,
     ) -> Result<(), crate::core::Error> {
         if who.is_super {
             let saved = {
@@ -188,7 +194,7 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
                     .settings
                     .lock()
                     .unwrap_or_else(|p| p.into_inner());
-                s.set_password_hashed(salt, hash);
+                s.set_password_hashed(salt, hash, kdf);
                 s.clone()
             };
             settings::save(&saved).map_err(|e| crate::core::Error::Persist(e.to_string()))
@@ -197,6 +203,7 @@ impl crate::app::ports::account::AccountEnv for WebAccountEnv<'_> {
             crate::app::users::update(&who.username, |u| {
                 u.pw_salt = salt.to_string();
                 u.pw_hash = hash.to_string();
+                u.pw_kdf = kdf.to_string();
             })
         }
     }

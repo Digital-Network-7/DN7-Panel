@@ -17,10 +17,17 @@ pub(crate) struct WebSettings {
     /// Random per-install salt (hex) for the password hash.
     #[serde(default)]
     pub(crate) pw_salt: String,
-    /// `sha256_hex(salt ":" password)` — the irreversible password verifier and
-    /// the shared secret for challenge-response login.
+    /// The irreversible password verifier and shared secret for challenge-
+    /// response login. Computed client-side per [`pw_kdf`](Self::pw_kdf).
     #[serde(default)]
     pub(crate) pw_hash: String,
+    /// Key-derivation scheme used to compute `pw_hash` from the password, so
+    /// login recomputes the same verifier. Empty (or "sha256") = legacy single
+    /// `sha256(salt ":" password)`; "s256:N" = N salted-SHA-256 iterations (a
+    /// key-stretch). Empty for accounts set before stretching existed; they
+    /// migrate to "s256:N" the next time the password is changed.
+    #[serde(default)]
+    pub(crate) pw_kdf: String,
     /// True while the password is still the auto-generated default (the user
     /// hasn't set their own yet).
     #[serde(default = "default_true")]

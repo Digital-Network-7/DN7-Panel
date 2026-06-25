@@ -22,8 +22,9 @@ pub(crate) trait AccountEnv {
     /// Whether `proof` equals the expected `sha256(nonce ":" verifier)`.
     fn verify_proof(&self, nonce: &str, verifier: &str, proof: &str) -> bool;
 
-    /// Persist a new password verifier (salt + hash) for the account.
-    fn save_password(&self, who: &Principal, salt: &str, hash: &str) -> Result<(), Error>;
+    /// Persist a new password verifier (salt + hash + KDF scheme) for the account.
+    fn save_password(&self, who: &Principal, salt: &str, hash: &str, kdf: &str)
+        -> Result<(), Error>;
 
     /// Sync the backing OS account's password (best-effort; no-op when the
     /// account has no system user).

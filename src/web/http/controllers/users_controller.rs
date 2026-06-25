@@ -41,6 +41,9 @@ pub(crate) struct CreateUserReq {
     pw_salt: String,
     #[serde(default)]
     pw_hash: String,
+    /// KDF scheme used to compute `pw_hash` (e.g. "s256:30000"); empty = legacy.
+    #[serde(default)]
+    pw_kdf: String,
     /// Plaintext (local console) — used to set the matching OS password.
     #[serde(default)]
     password: String,
@@ -79,6 +82,7 @@ pub(crate) async fn users_create(
         full_name: req.full_name.trim(),
         pw_salt: &req.pw_salt,
         pw_hash: &req.pw_hash,
+        pw_kdf: &req.pw_kdf,
         password: &req.password,
     })
     .await
@@ -114,6 +118,9 @@ pub(crate) struct UpdateUserReq {
     pw_salt: Option<String>,
     #[serde(default)]
     pw_hash: Option<String>,
+    /// KDF scheme used to compute `pw_hash` (e.g. "s256:30000"); empty = legacy.
+    #[serde(default)]
+    pw_kdf: Option<String>,
     /// Plaintext (local console) — used to set the matching OS password.
     #[serde(default)]
     password: Option<String>,
@@ -159,9 +166,10 @@ pub(crate) async fn users_update(
         if let Some(r) = &req.role {
             u.role = r.clone();
         }
-        if let Some((salt, hash)) = &pw {
+        if let Some((salt, hash, kdf)) = &pw {
             u.pw_salt = salt.clone();
             u.pw_hash = hash.clone();
+            u.pw_kdf = kdf.clone();
         }
     });
     if let Err(e) = res {
@@ -212,7 +220,7 @@ async fn apply_role_change(
 /// hash). Returns `Some((salt, hash_lowercased))`, `None` when absent, or the
 /// error `Response`.
 #[allow(clippy::result_large_err)]
-fn parse_pw_update(req: &UpdateUserReq) -> Result<Option<(String, String)>, Response> {
+fn parse_pw_update(req: &UpdateUserReq) -> Result<Option<(String, String, String)>, Response> {
     if req.pw_salt.is_none() && req.pw_hash.is_none() {
         return Ok(None);
     }
@@ -228,7 +236,8 @@ fn parse_pw_update(req: &UpdateUserReq) -> Result<Option<(String, String)>, Resp
             return Err(map_core_err(crate::core::Error::PasswordMalformed));
         }
     }
-    Ok(Some((salt, hash.to_lowercase())))
+    let kdf = req.pw_kdf.clone().unwrap_or_default();
+    Ok(Some((salt, hash.to_lowercase(), kdf)))
 }
 
 #[derive(serde::Deserialize)]

@@ -15,6 +15,9 @@ use crate::core::Error;
 pub(crate) struct PasswordChange<'a> {
     pub(crate) salt: &'a str,
     pub(crate) hash: &'a str,
+    /// KDF scheme the new `hash` was computed with (e.g. "s256:30000"); stored so
+    /// login recomputes the same verifier.
+    pub(crate) kdf: &'a str,
     /// One-time challenge nonce the `old_verifier` proof is bound to.
     pub(crate) nonce: &'a str,
     /// `sha256(nonce ":" current_verifier)` — proves knowledge of the current
@@ -48,7 +51,7 @@ pub(crate) async fn change_password(
     if current.is_empty() || !nonce_ok || !env.verify_proof(ch.nonce, &current, ch.old_verifier) {
         return Err(Error::OldPasswordWrong);
     }
-    env.save_password(who, ch.salt, &ch.hash.to_lowercase())?;
+    env.save_password(who, ch.salt, &ch.hash.to_lowercase(), ch.kdf)?;
     if !ch.plaintext.is_empty() {
         if let Some(sys) = &who.system_user {
             env.sync_system_password(sys, ch.plaintext).await;
@@ -125,7 +128,13 @@ mod tests {
         fn verify_proof(&self, _nonce: &str, verifier: &str, proof: &str) -> bool {
             !verifier.is_empty() && proof.eq_ignore_ascii_case(verifier)
         }
-        fn save_password(&self, _who: &Principal, salt: &str, hash: &str) -> Result<(), Error> {
+        fn save_password(
+            &self,
+            _who: &Principal,
+            salt: &str,
+            hash: &str,
+            _kdf: &str,
+        ) -> Result<(), Error> {
             *self.saved.borrow_mut() = Some((salt.to_string(), hash.to_string()));
             Ok(())
         }
@@ -175,6 +184,7 @@ mod tests {
         PasswordChange {
             salt,
             hash,
+            kdf: "s256:30000",
             nonce: "nonce",
             old_verifier,
             plaintext,

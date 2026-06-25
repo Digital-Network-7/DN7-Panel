@@ -118,11 +118,12 @@ impl WebSettings {
         &self.pw_hash
     }
 
-    /// Set a password from a client-computed salt + hash (so the plaintext never
-    /// crosses the wire). Marked non-default.
-    pub fn set_password_hashed(&mut self, salt: &str, hash: &str) {
+    /// Set a password from a client-computed salt + hash + KDF scheme (so the
+    /// plaintext never crosses the wire). Marked non-default.
+    pub fn set_password_hashed(&mut self, salt: &str, hash: &str, kdf: &str) {
         self.pw_salt = salt.to_string();
         self.pw_hash = hash.to_string();
+        self.pw_kdf = kdf.to_string();
         self.pw_default = false;
     }
 
@@ -134,6 +135,9 @@ impl WebSettings {
         self.username = default_username();
         self.pw_hash = hash_password(&salt, &pw);
         self.pw_salt = salt;
+        // Server-generated default uses the legacy single-hash scheme; it
+        // migrates to a stretched KDF when the operator sets their own password.
+        self.pw_kdf = String::new();
         self.pw_default = true;
         pw
     }
@@ -168,6 +172,7 @@ pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
         username: default_username(),
         pw_hash: hash_password(&salt, &pw),
         pw_salt: salt,
+        pw_kdf: String::new(), // legacy single-hash default; migrates on first change
         pw_default: true,
         owner_uid: current_uid(),
         full_name: String::new(),
@@ -209,6 +214,7 @@ mod tests {
             username: "admin".into(),
             pw_salt: String::new(),
             pw_hash: String::new(),
+            pw_kdf: String::new(),
             pw_default: true,
             owner_uid: 0,
             full_name: String::new(),
@@ -224,7 +230,7 @@ mod tests {
             trusted_proxies: Vec::new(),
         };
         let salt = "0123456789abcdef0123456789abcdef";
-        s.set_password_hashed(salt, &hash_password(salt, "mySecret!42"));
+        s.set_password_hashed(salt, &hash_password(salt, "mySecret!42"), "");
         // Stored as salt + hash, never the plaintext.
         assert_eq!(s.pw_salt, salt);
         assert_eq!(s.pw_hash.len(), 64);
@@ -242,6 +248,7 @@ mod tests {
             username: "bob".into(),
             pw_salt: "aa".into(),
             pw_hash: "bb".into(),
+            pw_kdf: String::new(),
             pw_default: false,
             owner_uid: 1000,
             full_name: String::new(),
