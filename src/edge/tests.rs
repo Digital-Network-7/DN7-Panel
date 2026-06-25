@@ -1220,4 +1220,100 @@ mod edge_tests {
         );
         println!("        (these include the colocated upstream — the edge alone is lower)\n");
     }
+
+    // ---- handshake-cost experiment ----------------------------------------
+
+    /// Run oha with a fully custom arg list (returns the text report).
+    async fn oha_raw(mut args: Vec<String>) -> String {
+        args.insert(0, "--no-tui".to_string());
+        let out = tokio::process::Command::new("oha")
+            .args(&args)
+            .output()
+            .await
+            .expect("run oha");
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    }
+
+    /// Why does a reverse proxy burn CPU at a LOW request rate? Almost always
+    /// per-request TLS handshakes / connection setup when keepalive isn't reused.
+    /// This holds the request RATE fixed (so throughput is identical across runs)
+    /// and measures CPU-µs/request for {plain, TLS} × {keepalive, fresh
+    /// connection per request, via --disable-keepalive}. The delta between
+    /// keepalive and fresh-connection isolates the inbound connect/handshake
+    /// cost — the thing an untuned nginx pays. Run:
+    ///   cargo test --release --bin dn7-panel edge_handshake -- --ignored --nocapture
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "handshake-cost experiment; run with --ignored --nocapture"]
+    async fn edge_handshake_cost() {
+        let _g = serial().lock().await;
+        let upstream = spawn_upstream_dedicated(2);
+        let www = unique_tmp("hs-static");
+        let cert_dir = unique_tmp("hs-certs");
+        publish_tls_config(upstream, &www, &cert_dir);
+        // Both listeners read the same published config; one terminates TLS.
+        let plain = spawn_edge().await;
+        let tls = spawn_edge_tls().await;
+
+        let rate: u64 = std::env::var("EDGE_HS_RATE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(300);
+        let dur = std::env::var("EDGE_HS_DUR").unwrap_or_else(|_| "12s".into());
+        // Drain TIME_WAIT between runs so fresh-connection runs don't exhaust
+        // loopback ports.
+        let drain = 25u64;
+
+        // (label, url, insecure, disable_keepalive)
+        let combos: [(&str, String, bool, bool); 4] = [
+            ("plain · keepalive   ", format!("http://{plain}/"), false, false),
+            ("plain · fresh-conn  ", format!("http://{plain}/"), false, true),
+            ("TLS   · keepalive   ", format!("https://{tls}/"), true, false),
+            ("TLS   · fresh-conn  ", format!("https://{tls}/"), true, true),
+        ];
+
+        println!("\n[hs] fixed rate = {rate} req/s · {dur} per run (CPU incl. colocated upstream)\n");
+        let mut per_req = Vec::new();
+        for (label, url, insecure, no_ka) in combos {
+            tokio::time::sleep(std::time::Duration::from_secs(drain)).await;
+            let mut args = vec![
+                "-H".to_string(),
+                "Host: proxy.example.test".to_string(),
+                "-c".to_string(),
+                "50".to_string(),
+                "-q".to_string(),
+                rate.to_string(),
+                "-z".to_string(),
+                dur.clone(),
+            ];
+            if insecure {
+                args.push("--insecure".to_string());
+            }
+            if no_ka {
+                args.push("--disable-keepalive".to_string());
+            }
+            args.push(url);
+
+            let t0 = cpu_time_secs();
+            let report = oha_raw(args).await;
+            let cpu = cpu_time_secs() - t0;
+            let reqs = parse_oha_200(&report);
+            let rps = parse_oha_rps(&report);
+            let per = if reqs > 0 { cpu * 1e6 / reqs as f64 } else { 0.0 };
+            println!("[hs] {label}: {rps:>5.0} req/s · {reqs:>6} reqs · {cpu:>5.2} CPU-s → {per:>6.0} µs CPU/req");
+            per_req.push(per);
+        }
+
+        let (p_ka, p_new, t_ka, t_new) = (per_req[0], per_req[1], per_req[2], per_req[3]);
+        println!("\n[hs] ── isolated per-request costs ──");
+        println!("[hs] TCP connect (plain fresh − keepalive):   {:>6.0} µs/req", p_new - p_ka);
+        println!("[hs] TLS handshake (TLS fresh − TLS keepalive):{:>6.0} µs/req", t_new - t_ka);
+        println!("[hs] → pure TLS-handshake CPU (minus TCP):     {:>6.0} µs/req", (t_new - t_ka) - (p_new - p_ka));
+        if t_ka > 0.0 {
+            println!("[hs] → TLS fresh-conn costs {:.1}× the CPU/req of TLS keepalive\n", t_new / t_ka);
+        }
+    }
 }
