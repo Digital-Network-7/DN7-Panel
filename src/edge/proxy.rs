@@ -32,7 +32,7 @@ use hyper::body::Incoming;
 use hyper::Request;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use tokio::sync::RwLock;
 
 use super::config::{ProxyTarget, Tuning, Upstream};
@@ -119,10 +119,14 @@ fn client() -> &'static Client<HttpsConnector, ProxyReqBody> {
         Client::builder(TokioExecutor::new())
             // Keep a large warm pool per upstream so high-concurrency bursts reuse
             // keepalive connections instead of dialing (and exhausting ephemeral
-            // ports) on every request. Idle connections are still reaped by the
-            // timeout below, so a quiet upstream doesn't hoard fds.
+            // ports) on every request.
             .pool_max_idle_per_host(8192)
+            // Reap connections idle longer than this so a busy-then-quiet upstream
+            // doesn't hold fds forever. CRITICAL: the idle reaper only runs when a
+            // `pool_timer` is set — without it `pool_idle_timeout` is a no-op and
+            // idle connections linger until reused (a soak test caught this).
             .pool_idle_timeout(Duration::from_secs(30))
+            .pool_timer(TokioTimer::new())
             .build(connector)
     })
 }

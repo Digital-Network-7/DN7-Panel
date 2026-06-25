@@ -1009,4 +1009,116 @@ mod edge_tests {
         println!("========== TLS STATIC · concurrency={conc} · {dur} ==========");
         println!("{}", run_oha(&url, "static.example.test", conc, &dur, true).await);
     }
+
+    // ---- soak / leak test (fd + RSS over load→drain cycles) ---------------
+
+    /// Run a shell snippet and parse its stdout as a number (0 on failure).
+    async fn sh_num(cmd: &str) -> u64 {
+        let out = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .output()
+            .await
+            .expect("run shell probe");
+        String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0)
+    }
+
+    /// Total open file descriptors for `pid` (lsof; one line per fd + a header).
+    async fn count_fds(pid: u32) -> u64 {
+        sh_num(&format!("lsof -p {pid} -n -P 2>/dev/null | wc -l")).await
+    }
+
+    /// Open network sockets for `pid` (the connection-leak signal).
+    async fn count_net_fds(pid: u32) -> u64 {
+        sh_num(&format!("lsof -a -p {pid} -i -n -P 2>/dev/null | wc -l")).await
+    }
+
+    /// Resident set size of `pid` in KiB (macOS/Linux `ps`).
+    async fn rss_kb(pid: u32) -> u64 {
+        sh_num(&format!("ps -o rss= -p {pid} 2>/dev/null")).await
+    }
+
+    /// Endurance test: drive sustained load in cycles and verify the process's
+    /// file descriptors and memory return to a steady level after each burst
+    /// drains — i.e. nothing (sockets, file handles, tasks holding either) leaks
+    /// across cycles. The proxy path exercises the richest surface: inbound
+    /// connections, the upstream connection pool, body/timeout wrappers, and the
+    /// container-resolution cache. Run explicitly (it takes a few minutes):
+    ///   cargo test --release --bin dn7-panel edge_soak -- --ignored --nocapture
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "long-running soak/leak test; run with --ignored --nocapture"]
+    async fn edge_soak_no_leak() {
+        let _g = serial().lock().await;
+        let upstream = spawn_upstream_dedicated(2);
+        let www = unique_tmp("soak-static");
+        publish_full_config(upstream, &www);
+        let edge = spawn_edge().await;
+        let pid = std::process::id();
+
+        let cycles: usize = std::env::var("EDGE_SOAK_CYCLES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
+        let load = std::env::var("EDGE_SOAK_LOAD").unwrap_or_else(|_| "15s".into());
+        let conc: usize = std::env::var("EDGE_SOAK_CONCURRENCY")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1000);
+        // Drain window must exceed the pool's reaper worst case: the idle reaper
+        // runs on an interval, so a connection can take up to ~2x the 30s idle
+        // timeout to be closed. 70s lets fds fully return to baseline.
+        let drain: u64 = std::env::var("EDGE_SOAK_DRAIN")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(70);
+
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let fd_base = count_fds(pid).await;
+        let net_base = count_net_fds(pid).await;
+        let rss_base = rss_kb(pid).await;
+        println!("\n[soak] baseline: fds={fd_base} net={net_base} rss={rss_base}KiB");
+        println!("[soak] {cycles} cycles · load={load} · concurrency={conc} · drain={drain}s\n");
+
+        let mut rest_fds = Vec::new();
+        let mut rest_rss = Vec::new();
+        for c in 1..=cycles {
+            // Load burst (proxy path).
+            let _ = run_oha(&format!("http://{edge}/"), "proxy.example.test", conc, &load, false)
+                .await;
+            let fd_peak = count_fds(pid).await;
+            let net_peak = count_net_fds(pid).await;
+
+            // Let connections + idle pool drain, then sample the resting level.
+            tokio::time::sleep(std::time::Duration::from_secs(drain)).await;
+            let fd_rest = count_fds(pid).await;
+            let net_rest = count_net_fds(pid).await;
+            let rss = rss_kb(pid).await;
+            println!(
+                "[soak] cycle {c}: peak fds={fd_peak} (net {net_peak}) → rest fds={fd_rest} (net {net_rest}) rss={rss}KiB"
+            );
+            rest_fds.push(fd_rest);
+            rest_rss.push(rss);
+        }
+
+        let fd0 = rest_fds[0];
+        let fd_last = *rest_fds.last().unwrap();
+        let rss0 = rest_rss[0];
+        let rss_last = *rest_rss.last().unwrap();
+        println!("\n[soak] resting fds:  first={fd0}  last={fd_last}  (baseline {fd_base})");
+        println!("[soak] resting rss:  first={rss0}KiB  last={rss_last}KiB  (baseline {rss_base}KiB)\n");
+
+        // fd/socket leak: after draining, the resting fd count must not ratchet
+        // up cycle over cycle. A small slack absorbs lsof timing + a few lingering
+        // TIME_WAIT-ish handles.
+        assert!(
+            fd_last <= fd0 + 64,
+            "fd leak suspected: resting fds grew {fd0} → {fd_last} across {cycles} cycles"
+        );
+        // Memory: the allocator may retain freed pages, so allow generous slack,
+        // but catch unbounded growth across cycles.
+        assert!(
+            rss_last <= rss0 + rss0 / 2 + 50_000,
+            "rss leak suspected: resting rss grew {rss0}KiB → {rss_last}KiB across {cycles} cycles"
+        );
+    }
 }
