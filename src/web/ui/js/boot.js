@@ -10,4 +10,9 @@ $('themeBtn').addEventListener('click', cycleTheme);
 $('verLine').addEventListener('click', openUpdate);
 $('userBox').addEventListener('click', toggleAccountMenu);
 
-if (Auth.token) showApp();
+// While the panel is uninitialized, the first-run wizard owns the screen
+// (instead of login). Otherwise fall through to the normal login/app path.
+bootInit().then((wizard) => {
+  if (wizard) return;
+  if (Auth.token) showApp();
+});

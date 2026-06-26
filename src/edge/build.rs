@@ -177,12 +177,18 @@ fn inject_console_route(cfg: &mut RuntimeConfig, input: &ReloadInput) {
         names.insert(0, ext.clone());
     }
 
+    // Only ENFORCE https once setup is done. During init the wizard is loaded
+    // over http (the banner's init URLs); if step 1 enables a self-signed cert,
+    // an http->https force-redirect would break step 2's fetch (the browser
+    // rejects the untrusted cert on an XHR). So redirect + HSTS wait for
+    // `initialized`; until then the cert is merely *offered* on :443.
+    let enforce_ssl = ssl && input.console.initialized;
     let route = Arc::new(ServerRoute {
         id: "__console__".to_string(),
         server_names: names.clone(),
         ssl,
-        force_ssl: ssl,
-        hsts: ssl.then_some(Hsts {
+        force_ssl: enforce_ssl,
+        hsts: enforce_ssl.then_some(Hsts {
             max_age: 63_072_000,
             include_sub: false,
         }),
