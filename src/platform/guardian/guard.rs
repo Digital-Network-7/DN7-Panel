@@ -28,7 +28,19 @@ pub fn touch_own_heartbeat(cfg: &PanelConfig) {
 
 /// Spawn the guardian background task: periodically ensure the supervisor is
 /// alive and relaunch it under a lock if it isn't.
+///
+/// `DN7_NO_GUARDIAN=1` disables this entirely. It exists for LOCAL TESTING: the
+/// supervision interval's first tick fires at t=0, so running the `panel` role
+/// standalone (no supervisor parent has written a heartbeat) makes the guardian
+/// immediately relaunch a full supervisor — which performs the real system
+/// install (canonical dir, global CLI, autostart units). In the normal
+/// supervisor→panel path the supervisor's heartbeat already exists at t=0, so
+/// this never triggers; the opt-out only matters for a hand-run `panel`.
 pub fn spawn(cfg: PanelConfig) {
+    if std::env::var("DN7_NO_GUARDIAN").is_ok_and(|v| v != "0" && !v.is_empty()) {
+        tracing::warn!("DN7_NO_GUARDIAN set: guardian disabled (no supervisor relaunch)");
+        return;
+    }
     tokio::spawn(async move {
         let supervisor = RolePaths::new(&cfg.runtime_dir, "supervisor");
         let relaunch_lock = cfg.runtime_dir.join("dn7-supervisor-relaunch.lock");

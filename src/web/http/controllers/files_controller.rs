@@ -369,7 +369,7 @@ pub(crate) fn sanitize_filename(name: &str) -> String {
 
 /// Upload: multipart-free — the path/container come as query params and the raw
 /// file bytes are the request body (kept simple; the UI sends one file at a
-/// time). Caps the body at 512 MiB to bound memory.
+/// time). Caps the body at `UPLOAD_CAP` (256 MiB) to bound memory.
 #[derive(serde::Deserialize)]
 pub(crate) struct UploadQuery {
     #[serde(default)]
@@ -427,7 +427,7 @@ pub(crate) async fn files_upload(
 ///   mode  — "zip" (body is a .zip to extract) | "file" (body is one file)
 ///   rel   — for mode=file: the file's relative path within the webroot
 ///   clear — "1" to wipe the webroot first (fresh upload)
-/// Body is the raw bytes (capped at 512 MiB), mirroring files_upload.
+/// Body is the raw bytes (capped at `UPLOAD_CAP` = 256 MiB), mirroring files_upload.
 #[derive(serde::Deserialize)]
 pub(crate) struct StaticUploadQuery {
     root: String,
