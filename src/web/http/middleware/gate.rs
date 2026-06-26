@@ -49,8 +49,8 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
         .get::<axum::extract::ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip());
     // Resolve all security decisions under one brief settings lock via the
-    // policy view (allow-list verdict, entry token/path, cookie Secure attr).
-    let (allow_active, ip_ok, entry_token, entry_path, secure) = {
+    // policy view (allow-list verdict, init-token gate state, cookie Secure attr).
+    let (allow_active, ip_ok, initialized, init_token, secure) = {
         // A poisoned lock means a thread panicked while holding it. The settings
         // it guards are only ever *read* here (a snapshot for security
         // decisions) and aren't left half-written by a panic, so recovering the
@@ -69,8 +69,8 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
         (
             pol.allow_list_active(),
             eff.map(|ip| pol.ip_allowed(ip)),
-            pol.entry_token(),
-            pol.entry_path(),
+            pol.initialized(),
+            pol.init_token(),
             pol.cookie_secure_attr(),
         )
     };
@@ -87,31 +87,42 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
             return (StatusCode::FORBIDDEN, "Forbidden").into_response();
         }
     }
-    // Safe-entry gate. Disabled (token None) → serve everything.
-    let token = match entry_token {
+    // Init-token gate: while the panel is UNINITIALIZED the console serves only
+    // the token-gated wizard. Once initialized there's no gate (normal auth
+    // protects every endpoint). This replaces the old secret safe-entry path.
+    if initialized {
+        return next.run(req).await;
+    }
+    let token = match init_token {
         Some(t) => t,
+        // Uninitialized but somehow no token — serve openly rather than lock the
+        // operator out (load_or_init always seeds one, so this is belt-and-braces).
         None => return next.run(req).await,
     };
     let headers = req.headers();
-    let authed = bearer(headers)
-        .map(|t| state.auth.valid(&t))
-        .unwrap_or(false);
-    let cookie_ok = cookie_value(headers, "dn7_entry").as_deref() == Some(token.as_str());
-    if authed || cookie_ok {
+    // The wizard SPA + /api/init both ride the `dn7_init` cookie set on the first
+    // tokened hit.
+    if cookie_value(headers, "dn7_init").as_deref() == Some(token.as_str()) {
         return next.run(req).await;
     }
-    if req.uri().path() == entry_path {
+    // First arrival with `?init_token=<token>`: serve the SPA (wizard) and set the
+    // cookie so its subsequent /ui + /api/init requests pass.
+    let q_token = req.uri().query().and_then(|q| {
+        q.split('&')
+            .find_map(|kv| kv.strip_prefix("init_token="))
+            .map(str::to_string)
+    });
+    if q_token.as_deref() == Some(token.as_str()) {
         let mut resp = index_page().await.into_response();
-        // Add `Secure` when serving over HTTPS so the entry token never rides a
-        // plaintext request if the user later hits the same host over HTTP.
         if let Ok(v) =
-            format!("dn7_entry={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000{secure}")
+            format!("dn7_init={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400{secure}")
                 .parse()
         {
             resp.headers_mut().append(header::SET_COOKIE, v);
         }
         return resp;
     }
+    // No valid token → 404 (don't reveal the console exists to a blind scan).
     (StatusCode::NOT_FOUND, "Not Found").into_response()
 }
 

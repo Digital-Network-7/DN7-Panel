@@ -34,20 +34,18 @@ impl<'a> SecurityPolicy<'a> {
         }
     }
 
-    /// The configured safe-entry path (raw), used to match the request URI.
-    pub(crate) fn entry_path(&self) -> String {
-        self.s.entry_path.clone()
+    /// Whether first-run setup is complete. Before it is, the console serves the
+    /// token-gated init wizard; after it, normal auth applies.
+    pub(crate) fn initialized(&self) -> bool {
+        self.s.initialized
     }
 
-    /// The safe-entry cookie token, or `None` when the gate is disabled
-    /// (entry path is "/" or empty).
-    pub(crate) fn entry_token(&self) -> Option<String> {
-        let e = self.s.entry_path.trim();
-        if e == "/" || e.is_empty() {
-            None
-        } else {
-            Some(e.trim_start_matches('/').to_string())
-        }
+    /// The one-time init token, or `None` once setup is complete (token cleared).
+    /// While set, the init gate requires it (`?init_token=` → `dn7_init` cookie)
+    /// before serving anything — the wizard's bootstrap secret.
+    pub(crate) fn init_token(&self) -> Option<String> {
+        let t = self.s.init_token.trim();
+        (!t.is_empty()).then(|| t.to_string())
     }
 
     /// Whether an authorized-IP allow list is configured. When it is, a request
@@ -223,13 +221,18 @@ mod tests {
     }
 
     #[test]
-    fn entry_token_none_when_disabled() {
-        assert_eq!(pol(&settings_with(&[], false, "/")).entry_token(), None);
-        assert_eq!(pol(&settings_with(&[], false, "")).entry_token(), None);
-        assert_eq!(
-            pol(&settings_with(&[], false, "/s3cr3t")).entry_token(),
-            Some("s3cr3t".to_string())
-        );
+    fn init_token_gate_state() {
+        let from = |v: serde_json::Value| -> WebSettings { serde_json::from_value(v).unwrap() };
+        // No token → init_token() None; uninitialized by default.
+        let s = from(serde_json::json!({ "port": 1080 }));
+        assert_eq!(pol(&s).init_token(), None);
+        assert!(!pol(&s).initialized());
+        // Token set, still uninitialized → Some(token) (the gate requires it).
+        let s = from(serde_json::json!({ "port": 1080, "init_token": "abc123" }));
+        assert_eq!(pol(&s).init_token().as_deref(), Some("abc123"));
+        // Initialized → gate is off (the caller checks initialized() first).
+        let s = from(serde_json::json!({ "port": 1080, "initialized": true, "init_token": "x" }));
+        assert!(pol(&s).initialized());
     }
 
     #[test]
