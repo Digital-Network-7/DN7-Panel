@@ -209,13 +209,11 @@ fn inject_console_route(cfg: &mut RuntimeConfig, input: &ReloadInput) {
     for name in &names {
         cfg.hosts.insert(name.to_ascii_lowercase(), route.clone());
     }
-    // Make the console the catch-all when (a) it's uninitialized — any Host
-    // reaches the token-gated wizard — or (b) it's initialized but has no chosen
-    // external address yet (a migrated legacy install): without a fallback it
-    // would only answer on localhost, stranding a remote operator. The fallback
-    // route is the same auth-protected console either way, so this exposes the
-    // login page (not the wizard) once initialized.
-    if !input.console.initialized || ext.is_empty() {
+    // While UNINITIALIZED the console is the catch-all: any Host reaches the
+    // token-gated wizard. Once initialized it answers only on its configured
+    // external address (+ localhost/127.0.0.1) — step 1 of the wizard always
+    // sets that address before step 2 flips `initialized`.
+    if !input.console.initialized {
         cfg.console_fallback = Some(route);
     }
 }

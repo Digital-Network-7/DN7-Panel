@@ -94,10 +94,10 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
     }
     let token = match init_token {
         Some(t) => t,
-        // Uninitialized with no token must be impossible — load_or_init always
-        // seeds (or self-heals) one. Treat a missing token as an anomaly and fail
-        // CLOSED rather than expose the wizard to anyone (a configured install is
-        // migrated to `initialized` before it ever reaches here).
+        // Uninitialized with no token shouldn't happen — load_or_init always
+        // seeds one on a fresh install. Treat a missing token as an anomaly and
+        // fail CLOSED rather than expose the wizard to anyone (`dn7 panel reset`
+        // re-arms a token to recover).
         None => return (StatusCode::NOT_FOUND, "Not Found").into_response(),
     };
     let headers = req.headers();
