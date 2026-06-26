@@ -72,7 +72,8 @@ pub(crate) fn set_keepalive(stream: &tokio::net::TcpStream) {
 /// The process-wide connection limiter (lazily sized to [`MAX_CONNECTIONS`]).
 fn conn_limiter() -> Arc<Semaphore> {
     static L: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    L.get_or_init(|| Arc::new(Semaphore::new(MAX_CONNECTIONS))).clone()
+    L.get_or_init(|| Arc::new(Semaphore::new(MAX_CONNECTIONS)))
+        .clone()
 }
 
 /// Bind the edge listeners and serve forever. Spawned from `edge::spawn` when
@@ -214,31 +215,23 @@ pub(crate) async fn serve_tls(
                                   // Terminate TLS under a deadline so a slow/incomplete handshake
                                   // (slowloris on :443) can't pin the task/fd. A failed or timed-out
                                   // handshake is per-connection: log and drop.
-            let tls_stream = match tokio::time::timeout(
-                TLS_HANDSHAKE_TIMEOUT,
-                acceptor.accept(stream),
-            )
-            .await
-            {
-                Ok(Ok(s)) => s,
-                Ok(Err(e)) => {
-                    tracing::debug!("edge :443 TLS handshake from {peer} failed: {e}");
-                    return;
-                }
-                Err(_) => {
-                    tracing::debug!("edge :443 TLS handshake from {peer} timed out");
-                    return;
-                }
-            };
+            let tls_stream =
+                match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+                    Ok(Ok(s)) => s,
+                    Ok(Err(e)) => {
+                        tracing::debug!("edge :443 TLS handshake from {peer} failed: {e}");
+                        return;
+                    }
+                    Err(_) => {
+                        tracing::debug!("edge :443 TLS handshake from {peer} timed out");
+                        return;
+                    }
+                };
 
             // Recover the SNI hostname the client offered from the completed
             // rustls server connection (the `.1` of the inner `(IO, ServerConn)`
             // pair). The router uses it only as a fallback host hint.
-            let sni = tls_stream
-                .get_ref()
-                .1
-                .server_name()
-                .map(|s| s.to_string());
+            let sni = tls_stream.get_ref().1.server_name().map(|s| s.to_string());
 
             let ctx = ConnCtx {
                 tls: true,

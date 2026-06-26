@@ -53,10 +53,12 @@ pub(crate) fn build_runtime(input: &ReloadInput) -> Result<RuntimeConfig, String
     );
 
     for site in &input.sites {
-        let access = if site
-            .access_id
-            .is_empty() { None } else { access_by_id.get(site.access_id.as_str()).copied() }
-            .map(|a| Arc::new(build_access(a)));
+        let access = if site.access_id.is_empty() {
+            None
+        } else {
+            access_by_id.get(site.access_id.as_str()).copied()
+        }
+        .map(|a| Arc::new(build_access(a)));
         let strip_auth = access
             .as_ref()
             .map(|_| {
@@ -250,10 +252,19 @@ fn build_trust_proxy(site: &Site) -> TrustProxy {
         .filter_map(parse_net)
         .collect();
     let sources = if explicit.is_empty() {
-        ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10"]
-            .iter()
-            .filter_map(|s| s.parse().ok())
-            .collect()
+        [
+            "127.0.0.0/8",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "169.254.0.0/16",
+            "::1/128",
+            "fc00::/7",
+            "fe80::/10",
+        ]
+        .iter()
+        .filter_map(|s| s.parse().ok())
+        .collect()
     } else {
         explicit
     };

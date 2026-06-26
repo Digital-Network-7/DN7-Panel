@@ -212,7 +212,11 @@ mod tests {
     fn good_password_no_totp_issues_session() {
         let auth = AuthState::new();
         let n = auth.issue_challenge();
-        match verify_login(&auth, &creds(false), &att("alice", "1.1.1.1", &n, VERIFIER, "")) {
+        match verify_login(
+            &auth,
+            &creds(false),
+            &att("alice", "1.1.1.1", &n, VERIFIER, ""),
+        ) {
             LoginOutcome::Ok { token, .. } => assert!(auth.valid(&token)),
             _ => panic!("expected Ok"),
         }
@@ -291,7 +295,11 @@ mod tests {
         let auth = AuthState::new();
         let n = auth.issue_challenge();
         assert!(matches!(
-            verify_login(&auth, &creds(true), &att("alice", "1.1.1.1", &n, VERIFIER, "")),
+            verify_login(
+                &auth,
+                &creds(true),
+                &att("alice", "1.1.1.1", &n, VERIFIER, "")
+            ),
             LoginOutcome::NeedTotp
         ));
     }

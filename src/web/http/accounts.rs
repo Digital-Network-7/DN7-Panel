@@ -130,8 +130,8 @@ mod tests {
         assert_eq!(account_level(&acct(true, true)), 2); // owner
         assert_eq!(account_level(&acct(false, true)), 1); // admin
         assert_eq!(account_level(&acct(false, false)), 0); // user
-        // role_level itself is covered in core::authz::rules; here we only assert
-        // the web-layer Account->level adapter above.
+                                                           // role_level itself is covered in core::authz::rules; here we only assert
+                                                           // the web-layer Account->level adapter above.
     }
 
     #[test]

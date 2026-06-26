@@ -25,7 +25,9 @@ impl rustls::server::ResolvesServerCert for SniResolver {
         // `current()` is a lock-free `ArcSwap` load; cert lookup is exact →
         // wildcard → default (see `CertStore::resolve`). `None` means the
         // handshake has no cert to offer and rustls aborts it.
-        super::store::current().certs.resolve(client_hello.server_name())
+        super::store::current()
+            .certs
+            .resolve(client_hello.server_name())
     }
 }
 

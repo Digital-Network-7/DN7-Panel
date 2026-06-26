@@ -35,7 +35,8 @@ pub(crate) fn valid_local_root(p: &str) -> Result<String> {
     if !path.is_absolute() {
         return Err(website_err(WebsiteError::LocalRootAbs));
     }
-    let canon = std::fs::canonicalize(path).map_err(|_| website_err(WebsiteError::LocalRootMissing))?;
+    let canon =
+        std::fs::canonicalize(path).map_err(|_| website_err(WebsiteError::LocalRootMissing))?;
     if !canon.is_dir() {
         return Err(website_err(WebsiteError::LocalRootNotDir));
     }

@@ -158,7 +158,11 @@ pub(crate) async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()
         .await?
     };
     // Best-effort cleanup of the in-memory challenge tokens.
-    for token in served_tokens.lock().unwrap_or_else(|p| p.into_inner()).iter() {
+    for token in served_tokens
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+    {
         crate::edge::acme_remove(token);
     }
 
@@ -276,7 +280,11 @@ pub(crate) async fn issue_le_named(
     };
 
     // Best-effort: drop the in-memory challenge tokens afterwards.
-    for token in served_tokens.lock().unwrap_or_else(|p| p.into_inner()).iter() {
+    for token in served_tokens
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+    {
         crate::edge::acme_remove(token);
     }
 

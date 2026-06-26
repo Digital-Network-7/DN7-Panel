@@ -134,9 +134,15 @@ mod website_error_tests {
     #[test]
     fn codes_namespaced_snake_case_and_wire_stable() {
         // A representative code matches the exact frontend `err.*` string.
-        assert_eq!(WebsiteError::DuplicateDomain.code(), "website.duplicate_domain");
+        assert_eq!(
+            WebsiteError::DuplicateDomain.code(),
+            "website.duplicate_domain"
+        );
         // Display is the semantic code only (no transport prefix in domain).
-        assert_eq!(WebsiteError::SiteNotFound.to_string(), "website.site_not_found");
+        assert_eq!(
+            WebsiteError::SiteNotFound.to_string(),
+            "website.site_not_found"
+        );
         // Exhaustive shape check across every variant.
         for e in [
             WebsiteError::AccessNotFound,

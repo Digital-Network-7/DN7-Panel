@@ -10,7 +10,7 @@ pub(crate) mod docker;
 pub(crate) mod file;
 pub(crate) mod metrics;
 pub(crate) mod mysql;
-pub(crate) mod website;
 pub(crate) mod store;
 pub(crate) mod support;
 pub(crate) mod system;
+pub(crate) mod website;

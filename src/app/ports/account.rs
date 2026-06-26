@@ -25,8 +25,13 @@ pub(crate) trait AccountEnv {
     fn verify_current(&self, stored: &str, verifier: &str) -> bool;
 
     /// Persist a new password verifier (salt + hash + KDF scheme) for the account.
-    fn save_password(&self, who: &Principal, salt: &str, hash: &str, kdf: &str)
-        -> Result<(), Error>;
+    fn save_password(
+        &self,
+        who: &Principal,
+        salt: &str,
+        hash: &str,
+        kdf: &str,
+    ) -> Result<(), Error>;
 
     /// Sync the backing OS account's password (best-effort; no-op when the
     /// account has no system user).

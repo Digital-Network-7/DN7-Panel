@@ -88,7 +88,8 @@ static CLIENT: OnceLock<Client<HttpsConnector, ProxyReqBody>> = OnceLock::new();
 /// The connector type for the pooled client: rustls-over-TCP with HTTP/1 and
 /// HTTP/2 negotiated via ALPN, falling back to plain HTTP for `http://`
 /// upstreams.
-type HttpsConnector = hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
+type HttpsConnector =
+    hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
 
 /// Lazily build (and cache) the shared pooled client. Tuned for a busy edge:
 /// bounded idle pool per host with keepalive reuse, TCP_NODELAY for low latency,
@@ -275,7 +276,9 @@ async fn resolve_container_cached(name: &str, port: i64) -> Option<String> {
     // Miss/stale: take the per-key single-flight lock so a burst collapses to one
     // daemon call.
     let gate = {
-        let mut map = container_inflight().lock().unwrap_or_else(|p| p.into_inner());
+        let mut map = container_inflight()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         map.entry(key.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
@@ -318,9 +321,9 @@ async fn resolve_container_cached(name: &str, port: i64) -> Option<String> {
 /// A still-fresh cached address for `key`, if any.
 async fn fresh_cached(key: &str) -> Option<String> {
     let cache = container_cache().read().await;
-    cache.get(key).and_then(|(addr, at)| {
-        (at.elapsed() < CONTAINER_TTL).then(|| addr.clone())
-    })
+    cache
+        .get(key)
+        .and_then(|(addr, at)| (at.elapsed() < CONTAINER_TTL).then(|| addr.clone()))
 }
 
 /// Drop long-abandoned cache entries (a container deleted long ago) so the map
@@ -339,9 +342,8 @@ async fn proxy_plain(req: Request<Incoming>) -> Resp {
     // GET — the common case — doesn't allocate a timer.
     let has_body = req.headers().contains_key(http::header::CONTENT_LENGTH)
         || req.headers().contains_key(http::header::TRANSFER_ENCODING);
-    let req = req.map(|incoming| {
-        super::timeout_body::prepare(incoming, BODY_INACTIVITY_TIMEOUT, has_body)
-    });
+    let req = req
+        .map(|incoming| super::timeout_body::prepare(incoming, BODY_INACTIVITY_TIMEOUT, has_body));
     match client().request(req).await {
         Ok(upstream) => {
             let (mut parts, body) = upstream.into_parts();
@@ -363,7 +365,11 @@ async fn proxy_plain(req: Request<Incoming>) -> Resp {
 /// upgrade future *before* consuming the request, open a one-shot upstream
 /// connection (plain TCP or rustls), forward the handshake, and on a `101` spawn
 /// a task that copies bytes both ways once both upgrades complete.
-async fn proxy_websocket(mut req: Request<Incoming>, target: &ProxyTarget, authority: &str) -> Resp {
+async fn proxy_websocket(
+    mut req: Request<Incoming>,
+    target: &ProxyTarget,
+    authority: &str,
+) -> Resp {
     use tokio::net::TcpStream;
 
     // Grab the inbound upgrade future now — `hyper::upgrade::on` must be called
@@ -406,11 +412,7 @@ async fn proxy_websocket(mut req: Request<Incoming>, target: &ProxyTarget, autho
 /// TLS-wrapped) IO, forward the upgrade request, and wire up the bidirectional
 /// copy on a `101`. Generic over the upstream IO so the http and https branches
 /// share this code.
-async fn ws_handshake<I>(
-    io: I,
-    req: Request<Incoming>,
-    inbound: hyper::upgrade::OnUpgrade,
-) -> Resp
+async fn ws_handshake<I>(io: I, req: Request<Incoming>, inbound: hyper::upgrade::OnUpgrade) -> Resp
 where
     I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
 {
@@ -520,7 +522,10 @@ async fn connect_tls(
 
     // SNI = the upstream host (strip the port). An IP literal can't be an SNI
     // server name; rustls handles that distinction via `ServerName::try_from`.
-    let host = authority.rsplit_once(':').map(|(h, _)| h).unwrap_or(authority);
+    let host = authority
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(authority);
     let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
         .map_err(|_| anyhow::anyhow!("invalid upstream TLS server name: {host}"))?;
 

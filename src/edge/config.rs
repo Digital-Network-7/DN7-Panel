@@ -241,7 +241,6 @@ pub(crate) enum DefaultRoute {
     Redirect(String),
 }
 
-
 /// http/server tuning knobs that affect request handling.
 pub(crate) struct Tuning {
     pub(crate) gzip: bool,

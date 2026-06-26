@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn argon2_roundtrip_and_legacy_migration() {
         let verifier = "0123456789abcdef".repeat(4); // looks like a 64-hex verifier
-        // Fresh hash verifies and is a PHC string.
+                                                     // Fresh hash verifies and is a PHC string.
         let stored = hash_verifier(&verifier).unwrap();
         assert!(stored.starts_with("$argon2id$"));
         let v = verify_verifier(&stored, &verifier);

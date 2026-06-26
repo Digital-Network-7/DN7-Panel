@@ -79,10 +79,12 @@ impl Body for TimeoutBody {
 /// Adapt an inbound `Incoming` request body into the proxied [`ProxyReqBody`],
 /// applying the inactivity timeout only when the request actually carries a body
 /// (`with_timeout == true`) so a bodyless GET doesn't pay for a timer.
-pub(crate) fn prepare(body: hyper::body::Incoming, timeout: Duration, with_timeout: bool) -> ProxyReqBody {
-    let boxed: ProxyReqBody = body
-        .map_err(|e| Box::new(e) as BoxError)
-        .boxed_unsync();
+pub(crate) fn prepare(
+    body: hyper::body::Incoming,
+    timeout: Duration,
+    with_timeout: bool,
+) -> ProxyReqBody {
+    let boxed: ProxyReqBody = body.map_err(|e| Box::new(e) as BoxError).boxed_unsync();
     if with_timeout {
         TimeoutBody::new(boxed, timeout).boxed_unsync()
     } else {

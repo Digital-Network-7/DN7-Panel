@@ -91,11 +91,16 @@ pub(crate) async fn handle(
 
     // 6. Exploit-pattern query blocking.
     if route.block_attacks && security::blocked_by_attacks(&query) {
-        return finish(response::status(http::StatusCode::FORBIDDEN), &route, ctx.tls);
+        return finish(
+            response::status(http::StatusCode::FORBIDDEN),
+            &route,
+            ctx.tls,
+        );
     }
 
     // 7. Access control (HTTP Basic + IP allow/deny). A `Some` short-circuits.
-    if let Some(mut resp) = security::check_access(route.access.as_deref(), req.headers(), client_ip)
+    if let Some(mut resp) =
+        security::check_access(route.access.as_deref(), req.headers(), client_ip)
     {
         security::decorate(&mut resp, &route, ctx.tls);
         return resp;
@@ -118,9 +123,10 @@ pub(crate) async fn handle(
             }
             RouteKind::Static(root) => static_files::handle(&req, root, &cfg.tuning).await,
             // The maintenance stub: upstream unresolvable at build time.
-            RouteKind::Maintenance => {
-                response::text(http::StatusCode::SERVICE_UNAVAILABLE, "503 Service Unavailable")
-            }
+            RouteKind::Maintenance => response::text(
+                http::StatusCode::SERVICE_UNAVAILABLE,
+                "503 Service Unavailable",
+            ),
         }
     };
 

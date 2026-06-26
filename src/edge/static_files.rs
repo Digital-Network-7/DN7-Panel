@@ -44,7 +44,11 @@ const ASSET_MAX_AGE: u64 = 604_800;
 const GZIP_MAX_BUFFER: u64 = 1024 * 1024; // 1 MiB
 
 /// Serve `req` from the static `root`. `tuning` carries gzip settings.
-pub(crate) async fn handle(req: &hyper::Request<Incoming>, root: &StaticRoot, tuning: &Tuning) -> Resp {
+pub(crate) async fn handle(
+    req: &hyper::Request<Incoming>,
+    root: &StaticRoot,
+    tuning: &Tuning,
+) -> Resp {
     // Only GET/HEAD can yield a body; everything else is a method error so we
     // never accidentally serve a file for a PUT/DELETE/etc.
     let method = req.method();
@@ -476,7 +480,11 @@ fn full_content_type(ct: &str) -> String {
 }
 
 /// Attach `Last-Modified`/`ETag` validators when we have them.
-fn attach_validators(headers: &mut http::HeaderMap, last_modified: Option<&str>, etag: Option<&str>) {
+fn attach_validators(
+    headers: &mut http::HeaderMap,
+    last_modified: Option<&str>,
+    etag: Option<&str>,
+) {
     if let Some(lm) = last_modified {
         if let Ok(v) = HeaderValue::from_str(lm) {
             headers.insert(header::LAST_MODIFIED, v);
@@ -510,7 +518,9 @@ fn attach_cache(headers: &mut http::HeaderMap, file_path: &Path, root: &StaticRo
         HeaderValue::from_static("public, max-age=604800"),
     );
     // Absolute `Expires` for HTTP/1.0 caches, one week out from now.
-    if let Some(expires) = httpdate_from(std::time::SystemTime::now() + std::time::Duration::from_secs(ASSET_MAX_AGE)) {
+    if let Some(expires) =
+        httpdate_from(std::time::SystemTime::now() + std::time::Duration::from_secs(ASSET_MAX_AGE))
+    {
         if let Ok(v) = HeaderValue::from_str(&expires) {
             headers.insert(header::EXPIRES, v);
         }
@@ -525,7 +535,9 @@ fn not_modified(
     mtime: Option<std::time::SystemTime>,
 ) -> bool {
     if let (Some(inm), Some(tag)) = (
-        headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()),
+        headers
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok()),
         etag,
     ) {
         // Match any of the comma-separated client tags (ignoring a weak prefix).
@@ -551,7 +563,9 @@ fn not_modified(
 
 /// Whole seconds since the Unix epoch for a `SystemTime`.
 fn epoch_secs(t: std::time::SystemTime) -> Option<u64> {
-    t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+    t.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
 }
 
 /// A weak-ish strong ETag derived from mtime + size: `"<mtime_secs>-<len>"`.

@@ -253,7 +253,11 @@ fn proc_pids_for_inode(inode: u64) -> Vec<u32> {
         Err(_) => return pids,
     };
     for entry in entries.flatten() {
-        let pid = match entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) {
+        let pid = match entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+        {
             Some(p) => p,
             None => continue,
         };
@@ -388,7 +392,8 @@ pub(crate) async fn list_dirs(path_arg: Option<&str>) -> Result<Value> {
     if !path.is_absolute() {
         return Err(website_err(WebsiteError::LocalRootAbs));
     }
-    let canon = std::fs::canonicalize(path).map_err(|_| website_err(WebsiteError::LocalRootMissing))?;
+    let canon =
+        std::fs::canonicalize(path).map_err(|_| website_err(WebsiteError::LocalRootMissing))?;
     let mut dirs: Vec<String> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&canon) {
         for ent in rd.flatten() {

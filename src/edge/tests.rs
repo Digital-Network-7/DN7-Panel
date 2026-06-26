@@ -117,14 +117,18 @@ mod edge_tests {
         let cfg = build::build_runtime(&input).expect("clean multi-site build succeeds");
 
         // proxy_host → RouteKind::Proxy.
-        let p = cfg.route_for("proxy.example.com").expect("proxy host indexed");
+        let p = cfg
+            .route_for("proxy.example.com")
+            .expect("proxy host indexed");
         assert!(
             matches!(p.kind, RouteKind::Proxy(_)),
             "proxy_host must project to RouteKind::Proxy"
         );
 
         // static → RouteKind::Static with the root joined under www_dir.
-        let s = cfg.route_for("static.example.com").expect("static host indexed");
+        let s = cfg
+            .route_for("static.example.com")
+            .expect("static host indexed");
         match &s.kind {
             RouteKind::Static(root) => {
                 assert_eq!(
@@ -138,7 +142,9 @@ mod edge_tests {
 
         // ssl-without-cert → ssl flag degraded to false (one cert-less site must
         // not break the reload; it just serves plain HTTP).
-        let c = cfg.route_for("secure.example.com").expect("ssl host indexed");
+        let c = cfg
+            .route_for("secure.example.com")
+            .expect("ssl host indexed");
         assert!(
             !c.ssl,
             "an ssl site with no cert material must degrade to ssl=false"
@@ -171,7 +177,10 @@ mod edge_tests {
         use super::super::config::wildcard_matches;
         // `*.example.com` is stored as the suffix `.example.com`.
         let suffix = ".example.com";
-        assert!(wildcard_matches("foo.example.com", suffix), "one label matches");
+        assert!(
+            wildcard_matches("foo.example.com", suffix),
+            "one label matches"
+        );
         assert!(
             !wildcard_matches("foo.bar.example.com", suffix),
             "a deeper subdomain must NOT match (nginx single-label semantics)"
@@ -180,7 +189,10 @@ mod edge_tests {
             !wildcard_matches("example.com", suffix),
             "the bare apex (empty label) must not match the wildcard"
         );
-        assert!(!wildcard_matches("foo.other.com", suffix), "different domain");
+        assert!(
+            !wildcard_matches("foo.other.com", suffix),
+            "different domain"
+        );
     }
 
     #[test]
@@ -233,12 +245,7 @@ mod edge_tests {
     #[test]
     fn validate_rejects_ssl_route_without_cert() {
         // ssl == true but the (empty) CertStore resolves no cert → Err.
-        let cfg = route(
-            "ssl1",
-            "secure.example.com",
-            true,
-            RouteKind::Maintenance,
-        );
+        let cfg = route("ssl1", "secure.example.com", true, RouteKind::Maintenance);
         let err = validate::validate(&cfg)
             .expect_err("ssl route with no resolvable cert must fail validation");
         assert!(
@@ -296,10 +303,7 @@ mod edge_tests {
             live.route_for(host_a).is_some(),
             "published config must be visible via store::current()"
         );
-        assert!(
-            live.route_for(host_b).is_none(),
-            "host_b not published yet"
-        );
+        assert!(live.route_for(host_b).is_none(), "host_b not published yet");
 
         // Publish a second config: the swap must be visible immediately. The Arc
         // `live` we still hold keeps serving its old snapshot (zero-drop) — it
@@ -449,9 +453,14 @@ mod edge_tests {
             www_dir: unique_tmp("www"),
         };
         let cfg = build::build_runtime(&input).expect("guarded site builds");
-        let route = cfg.route_for("guarded.example.com").expect("guarded indexed");
+        let route = cfg
+            .route_for("guarded.example.com")
+            .expect("guarded indexed");
         let ac = route.access.as_ref().expect("access list must be attached");
-        assert!(ac.satisfy_all, "satisfy \"all\" projects to satisfy_all=true");
+        assert!(
+            ac.satisfy_all,
+            "satisfy \"all\" projects to satisfy_all=true"
+        );
         assert!(ac.has_auth(), "the access list's user must be carried");
         assert!(ac.has_acl(), "the access list's deny rule must be carried");
         assert_eq!(ac.realm, "Guarded Realm", "realm comes from the list name");
@@ -640,7 +649,11 @@ mod edge_tests {
             Some("bytes 0-3/9"),
             "Content-Range reports the slice and total length"
         );
-        assert_eq!(r.text().await.unwrap(), "STAT", "the first 4 bytes of STATIC-OK");
+        assert_eq!(
+            r.text().await.unwrap(),
+            "STAT",
+            "the first 4 bytes of STATIC-OK"
+        );
 
         // (3) Basic auth: 401 without creds, 200 with the right creds.
         let r = client
@@ -719,11 +732,17 @@ mod edge_tests {
 
         let mut ok = 0;
         for t in tasks {
-            let status = t.await.expect("request task did not panic").expect("no transport error");
+            let status = t
+                .await
+                .expect("request task did not panic")
+                .expect("no transport error");
             assert_eq!(status, 200, "every request under reload must succeed");
             ok += 1;
         }
-        assert_eq!(ok, 200, "all 200 concurrent requests completed across reloads");
+        assert_eq!(
+            ok, 200,
+            "all 200 concurrent requests completed across reloads"
+        );
     }
 
     /// A throughput + latency benchmark (run explicitly). Fires `EDGE_BENCH_TOTAL`
@@ -917,10 +936,16 @@ mod edge_tests {
         let url = format!("http://{edge}/");
 
         println!("\n========== REVERSE-PROXY path · concurrency={conc} · {dur} ==========");
-        println!("{}", run_oha(&url, "proxy.example.test", conc, &dur, false).await);
+        println!(
+            "{}",
+            run_oha(&url, "proxy.example.test", conc, &dur, false).await
+        );
 
         println!("========== STATIC path · concurrency={conc} · {dur} ==========");
-        println!("{}", run_oha(&url, "static.example.test", conc, &dur, false).await);
+        println!(
+            "{}",
+            run_oha(&url, "static.example.test", conc, &dur, false).await
+        );
     }
 
     /// Write a self-signed cert as the catch-all `default.crt`/`default.key` in
@@ -970,7 +995,11 @@ mod edge_tests {
 
     /// Like `publish_full_config`, but writes a default cert into `cert_dir` so
     /// the TLS listener has a certificate to present.
-    fn publish_tls_config(upstream: std::net::SocketAddr, www: &std::path::Path, cert_dir: &std::path::Path) {
+    fn publish_tls_config(
+        upstream: std::net::SocketAddr,
+        www: &std::path::Path,
+        cert_dir: &std::path::Path,
+    ) {
         std::fs::create_dir_all(www).unwrap();
         std::fs::write(www.join("index.html"), "STATIC-OK").unwrap();
         write_default_cert(cert_dir);
@@ -984,8 +1013,7 @@ mod edge_tests {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let acceptor =
-            tokio_rustls::TlsAcceptor::from(super::super::tls::server_config().unwrap());
+        let acceptor = tokio_rustls::TlsAcceptor::from(super::super::tls::server_config().unwrap());
         tokio::spawn(super::super::listener::serve_tls(listener, acceptor));
         addr
     }
@@ -1013,10 +1041,16 @@ mod edge_tests {
         let url = format!("https://{edge}/");
 
         println!("\n========== TLS REVERSE-PROXY · concurrency={conc} · {dur} ==========");
-        println!("{}", run_oha(&url, "proxy.example.test", conc, &dur, true).await);
+        println!(
+            "{}",
+            run_oha(&url, "proxy.example.test", conc, &dur, true).await
+        );
 
         println!("========== TLS STATIC · concurrency={conc} · {dur} ==========");
-        println!("{}", run_oha(&url, "static.example.test", conc, &dur, true).await);
+        println!(
+            "{}",
+            run_oha(&url, "static.example.test", conc, &dur, true).await
+        );
     }
 
     // ---- soak / leak test (fd + RSS over load→drain cycles) ---------------
@@ -1029,7 +1063,10 @@ mod edge_tests {
             .output()
             .await
             .expect("run shell probe");
-        String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0)
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(0)
     }
 
     /// Total open file descriptors for `pid` (lsof; one line per fd + a header).
@@ -1092,8 +1129,14 @@ mod edge_tests {
         let mut rest_rss = Vec::new();
         for c in 1..=cycles {
             // Load burst (proxy path).
-            let _ = run_oha(&format!("http://{edge}/"), "proxy.example.test", conc, &load, false)
-                .await;
+            let _ = run_oha(
+                &format!("http://{edge}/"),
+                "proxy.example.test",
+                conc,
+                &load,
+                false,
+            )
+            .await;
             let fd_peak = count_fds(pid).await;
             let net_peak = count_net_fds(pid).await;
 
@@ -1114,7 +1157,9 @@ mod edge_tests {
         let rss0 = rest_rss[0];
         let rss_last = *rest_rss.last().unwrap();
         println!("\n[soak] resting fds:  first={fd0}  last={fd_last}  (baseline {fd_base})");
-        println!("[soak] resting rss:  first={rss0}KiB  last={rss_last}KiB  (baseline {rss_base}KiB)\n");
+        println!(
+            "[soak] resting rss:  first={rss0}KiB  last={rss_last}KiB  (baseline {rss_base}KiB)\n"
+        );
 
         // fd/socket leak: after draining, the resting fd count must not ratchet
         // up cycle over cycle. A small slack absorbs lsof timing + a few lingering
@@ -1154,7 +1199,10 @@ mod edge_tests {
             .output()
             .await
             .expect("run ps probe");
-        String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0.0)
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(0.0)
     }
 
     /// Pull the `[200]` success count out of an oha report.
@@ -1162,7 +1210,11 @@ mod edge_tests {
         for line in report.lines() {
             let l = line.trim();
             if l.starts_with("[200]") {
-                return l.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+                return l
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
             }
         }
         0
@@ -1172,7 +1224,11 @@ mod edge_tests {
     fn parse_oha_rps(report: &str) -> f64 {
         for line in report.lines() {
             if line.contains("Requests/sec:") {
-                return line.split_whitespace().last().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                return line
+                    .split_whitespace()
+                    .last()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0);
             }
         }
         0.0
@@ -1201,7 +1257,9 @@ mod edge_tests {
         // Idle: no traffic for a few seconds, then read the instantaneous %CPU.
         tokio::time::sleep(std::time::Duration::from_secs(4)).await;
         let idle = ps_f64(&format!("ps -o %cpu= -p {pid}")).await;
-        println!("\n[cpu] idle (no traffic): {idle:.1}% of one core (process incl. colocated upstream)");
+        println!(
+            "\n[cpu] idle (no traffic): {idle:.1}% of one core (process incl. colocated upstream)"
+        );
 
         // Under load: CPU-time delta over the burst.
         let t0 = cpu_time_secs();
@@ -1278,13 +1336,35 @@ mod edge_tests {
 
         // (label, url, insecure, disable_keepalive)
         let combos: [(&str, String, bool, bool); 4] = [
-            ("plain · keepalive   ", format!("http://{plain}/"), false, false),
-            ("plain · fresh-conn  ", format!("http://{plain}/"), false, true),
-            ("TLS   · keepalive   ", format!("https://{tls}/"), true, false),
-            ("TLS   · fresh-conn  ", format!("https://{tls}/"), true, true),
+            (
+                "plain · keepalive   ",
+                format!("http://{plain}/"),
+                false,
+                false,
+            ),
+            (
+                "plain · fresh-conn  ",
+                format!("http://{plain}/"),
+                false,
+                true,
+            ),
+            (
+                "TLS   · keepalive   ",
+                format!("https://{tls}/"),
+                true,
+                false,
+            ),
+            (
+                "TLS   · fresh-conn  ",
+                format!("https://{tls}/"),
+                true,
+                true,
+            ),
         ];
 
-        println!("\n[hs] fixed rate = {rate} req/s · {dur} per run (CPU incl. colocated upstream)\n");
+        println!(
+            "\n[hs] fixed rate = {rate} req/s · {dur} per run (CPU incl. colocated upstream)\n"
+        );
         let mut per_req = Vec::new();
         for (label, url, insecure, no_ka) in combos {
             tokio::time::sleep(std::time::Duration::from_secs(drain)).await;
@@ -1311,18 +1391,34 @@ mod edge_tests {
             let cpu = cpu_time_secs() - t0;
             let reqs = parse_oha_200(&report);
             let rps = parse_oha_rps(&report);
-            let per = if reqs > 0 { cpu * 1e6 / reqs as f64 } else { 0.0 };
+            let per = if reqs > 0 {
+                cpu * 1e6 / reqs as f64
+            } else {
+                0.0
+            };
             println!("[hs] {label}: {rps:>5.0} req/s · {reqs:>6} reqs · {cpu:>5.2} CPU-s → {per:>6.0} µs CPU/req");
             per_req.push(per);
         }
 
         let (p_ka, p_new, t_ka, t_new) = (per_req[0], per_req[1], per_req[2], per_req[3]);
         println!("\n[hs] ── isolated per-request costs ──");
-        println!("[hs] TCP connect (plain fresh − keepalive):   {:>6.0} µs/req", p_new - p_ka);
-        println!("[hs] TLS handshake (TLS fresh − TLS keepalive):{:>6.0} µs/req", t_new - t_ka);
-        println!("[hs] → pure TLS-handshake CPU (minus TCP):     {:>6.0} µs/req", (t_new - t_ka) - (p_new - p_ka));
+        println!(
+            "[hs] TCP connect (plain fresh − keepalive):   {:>6.0} µs/req",
+            p_new - p_ka
+        );
+        println!(
+            "[hs] TLS handshake (TLS fresh − TLS keepalive):{:>6.0} µs/req",
+            t_new - t_ka
+        );
+        println!(
+            "[hs] → pure TLS-handshake CPU (minus TCP):     {:>6.0} µs/req",
+            (t_new - t_ka) - (p_new - p_ka)
+        );
         if t_ka > 0.0 {
-            println!("[hs] → TLS fresh-conn costs {:.1}× the CPU/req of TLS keepalive\n", t_new / t_ka);
+            println!(
+                "[hs] → TLS fresh-conn costs {:.1}× the CPU/req of TLS keepalive\n",
+                t_new / t_ka
+            );
         }
     }
 
@@ -1355,7 +1451,11 @@ mod edge_tests {
     /// (Re)publish the TLS config from `cert_dir` (which must already contain
     /// default.crt/default.key). The TLS listener's SNI resolver reads the store
     /// live, so this swaps the presented cert without re-binding.
-    fn republish_tls_config(upstream: std::net::SocketAddr, www: &std::path::Path, cert_dir: &std::path::Path) {
+    fn republish_tls_config(
+        upstream: std::net::SocketAddr,
+        www: &std::path::Path,
+        cert_dir: &std::path::Path,
+    ) {
         publish_tls_runtime(upstream, www, cert_dir);
     }
 
@@ -1415,7 +1515,9 @@ mod edge_tests {
         let drain = 25u64;
         let nap = || tokio::time::sleep(std::time::Duration::from_secs(drain));
 
-        println!("\n[rsa] fixed rate = {rate} req/s · {dur} per run (CPU incl. colocated upstream)\n");
+        println!(
+            "\n[rsa] fixed rate = {rate} req/s · {dur} per run (CPU incl. colocated upstream)\n"
+        );
 
         republish_tls_config(upstream, &www, &dir_ec);
         nap().await;

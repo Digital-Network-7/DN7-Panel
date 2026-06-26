@@ -130,7 +130,8 @@ pub(crate) fn verify_htpasswd_hash(hash: &str, password: &str) -> bool {
     if let Some(b64) = hash.strip_prefix("{SHA}") {
         use base64::Engine;
         use sha1::{Digest, Sha1};
-        let want = base64::engine::general_purpose::STANDARD.encode(Sha1::digest(password.as_bytes()));
+        let want =
+            base64::engine::general_purpose::STANDARD.encode(Sha1::digest(password.as_bytes()));
         return constant_eq(want.as_bytes(), b64.as_bytes());
     }
     false

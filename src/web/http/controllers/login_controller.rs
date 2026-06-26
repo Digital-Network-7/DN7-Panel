@@ -195,7 +195,8 @@ fn resolve_login_account(state: &Shared, username: &str) -> LoginAccount {
 /// harmless: migration is a pure optimization and re-runs on a future login.
 fn migrate_stored_hash(state: &Shared, username: &str, verifier: &str, new_hash: &str) {
     use crate::infra::auth::password_matches;
-    let still_legacy = |stored: &str| !stored.starts_with("$argon2") && password_matches(stored, verifier);
+    let still_legacy =
+        |stored: &str| !stored.starts_with("$argon2") && password_matches(stored, verifier);
     {
         let mut su = state.settings.lock().unwrap_or_else(|p| p.into_inner());
         if username == su.username {

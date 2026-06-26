@@ -21,8 +21,7 @@ where
     B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    body.map_err(|e| std::io::Error::other(e.into()))
-        .boxed()
+    body.map_err(|e| std::io::Error::other(e.into())).boxed()
 }
 
 /// A fully-buffered body from anything `Bytes`-convertible.
@@ -34,7 +33,9 @@ pub(crate) fn full<T: Into<Bytes>>(chunk: T) -> ResBody {
 
 /// An empty body.
 pub(crate) fn empty() -> ResBody {
-    Empty::<Bytes>::new().map_err(|never| match never {}).boxed()
+    Empty::<Bytes>::new()
+        .map_err(|never| match never {})
+        .boxed()
 }
 
 /// A bare status response with an empty body.

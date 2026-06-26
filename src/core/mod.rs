@@ -11,8 +11,8 @@ pub(crate) mod docker;
 pub(crate) mod error;
 pub(crate) mod identity;
 pub(crate) mod mysql;
-pub(crate) mod website;
 pub(crate) mod path;
 pub(crate) mod settings;
+pub(crate) mod website;
 
 pub(crate) use error::Error;
