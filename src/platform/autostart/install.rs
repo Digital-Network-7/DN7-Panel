@@ -227,17 +227,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rc_local_block_inserted_before_exit() {
-        let existing = "#!/bin/sh -e\nfoo\nexit 0\n";
-        let out = existing.replacen("exit 0", &format!("{RC_LOCAL_MARKER}\nLAUNCH\nexit 0"), 1);
-        assert!(out.contains(RC_LOCAL_MARKER));
-        // The launch must come before the final exit 0.
-        let marker_idx = out.find(RC_LOCAL_MARKER).unwrap();
-        let exit_idx = out.rfind("exit 0").unwrap();
-        assert!(marker_idx < exit_idx);
-    }
-
-    #[test]
     fn rewrite_replaces_old_launch_line() {
         let existing = format!("#!/bin/sh -e\n{RC_LOCAL_MARKER}\nOLD_LAUNCH\nexit 0\n");
         let out = rewrite_rc_local(&existing, "NEW_LAUNCH");

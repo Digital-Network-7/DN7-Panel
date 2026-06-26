@@ -941,13 +941,13 @@ mod edge_tests {
         std::fs::write(cert_dir.join("default.key"), key_pair.serialize_pem()).unwrap();
     }
 
-    /// Like `publish_full_config`, but writes a default cert into `cert_dir` so
-    /// the TLS listener has a certificate to present.
-    fn publish_tls_config(upstream: std::net::SocketAddr, www: &std::path::Path, cert_dir: &std::path::Path) {
-        std::fs::create_dir_all(www).unwrap();
-        std::fs::write(www.join("index.html"), "STATIC-OK").unwrap();
-        write_default_cert(cert_dir);
-
+    /// Build + publish a 2-site (proxy + static) TLS runtime from `cert_dir`.
+    /// Callers that need the cert/static files on disk write them first.
+    fn publish_tls_runtime(
+        upstream: std::net::SocketAddr,
+        www: &std::path::Path,
+        cert_dir: &std::path::Path,
+    ) {
         let mut proxy = base_site("p", "proxy.example.test", "proxy_host");
         proxy.target_url = upstream.to_string();
         proxy.force_ssl = false;
@@ -962,10 +962,19 @@ mod edge_tests {
             default_site: DefaultSite::default(),
             tuning: HttpTuning::default(),
             cert_dir: cert_dir.to_path_buf(),
-            www_dir: unique_tmp("tls-www-base"),
+            www_dir: unique_tmp("tls-www"),
         };
         let cfg = build::build_runtime(&input).expect("tls config builds");
         store::publish(std::sync::Arc::new(cfg));
+    }
+
+    /// Like `publish_full_config`, but writes a default cert into `cert_dir` so
+    /// the TLS listener has a certificate to present.
+    fn publish_tls_config(upstream: std::net::SocketAddr, www: &std::path::Path, cert_dir: &std::path::Path) {
+        std::fs::create_dir_all(www).unwrap();
+        std::fs::write(www.join("index.html"), "STATIC-OK").unwrap();
+        write_default_cert(cert_dir);
+        publish_tls_runtime(upstream, www, cert_dir);
     }
 
     /// Bind the edge TLS listener on an ephemeral loopback port and start serving.
@@ -1347,22 +1356,7 @@ mod edge_tests {
     /// default.crt/default.key). The TLS listener's SNI resolver reads the store
     /// live, so this swaps the presented cert without re-binding.
     fn republish_tls_config(upstream: std::net::SocketAddr, www: &std::path::Path, cert_dir: &std::path::Path) {
-        let mut proxy = base_site("p", "proxy.example.test", "proxy_host");
-        proxy.target_url = upstream.to_string();
-        proxy.force_ssl = false;
-        let mut stat = base_site("s", "static.example.test", "static");
-        stat.local_root = www.to_string_lossy().to_string();
-        stat.force_ssl = false;
-        let input = ReloadInput {
-            sites: vec![proxy, stat],
-            access: Vec::new(),
-            default_site: DefaultSite::default(),
-            tuning: HttpTuning::default(),
-            cert_dir: cert_dir.to_path_buf(),
-            www_dir: unique_tmp("rtls-www"),
-        };
-        let cfg = build::build_runtime(&input).expect("tls config builds");
-        store::publish(std::sync::Arc::new(cfg));
+        publish_tls_runtime(upstream, www, cert_dir);
     }
 
     /// Measure CPU-µs/request for a TLS run at a fixed rate (returns cpu/req).
