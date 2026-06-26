@@ -121,12 +121,12 @@ fn layers_respect_dependency_rules() {
 ///
 /// Entries are path suffixes (relative to the crate root) so a capability that
 /// was split into a directory keeps a precise whitelist (e.g. only
-/// `nginx/model.rs`, not every `model.rs`).
+/// `website/model.rs`, not every `model.rs`).
 const DOMAIN_SERDE_WHITELIST: &[&str] = &[
     "core/identity/model.rs",
     "core/settings/model.rs",
     "core/mysql/catalog.rs",
-    "core/nginx/model.rs",
+    "core/website/model.rs",
 ];
 
 fn scan_core_serde(dir: &Path, violations: &mut Vec<String>) {
