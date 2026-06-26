@@ -297,6 +297,42 @@ mod edge_tests {
         validate::validate(&cfg).expect("a clean plain-HTTP config validates");
     }
 
+    #[test]
+    fn console_https_validates_with_cert_under_external_address_only() {
+        // Regression: a console with HTTPS enabled used to mark the
+        // localhost/127.0.0.1 host keys `ssl` too (no cert resolves there), so
+        // `validate` aborted the WHOLE reload — blocking the wizard's HTTPS path.
+        // The cert lives under the external address; the loopback keys stay plain.
+        let cert_dir = unique_tmp("console-tls");
+        std::fs::create_dir_all(&cert_dir).unwrap();
+        let params = rcgen::CertificateParams::new(vec!["panel.example.test".to_string()]).unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        std::fs::write(cert_dir.join("cert-console.crt"), cert.pem()).unwrap();
+        std::fs::write(cert_dir.join("cert-console.key"), key.serialize_pem()).unwrap();
+
+        let input = ReloadInput {
+            sites: Vec::new(),
+            access: Vec::new(),
+            default_site: DefaultSite::default(),
+            tuning: HttpTuning::default(),
+            cert_dir,
+            www_dir: unique_tmp("www"),
+            console: ConsoleParams {
+                external_address: "panel.example.test".to_string(),
+                https_mode: "selfsigned".to_string(),
+                initialized: true,
+            },
+        };
+        let cfg = build::build_runtime(&input).expect("console-TLS config builds");
+        validate::validate(&cfg).expect("a console-HTTPS config must validate");
+
+        // The named external route serves TLS; the loopback keys stay plain HTTP.
+        assert!(cfg.hosts.get("panel.example.test").unwrap().ssl);
+        assert!(!cfg.hosts.get("localhost").unwrap().ssl);
+        assert!(!cfg.hosts.get("127.0.0.1").unwrap().ssl);
+    }
+
     // ---- store: the zero-drop reload primitive ---------------------------
 
     #[tokio::test]

@@ -153,68 +153,78 @@ pub(crate) fn build_runtime(input: &ReloadInput) -> Result<RuntimeConfig, String
 /// so the init wizard answers ANY host on a fresh box. The console wins over a
 /// user site that collides on these names — it's how the box is managed.
 fn inject_console_route(cfg: &mut RuntimeConfig, input: &ReloadInput) {
-    let target = ProxyTarget {
+    // /api/terminal + container-exec ride WS upgrades. Built fresh per route
+    // (ProxyTarget isn't Clone), all pointing at the loopback console.
+    let mk_target = || ProxyTarget {
         scheme: "http".to_string(),
         upstream: Upstream::Fixed(format!("127.0.0.1:{CONSOLE_LOOPBACK_PORT}")),
-        websockets: true, // /api/terminal + container-exec ride WS upgrades
+        websockets: true,
         cache_assets: false,
         strip_auth: false,
     };
-    // Console TLS cert (LE/self-signed), written by the wizard as cert-console.*.
-    let cert = (input.console.https_mode != "none")
-        .then(|| {
-            load_certified_key(
-                &input.cert_dir.join("cert-console.crt"),
-                &input.cert_dir.join("cert-console.key"),
-            )
+    let console_route = |ssl: bool, force_ssl: bool, names: Vec<String>| {
+        Arc::new(ServerRoute {
+            id: "__console__".to_string(),
+            server_names: names,
+            ssl,
+            force_ssl,
+            hsts: force_ssl.then_some(Hsts {
+                max_age: 63_072_000,
+                include_sub: false,
+            }),
+            block_attacks: false,
+            trust_proxy: None,
+            access: None,
+            kind: RouteKind::Proxy(mk_target()),
+            locations: Vec::new(),
+            extra_headers: Vec::new(),
         })
-        .flatten();
-    let ssl = cert.is_some();
+    };
 
+    // A PLAIN-HTTP route for the loopback host keys — the SSH-tunnel fallback
+    // when :80 is contended. Never TLS: there is no cert for `localhost`/
+    // `127.0.0.1` (marking the route `ssl` there would make `validate` demand a
+    // cert that doesn't resolve and abort the whole reload). It doubles as the
+    // uninitialized catch-all, so the wizard rides http on any Host.
+    let loopback = console_route(
+        false,
+        false,
+        vec!["localhost".to_string(), "127.0.0.1".to_string()],
+    );
+    cfg.hosts.insert("localhost".to_string(), loopback.clone());
+    cfg.hosts.insert("127.0.0.1".to_string(), loopback.clone());
+
+    // The named, TLS-capable console route at the operator's external address
+    // (skipped when there's no address, or it IS a loopback name). The cert is
+    // indexed under that address, so an `ssl` route here actually resolves.
+    // Only ENFORCE https once setup is done: during init the wizard loads over
+    // http (the banner's init URLs); if step 1 enables a self-signed cert, an
+    // http->https redirect would break step 2's fetch (the browser rejects the
+    // untrusted cert on an XHR). So redirect + HSTS wait for `initialized`.
     let ext = input.console.external_address.trim().to_ascii_lowercase();
-    let mut names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
-    if !ext.is_empty() && !names.contains(&ext) {
-        names.insert(0, ext.clone());
+    if !ext.is_empty() && ext != "localhost" && ext != "127.0.0.1" {
+        let cert = (input.console.https_mode != "none")
+            .then(|| {
+                load_certified_key(
+                    &input.cert_dir.join("cert-console.crt"),
+                    &input.cert_dir.join("cert-console.key"),
+                )
+            })
+            .flatten();
+        let ssl = cert.is_some();
+        let enforce_ssl = ssl && input.console.initialized;
+        if let Some(ck) = cert {
+            index_cert(&mut cfg.certs, &ext, ck);
+        }
+        let named = console_route(ssl, enforce_ssl, vec![ext.clone()]);
+        cfg.hosts.insert(ext, named);
     }
 
-    // Only ENFORCE https once setup is done. During init the wizard is loaded
-    // over http (the banner's init URLs); if step 1 enables a self-signed cert,
-    // an http->https force-redirect would break step 2's fetch (the browser
-    // rejects the untrusted cert on an XHR). So redirect + HSTS wait for
-    // `initialized`; until then the cert is merely *offered* on :443.
-    let enforce_ssl = ssl && input.console.initialized;
-    let route = Arc::new(ServerRoute {
-        id: "__console__".to_string(),
-        server_names: names.clone(),
-        ssl,
-        force_ssl: enforce_ssl,
-        hsts: enforce_ssl.then_some(Hsts {
-            max_age: 63_072_000,
-            include_sub: false,
-        }),
-        block_attacks: false,
-        trust_proxy: None,
-        access: None,
-        kind: RouteKind::Proxy(target),
-        locations: Vec::new(),
-        extra_headers: Vec::new(),
-    });
-
-    // TLS SNI cert under the external address only (localhost/IP serve plain).
-    if let (Some(ck), false) = (cert, ext.is_empty()) {
-        index_cert(&mut cfg.certs, &ext, ck);
-    }
-    // The console takes these host keys (overwrites any colliding user site —
-    // reachability of the management console wins).
-    for name in &names {
-        cfg.hosts.insert(name.to_ascii_lowercase(), route.clone());
-    }
-    // While UNINITIALIZED the console is the catch-all: any Host reaches the
-    // token-gated wizard. Once initialized it answers only on its configured
-    // external address (+ localhost/127.0.0.1) — step 1 of the wizard always
-    // sets that address before step 2 flips `initialized`.
+    // While UNINITIALIZED the console is the catch-all (the plain loopback route)
+    // so any Host reaches the token-gated wizard. Once initialized it answers
+    // only on its configured external address (+ localhost/127.0.0.1).
     if !input.console.initialized {
-        cfg.console_fallback = Some(route);
+        cfg.console_fallback = Some(loopback);
     }
 }
 
