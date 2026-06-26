@@ -12,18 +12,23 @@ pub(crate) struct WsAuth {
 }
 
 /// Same-origin guard for WebSocket upgrades. When the browser sends an `Origin`,
-/// its authority must equal the request `Host`; a cross-site page is refused.
-/// A missing `Origin` (non-browser client) is allowed — the one-time ticket
-/// still authorizes. Defense in depth: auth is bearer-only (no ambient cookie),
-/// so cross-site WS hijacking is already structurally prevented; this also
-/// rejects mismatched origins before a ticket is consumed.
+/// its authority must equal the host the browser used; a cross-site page is
+/// refused. A missing `Origin` (non-browser client) is allowed — the one-time
+/// ticket still authorizes. Defense in depth: auth is bearer-only (no ambient
+/// cookie), so cross-site WS hijacking is already structurally prevented; this
+/// also rejects mismatched origins before a ticket is consumed.
+///
+/// The console runs behind the edge, which rewrites `Host` to the loopback
+/// upstream and carries the real external host in `X-Forwarded-Host` — so the
+/// comparison uses that (falling back to `Host` for a direct/tunnel connection).
 fn ws_origin_ok(headers: &header::HeaderMap) -> bool {
     let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
         return true; // no Origin header (non-browser) — ticket is the gate
     };
     let origin_authority = origin.split_once("://").map(|(_, a)| a).unwrap_or(origin);
     let host = headers
-        .get(header::HOST)
+        .get("x-forwarded-host")
+        .or_else(|| headers.get(header::HOST))
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     !host.is_empty() && origin_authority == host
@@ -138,4 +143,48 @@ pub(crate) async fn container_privileged(
     }
     let privileged = crate::app::docker::container_is_privileged(&q.container).await;
     Json(json!({ "ok": true, "data": { "privileged": privileged } })).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hm(pairs: &[(&str, &str)]) -> header::HeaderMap {
+        let mut h = header::HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                header::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                v.parse().unwrap(),
+            );
+        }
+        h
+    }
+
+    #[test]
+    fn ws_origin_matches_forwarded_host_behind_edge() {
+        // Behind the edge: Host is the loopback upstream, the real host rides
+        // X-Forwarded-Host — the Origin must match THAT, not Host.
+        assert!(ws_origin_ok(&hm(&[
+            ("origin", "https://mypanel.dn7.cn"),
+            ("x-forwarded-host", "mypanel.dn7.cn"),
+            ("host", "127.0.0.1:1080"),
+        ])));
+        // Cross-site page: Origin doesn't match the forwarded host -> refused.
+        assert!(!ws_origin_ok(&hm(&[
+            ("origin", "https://evil.example"),
+            ("x-forwarded-host", "mypanel.dn7.cn"),
+            ("host", "127.0.0.1:1080"),
+        ])));
+    }
+
+    #[test]
+    fn ws_origin_falls_back_to_host_when_not_proxied() {
+        // Direct / SSH-tunnel connection (no X-Forwarded-Host): compare to Host.
+        assert!(ws_origin_ok(&hm(&[
+            ("origin", "http://localhost:1080"),
+            ("host", "localhost:1080"),
+        ])));
+        // No Origin (non-browser client) is allowed — the ticket is the gate.
+        assert!(ws_origin_ok(&hm(&[("host", "127.0.0.1:1080")])));
+    }
 }

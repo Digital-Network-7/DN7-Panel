@@ -562,6 +562,7 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
 }
 
 /// Apply the forwarded-header rewrite (mirrors `confgen::proxy_location`):
+///   * `X-Forwarded-Host` → the original client Host (before the rewrite below).
 ///   * `Host` → the upstream authority (so the upstream sees its own vhost).
 ///   * `X-Real-IP` → the resolved client IP.
 ///   * `X-Forwarded-For` → existing value + `, ip`, else just `ip`.
@@ -579,6 +580,14 @@ fn rewrite_request_headers(
     // Strip hop-by-hop first so a client-supplied `Connection: close` etc. can't
     // leak through; on a WS handshake we keep connection/upgrade intact.
     strip_hop_by_hop(headers, is_ws);
+
+    // X-Forwarded-Host = the ORIGINAL Host the client used, captured before we
+    // overwrite Host with the upstream authority below. A proxied app (e.g. the
+    // console's WebSocket same-origin check) needs the real external host, not
+    // the loopback upstream it's now being sent to.
+    if let Some(orig_host) = headers.get(http::header::HOST).cloned() {
+        headers.insert(HeaderName::from_static("x-forwarded-host"), orig_host);
+    }
 
     // Host = upstream authority.
     if let Ok(v) = HeaderValue::from_str(authority) {
