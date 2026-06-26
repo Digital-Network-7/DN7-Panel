@@ -41,10 +41,11 @@ function logout() {
   $('login').classList.remove('hidden');
 }
 
-// First-run forced credential setup: shown after logging in while still on the
-// default account ("admin") or the auto-generated default password. A
-// non-dismissible overlay that requires a new account name (not "admin") and a
-// new password (not the default), then saves both via /api/settings.
+// Legacy post-login credential nag: shown after logging in while the account is
+// still named "admin" (the residual `must_setup` heuristic). A non-dismissible
+// overlay that requires a new account name (not "admin") and a new password,
+// then saves both via /api/settings. The token-gated first-run wizard now sets a
+// real account + password at init, so this rarely triggers.
 function forceAccountSetup(currentUser, onDone) {
   const root = $('modalRoot');
   if (document.getElementById('suGo')) return; // already open

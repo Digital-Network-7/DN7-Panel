@@ -1,8 +1,8 @@
 //! Startup banner printed to the operator's terminal on a supervisor launch.
 //!
-//! On a fresh install the auto-generated username/password are shown once; once
-//! it's been shown the password is irrecoverable, so the banner only prints a
-//! notice (with a pointer to `dn7 panel reset` to regenerate it).
+//! Before first-run setup it prints the token-gated init URLs (internal +
+//! public IP, each with `?init_token=`); once initialized it prints the console
+//! access URL. `dn7 panel reset` re-arms the init token to re-run setup.
 
 use crate::platform::config::PanelConfig;
 use std::io::{Read, Write};
