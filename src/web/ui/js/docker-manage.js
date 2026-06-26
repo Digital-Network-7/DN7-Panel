@@ -187,18 +187,12 @@ function kvRow(id, cells, opts) {
     if (opts.ipv6Val) cb.checked = true;
     row.appendChild(lab);
   }
-  if (opts.ro) {
-    const lab = el('label', { class: 'tgl' });
-    lab.innerHTML = `<input type="checkbox" /><span class="tglbox"></span><span class="tgltxt">${tr('dk.readonly')}</span>`;
-    lab.querySelector('input')._ro = true;
-    row.appendChild(lab);
-  }
   const rm = el('button', { class: 'rm', type: 'button' }, '×');
   rm.onclick = () => row.remove();
   row.appendChild(rm);
   wrap.appendChild(row);
 }
-// Read a dynamic kv list back: array of [v0, v1, ...] with .proto / .ro extras.
+// Read a dynamic kv list back: array of [v0, v1, ...] with .proto / .ipv6 extras.
 function readKv(id) {
   return Array.from($(id).querySelectorAll('.kvrow')).map((row) => {
     const vals = Array.from(row.querySelectorAll('input[type="text"], input:not([type])')).map((i) => i.value.trim());
@@ -206,7 +200,6 @@ function readKv(id) {
     const proto = row.querySelector('select');
     if (proto && proto._proto) out.proto = proto.value;
     row.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
-      if (cb._ro) out.ro = cb.checked;
       if (cb._ipv6) out.ipv6 = cb.checked;
     });
     return out;

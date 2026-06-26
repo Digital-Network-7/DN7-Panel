@@ -115,7 +115,9 @@ pub(crate) fn valid_host_line(s: &str) -> bool {
 /// Validate a docker size like "10m" / "512k" (used for log max-size).
 pub(crate) fn valid_log_size(s: &str) -> bool {
     let s = s.trim();
-    !s.is_empty()
+    // At least one digit before the unit ("m"/"k"/"g" alone is invalid: with
+    // len 1 the `take(len-1)` mantissa is empty and would pass vacuously).
+    s.len() >= 2
         && s.len() <= 10
         && s.chars().take(s.len() - 1).all(|c| c.is_ascii_digit())
         && matches!(s.chars().last(), Some('k' | 'K' | 'm' | 'M' | 'g' | 'G'))

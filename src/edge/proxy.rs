@@ -202,7 +202,9 @@ pub(crate) async fn handle(
     } else {
         proxy_plain(req).await
     };
-    if add_asset_cache {
+    // Only cache a SUCCESSFUL asset response — never a transient upstream error
+    // (502/503/504) or a 404, which would otherwise be pinned for a week.
+    if add_asset_cache && resp.status().is_success() {
         // Don't clobber an upstream that already set its own caching policy.
         if !resp.headers().contains_key(http::header::CACHE_CONTROL) {
             resp.headers_mut().insert(

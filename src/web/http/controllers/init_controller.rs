@@ -73,6 +73,12 @@ pub(crate) async fn init_step2(State(state): State<Shared>, Json(req): Json<Step
     if locked_initialized(&state) {
         return init_err("已初始化");
     }
+    // Step 1 must have completed first — it sets the external address (and issues
+    // any cert). Without it, a direct step2 would flip `initialized` while
+    // leaving TLS/address setup skipped (and the console stranded on localhost).
+    if lock_settings(&state).external_address.trim().is_empty() {
+        return init_err("请先完成第一步（设置对外访问地址）");
+    }
     let un = req.username.trim().to_string();
     if !crate::app::users::valid_username(&un) {
         return init_err("用户名格式不正确（小写字母/数字/_/-，1-32 位，且不能为 root）");

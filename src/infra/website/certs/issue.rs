@@ -217,7 +217,9 @@ pub(crate) async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()
     // write, no reload. We capture the tokens so they can be dropped afterwards.
     op_push(op_id, &pmsg("ng.prep_http", &[]));
     let served_tokens = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let (cert_chain_pem, key_pem) = {
+    // Don't `?` the dance here: a failed issuance must still hit the token
+    // cleanup below, or the in-memory challenge tokens leak on every failure.
+    let dance = {
         let served = served_tokens.clone();
         acme_http01(op_id, &host, move |chals| async move {
             let mut toks = Vec::new();
@@ -228,9 +230,9 @@ pub(crate) async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()
             *served.lock().unwrap_or_else(|p| p.into_inner()) = toks;
             Ok(())
         })
-        .await?
+        .await
     };
-    // Best-effort cleanup of the in-memory challenge tokens.
+    // Best-effort cleanup of the in-memory challenge tokens (success OR failure).
     for token in served_tokens
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -238,6 +240,7 @@ pub(crate) async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()
     {
         crate::edge::acme_remove(token);
     }
+    let (cert_chain_pem, key_pem) = dance?;
 
     // Persist the issued chain + key into the certificate library (a named
     // cert), so the cert shows up under SSL certificate management and is

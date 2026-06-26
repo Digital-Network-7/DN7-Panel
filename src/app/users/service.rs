@@ -127,35 +127,50 @@ async fn create_with(env: &impl UsersEnv, req: &NewUser<'_>) -> Result<PanelUser
     )
     .await
     .map_err(|e| Error::Persist(e.to_string()))?;
-    let (uid, _home) = env.getpwnam(req.username).unwrap_or((0, String::new()));
-    // Store Argon2id(verifier), not the client verifier itself, so a leaked user
-    // file can't be replayed as a login.
-    let pw_hash = crate::infra::auth::hash_verifier(&req.pw_hash.to_lowercase())
-        .ok_or_else(|| Error::Persist("密码哈希失败".to_string()))?;
-    let user = PanelUser {
-        username: req.username.to_string(),
-        pw_salt: req.pw_salt.to_string(),
-        pw_hash,
-        pw_kdf: req.pw_kdf.to_string(),
-        role: req.role.to_string(),
-        full_name: req.full_name.to_string(),
-        nickname: String::new(),
-        avatar: String::new(),
-        totp_secret: String::new(),
-        totp_enabled: false,
-        uid,
-    };
-    let u = user.clone();
-    let mut pushed = Some(u);
-    env.mutate(&mut |users| {
-        let u = pushed.take().ok_or(Error::UserExists)?;
-        if users.iter().any(|x| x.username == u.username) {
-            return Err(Error::UserExists);
-        }
-        users.push(u);
-        Ok(())
-    })?;
-    Ok(user)
+
+    // The backing OS account now EXISTS. Build + store the panel record, and on
+    // ANY later failure roll the OS account back — otherwise a failed create
+    // leaves an orphaned (possibly sudo) Linux account behind.
+    let result: Result<PanelUser> = async {
+        // getpwnam must resolve a just-created account; a None here is a real
+        // failure — never default the stored uid to 0 (root's uid).
+        let (uid, _home) = env
+            .getpwnam(req.username)
+            .ok_or_else(|| Error::Persist("无法解析新账号的 uid".to_string()))?;
+        // Store Argon2id(verifier), not the client verifier itself, so a leaked
+        // user file can't be replayed as a login.
+        let pw_hash = crate::infra::auth::hash_verifier(&req.pw_hash.to_lowercase())
+            .ok_or_else(|| Error::Persist("密码哈希失败".to_string()))?;
+        let user = PanelUser {
+            username: req.username.to_string(),
+            pw_salt: req.pw_salt.to_string(),
+            pw_hash,
+            pw_kdf: req.pw_kdf.to_string(),
+            role: req.role.to_string(),
+            full_name: req.full_name.to_string(),
+            nickname: String::new(),
+            avatar: String::new(),
+            totp_secret: String::new(),
+            totp_enabled: false,
+            uid,
+        };
+        let mut pushed = Some(user.clone());
+        env.mutate(&mut |users| {
+            let u = pushed.take().ok_or(Error::UserExists)?;
+            if users.iter().any(|x| x.username == u.username) {
+                return Err(Error::UserExists);
+            }
+            users.push(u);
+            Ok(())
+        })?;
+        Ok(user)
+    }
+    .await;
+
+    if result.is_err() {
+        let _ = env.remove(req.username).await; // best-effort rollback
+    }
+    result
 }
 
 /// Validate a new-user request (username chars, role, and well-formed hex

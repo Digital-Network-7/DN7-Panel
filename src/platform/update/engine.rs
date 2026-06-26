@@ -297,11 +297,8 @@ pub async fn self_update(cfg: &PanelConfig) -> Result<PathBuf> {
                 "self-update: source {} failed ({e}); failing over",
                 primary.source.as_str()
             );
-            // Force a re-probe next time and try the other source now.
-            let mut st = UpdateState::load();
-            st.chosen = None;
-            st.probed_at = 0;
-            let _ = st.save();
+            // Try the other source now — `release_from` below selects it
+            // directly; there is no probe cache to reset.
             set_progress(0);
             set_bytes(0, 0);
             let fb = fetch::release_from(cfg, primary.source.other()).await?;

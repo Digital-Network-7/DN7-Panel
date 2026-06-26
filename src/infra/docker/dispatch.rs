@@ -92,6 +92,8 @@ pub(crate) async fn guard_managed_ops(req: &Req) -> Result<()> {
         "start_container",
         "stop_container",
         "restart_container",
+        "pause_container",
+        "unpause_container",
         "remove_container",
         "logs",
         "inspect_container",

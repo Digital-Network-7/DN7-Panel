@@ -146,9 +146,9 @@ pub(crate) async fn users_update(
     if !accounts::can_manage(actor_lvl, role_level(&target.role)) {
         return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
     }
-    // Optional role change (also adjusts the sudo group). The new role must
-    // also be strictly below the actor.
-    if let Err(r) = apply_role_change(&req, &target.role, actor_lvl).await {
+    // Validate an optional role change (the new role must be strictly below the
+    // actor). The OS sudo-group change is applied AFTER the persist below.
+    if let Err(r) = validate_role_change(&req, actor_lvl) {
         return r;
     }
     // Optional password reset (admin-set; no old password needed).
@@ -175,6 +175,16 @@ pub(crate) async fn users_update(
     if let Err(e) = res {
         return map_core_err(e);
     }
+    // Apply the OS sudo-group change AFTER persisting the panel role (the store
+    // is the source of truth) — a persist failure must not leave the OS sudo
+    // group and the stored role divergent.
+    if let Some(role) = &req.role {
+        if *role != target.role {
+            if let Err(e) = crate::infra::system::set_sudo(&req.username, role == "admin").await {
+                return Json(op_err_body(e)).into_response();
+            }
+        }
+    }
     if let Some(f) = &req.full_name {
         let _ = crate::infra::system::set_full_name(&req.username, f.trim()).await;
     }
@@ -193,25 +203,17 @@ pub(crate) async fn users_update(
     Json(json!({ "ok": true })).into_response()
 }
 
-/// Apply an optional role change: validate the role, ensure it's strictly below
-/// the actor's level, and adjust the sudo group when it actually changes.
+/// Validate an optional role change: the role is well-formed and strictly below
+/// the actor's level. Pure check — the OS sudo-group side effect is applied by
+/// the caller after the panel role is persisted.
 #[allow(clippy::result_large_err)]
-async fn apply_role_change(
-    req: &UpdateUserReq,
-    target_role: &str,
-    actor_lvl: u8,
-) -> Result<(), Response> {
+fn validate_role_change(req: &UpdateUserReq, actor_lvl: u8) -> Result<(), Response> {
     let Some(role) = &req.role else { return Ok(()) };
     if !matches!(role.as_str(), "admin" | "user") {
         return Err(map_core_err(crate::core::Error::RoleInvalid));
     }
     if !accounts::can_manage(actor_lvl, role_level(role)) {
         return Err(api_err(StatusCode::FORBIDDEN, "auth.forbidden"));
-    }
-    if role != target_role {
-        if let Err(e) = crate::infra::system::set_sudo(&req.username, role == "admin").await {
-            return Err(Json(op_err_body(e)).into_response());
-        }
     }
     Ok(())
 }

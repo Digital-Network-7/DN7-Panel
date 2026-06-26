@@ -47,7 +47,13 @@ pub(crate) async fn container_ip(target: &str) -> Option<String> {
 /// container IP). Returns None when the port isn't published, or is published
 /// only on a specific *external* interface that loopback can't reach (the caller
 /// then falls back to the container IP).
-pub(crate) async fn published_host_port(target: &str, container_port: i64) -> Option<u16> {
+/// Returns the loopback host to dial (`127.0.0.1` or `[::1]`) plus the published
+/// host port — the address family must match the binding, since an IPv6-only
+/// (`::1`/`::`/`[::]`) binding is NOT reachable over IPv4 `127.0.0.1`.
+pub(crate) async fn published_host_port(
+    target: &str,
+    container_port: i64,
+) -> Option<(&'static str, u16)> {
     let dkr = crate::infra::docker::dkr().ok()?;
     let inspect = dkr.inspect_container(target, None).await.ok()?;
     let ports = inspect.network_settings.and_then(|n| n.ports)?;
@@ -60,19 +66,17 @@ pub(crate) async fn published_host_port(target: &str, container_port: i64) -> Op
         }
         if let Some(binds) = binds {
             for b in binds {
-                // A binding to a specific external IP (e.g. 1.2.3.4) is NOT
-                // reachable from the host's nginx via 127.0.0.1, so only accept
-                // wildcard / loopback HostIps. Empty == 0.0.0.0 (all interfaces).
+                // Only wildcard / loopback HostIps are reachable from the edge;
+                // a specific external IP (e.g. 1.2.3.4) is skipped. The loopback
+                // family must match the binding (empty == 0.0.0.0, all IPv4).
                 let host_ip = b.host_ip.as_deref().unwrap_or("");
-                let loopback_reachable = matches!(
-                    host_ip,
-                    "" | "0.0.0.0" | "127.0.0.1" | "::" | "::1" | "[::]"
-                );
-                if !loopback_reachable {
-                    continue;
-                }
+                let loopback = match host_ip {
+                    "" | "0.0.0.0" | "127.0.0.1" => "127.0.0.1",
+                    "::" | "::1" | "[::]" => "[::1]",
+                    _ => continue,
+                };
                 if let Some(hp) = b.host_port.and_then(|p| p.parse::<u16>().ok()) {
-                    return Some(hp);
+                    return Some((loopback, hp));
                 }
             }
         }
@@ -87,8 +91,8 @@ pub(crate) async fn resolve_container_upstream(
     container: &str,
     container_port: i64,
 ) -> Result<String> {
-    if let Some(hp) = published_host_port(container, container_port).await {
-        Ok(format!("127.0.0.1:{hp}"))
+    if let Some((host, hp)) = published_host_port(container, container_port).await {
+        Ok(format!("{host}:{hp}"))
     } else {
         let ip = container_ip(container).await.ok_or_else(|| {
             anyhow!(

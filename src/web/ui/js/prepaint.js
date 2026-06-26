@@ -6,6 +6,13 @@
 // can use a strict `script-src 'self'` with no `'unsafe-inline'`.
 (function () {
   try {
+    // Brand config arrives as a same-origin JSON data block (CSP-safe; a strict
+    // `script-src 'self'` blocks an inline brand script). Parse it into
+    // window.__BRAND__ for this and the later app scripts (theme/settings).
+    try {
+      var bn = document.getElementById('__dn7_brand__');
+      if (bn) window.__BRAND__ = JSON.parse(bn.textContent || '{}');
+    } catch (e) { /* fall back to default branding */ }
     var m = localStorage.getItem('dn7_theme') || (window.__BRAND__ && window.__BRAND__.theme) || 'auto';
     var eff = m;
     if (m === 'auto') eff = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';

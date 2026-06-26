@@ -72,6 +72,7 @@ pub(crate) fn is_read_op(op: &str) -> bool {
             | "list_access"
             | "list_containers"
             | "list_named_certs"
+            | "get_settings"
             | "list_ops"
             | "list_sites"
             | "op_log"

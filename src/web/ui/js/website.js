@@ -255,7 +255,7 @@ function ngAddSite(reload, site) {
       if (editing && site.access_id) sel.value = site.access_id;
     }).catch(() => {});
 
-    const staticUpload = { mode: null, zip: null, files: [] };
+    const staticUpload = { mode: null, zip: null };
     // Static-site source: 'upload' (managed www subdir) or 'local' (existing
     // host directory). `setStaticSource` is wired when the static fields render.
     let staticSource = 'upload';
@@ -304,10 +304,10 @@ function ngAddSite(reload, site) {
     const wireStaticPickers = () => {
       const drop = $('nsDrop');
       drop.onclick = () => $('nsZip').click();
-      $('nsZip').onchange = (e) => { const f = e.target.files[0]; if (!f) return; staticUpload.mode = 'zip'; staticUpload.zip = f; staticUpload.files = []; $('nsUpList').innerHTML = tr('ng.sel_zip', { name: esc(f.name), size: fmtBytes(f.size) }); };
+      $('nsZip').onchange = (e) => { const f = e.target.files[0]; if (!f) return; staticUpload.mode = 'zip'; staticUpload.zip = f; $('nsUpList').innerHTML = tr('ng.sel_zip', { name: esc(f.name), size: fmtBytes(f.size) }); };
       ['dragover', 'dragenter'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('drag'); }));
       ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('drag'); }));
-      drop.addEventListener('drop', (e) => { const f = (e.dataTransfer.files || [])[0]; if (f && /\.zip$/i.test(f.name)) { staticUpload.mode = 'zip'; staticUpload.zip = f; staticUpload.files = []; $('nsUpList').innerHTML = tr('ng.sel_zip', { name: esc(f.name), size: fmtBytes(f.size) }); } });
+      drop.addEventListener('drop', (e) => { const f = (e.dataTransfer.files || [])[0]; if (f && /\.zip$/i.test(f.name)) { staticUpload.mode = 'zip'; staticUpload.zip = f; $('nsUpList').innerHTML = tr('ng.sel_zip', { name: esc(f.name), size: fmtBytes(f.size) }); } });
     };
 
     // Prefill the kind-specific fields when editing (re-run after kindFields()
@@ -455,19 +455,6 @@ async function uploadStatic(root, su) {
     const r = await fetch('/api/website/static-upload?' + qs, { method: 'POST', headers: authHeaders(), body: su.zip });
     const b = await r.json().catch(() => ({}));
     if (!r.ok || b.ok === false) throw new Error(b.error || tr('ng.upload_failed'));
-    return;
-  }
-  if (su.mode === 'dir' && su.files.length) {
-    for (let i = 0; i < su.files.length; i++) {
-      const f = su.files[i];
-      let rel = f.webkitRelativePath || f.name;
-      const slash = rel.indexOf('/');
-      if (slash > 0) rel = rel.slice(slash + 1);
-      const qs = `root=${encodeURIComponent(root)}&mode=file&rel=${encodeURIComponent(rel)}` + (i === 0 ? '&clear=1' : '');
-      const r = await fetch('/api/website/static-upload?' + qs, { method: 'POST', headers: authHeaders(), body: f });
-      const b = await r.json().catch(() => ({}));
-      if (!r.ok || b.ok === false) throw new Error(b.error || (tr('ng.upload_failed') + '：' + rel));
-    }
   }
 }
 

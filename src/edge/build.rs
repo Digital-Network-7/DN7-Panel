@@ -349,6 +349,10 @@ fn build_trust_proxy(site: &Site) -> TrustProxy {
         .trust_proxy_cidrs
         .split_whitespace()
         .filter_map(parse_net)
+        // Never trust a default route (`0.0.0.0/0` / `::/0`): it would trust
+        // every peer and let any client forge X-Forwarded-For, defeating the
+        // real-IP/ACL logic. Dropping it falls back to the private/loopback set.
+        .filter(|n| n.prefix_len() != 0)
         .collect();
     let sources = if explicit.is_empty() {
         [

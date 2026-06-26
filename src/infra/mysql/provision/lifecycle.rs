@@ -52,6 +52,12 @@ pub(crate) async fn credentials(req: &Req) -> Result<Value> {
     let user = if m.admin_user.is_empty() {
         "root".to_string()
     } else {
+        // The non-root admin account is created post-install; if that step was
+        // skipped (init timed out before the instance was ready), the manifest
+        // advertises an account that doesn't exist yet. Best-effort (idempotent
+        // CREATE USER IF NOT EXISTS) ensure it exists now that we're handing the
+        // operator these credentials. No-op once it's there / if still not ready.
+        create_admin_user(&m.container, &password, &m.admin_user).await;
         m.admin_user.clone()
     };
     Ok(json!({
@@ -73,12 +79,20 @@ pub(crate) async fn reset_password(req: &Req) -> Result<Value> {
     let new = gen_password();
 
     // ALTER USER over the local socket, authenticating with the current root
-    // password. Values are passed as separate argv entries (no shell).
-    let sql = format!(
-        "ALTER USER 'root'@'localhost' IDENTIFIED BY '{}'; ALTER USER 'root'@'%' IDENTIFIED BY '{}'; FLUSH PRIVILEGES;",
-        sql_escape(&new),
-        sql_escape(&new)
+    // password. Values are passed as separate argv entries (no shell). Rotate
+    // root on both hosts AND the non-root admin account (it shares the password
+    // and credentials() advertises it — it must not be left with the old one).
+    let np = sql_escape(&new);
+    let mut sql = format!(
+        "ALTER USER 'root'@'localhost' IDENTIFIED BY '{np}'; ALTER USER 'root'@'%' IDENTIFIED BY '{np}';"
     );
+    if !m.admin_user.is_empty() && m.admin_user != "root" {
+        sql.push_str(&format!(
+            " ALTER USER '{}'@'%' IDENTIFIED BY '{np}';",
+            sql_escape(&m.admin_user)
+        ));
+    }
+    sql.push_str(" FLUSH PRIVILEGES;");
     let (code, out) = mysql_exec(&m.container, &old, &sql).await?;
     if code != 0 {
         return Err(anyhow!(

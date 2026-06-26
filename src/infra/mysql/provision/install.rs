@@ -205,7 +205,7 @@ pub(crate) async fn run_install_detached(op_id: &str, spec: InstallSpec) -> Resu
 /// When the admin account isn't root, create it as a full-privilege user
 /// sharing the same password (root stays the panel's internal superuser).
 /// No-op for `root` or an invalid identifier.
-async fn create_admin_user(container: &str, password: &str, admin_user: &str) {
+pub(crate) async fn create_admin_user(container: &str, password: &str, admin_user: &str) {
     if admin_user == "root" || !valid_ident(admin_user, false) {
         return;
     }

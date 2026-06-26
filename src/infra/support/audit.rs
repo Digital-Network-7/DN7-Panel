@@ -204,11 +204,16 @@ fn append_and_trim(line: &str) {
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&p)
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    // Set 0600 AT creation so the file (and its first line) is never world-
+    // readable, even briefly, before the set_permissions below re-asserts it.
+    #[cfg(unix)]
     {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    if let Ok(mut f) = opts.open(&p) {
         let _ = writeln!(f, "{line}");
     }
     #[cfg(unix)]

@@ -277,9 +277,12 @@ pub(crate) async fn rename_network(req: &Req) -> Result<Value> {
 
     // Detach all containers, then remove the old network (frees the subnet).
     detach_members(&dkr, &old, &members).await;
-    dkr.remove_network(&old)
-        .await
-        .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
+    if let Err(e) = dkr.remove_network(&old).await {
+        // Couldn't free the old network — re-attach the members we just detached
+        // so they don't lose connectivity, then surface the error.
+        reattach_members(&dkr, &old, &members).await;
+        return Err(anyhow!(friendly_docker_err(&e)));
+    }
 
     // Create the renamed network. On failure, restore the original + members.
     if let Err(e) = dkr.create_network(spec.create_opts(new)).await {

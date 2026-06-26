@@ -97,6 +97,15 @@ pub(crate) async fn create_user(req: &Req) -> Result<Value> {
     if !valid_ident(user, false) {
         return Err(mysql_err(MysqlError::UserNameRules));
     }
+    // Refuse reserved system-account names (valid_ident allows 'root' and the
+    // 'mysql.'/'mariadb.' prefixes) — drop_user won't delete them, so creating
+    // one would be a non-removable, possibly superuser-shadowing account.
+    if user.eq_ignore_ascii_case("root")
+        || user.starts_with("mysql.")
+        || user.starts_with("mariadb.")
+    {
+        return Err(mysql_err(MysqlError::UserNameRules));
+    }
     if !valid_ident(host, true) {
         return Err(mysql_err(MysqlError::BadHost));
     }

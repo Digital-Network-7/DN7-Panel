@@ -345,15 +345,16 @@ async fn recreate_from_snapshot(
     Ok(())
 }
 
-/// A compact UTC-ish timestamp for backup file names (YYYYMMDD-HHMMSS-derived).
-/// Uses seconds-since-epoch to avoid a chrono/time dependency; monotonic and
-/// unique enough for backup ordering.
+/// A compact timestamp for backup file names. Uses MILLIS-since-epoch (no
+/// chrono/time dependency): monotonic + sortable, and collision-resistant so two
+/// backups of the same container within the same second don't clobber each other
+/// (whole-second stems used to silently overwrite).
 pub(crate) fn now_stamp() -> String {
-    let secs = std::time::SystemTime::now()
+    let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis())
         .unwrap_or(0);
-    format!("{secs}")
+    format!("{millis}")
 }
 
 /// Open a container backup file for streaming download. Validates the

@@ -135,16 +135,20 @@ pub fn render_index(tmpl: &str, b: &Branding) -> String {
         b.logo.clone()
     };
     // Public, non-secret brand info for the runtime JS (theme fallback, etc.).
-    let global = format!(
-        "<script>window.__BRAND__={};</script>",
-        serde_json::to_string(&serde_json::json!({
-            "name": b.panel_name,
-            "logo": b.logo,
-            "accent": b.accent,
-            "theme": b.theme_default,
-        }))
-        .unwrap_or_else(|_| "{}".into())
-    );
+    // Emitted as a JSON *data* block (not an inline `<script>`) so it isn't
+    // blocked by the strict `script-src 'self'` CSP — prepaint.js (a same-origin
+    // script) parses it into `window.__BRAND__`. `<` is escaped to `<` so a
+    // brand value can't break out of the block via `</script>`.
+    let brand_json = serde_json::to_string(&serde_json::json!({
+        "name": b.panel_name,
+        "logo": b.logo,
+        "accent": b.accent,
+        "theme": b.theme_default,
+    }))
+    .unwrap_or_else(|_| "{}".into())
+    .replace('<', "\\u003c");
+    let global =
+        format!("<script type=\"application/json\" id=\"__dn7_brand__\">{brand_json}</script>");
     let favicon = format!(
         "<link rel=\"icon\" type=\"image/svg+xml\" href=\"{}\" />",
         esc(&favicon_href)
@@ -224,7 +228,8 @@ mod tests {
     fn render_default_keeps_builtin_mark_and_name() {
         let tmpl = "<title>DN7 Panel</title><!--__DN7_HEAD__--><span><!--__DN7_BRAND_MARK__--></span><h1>__DN7_BRAND_NAME__</h1>";
         let out = render_index(tmpl, &Branding::default());
-        assert!(out.contains("window.__BRAND__"));
+        // Brand config is a CSP-safe JSON data block (not an inline script).
+        assert!(out.contains("id=\"__dn7_brand__\""));
         assert!(out.contains("<svg")); // built-in mark
         assert!(out.contains(">DN7 Panel</h1>"));
         assert!(!out.contains("__DN7_BRAND_NAME__"));
