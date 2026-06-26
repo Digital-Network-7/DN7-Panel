@@ -87,8 +87,11 @@ pub(crate) async fn reset_password(req: &Req) -> Result<Value> {
         "ALTER USER 'root'@'localhost' IDENTIFIED BY '{np}'; ALTER USER 'root'@'%' IDENTIFIED BY '{np}';"
     );
     if !m.admin_user.is_empty() && m.admin_user != "root" {
+        // IF EXISTS: the admin account may not have been created yet (a timed-out
+        // install). Without it, this ALTER would fail the whole batch AFTER root's
+        // password was already changed — desyncing root_enc and locking us out.
         sql.push_str(&format!(
-            " ALTER USER '{}'@'%' IDENTIFIED BY '{np}';",
+            " ALTER USER IF EXISTS '{}'@'%' IDENTIFIED BY '{np}';",
             sql_escape(&m.admin_user)
         ));
     }

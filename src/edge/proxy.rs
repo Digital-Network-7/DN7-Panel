@@ -200,6 +200,12 @@ pub(crate) async fn handle(
     let mut resp = if is_ws {
         proxy_websocket(req, target, &authority).await
     } else {
+        // The upstream (a managed site or the loopback console) speaks HTTP/1.
+        // The inbound request may be HTTP/2 — the edge's TLS listener negotiates
+        // h2 via ALPN — and forwarding it as-is makes the h1 upstream client
+        // reject it ("Connection is HTTP/1, but request requires HTTP/2" ->
+        // 502). Terminate the client's protocol here and speak h1 to the backend.
+        *req.version_mut() = http::Version::HTTP_11;
         proxy_plain(req).await
     };
     // Only cache a SUCCESSFUL asset response — never a transient upstream error

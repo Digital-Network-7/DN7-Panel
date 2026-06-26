@@ -167,8 +167,15 @@ async fn create_with(env: &impl UsersEnv, req: &NewUser<'_>) -> Result<PanelUser
     }
     .await;
 
-    if result.is_err() {
-        let _ = env.remove(req.username).await; // best-effort rollback
+    // Roll back the OS account we just provisioned on failure — EXCEPT a
+    // concurrent-create race (UserExists from the under-lock re-check). provision
+    // ADOPTS a pre-existing account, so the race winner and loser share ONE OS
+    // account; removing it on the loser's path would delete the winner's account
+    // (orphaning the record the winner just persisted).
+    if let Err(e) = &result {
+        if !matches!(e, Error::UserExists) {
+            let _ = env.remove(req.username).await; // best-effort rollback
+        }
     }
     result
 }
@@ -364,6 +371,12 @@ mod tests {
         assert!(matches!(e, Error::UserExists));
         assert_eq!(env.provisioned.borrow().as_slice(), ["alice"]); // OS side ran
         assert_eq!(env.users.borrow().len(), 1); // only the racing one
+                                                 // The loser must NOT roll back: provision adopts the SHARED OS account,
+                                                 // so removing it would delete the race winner's account.
+        assert!(
+            env.removed.borrow().is_empty(),
+            "loser must not remove the shared account"
+        );
     }
 
     #[tokio::test]
