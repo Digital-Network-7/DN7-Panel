@@ -255,7 +255,12 @@ fn inspect_volumes(hc: &bollard::models::HostConfig) -> Vec<Value> {
     };
     for b in binds {
         let parts: Vec<&str> = b.split(':').collect();
-        if parts.len() >= 2 && parts[0].starts_with('/') {
+        // A bind entry is `src:dst[:opts]` where `src` is EITHER an absolute host
+        // path (bind mount) OR a named docker volume. Emit BOTH — the create side
+        // distinguishes them by the leading '/'. Skipping named volumes here meant
+        // edit/upgrade/backup-restore (which force-recreate from this read-back)
+        // dropped every named volume, silently detaching the container's data.
+        if parts.len() >= 2 && !parts[0].is_empty() {
             volumes.push(json!({
                 "host": parts[0],
                 "container": parts[1],
@@ -310,4 +315,29 @@ pub(crate) async fn get_container_config(req: &Req) -> Result<Value> {
     let dkr = dkr()?;
     let body = container_create_body(&dkr, &r).await?;
     Ok(json!({ "config": body }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inspect_volumes_captures_binds_and_named_volumes() {
+        let hc = bollard::models::HostConfig {
+            binds: Some(vec![
+                "/srv/data:/data".to_string(),
+                "appvol:/var/lib/app".to_string(), // named volume — was silently dropped
+                "rovol:/etc/conf:ro".to_string(),
+            ]),
+            ..Default::default()
+        };
+        let v = inspect_volumes(&hc);
+        assert_eq!(v.len(), 3, "named volumes must round-trip, not be dropped");
+        assert_eq!(v[0]["host"], "/srv/data");
+        assert_eq!(v[0]["container"], "/data");
+        assert_eq!(v[1]["host"], "appvol");
+        assert_eq!(v[1]["container"], "/var/lib/app");
+        assert_eq!(v[2]["host"], "rovol");
+        assert_eq!(v[2]["readonly"], true);
+    }
 }

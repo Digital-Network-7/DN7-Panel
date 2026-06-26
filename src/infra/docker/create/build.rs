@@ -331,20 +331,9 @@ fn spec_binds(req: &Req) -> Result<Vec<String>> {
         // Source is either an absolute host path (bind mount) or a named docker
         // volume (no leading slash). The container target is always absolute.
         if host.starts_with('/') {
-            validate_path(host)?;
-            // Reject host-compromise bind sources (docker socket, /etc, /root,
-            // kernel pseudo-fs, …) — unconditional, regardless of caller.
-            if crate::core::docker::host_bind_denied(host) {
-                return Err(docker_err(DockerError::BindHostPathDenied));
-            }
-            // The deny-list above is lexical; also resolve symlinks so a host
-            // symlink under an allowed path (e.g. `/srv/data -> /etc`) can't mount
-            // the protected target. Re-check the canonical form when it exists.
-            if let Ok(canon) = std::fs::canonicalize(host) {
-                if crate::core::docker::host_bind_denied(&canon.to_string_lossy()) {
-                    return Err(docker_err(DockerError::BindHostPathDenied));
-                }
-            }
+            // Host-compromise gate (deny-list + symlink re-check), shared with
+            // create_volume_op so the two bind-source paths can't drift.
+            validate_bind_source(host)?;
         } else {
             validate_name(host)?;
         }

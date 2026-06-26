@@ -51,11 +51,12 @@ pub(crate) async fn create_volume_op(req: &Req) -> Result<Value> {
         ..Default::default()
     };
     // Optional host path: back the volume with a bind mount to an absolute host
-    // directory (local driver: type=none, o=bind, device=<path>).
+    // directory (local driver: type=none, o=bind, device=<path>). This volume is
+    // a bind mount the moment it's attached by name, and a named volume hides its
+    // host path from `spec_binds` — so the host-compromise deny-list MUST run HERE
+    // too (same shared gate as container-create binds), or it's a full bypass.
     if let Some(dev) = req.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        if !dev.starts_with('/') {
-            return Err(docker_err(DockerError::PathNotAbsolute));
-        }
+        validate_bind_source(dev)?;
         let mut o = HashMap::new();
         o.insert("type".to_string(), "none".to_string());
         o.insert("o".to_string(), "bind".to_string());

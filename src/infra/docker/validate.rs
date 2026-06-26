@@ -119,6 +119,28 @@ pub(crate) fn validate_path(s: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate an absolute host path used as a bind-mount SOURCE — for a container
+/// volume OR a host-path-backed `local`/bind named volume. Both end up as a real
+/// bind mount the daemon resolves, so this is the single host-compromise gate:
+/// bad-char check, the lexical deny-list (docker socket, `/`, `/etc`, `/root`,
+/// kernel pseudo-fs, …), and a symlink re-check (canonicalize → deny-list) so a
+/// host symlink under an allowed path can't mount a denied target. Factored out
+/// of `spec_binds` so the container-create and volume-create paths share ONE
+/// gate and can't drift — a named volume hides its host path from `spec_binds`,
+/// so the deny-list MUST also run at volume-create time.
+pub(crate) fn validate_bind_source(host: &str) -> Result<()> {
+    validate_path(host)?;
+    if crate::core::docker::host_bind_denied(host) {
+        return Err(docker_err(DockerError::BindHostPathDenied));
+    }
+    if let Ok(canon) = std::fs::canonicalize(host) {
+        if crate::core::docker::host_bind_denied(&canon.to_string_lossy()) {
+            return Err(docker_err(DockerError::BindHostPathDenied));
+        }
+    }
+    Ok(())
+}
+
 /// Validate an env var entry "KEY=VALUE". KEY must be a valid identifier; VALUE
 /// is taken verbatim (it's a separate argv entry, so no shell interpretation),
 /// but we still reject newlines.
@@ -143,4 +165,33 @@ pub(crate) fn validate_env(s: &str) -> Result<()> {
         return Err(docker_err(DockerError::EnvBadChars));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bind_source_rejects_host_compromise_paths() {
+        // The deny-list (lexical, incl. `//`/`/.` normalization) applies to the
+        // bind/volume SOURCE — these must be rejected on BOTH container-create and
+        // volume-create paths via this one gate.
+        for p in [
+            "/",
+            "/etc",
+            "/etc/shadow",
+            "/root/.ssh",
+            "/var/run/docker.sock",
+            "/run/docker.sock",
+            "/proc/1/mem",
+            "//etc/./shadow",
+        ] {
+            assert!(validate_bind_source(p).is_err(), "{p} must be denied");
+        }
+        // Bad chars / non-absolute are rejected before the deny-list.
+        assert!(validate_bind_source("/srv:data").is_err());
+        assert!(validate_bind_source("relative/path").is_err());
+        // A benign, non-existent absolute path passes (canonicalize skipped on ENOENT).
+        assert!(validate_bind_source("/srv/dn7-nonexistent-bindsrc-test").is_ok());
+    }
 }

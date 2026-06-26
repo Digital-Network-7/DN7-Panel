@@ -283,6 +283,14 @@ pub(crate) async fn twofa_setup(
         Ok(a) => a,
         Err(r) => return r,
     };
+    // Refuse to (re)enroll while 2FA is already on: this path rotates the secret
+    // and writes enabled=false, so without this guard a bare POST would silently
+    // DISABLE the live second factor with no TOTP code. The user must go through
+    // `disable` first (which requires a valid code). (resolve_account reads the
+    // enabled flag live from the store, so this can't be a stale view.)
+    if a.totp_enabled {
+        return api_err(StatusCode::CONFLICT, "auth.2fa_already_on");
+    }
     let secret = crate::infra::support::totp::gen_secret();
     let issuer = branding::load().panel_name;
     let uri = crate::infra::support::totp::provisioning_uri(&issuer, &a.username, &secret);

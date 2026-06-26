@@ -218,12 +218,20 @@ pub fn version_gt(a: &str, b: &str) -> bool {
     }
 }
 
-/// Re-exec the canonical supervisor binary in this process's place (no args, so
-/// it comes back as the supervisor role). On success this never returns.
+/// Re-exec the canonical supervisor binary in this process's place. On success
+/// this never returns.
+///
+/// MUST pass `--foreground`: this process is already detached (systemd launches
+/// us as `{BIN} --foreground`, or we self-daemonized), so re-entering `main`
+/// with empty argv would make it daemonize AGAIN — double-forking out from under
+/// systemd, which then sees MainPID exit and fires `Restart=always` (restart
+/// churn on every auto-update, logs silently leaving journald). The flag routes
+/// to the supervisor role and skips daemonization, keeping the PID stable.
 fn reexec_supervisor() {
     use std::os::unix::process::CommandExt;
     let exe = crate::platform::paths::stable_bin();
     let err = std::process::Command::new(&exe)
+        .arg("--foreground")
         .current_dir(crate::platform::paths::INSTALL_DIR)
         .exec();
     tracing::warn!("supervisor re-exec failed: {err}");
