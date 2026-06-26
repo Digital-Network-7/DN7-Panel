@@ -337,15 +337,26 @@ function buildContainerActions(holder, reload) {
 // clean menu rows; `{ sep:true }` inserts a divider.
 function mkHoverPanel(trigger, items) {
   const panel = el('div', { class: 'dk-pop' });
+  panel.setAttribute('role', 'menu');
   items.forEach((it) => {
     if (it.sep) { panel.appendChild(el('div', { class: 'mi-sep' })); return; }
     const b = el('button', { class: 'mi' + (it.cls === 'danger' ? ' danger' : '') }, it.label);
+    b.setAttribute('role', 'menuitem');
     b.onclick = () => { hide(); it.fn(); };
     panel.appendChild(b);
   });
-  let timer;
+  let timer, open = false, mounted = false, docHandler = null;
+  // The Advanced menu's trigger is a <button> (Enter/Space fire a native click);
+  // the status chip is a <span>, so make it focusable + announce the popup.
+  const isButton = trigger.tagName === 'BUTTON';
+  if (!isButton) {
+    if (!trigger.hasAttribute('tabindex')) trigger.setAttribute('tabindex', '0');
+    trigger.setAttribute('role', 'button');
+  }
+  trigger.setAttribute('aria-haspopup', 'menu');
+  trigger.setAttribute('aria-expanded', 'false');
   const place = () => {
-    document.body.appendChild(panel);
+    if (!mounted) { document.body.appendChild(panel); mounted = true; }
     panel.style.visibility = 'hidden'; panel.style.display = 'flex';
     const r = trigger.getBoundingClientRect();
     const pw = panel.offsetWidth, ph = panel.offsetHeight;
@@ -359,13 +370,42 @@ function mkHoverPanel(trigger, items) {
     panel.style.top = top + 'px';
     panel.style.left = left + 'px';
     panel.style.visibility = 'visible';
+    trigger.setAttribute('aria-expanded', 'true');
   };
   const show = () => { clearTimeout(timer); place(); };
-  const hide = () => { timer = setTimeout(() => { panel.style.display = 'none'; }, 130); };
+  const hide = () => {
+    clearTimeout(timer);
+    panel.style.display = 'none';
+    open = false;
+    trigger.setAttribute('aria-expanded', 'false');
+    if (docHandler) { document.removeEventListener('mousedown', docHandler); docHandler = null; }
+  };
+  // Delayed close lets the cursor cross the gap from trigger to panel, but a
+  // click-pinned (`open`) menu stays put until it's explicitly dismissed.
+  const hideSoon = () => { timer = setTimeout(() => { if (!open) hide(); }, 130); };
+  // Hover — progressive enhancement for mouse users (unchanged behaviour).
   trigger.addEventListener('mouseenter', show);
-  trigger.addEventListener('mouseleave', hide);
+  trigger.addEventListener('mouseleave', hideSoon);
   panel.addEventListener('mouseenter', () => clearTimeout(timer));
-  panel.addEventListener('mouseleave', hide);
+  panel.addEventListener('mouseleave', hideSoon);
+  // Click / touch / keyboard — the primary, accessible open path (was missing,
+  // so the whole menu was dead on touch and keyboard).
+  const toggle = (e) => {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    if (open) { hide(); return; }
+    open = true; show();
+    // Dismiss on any outside press; registered only while open so it can't leak.
+    docHandler = (ev) => { if (!trigger.contains(ev.target) && !panel.contains(ev.target)) hide(); };
+    document.addEventListener('mousedown', docHandler);
+  };
+  trigger.addEventListener('click', toggle);
+  trigger.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { hide(); trigger.focus(); }
+    // A <button> already synthesises a click on Enter/Space; only fake it for the
+    // non-button trigger so a button doesn't toggle twice (net no-op).
+    else if (!isButton && (e.key === 'Enter' || e.key === ' ')) toggle(e);
+  });
+  panel.addEventListener('keydown', (e) => { if (e.key === 'Escape') { hide(); trigger.focus(); } });
 }
 
 function doCAction(o, id, reload) { op('docker', { op: o, ref: id }).then(() => { toast(tr('dk.op_ok'), 'ok'); reload && reload(); }).catch((e) => toast(e.message, 'err')); }

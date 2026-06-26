@@ -679,3 +679,16 @@ table.nettbl td .clamp1 { display: -webkit-box; -webkit-box-orient: vertical; -w
   background: var(--panel-solid); color: var(--fg); border: 1px solid var(--line2);
   border-radius: 9px; padding: 8px 11px; font-size: 12px; line-height: 1.5;
   box-shadow: 0 10px 30px rgba(0,0,0,.42); white-space: pre-wrap; word-break: break-all; pointer-events: none; }
+
+/* Narrow screens (phones/tablet portrait): collapse the sidebar to an icon rail
+   so a 228px sidebar doesn't eat most of the viewport. Labels/brand/footer hide;
+   the icons stay tappable and .content takes the rest. (No JS — the rail is just
+   a narrower, always-visible aside.) */
+@media (max-width: 720px) {
+  aside { width: 56px; padding: 14px 6px; }
+  aside .logo { justify-content: center; padding: 2px 0 14px; }
+  aside .logo h1 { display: none; }
+  nav button { justify-content: center; padding: 12px 0; }
+  nav button .t { display: none; }
+  aside .foot { display: none; }
+}
