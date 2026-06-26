@@ -116,5 +116,9 @@ fn locked_initialized(state: &Shared) -> bool {
 }
 
 fn init_err(msg: &str) -> Response {
-    (StatusCode::BAD_REQUEST, Json(json!({ "ok": false, "msg": msg }))).into_response()
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "ok": false, "msg": msg })),
+    )
+        .into_response()
 }

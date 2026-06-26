@@ -83,13 +83,16 @@ mod edge_tests {
         }
     }
 
-    /// An "already initialized, no external console address" console fixture, so
-    /// the synthesized console route only claims localhost/127.0.0.1 and never
-    /// becomes the catch-all (`console_fallback`) — keeping these tests focused
-    /// on user-site routing + default_site behaviour.
+    /// An "already initialized" console fixture with a dedicated external
+    /// address, so the synthesized console route claims only that host (+
+    /// localhost/127.0.0.1) and never becomes the catch-all (`console_fallback`)
+    /// — keeping these tests focused on user-site routing + default_site
+    /// behaviour. A real initialized install always has an external address (the
+    /// wizard requires one); only a migrated legacy install has an empty one,
+    /// which falls back to the console on purpose.
     fn test_console() -> ConsoleParams {
         ConsoleParams {
-            external_address: String::new(),
+            external_address: "console.internal.test".to_string(),
             https_mode: "none".to_string(),
             initialized: true,
         }

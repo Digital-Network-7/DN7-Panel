@@ -90,7 +90,10 @@ pub(crate) async fn edge_reload() -> Result<()> {
     let setup = is_setup();
     let ws = crate::infra::store::settings::load();
     let console = crate::edge::ConsoleParams {
-        external_address: ws.as_ref().map(|w| w.external_address.clone()).unwrap_or_default(),
+        external_address: ws
+            .as_ref()
+            .map(|w| w.external_address.clone())
+            .unwrap_or_default(),
         https_mode: ws
             .as_ref()
             .map(|w| w.https_mode.clone())

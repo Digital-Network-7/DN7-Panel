@@ -94,14 +94,19 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
     }
     let token = match init_token {
         Some(t) => t,
-        // Uninitialized but somehow no token — serve openly rather than lock the
-        // operator out (load_or_init always seeds one, so this is belt-and-braces).
-        None => return next.run(req).await,
+        // Uninitialized with no token must be impossible — load_or_init always
+        // seeds (or self-heals) one. Treat a missing token as an anomaly and fail
+        // CLOSED rather than expose the wizard to anyone (a configured install is
+        // migrated to `initialized` before it ever reaches here).
+        None => return (StatusCode::NOT_FOUND, "Not Found").into_response(),
     };
     let headers = req.headers();
     // The wizard SPA + /api/init both ride the `dn7_init` cookie set on the first
-    // tokened hit.
-    if cookie_value(headers, "dn7_init").as_deref() == Some(token.as_str()) {
+    // tokened hit. Constant-time compares — it's the bootstrap secret.
+    if cookie_value(headers, "dn7_init")
+        .map(|c| ct_eq(c.as_bytes(), token.as_bytes()))
+        .unwrap_or(false)
+    {
         return next.run(req).await;
     }
     // First arrival with `?init_token=<token>`: serve the SPA (wizard) and set the
@@ -111,10 +116,25 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
             .find_map(|kv| kv.strip_prefix("init_token="))
             .map(str::to_string)
     });
-    if q_token.as_deref() == Some(token.as_str()) {
+    if q_token
+        .map(|q| ct_eq(q.as_bytes(), token.as_bytes()))
+        .unwrap_or(false)
+    {
+        // `Secure` when the external hop is HTTPS (the edge sets X-Forwarded-Proto;
+        // the console is loopback-only) so the token never rides a cleartext
+        // request once TLS is on. Init is normally http, so this is usually empty.
+        let secure = if headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            == Some("https")
+        {
+            "; Secure"
+        } else {
+            ""
+        };
         let mut resp = index_page().await.into_response();
         if let Ok(v) =
-            format!("dn7_init={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400")
+            format!("dn7_init={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400{secure}")
                 .parse()
         {
             resp.headers_mut().append(header::SET_COOKIE, v);
@@ -123,6 +143,20 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
     }
     // No valid token → 404 (don't reveal the console exists to a blind scan).
     (StatusCode::NOT_FOUND, "Not Found").into_response()
+}
+
+/// Constant-time byte-slice equality (length-aware). The length of the init
+/// token is fixed/known, so only the *content* comparison needs to avoid an
+/// early-exit timing signal on the bootstrap secret.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// Read a named cookie value from the request headers.

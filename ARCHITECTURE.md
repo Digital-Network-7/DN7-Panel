@@ -29,7 +29,7 @@ src/
   core/          纯规则:error / identity / authz(最核心)+ 各能力模型与校验
   contracts/     对外协议唯一来源:req/resp DTO、命令枚举、错误码注册表
   app/           用例服务(一个用例一个入口)+ ports(仅重外部依赖的 trait)
-  infra/         adapters(docker/nginx/mysql/system/store)+ support(json_store/crypto/…)
+  infra/         adapters(docker/website/mysql/system/store)+ edge(内置 Rust 反代)+ support(json_store/crypto/…)
   web/           交付层:DTO 解析、调 service、响应映射、中间件、嵌入 UI(web/http + web/routes)
   platform/      宿主运行时:daemon/supervisor/update/signing/paths/banner/autostart
 ```
@@ -52,7 +52,7 @@ src/
 - **细粒度授权出口**:细粒度授权统一经 app/core 暴露的显式判定接口(如 `core::authz::can_manage`),不散落在 handler/adapter。
 
 **infra/** — side effects. Two kinds, kept in separate directories:
-- **adapters**:`docker`(bollard)、`nginx`(confgen/写盘/reload/htpasswd)、`mysql`、`system`(useradd/sudo/chpasswd/PTY/fs)、`store`(manifest 持久化)、`metrics`、`file`。实现 `app::ports` 或被 app 直接调用。
+- **adapters**:`docker`(bollard)、`website`(站点/证书/access 清单的控制面:写盘 + ACME/htpasswd,无外部 nginx、无 confgen)、`edge`(进程内纯-Rust 反向代理,独占 :80/:443,从清单构建路由表)、`mysql`、`system`(useradd/sudo/chpasswd/PTY/fs)、`store`(manifest 持久化)、`metrics`、`file`。实现 `app::ports` 或被 app 直接调用。
 - **support**:`json_store`、`crypto`、`op_registry`、`audit`、`procs`、`totp`、`fetch` —— 技术支撑,不是外部系统适配器,**不建端口**,infra 内直接用。
 - infra 实现规则,**不决定**规则(规则在 core/app)。
 
@@ -117,7 +117,7 @@ platform 独立;跨层装配仅限"受控组合根集合"
 1. **目录级 deny**:按 §4 禁止项锁死各层。
 2. **模块级 allowlist**:`bollard` 仅 `src/infra/`,`axum` 仅 `src/web/`。
 3. **语义级**:`core` 默认禁 serde,仅白名单持久化实体文件可 derive
-   (`core/identity/model.rs`、`core/settings/model.rs`、`core/mysql/catalog.rs`、`core/nginx/model.rs`)。
+   (`core/identity/model.rs`、`core/settings/model.rs`、`core/mysql/catalog.rs`、`core/website/model.rs`)。
 
 迁移期对未达标目录可加 `// arch-allow(<阶段/工单>): <原因>` 例外,但必须带原因、带可追溯标识、迁移完成后删除;架构测试统计其数量,应单调下降。
 
@@ -163,7 +163,7 @@ pub(crate) async fn run_op(...) -> Result<...> { ... }
 - **`model` / types** — 请求结构、响应 DTO、存储记录、枚举。
 - **`validate`** — 纯输入校验(无 I/O),易单测。
 - **`store` / persistence** — 读写磁盘 JSON/状态、路径 helper。
-- **`exec` / operations** — 真正的副作用(起进程、调 Docker daemon、写 nginx conf)。
+- **`exec` / operations** — 真正的副作用(起进程、调 Docker daemon、写证书/站点根、构建并热切换 edge 路由表)。
 - **`render` / response mapping** — 拼 JSON/HTTP 响应、错误映射。
 - **`dispatch`** — `op`/路由表,只做路由,保持小。
 
@@ -185,17 +185,17 @@ pub(crate) async fn run_op(...) -> Result<...> { ... }
   `web::terminal::run_web_pty` / `run_web_container_exec`、
   `infra/file/ctn::upload_tar_stream`、`infra/file/ctnfs::web_ctn_read_stream`、
   `platform/supervisor::supervise_loop`。
-- **自包含算法** — 如 `infra/nginx/htpasswd::apr1_with_salt`(Apache apr1 MD5-crypt)。
+- **自包含算法** — 如 `infra/website/htpasswd::apr1_with_salt`(Apache apr1 MD5-crypt)。
 - **Config / DTO 组装** — 输入算完后基本是一大坨结构体/JSON:
   `infra/docker/create/build::build_create_spec`、
   `infra/mysql/provision/install::create_mysql_container`、
   `infra/docker/containers/{list::container_row, inspect::inspect_container}`、
-  `infra/nginx/sites/build::site_from_req`。
+  `infra/website/sites/build::site_from_req`。
 - **Op 分发表** — 扁平 `match`,每臂一行调用:
   `infra/docker/dispatch::run_op`、`infra/mysql/dispatch::run_op`、
   `infra/docker/containers/actions::container_action`、`web/routes::build_router`。
 - **编排管线** — 一串带进度上报的 await 步骤:
-  `infra/nginx/certs/acme::acme_http01`、
+  `infra/website/certs/acme::acme_http01`、
   `infra/mysql/provision/install::run_install_detached`、
   `web/http/controllers/settings_controller::apply_settings_update`。
 - **单遍解析器** — 对外部输出的有状态单循环:`infra/metrics/host::detect_mem_model`。
@@ -204,7 +204,7 @@ pub(crate) async fn run_op(...) -> Result<...> { ... }
 
 ## 13. 安全敏感配置(能力护栏)
 
-这是远程管理控制台:产品级配置(站点开关、allow-list、原始 nginx 指令)可直接移动基础设施安全边界。任何这类旋钮必须**用策略包裹**,不能直通底层系统,且四点齐备:
+这是远程管理控制台:产品级配置(站点开关、allow-list、原始反向代理指令)可直接移动基础设施安全边界。任何这类旋钮必须**用策略包裹**,不能直通底层系统,且四点齐备:
 
 1. **校验** — 纯校验器在入文件/命令前拒绝畸形/过宽输入(放 `validate` 模块,规则可审计)。
 2. **安全默认** — 输入空/未设时回退到*封闭*选项,绝不是开放项(空 trusted-proxy 列表只信私网+回环,不是 `0.0.0.0/0`;allow-list 解析不出 peer IP 时 fail closed)。
@@ -215,13 +215,12 @@ pub(crate) async fn run_op(...) -> Result<...> { ... }
 
 | Knob | Validator | Safe default |
 |------|-----------|--------------|
-| `trust_proxy_cidrs` | `nginx/sites/build::sanitize_trusted_cidrs` | 仅私网 + 回环 |
+| `trust_proxy_cidrs` | `website/sites/build::sanitize_trusted_cidrs` | 仅私网 + 回环 |
 | `extra_conf` | `validate_extra_conf`(结构校验);内置 edge 仅采纳 `add_header` 白名单 | 空(无指令) |
 | static `local_root` | `valid_local_root`(绝对、存在、deny-list) | 上传托管目录 |
 | `allow_ips` | `settings::normalize_allow_ips` | 空=放行任意;未知 peer 时门禁 fail closed |
-| `public_access`(面板绑定) | 设置项;关闭则绑 `127.0.0.1` 而非 `0.0.0.0` | 开(`0.0.0.0`);建议关并经 nginx/SSH 隧道 |
-| `redirect_url` | `core/nginx::valid_redirect_url`(仅 http/https) | n/a |
-| proxy target / `server_name` / location path | `core/nginx` token 校验 | n/a |
+| `redirect_url` | `core/website::valid_redirect_url`(仅 http/https) | n/a |
+| proxy target / `server_name` / location path | `core/website` token 校验 | n/a |
 | docker 容器 bind 挂载 | `core/docker::host_bind_denied`(拒 docker.sock、`/`、`/etc` `/root` `/boot` `/proc` `/sys` `/dev` 及子路径) | 具名卷 / 非敏感路径 |
 | docker `privileged` | `infra/docker/create/build::enforce_create_policy` — 仅 super,默认拒 | `false`(非特权) |
 | docker `network` = host/`container:` | `core/docker::network_mode_privileged` 经 `enforce_create_policy` — 仅 super | bridge(隔离) |

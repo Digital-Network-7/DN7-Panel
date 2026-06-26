@@ -1,14 +1,16 @@
 //! Persisted web-console settings (`<data>/web.json`, 0600).
 //!
-//! The console password is stored **irreversibly**: only a random per-install
-//! salt and `sha256(salt ":" password)` are kept — the plaintext is never
-//! written to disk or logged and cannot be recovered. Login uses a
-//! challenge-response over that hash (see `auth`/`server`), so the plaintext
-//! never crosses the wire either.
+//! The console password is stored **irreversibly**: the client sends a per-
+//! install salt + verifier (`sha256(salt ":" password)`) and the server keeps
+//! `Argon2id(verifier)` at rest — the plaintext is never written to disk or
+//! logged and cannot be recovered, and login is a challenge-response over the
+//! verifier, so the plaintext never crosses the wire either.
 //!
-//! The auto-generated password is shown to the operator exactly once, in the
-//! launch banner, at generation time. If it's forgotten, `dn7 panel reset`
-//! (runnable only by the install owner / root) generates a new one.
+//! There is no auto-generated account: a fresh install is seeded UNINITIALIZED
+//! with only a one-time `init_token` (printed to the launch banner), and the
+//! operator sets the account + password through the token-gated first-run
+//! wizard. `dn7 panel reset` (install owner / root only) clears the account and
+//! re-arms a fresh init token so the wizard can be re-run.
 
 use rand::Rng;
 
@@ -28,7 +30,6 @@ pub fn gen_init_token() -> String {
         .map(|_| CS[rng.gen_range(0..CS.len())] as char)
         .collect()
 }
-
 
 /// Validate + normalize an authorized-IP allow list: each non-empty entry must
 /// be an IPv4/IPv6 address or CIDR. Returns the deduped list, or None if any
@@ -108,6 +109,28 @@ impl WebSettings {
     }
 }
 
+/// Self-heal a freshly-loaded record into a SAFE init-gate state, returning
+/// whether it changed (so the caller persists). Two unsafe states the init gate
+/// would otherwise treat as "open the wizard to anyone" are repaired:
+///   - a record that is `!initialized` with no token but DOES have credentials —
+///     a pre-redesign install that predates the `initialized` flag: it is
+///     already set up, so mark it initialized (else a routine upgrade would
+///     re-expose a configured panel to unauthenticated remote takeover);
+///   - a record that is `!initialized` with no token AND no credentials (a
+///     hand-edited / truncated file): re-arm a token so the gate stays CLOSED.
+///
+/// A normal record (initialized, or uninitialized-with-token) is left untouched.
+fn migrate_loaded(s: &mut WebSettings) -> bool {
+    if s.initialized || !s.init_token.is_empty() {
+        return false;
+    }
+    if !s.pw_hash.is_empty() {
+        s.initialized = true;
+    } else {
+        s.init_token = gen_init_token();
+    }
+    true
+}
 
 /// Load persisted settings, or seed a fresh file from the env-var defaults
 /// (generating a password). On a fresh seed the generated plaintext password is
@@ -115,9 +138,16 @@ impl WebSettings {
 /// never stored in plaintext or logged. Returns `None` for the plaintext when
 /// an existing file was loaded.
 pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
-    // A persisted file (initialized or not) is returned verbatim — so a seeded
-    // but not-yet-initialized install keeps the SAME init token across reboots.
-    if let Some(s) = load() {
+    // A persisted file (initialized or not) is returned — a seeded but
+    // not-yet-initialized install keeps the SAME init token across reboots —
+    // but FIRST self-heal two unsafe states the init gate would otherwise treat
+    // as "open the wizard to anyone":
+    if let Some(mut s) = load() {
+        if migrate_loaded(&mut s) {
+            if let Err(e) = save(&s) {
+                tracing::warn!("could not persist settings self-heal: {e}");
+            }
+        }
         return (s, None);
     }
     let _ = default_port;
@@ -157,6 +187,52 @@ pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Build a minimal WebSettings via serde (unspecified fields take their
+    // serde defaults: initialized=false, init_token="").
+    fn ws(v: serde_json::Value) -> WebSettings {
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn migrate_legacy_credentialed_record_is_marked_initialized() {
+        // A pre-redesign file: it has an account/verifier but no init flag/token.
+        // The self-heal must treat it as already set up — NOT re-expose the
+        // wizard (the upgrade-takeover hole this guards).
+        let mut s = ws(serde_json::json!({
+            "port": 1080, "username": "bob", "pw_hash": "deadbeef", "pw_default": false
+        }));
+        assert!(!s.initialized && s.init_token.is_empty());
+        assert!(migrate_loaded(&mut s), "a legacy record needs healing");
+        assert!(s.initialized, "credentialed legacy record -> initialized");
+        assert!(
+            s.init_token.is_empty(),
+            "no token armed for a configured install"
+        );
+    }
+
+    #[test]
+    fn migrate_tokenless_uninitialized_rearms_a_token() {
+        // No credentials, no token, not initialized (a truncated/hand-edited
+        // file): re-arm a token so the gate stays CLOSED (requires the token).
+        let mut s = ws(serde_json::json!({ "port": 1080 }));
+        assert!(migrate_loaded(&mut s));
+        assert!(!s.initialized);
+        assert_eq!(s.init_token.len(), 32, "a fresh token is armed");
+    }
+
+    #[test]
+    fn migrate_is_noop_for_initialized_or_tokened_records() {
+        // An already-initialized record is untouched.
+        let mut a = ws(serde_json::json!({ "port": 1080, "initialized": true }));
+        assert!(!migrate_loaded(&mut a));
+        // A normal uninitialized record that already carries its token is
+        // untouched (the token must stay stable across reboots).
+        let mut b = ws(serde_json::json!({ "port": 1080, "init_token": "tok123" }));
+        assert!(!migrate_loaded(&mut b));
+        assert_eq!(b.init_token, "tok123");
+        assert!(!b.initialized);
+    }
 
     #[test]
     fn password_is_hashed_irreversibly() {
