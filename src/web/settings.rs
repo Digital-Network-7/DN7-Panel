@@ -35,6 +35,16 @@ pub fn gen_port() -> u16 {
     rand::thread_rng().gen_range(20000..=60000)
 }
 
+/// A 32-char alphanumeric one-time init token, printed to the launch banner and
+/// required (as `?init_token=`) to reach the first-run wizard.
+pub fn gen_init_token() -> String {
+    const CS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let mut rng = rand::thread_rng();
+    (0..32)
+        .map(|_| CS[rng.gen_range(0..CS.len())] as char)
+        .collect()
+}
+
 /// Validate/normalize a safe-entry path: "/" (disabled) or "/<token>" where the
 /// token is 1..=32 of [A-Za-z0-9_-] and not a reserved route. Returns the
 /// normalized "/<token>" (or "/"), or None if invalid.
@@ -187,6 +197,12 @@ pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
         // exposure (all interfaces) in Settings — ideally with HTTPS on — rather
         // than a brand-new install sitting on 0.0.0.0 in cleartext by default.
         public_access: false,
+        // Init-flow fields (Phase 3 rewrites this seeding to drop the random
+        // port/entry/password above and lead with these).
+        initialized: false,
+        init_token: gen_init_token(),
+        external_address: String::new(),
+        https_mode: "none".to_string(),
         session_timeout: default_timeout(),
         allow_ips: Vec::new(),
         trusted_proxies: Vec::new(),
@@ -225,6 +241,10 @@ mod tests {
             entry_path: "/".into(),
             https: false,
             public_access: true,
+            initialized: false,
+            init_token: String::new(),
+            external_address: String::new(),
+            https_mode: "none".into(),
             session_timeout: 1440,
             allow_ips: Vec::new(),
             trusted_proxies: Vec::new(),
@@ -259,6 +279,10 @@ mod tests {
             entry_path: "/".into(),
             https: false,
             public_access: true,
+            initialized: false,
+            init_token: String::new(),
+            external_address: String::new(),
+            https_mode: "none".into(),
             session_timeout: 1440,
             allow_ips: Vec::new(),
             trusted_proxies: Vec::new(),

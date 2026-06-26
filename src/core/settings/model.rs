@@ -63,6 +63,31 @@ pub(crate) struct WebSettings {
     /// host — the recommended hardening. Default on. Changing needs a restart.
     #[serde(default = "default_true")]
     pub(crate) public_access: bool,
+
+    // --- Init-flow redesign: the console is fronted by the edge (:80/:443) and
+    // bootstrapped via a token-gated wizard instead of a pre-generated
+    // account/port/entry-path. `initialized` is the single source of truth. ---
+    /// Whether the operator has completed first-run setup (chose an external
+    /// address + HTTPS, set an account + password). The single authoritative
+    /// "is this panel set up?" flag — replaces the old `pw_default`/`username`
+    /// heuristics. A fresh / legacy file defaults `false` → the wizard runs.
+    #[serde(default)]
+    pub(crate) initialized: bool,
+    /// One-time 32-char first-boot token. Printed to the launch banner and
+    /// required (as `?init_token=`) to reach the init wizard. Cleared once
+    /// `initialized` is set. Empty after setup.
+    #[serde(default)]
+    pub(crate) init_token: String,
+    /// The operator-chosen external access address for the console — an IP (the
+    /// detected default) or a domain. Becomes the console's `server_name` on the
+    /// edge. Empty until the wizard's step 1.
+    #[serde(default)]
+    pub(crate) external_address: String,
+    /// Console HTTPS mode at the edge: "none" (plain :80), "selfsigned", or "le"
+    /// (Let's Encrypt — only when `external_address` is a domain).
+    #[serde(default = "default_https_mode")]
+    pub(crate) https_mode: String,
+
     /// Session inactivity timeout, in minutes (default 1440 = 24h). Applied
     /// live to the auth layer.
     #[serde(default = "default_timeout")]
@@ -89,6 +114,11 @@ fn default_entry() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+/// Default console HTTPS mode: plain HTTP until the wizard configures a cert.
+fn default_https_mode() -> String {
+    "none".to_string()
 }
 
 /// Default session inactivity timeout in minutes (24h).
