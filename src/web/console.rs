@@ -3,41 +3,44 @@
 use super::settings;
 
 /// Console info for the startup banner. Reads the settings, **seeding them on
-/// first run** so the password exists. `new_password` is `Some` only on the run
-/// that generated it (shown once); otherwise the password is irrecoverable and
-/// the banner points the operator to `dn7 panel reset`.
+/// first run** (uninitialized, with a one-time init token). Before setup the
+/// banner shows the token-gated init URLs; after setup, the console access URL.
 pub struct ConsoleInfo {
-    pub port: u16,
-    pub username: String,
-    pub new_password: Option<String>,
-    /// Safe-entry path ("/" when disabled) and whether HTTPS is on — for the
-    /// access URL shown in the banner / CLI.
-    pub entry_path: String,
-    pub https: bool,
+    /// One-time init token (empty once initialized).
+    pub init_token: String,
+    /// Whether first-run setup is complete.
+    pub initialized: bool,
+    /// The configured external access address (IP or domain); empty pre-init.
+    pub external_address: String,
+    /// Console HTTPS mode: "none" | "selfsigned" | "le".
+    pub https_mode: String,
 }
 
 pub fn console_info(default_port: u16) -> ConsoleInfo {
-    let (s, fresh) = settings::load_or_init(default_port);
+    let (s, _fresh) = settings::load_or_init(default_port);
     ConsoleInfo {
-        port: s.port,
-        username: s.username,
-        new_password: fresh,
-        entry_path: s.entry_path,
-        https: s.https,
+        init_token: s.init_token,
+        initialized: s.initialized,
+        external_address: s.external_address,
+        https_mode: s.https_mode,
     }
 }
 
-/// Build the access URL from the persisted settings + a host. Returns None when
-/// the console isn't initialized.
+/// The console access URL once initialized (None while the wizard is pending).
+/// Uses the configured external address (falling back to `host`) + the chosen
+/// scheme; the edge serves the console on :80/:443 (no port, no entry path).
 pub fn access_url(host: &str) -> Option<String> {
     let s = settings::load()?;
-    let scheme = if s.https { "https" } else { "http" };
-    let entry = if s.entry_path == "/" {
-        String::new()
+    if !s.initialized {
+        return None;
+    }
+    let scheme = if s.https_mode == "none" { "http" } else { "https" };
+    let h = if s.external_address.is_empty() {
+        host.to_string()
     } else {
-        s.entry_path.clone()
+        s.external_address.clone()
     };
-    Some(format!("{scheme}://{host}:{}{entry}", s.port))
+    Some(format!("{scheme}://{h}/"))
 }
 
 /// Set the console port (random high port when `None`). Returns the new port.

@@ -11,13 +11,12 @@
 //! (runnable only by the install owner / root) generates a new one.
 
 use rand::Rng;
-use sha2::{Digest, Sha256};
 
 /// The console settings entity now lives in the domain layer; re-exported so
 /// call sites (`crate::web::settings::WebSettings`) stay stable while this
 /// module keeps the credential/reset behaviour and validation. Persistence is
 /// delegated to infra/store.
-pub(crate) use crate::core::settings::{default_timeout, default_username, WebSettings};
+pub(crate) use crate::core::settings::{default_timeout, WebSettings};
 pub(crate) use crate::infra::store::settings::{load, save};
 
 /// A random 6-char lowercase-alnum safe-entry path ("/xxxxxx").
@@ -100,22 +99,6 @@ fn valid_ip_or_cidr(s: &str) -> bool {
     }
 }
 
-/// `sha256_hex(salt ":" plain)` — the stored verifier / challenge secret.
-fn hash_password(salt: &str, plain: &str) -> String {
-    let mut h = Sha256::new();
-    h.update(salt.as_bytes());
-    h.update(b":");
-    h.update(plain.as_bytes());
-    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Generate a random hex salt (16 bytes → 32 hex chars).
-fn gen_salt() -> String {
-    let mut b = [0u8; 16];
-    rand::thread_rng().fill(&mut b);
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
-
 /// Current real uid (for the reset owner check).
 fn current_uid() -> u32 {
     // SAFETY: getuid() is always safe; it just reads the process's real uid.
@@ -137,30 +120,27 @@ impl WebSettings {
         self.pw_default = false;
     }
 
-    /// Reset account + password to a freshly-generated default. Returns the new
-    /// plaintext password (to show once). The install owner is left unchanged.
+    /// Reset to the UNINITIALIZED state: clear the account/credentials + the
+    /// external-address/HTTPS choice, and re-arm a fresh one-time init token
+    /// (returned so `dn7 panel reset` can print it and the operator can re-run
+    /// the wizard). `owner_uid` is preserved (the reset-authorization anchor).
     pub fn reset(&mut self) -> String {
-        let pw = gen_password();
-        let salt = gen_salt();
-        self.username = default_username();
-        self.pw_hash = hash_password(&salt, &pw);
-        self.pw_salt = salt;
-        // Server-generated default uses the legacy single-hash scheme; it
-        // migrates to a stretched KDF when the operator sets their own password.
+        self.username = String::new();
+        self.pw_hash = String::new();
+        self.pw_salt = String::new();
         self.pw_kdf = String::new();
         self.pw_default = true;
-        pw
+        self.totp_secret = String::new();
+        self.totp_enabled = false;
+        self.initialized = false;
+        self.external_address = String::new();
+        self.https_mode = "none".to_string();
+        let token = gen_init_token();
+        self.init_token = token.clone();
+        token
     }
 }
 
-/// Generate a strong, URL-safe random password (no shell/quote specials).
-fn gen_password() -> String {
-    const CHARSET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-    let mut rng = rand::thread_rng();
-    (0..20)
-        .map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char)
-        .collect()
-}
 
 /// Load persisted settings, or seed a fresh file from the env-var defaults
 /// (generating a password). On a fresh seed the generated plaintext password is
@@ -168,21 +148,23 @@ fn gen_password() -> String {
 /// never stored in plaintext or logged. Returns `None` for the plaintext when
 /// an existing file was loaded.
 pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
+    // A persisted file (initialized or not) is returned verbatim — so a seeded
+    // but not-yet-initialized install keeps the SAME init token across reboots.
     if let Some(s) = load() {
-        if !s.pw_hash.is_empty() {
-            return (s, None);
-        }
+        return (s, None);
     }
-    let pw = gen_password();
-    let salt = gen_salt();
+    let _ = default_port;
+    // Fresh install: seed an UNINITIALIZED record. No account, password, secret
+    // entry path, or random public port — the operator bootstraps through the
+    // token-gated wizard the edge serves on :80. Only the one-time init token is
+    // generated (and printed to the launch banner). The `port` field is now
+    // vestigial (the console binds the fixed loopback const); kept for the model.
     let s = WebSettings {
-        // Fresh install: a random high port + secret entry path (printed once in
-        // the banner). The provided default_port is only a fallback.
-        port: gen_port(),
-        username: default_username(),
-        pw_hash: hash_password(&salt, &pw),
-        pw_salt: salt,
-        pw_kdf: String::new(), // legacy single-hash default; migrates on first change
+        port: crate::edge::CONSOLE_LOOPBACK_PORT,
+        username: String::new(),
+        pw_hash: String::new(),
+        pw_salt: String::new(),
+        pw_kdf: String::new(),
         pw_default: true,
         owner_uid: current_uid(),
         full_name: String::new(),
@@ -190,15 +172,9 @@ pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
         avatar: String::new(),
         totp_secret: String::new(),
         totp_enabled: false,
-        entry_path: gen_entry(),
+        entry_path: "/".to_string(),
         https: false,
-        // Secure default: bind to loopback only. A fresh install is reachable
-        // from the host (or via an SSH tunnel); the operator opts into public
-        // exposure (all interfaces) in Settings — ideally with HTTPS on — rather
-        // than a brand-new install sitting on 0.0.0.0 in cleartext by default.
         public_access: false,
-        // Init-flow fields (Phase 3 rewrites this seeding to drop the random
-        // port/entry/password above and lead with these).
         initialized: false,
         init_token: gen_init_token(),
         external_address: String::new(),
@@ -207,16 +183,11 @@ pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
         allow_ips: Vec::new(),
         trusted_proxies: Vec::new(),
     };
-    let _ = default_port;
     if let Err(e) = save(&s) {
         tracing::warn!("could not persist web settings: {e}");
     }
-    tracing::info!(
-        port = s.port,
-        username = %s.username,
-        "web console initialized (password shown once in the launch banner)"
-    );
-    (s, Some(pw))
+    tracing::info!("web console seeded (uninitialized — init token shown in the launch banner)");
+    (s, None)
 }
 
 #[cfg(test)]
@@ -249,54 +220,61 @@ mod tests {
             allow_ips: Vec::new(),
             trusted_proxies: Vec::new(),
         };
+        // set_password_hashed stores the CLIENT-computed salt + verifier + KDF
+        // verbatim (the server never sees/derives the plaintext) and clears the
+        // default flag.
         let salt = "0123456789abcdef0123456789abcdef";
-        s.set_password_hashed(salt, &hash_password(salt, "mySecret!42"), "");
-        // Stored as salt + hash, never the plaintext.
+        let hash = "a".repeat(64);
+        s.set_password_hashed(salt, &hash, "s256:30000");
         assert_eq!(s.pw_salt, salt);
-        assert_eq!(s.pw_hash.len(), 64);
-        assert!(!s.pw_hash.contains("mySecret"));
+        assert_eq!(s.pw_hash, hash);
+        assert_eq!(s.pw_kdf, "s256:30000");
+        assert_eq!(s.verifier(), hash);
         assert!(!s.pw_default);
-        // The verifier is reproducible from salt + plaintext.
-        assert_eq!(s.verifier(), hash_password(&s.pw_salt, "mySecret!42"));
-        assert_ne!(s.verifier(), hash_password(&s.pw_salt, "wrong"));
     }
 
     #[test]
-    fn reset_regenerates_and_returns_plaintext() {
+    fn reset_clears_creds_and_rearms_token() {
         let mut s = WebSettings {
             port: 1080,
             username: "bob".into(),
             pw_salt: "aa".into(),
             pw_hash: "bb".into(),
-            pw_kdf: String::new(),
+            pw_kdf: "s256:30000".into(),
             pw_default: false,
             owner_uid: 1000,
             full_name: String::new(),
             nickname: String::new(),
             avatar: String::new(),
-            totp_secret: String::new(),
-            totp_enabled: false,
+            totp_secret: "SECRET".into(),
+            totp_enabled: true,
             entry_path: "/".into(),
             https: false,
             public_access: true,
-            initialized: false,
+            initialized: true,
             init_token: String::new(),
-            external_address: String::new(),
-            https_mode: "none".into(),
+            external_address: "panel.example.com".into(),
+            https_mode: "le".into(),
             session_timeout: 1440,
             allow_ips: Vec::new(),
             trusted_proxies: Vec::new(),
         };
-        let pw = s.reset();
-        assert_eq!(s.username, "admin"); // account reset
-        assert_eq!(s.owner_uid, 1000); // owner preserved
-        assert!(s.pw_default);
-        assert_eq!(s.verifier(), hash_password(&s.pw_salt, &pw));
+        let token = s.reset();
+        // Credentials + setup state cleared; owner preserved; fresh 32-char token.
+        assert!(s.username.is_empty() && s.pw_hash.is_empty() && s.totp_secret.is_empty());
+        assert!(!s.initialized);
+        assert!(s.external_address.is_empty());
+        assert_eq!(s.https_mode, "none");
+        assert_eq!(s.owner_uid, 1000);
+        assert_eq!(token.len(), 32);
+        assert_eq!(s.init_token, token);
     }
 
     #[test]
-    fn salt_is_random() {
-        assert_ne!(gen_salt(), gen_salt());
+    fn init_token_is_random_and_32_chars() {
+        let a = gen_init_token();
+        assert_eq!(a.len(), 32);
+        assert_ne!(a, gen_init_token());
     }
 
     #[test]

@@ -9,41 +9,34 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs, UdpSocket};
 use std::time::Duration;
 
-/// Print the console banner. Reads (seeding on first run) the web settings so
-/// the password exists, then resolves the host's addresses.
+/// Print the console banner. Reads (seeding on first run) the web settings, then
+/// resolves the host's addresses. Before first-run setup it prints the
+/// token-gated init URLs (the edge serves the wizard on :80); after setup it
+/// prints the console access URL.
 pub fn print(cfg: &PanelConfig) {
     let info = crate::web::console_info(cfg.web_port);
     println!();
-    let port = info.port;
-    let scheme = if info.https { "https" } else { "http" };
-    let entry = if info.entry_path == "/" {
-        String::new()
-    } else {
-        info.entry_path.clone()
-    };
-    let internal = internal_ip();
-    let public = public_ip();
-
     println!("  ┌─ DN7 Panel ──────────────────────────────────");
-    match &public {
-        Some(pip) => {
-            println!("  │  控制台 console  →  {scheme}://{pip}:{port}{entry}");
-            println!("  │                  →  {scheme}://{internal}:{port}{entry}  (内网)");
+    if !info.initialized {
+        let token = &info.init_token;
+        let internal = internal_ip();
+        println!("  │  内网初始化  →  http://{internal}/?init_token={token}");
+        if let Some(pip) = public_ip() {
+            println!("  │  外网初始化  →  http://{pip}/?init_token={token}");
         }
-        None => {
-            println!("  │  控制台 console  →  {scheme}://{internal}:{port}{entry}");
-        }
-    }
-    if !entry.is_empty() {
-        println!("  │  安全入口 entry  →  {entry}  （必须带此路径才能打开登录页）");
-    }
-    if let Some(pw) = &info.new_password {
-        println!("  │  账号 username   →  {}", info.username);
-        println!("  │  密码 password   →  {pw}");
-        println!("  │  提示            →  此密码与上面的端口/安全入口仅显示一次，请妥善保存");
+        println!("  │  提示        →  打开任一链接完成初始化（令牌仅本次有效）");
     } else {
-        println!("  │  账号 / 密码     →  已设置");
-        println!("  │                     （忘记密码可在主机运行: dn7 panel reset）");
+        let scheme = if info.https_mode == "none" {
+            "http"
+        } else {
+            "https"
+        };
+        let host = if info.external_address.is_empty() {
+            internal_ip()
+        } else {
+            info.external_address.clone()
+        };
+        println!("  │  控制台 console  →  {scheme}://{host}/");
     }
     println!("  └──────────────────────────────────────────────");
     println!();
