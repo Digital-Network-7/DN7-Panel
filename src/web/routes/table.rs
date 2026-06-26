@@ -19,6 +19,11 @@ pub(crate) fn build_router(state: Shared) -> Router {
         .route("/ui/*path", get(ui_asset))
         .route("/api/login/challenge", get(login_challenge))
         .route("/api/login", post(login))
+        // First-run init wizard (pre-auth; only reachable while UNINITIALIZED and
+        // past the init-token gate). Step 2 flips `initialized`.
+        .route("/api/init/status", get(init_status))
+        .route("/api/init/step1", post(init_step1))
+        .route("/api/init/step2", post(init_step2))
         // Authenticated API.
         .route("/api/logout", post(logout))
         .route("/api/ticket", post(mint_ticket))

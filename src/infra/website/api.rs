@@ -112,6 +112,24 @@ pub(crate) async fn edge_reload() -> Result<()> {
     };
     crate::edge::reload(input).await
 }
+
+/// First-run console TLS: issue (or clear) the console cert for the chosen HTTPS
+/// mode, writing the fixed `cert-console.*` paths the edge loads for the managed
+/// console route. Runs before website setup (no `Layout`). "le" awaits the full
+/// ACME dance, so the caller only advances the wizard on a verified cert.
+pub(crate) async fn console_apply_tls(https_mode: &str, external_address: &str) -> Result<()> {
+    match https_mode {
+        "le" => issue_console_le(external_address).await?,
+        "selfsigned" => issue_console_self_signed(external_address).await?,
+        _ => {
+            // "none": drop any stale console cert so the edge serves plain HTTP.
+            let _ = std::fs::remove_file(console_crt_path());
+            let _ = std::fs::remove_file(console_key_path());
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn op_dismiss_registry(op_id: &str) {
     op_dismiss(op_id);
 }

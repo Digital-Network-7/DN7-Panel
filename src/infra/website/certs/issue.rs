@@ -110,6 +110,79 @@ pub(crate) fn set_key_perms(path: &std::path::Path) {
     }
 }
 
+/// The fixed paths the edge loads for the managed console route's TLS. These
+/// live directly under the cert dir (not the named-cert store), so they work
+/// during first-run init — before website setup exists, so there's no `Layout`.
+pub(crate) fn console_crt_path() -> std::path::PathBuf {
+    certs_dir().join("cert-console.crt")
+}
+pub(crate) fn console_key_path() -> std::path::PathBuf {
+    certs_dir().join("cert-console.key")
+}
+
+/// First-run console TLS: write a self-signed cert/key for `host` to the fixed
+/// console paths (the browser will warn; it's the no-domain default for HTTPS).
+pub(crate) async fn issue_console_self_signed(host: &str) -> Result<()> {
+    let crt = console_crt_path();
+    let key = console_key_path();
+    gen_self_signed_to(&crt, &key, host).await?;
+    set_key_perms(&key);
+    Ok(())
+}
+
+/// First-run console TLS via Let's Encrypt for `domain`. Runs the ACME HTTP-01
+/// dance inline (awaited, with the same localhost self-check pre-flight as the
+/// site flow) and writes the issued chain to the fixed console paths — so the
+/// wizard only advances once a real cert is in hand. No `Layout` needed.
+pub(crate) async fn issue_console_le(domain: &str) -> Result<()> {
+    let host = primary_host(domain);
+    if host.is_empty() || host == "_" || host.contains('*') {
+        return Err(website_err(WebsiteError::LeNeedDomainSpecific));
+    }
+    let op_id = new_op_id();
+    op_create(&op_id, "cert", &host);
+    let served_tokens = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let dance = {
+        let served = served_tokens.clone();
+        acme_http01(&op_id, &host, move |chals| async move {
+            let mut toks = Vec::new();
+            for (token, keyauth) in &chals {
+                crate::edge::acme_insert(token, keyauth);
+                toks.push(token.clone());
+            }
+            *served.lock().unwrap_or_else(|p| p.into_inner()) = toks;
+            Ok(())
+        })
+        .await
+    };
+    for token in served_tokens
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+    {
+        crate::edge::acme_remove(token);
+    }
+    let (cert_chain_pem, key_pem) = match dance {
+        Ok(v) => {
+            op_finish(&op_id, "done", "");
+            v
+        }
+        Err(e) => {
+            op_finish(&op_id, "error", &e.to_string());
+            return Err(e);
+        }
+    };
+    let crt = console_crt_path();
+    let key = console_key_path();
+    if let Some(dir) = crt.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&crt, cert_chain_pem)?;
+    write_key_file(&key, &key_pem)?;
+    set_key_perms(&key);
+    Ok(())
+}
+
 /// Issue a Let's Encrypt cert via the ACME HTTP-01 challenge, detached. The flow:
 ///   1. register the challenge token in the edge's in-memory map (it serves :80),
 ///   2. run the ACME order + validation,
