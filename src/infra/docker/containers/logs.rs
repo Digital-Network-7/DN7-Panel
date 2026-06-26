@@ -16,7 +16,7 @@ pub(crate) fn sanitize_log(s: &str) -> String {
 }
 
 /// Remove literal C-style hex escapes like `\x16\x03\x01…` that some servers
-/// (notably nginx) write into their access logs when a client sends raw binary
+/// (notably web servers) write into their access logs when a client sends raw binary
 /// to a text endpoint (e.g. a TLS ClientHello to a plain-HTTP port). They are
 /// valid text but render as a wall of noise, so any run of them is collapsed
 /// away. Three-digit octal escapes (`\NNN`) emitted by some loggers go too.

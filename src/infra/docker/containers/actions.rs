@@ -61,7 +61,7 @@ pub(crate) async fn container_action(req: &Req, action: &str) -> Result<Value> {
                 .await
                 .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
             // A removed container may be the upstream of a `proxy_container`
-            // nginx site. Re-sync site confs so any now-dangling site fails
+            // website (proxy_container) site. Re-sync site confs so any now-dangling site fails
             // closed (503 stub) instead of proxying to a recycled IP.
             crate::infra::website::resync_after_container_change();
             "removed"

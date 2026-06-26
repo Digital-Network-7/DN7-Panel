@@ -296,7 +296,7 @@ function buildContainerActions(holder, reload) {
   const state = holder.dataset.state, running = state === 'running';
   const managed = holder.dataset.managed === '1';
   const mk = (label, cls, fn) => { const b = el('button', { class: 'btn sm ' + (cls || 'sec') }, label); b.onclick = fn; holder.appendChild(b); };
-  // DN7 Panel-managed service containers (nginx / mysql): lifecycle/edit/delete/
+  // DN7 Panel-managed service containers (the managed MySQL service): lifecycle/edit/delete/
   // logs belong to their own pages. Only safe read-only observe actions show
   // here — Terminal, Files, and an Advanced menu carrying Monitor.
   if (managed) {

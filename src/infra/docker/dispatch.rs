@@ -84,8 +84,7 @@ pub(crate) fn op_dismiss_registry(op_id: &str) {
     op_dismiss(op_id);
 }
 
-/// Reject operations on DN7 Panel-managed service containers/images (nginx /
-/// mysql) on the generic Docker channel — they're managed by their own modules
+/// Reject operations on DN7 Panel-managed service containers/images (the managed MySQL service) on the generic Docker channel — they're managed by their own modules
 /// so state/volumes stay consistent. Applies to every caller (web console AND
 /// the mini-program relay).
 pub(crate) async fn guard_managed_ops(req: &Req) -> Result<()> {
@@ -122,7 +121,7 @@ pub(crate) async fn guard_managed_ops(req: &Req) -> Result<()> {
     Ok(())
 }
 
-/// DN7 Panel-managed service containers (nginx / mysql) must not be removed from
+/// DN7 Panel-managed service containers (the managed MySQL service) must not be removed from
 /// the generic Docker page — they have their own management pages that also
 /// clean up the associated state/volumes. Returns `Some(reason)` to block the
 /// removal, `None` to allow it. Identifies the target by inspecting its real
@@ -152,7 +151,7 @@ pub(crate) async fn managed_container_guard(reference: &str) -> Option<String> {
 }
 
 /// True if `reference` is an image used by a DN7 Panel-managed service container
-/// (nginx / mysql) — such images can't be removed from the Docker page.
+/// (the managed MySQL service) — such images can't be removed from the Docker page.
 pub(crate) async fn managed_image_guard(reference: &str) -> bool {
     let dkr = match dkr() {
         Ok(d) => d,

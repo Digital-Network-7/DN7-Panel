@@ -61,7 +61,7 @@ fn container_row(c: bollard::models::ContainerSummary, has_shell: bool) -> Value
         .map(|s| s.trim_start_matches('/').to_string())
         .unwrap_or_default();
     let state = c.state.clone().unwrap_or_default();
-    // DN7 Panel-managed service containers (nginx / mysql) are marked so the UI
+    // DN7 Panel-managed service containers (the managed MySQL service) are marked so the UI
     // can show "内置" and hide direct controls (the panel also refuses ops on
     // them — see `managed_container_guard`).
     let has_mysql_label = c

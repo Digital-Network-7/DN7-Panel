@@ -7,7 +7,7 @@ fn sanitizes_binary_log() {
     let out = sanitize_log(&raw);
     assert_eq!(out, "hi\nokworld\t!");
     assert_eq!(sanitize_log("日志 ok"), "日志 ok");
-    // Literal nginx-style hex escapes in an access log line are stripped.
+    // Literal web-server-style hex escapes in an access log line are stripped.
     let access = "1.2.3.4 - - \"\\x16\\x03\\x01\\x00\\xEE\" 400 154 \"-\"";
     assert_eq!(sanitize_log(access), "1.2.3.4 - - \"\" 400 154 \"-\"");
 }

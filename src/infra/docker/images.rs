@@ -198,7 +198,7 @@ fn collect_image_refs(
     }
 }
 
-/// Whether a container is a DN7 Panel-managed service (nginx / mysql).
+/// Whether a container is a DN7 Panel-managed service (the managed MySQL service).
 fn is_managed_container(c: &bollard::models::ContainerSummary) -> bool {
     let name = c
         .names
@@ -243,7 +243,7 @@ async fn image_ref_sets(
 }
 
 /// The set of image refs (repo:tag) + short ids used by DN7 Panel-managed service
-/// containers (nginx / mysql). Used to mark those images "内置" and protect
+/// containers (the managed MySQL service). Used to mark those images "内置" and protect
 /// them from removal.
 pub(crate) async fn managed_image_refs(dkr: &Docker) -> std::collections::HashSet<String> {
     let mut out = std::collections::HashSet::new();
