@@ -16,7 +16,7 @@ mod edge_tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    use super::super::build::{self, ReloadInput};
+    use super::super::build::{self, ConsoleParams, ReloadInput};
     use super::super::config::{
         AccessControl, AclNet, AclRule, DefaultRoute, RouteKind, RuntimeConfig, ServerRoute,
     };
@@ -83,6 +83,18 @@ mod edge_tests {
         }
     }
 
+    /// An "already initialized, no external console address" console fixture, so
+    /// the synthesized console route only claims localhost/127.0.0.1 and never
+    /// becomes the catch-all (`console_fallback`) — keeping these tests focused
+    /// on user-site routing + default_site behaviour.
+    fn test_console() -> ConsoleParams {
+        ConsoleParams {
+            external_address: String::new(),
+            https_mode: "none".to_string(),
+            initialized: true,
+        }
+    }
+
     /// A `ReloadInput` over the given sites with empty access/default/tuning and
     /// fresh (non-existent) cert/www roots — the common build fixture.
     fn reload_input(sites: Vec<Site>) -> ReloadInput {
@@ -93,6 +105,7 @@ mod edge_tests {
             tuning: HttpTuning::default(),
             cert_dir: unique_tmp("certs"),
             www_dir: unique_tmp("www"),
+            console: test_console(),
         }
     }
 
@@ -451,6 +464,7 @@ mod edge_tests {
             tuning: HttpTuning::default(),
             cert_dir: unique_tmp("certs"),
             www_dir: unique_tmp("www"),
+            console: test_console(),
         };
         let cfg = build::build_runtime(&input).expect("guarded site builds");
         let route = cfg
@@ -575,6 +589,7 @@ mod edge_tests {
             tuning: HttpTuning::default(),
             cert_dir: unique_tmp("certs"),
             www_dir: unique_tmp("www-base"),
+            console: test_console(),
         };
         let cfg = build::build_runtime(&input).expect("full config builds");
         store::publish(std::sync::Arc::new(cfg));
@@ -988,6 +1003,7 @@ mod edge_tests {
             tuning: HttpTuning::default(),
             cert_dir: cert_dir.to_path_buf(),
             www_dir: unique_tmp("tls-www"),
+            console: test_console(),
         };
         let cfg = build::build_runtime(&input).expect("tls config builds");
         store::publish(std::sync::Arc::new(cfg));

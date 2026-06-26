@@ -38,8 +38,9 @@ mod validate;
 #[cfg(test)]
 mod tests;
 
-// Public surface used by `infra::nginx` (the control plane) and `platform`.
-pub(crate) use build::ReloadInput;
+// Public surface used by `infra::website` (the control plane) and `platform`.
+pub(crate) use build::{ConsoleParams, ReloadInput};
+pub(crate) use config::CONSOLE_LOOPBACK_PORT;
 pub(crate) use reload::reload;
 pub(crate) use status::port_conflict;
 

@@ -84,13 +84,31 @@ pub(crate) async fn op_reload() -> Result<()> {
 /// route table, returning an `nginx -t`-style error (without disturbing the live
 /// config) if the new model is invalid.
 pub(crate) async fn edge_reload() -> Result<()> {
+    // User-site manifests only exist after website setup; the console route is
+    // synthesized from WebSettings regardless, so the edge always serves the
+    // console / init wizard.
+    let setup = is_setup();
+    let ws = crate::infra::store::settings::load();
+    let console = crate::edge::ConsoleParams {
+        external_address: ws.as_ref().map(|w| w.external_address.clone()).unwrap_or_default(),
+        https_mode: ws
+            .as_ref()
+            .map(|w| w.https_mode.clone())
+            .unwrap_or_else(|| "none".to_string()),
+        initialized: ws.as_ref().map(|w| w.initialized).unwrap_or(false),
+    };
     let input = crate::edge::ReloadInput {
-        sites: load_sites(),
-        access: load_access(),
-        default_site: load_webglobal().default_site,
+        sites: if setup { load_sites() } else { Vec::new() },
+        access: if setup { load_access() } else { Vec::new() },
+        default_site: if setup {
+            load_webglobal().default_site
+        } else {
+            crate::core::website::DefaultSite::default()
+        },
         tuning: current_tuning(),
         cert_dir: certs_dir(),
         www_dir: www_dir(),
+        console,
     };
     crate::edge::reload(input).await
 }
@@ -136,10 +154,10 @@ pub(crate) async fn force_start() -> Result<Value> {
 /// before that the edge serves the empty-config default_site (and, once wired,
 /// the console route / init wizard).
 pub(crate) async fn edge_autostart() {
-    if is_setup() {
-        if let Err(e) = edge_reload().await {
-            tracing::error!("edge: initial config load failed: {e:#}");
-        }
+    // Always publish the route table (even on a fresh, un-set-up box) so the
+    // edge serves the console / init wizard, then bind the listeners.
+    if let Err(e) = edge_reload().await {
+        tracing::error!("edge: initial config load failed: {e:#}");
     }
     crate::edge::spawn();
 }

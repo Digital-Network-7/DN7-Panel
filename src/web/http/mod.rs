@@ -13,7 +13,7 @@ use axum::{
     http::{header, StatusCode},
     middleware::Next,
     response::{Html, IntoResponse, Response},
-    Json, Router,
+    Json,
 };
 use serde_json::{json, Value};
 use tokio::sync::Mutex;

@@ -17,6 +17,12 @@ use std::sync::Arc;
 
 use ipnet::IpNet;
 
+/// Loopback port the web console binds, and the upstream the edge's console
+/// route proxies to. A fixed constant (not operator-tunable) since the console
+/// is now an internal service fronted by the edge on :80/:443 — the two MUST
+/// agree, so they share this one source of truth.
+pub(crate) const CONSOLE_LOOPBACK_PORT: u16 = 1080;
+
 /// A fully-built, validated, immutable serving configuration. Published behind
 /// an `ArcSwap`; never mutated after construction.
 #[derive(Default)]
@@ -30,6 +36,13 @@ pub(crate) struct RuntimeConfig {
     pub(crate) wildcards: Vec<(String, Arc<ServerRoute>)>,
     /// What to do for a request whose Host matches no managed route.
     pub(crate) default_site: DefaultRoute,
+    /// Catch-all route to the local console, used BEFORE `default_site` when set.
+    /// Populated only while the panel is uninitialized, so a fresh box answers
+    /// the init wizard on ANY host/IP (the operator hasn't chosen an address
+    /// yet). Once initialized this is `None` and the console is reachable only at
+    /// its named route (`external_address`), with unmatched hosts hitting
+    /// `default_site`.
+    pub(crate) console_fallback: Option<Arc<ServerRoute>>,
     /// http/server tuning knobs (gzip, body-size cap, keepalive…).
     pub(crate) tuning: Tuning,
     /// SNI → certificate material for TLS termination.
@@ -45,11 +58,17 @@ impl RuntimeConfig {
             return Some(r);
         }
         // Longest suffix wins so `*.a.example.com` beats `*.example.com`.
-        self.wildcards
+        if let Some(r) = self
+            .wildcards
             .iter()
             .filter(|(suffix, _)| wildcard_matches(host, suffix))
             .max_by_key(|(suffix, _)| suffix.len())
             .map(|(_, r)| r)
+        {
+            return Some(r);
+        }
+        // Uninitialized catch-all: any unmatched host → the console (wizard).
+        self.console_fallback.as_ref()
     }
 }
 

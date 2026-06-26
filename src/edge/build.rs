@@ -31,6 +31,21 @@ pub(crate) struct ReloadInput {
     pub(crate) cert_dir: PathBuf,
     /// Directory upload-mode static roots live under (`<www>/<root>`).
     pub(crate) www_dir: PathBuf,
+    /// The managed console route the edge fronts (the panel itself).
+    pub(crate) console: ConsoleParams,
+}
+
+/// Inputs for the synthesized console route (the panel, reverse-proxied by the
+/// edge). The upstream is always the fixed loopback console
+/// (`127.0.0.1:CONSOLE_LOOPBACK_PORT`).
+pub(crate) struct ConsoleParams {
+    /// Operator-chosen external address (IP or domain). Empty before the wizard.
+    pub(crate) external_address: String,
+    /// `"none"` | `"selfsigned"` | `"le"` — drives the console route's TLS.
+    pub(crate) https_mode: String,
+    /// When false (uninitialized), the console is ALSO the catch-all so the
+    /// wizard answers any host on a fresh box.
+    pub(crate) initialized: bool,
 }
 
 /// Build (and structurally de-duplicate) the route table. Returns an
@@ -126,7 +141,71 @@ pub(crate) fn build_runtime(input: &ReloadInput) -> Result<RuntimeConfig, String
         }
     }
 
+    inject_console_route(&mut cfg, input);
     Ok(cfg)
+}
+
+/// Synthesize the managed console route — a reverse proxy to the loopback
+/// console (the panel itself). It's reachable at the operator's
+/// `external_address` (with TLS when configured), plus `localhost`/`127.0.0.1`
+/// so an SSH tunnel still reaches the console even if `:80` is contended.
+/// Before the panel is initialized it's ALSO the catch-all (`console_fallback`)
+/// so the init wizard answers ANY host on a fresh box. The console wins over a
+/// user site that collides on these names — it's how the box is managed.
+fn inject_console_route(cfg: &mut RuntimeConfig, input: &ReloadInput) {
+    let target = ProxyTarget {
+        scheme: "http".to_string(),
+        upstream: Upstream::Fixed(format!("127.0.0.1:{CONSOLE_LOOPBACK_PORT}")),
+        websockets: true, // /api/terminal + container-exec ride WS upgrades
+        cache_assets: false,
+        strip_auth: false,
+    };
+    // Console TLS cert (LE/self-signed), written by the wizard as cert-console.*.
+    let cert = (input.console.https_mode != "none")
+        .then(|| {
+            load_certified_key(
+                &input.cert_dir.join("cert-console.crt"),
+                &input.cert_dir.join("cert-console.key"),
+            )
+        })
+        .flatten();
+    let ssl = cert.is_some();
+
+    let ext = input.console.external_address.trim().to_ascii_lowercase();
+    let mut names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
+    if !ext.is_empty() && !names.contains(&ext) {
+        names.insert(0, ext.clone());
+    }
+
+    let route = Arc::new(ServerRoute {
+        id: "__console__".to_string(),
+        server_names: names.clone(),
+        ssl,
+        force_ssl: ssl,
+        hsts: ssl.then_some(Hsts {
+            max_age: 63_072_000,
+            include_sub: false,
+        }),
+        block_attacks: false,
+        trust_proxy: None,
+        access: None,
+        kind: RouteKind::Proxy(target),
+        locations: Vec::new(),
+        extra_headers: Vec::new(),
+    });
+
+    // TLS SNI cert under the external address only (localhost/IP serve plain).
+    if let (Some(ck), false) = (cert, ext.is_empty()) {
+        index_cert(&mut cfg.certs, &ext, ck);
+    }
+    // The console takes these host keys (overwrites any colliding user site —
+    // reachability of the management console wins).
+    for name in &names {
+        cfg.hosts.insert(name.to_ascii_lowercase(), route.clone());
+    }
+    if !input.console.initialized {
+        cfg.console_fallback = Some(route);
+    }
 }
 
 /// Split a (possibly multi-host) `server_name` into individual hostnames.

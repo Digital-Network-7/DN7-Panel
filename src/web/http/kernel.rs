@@ -37,9 +37,6 @@ impl WebState {
 /// runs for the process lifetime.
 pub fn spawn(cfg: PanelConfig) {
     let (s, _fresh) = settings::load_or_init(cfg.web_port);
-    let port = s.port;
-    let https = s.https;
-    let public = s.public_access;
     let ttl_secs = (s.session_timeout.max(1) as u64) * 60;
     let auth = AuthState::with_store();
     auth.set_ttl_secs(ttl_secs);
@@ -61,85 +58,29 @@ pub fn spawn(cfg: PanelConfig) {
         }
     });
     tokio::spawn(async move {
-        if let Err(e) = serve(state, port, https, public).await {
+        if let Err(e) = serve(state).await {
             tracing::warn!("web console exited: {e}");
         }
     });
 }
 
-pub(crate) async fn serve(
-    state: Shared,
-    port: u16,
-    https: bool,
-    public: bool,
-) -> anyhow::Result<()> {
+/// Serve the console on loopback, plain HTTP. The console is now an internal
+/// service: the edge owns :80/:443 and reverse-proxies the operator's external
+/// address to here (terminating TLS at the edge), so the console never binds a
+/// public interface and never terminates its own TLS. The real client IP is
+/// recovered from the edge's `X-Forwarded-For` (trusted because the peer is
+/// loopback — see `security::real_ip`).
+pub(crate) async fn serve(state: Shared) -> anyhow::Result<()> {
     let app = crate::web::routes::build_router(state);
-    // Public access binds all interfaces; otherwise loopback only, so the
-    // console is reachable only locally or via an SSH tunnel / trusted proxy.
-    let host = if public { [0, 0, 0, 0] } else { [127, 0, 0, 1] };
-    if public && !https {
-        tracing::warn!(
-            port,
-            "web console is exposed on ALL interfaces over PLAIN HTTP — credentials \
-             and sessions travel in cleartext. Enable HTTPS in Settings, or disable \
-             public access and reach the console via an SSH tunnel."
-        );
-    }
-    let addr = SocketAddr::from((host, port));
-    bind_and_serve(app, addr, https).await
-}
-
-/// Bind and serve the app on `addr`, over self-signed HTTPS (rustls ring
-/// provider — musl-static friendly) or plain HTTP. Runs until the process exits.
-pub(crate) async fn bind_and_serve(
-    app: Router,
-    addr: SocketAddr,
-    https: bool,
-) -> anyhow::Result<()> {
-    if https {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let (cert_pem, key_pem) = ensure_panel_cert()?;
-        let tls = axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem, key_pem).await?;
-        tracing::info!(%addr, "web console listening (https)");
-        axum_server::bind_rustls(addr, tls)
-            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
-            .await?;
-    } else {
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        tracing::info!(%addr, "web console listening");
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await?;
-    }
+    let addr = SocketAddr::from(([127, 0, 0, 1], crate::edge::CONSOLE_LOOPBACK_PORT));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(%addr, "web console listening (loopback; fronted by the edge)");
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
-}
-
-/// Safe-entry gate: when a non-"/" entry path is configured, only requests that
-/// Load (or generate + persist) the panel's self-signed TLS cert/key as PEM.
-pub(crate) fn ensure_panel_cert() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
-    let dir = crate::platform::paths::data_dir();
-    let crt = dir.join("panel-tls.crt");
-    let key = dir.join("panel-tls.key");
-    if let (Ok(c), Ok(k)) = (std::fs::read(&crt), std::fs::read(&key)) {
-        if !c.is_empty() && !k.is_empty() {
-            return Ok((c, k));
-        }
-    }
-    let host = sysinfo::System::host_name().unwrap_or_default();
-    let mut sans = vec!["localhost".to_string()];
-    if !host.is_empty() && host != "localhost" {
-        sans.push(host);
-    }
-    let params = rcgen::CertificateParams::new(sans)?;
-    let kp = rcgen::KeyPair::generate()?;
-    let cert = params.self_signed(&kp)?;
-    let cpem = cert.pem();
-    let kpem = kp.serialize_pem();
-    crate::platform::paths::write_public(&crt, cpem.as_bytes())?;
-    crate::platform::paths::write_private(&key, kpem.as_bytes())?;
-    Ok((cpem.into_bytes(), kpem.into_bytes()))
 }
 
 // ---------------------------------------------------------------------------
