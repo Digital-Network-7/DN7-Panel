@@ -18,9 +18,7 @@ pub(crate) async fn get_settings(
     // only when the operator chooses to change it.
     Json(json!({
         "ok": true,
-        "data": { "port": s.port, "username": s.username, "pw_default": s.pw_default,
-                  "entry_path": s.entry_path, "https": s.https,
-                  "public_access": s.public_access,
+        "data": { "username": s.username, "pw_default": s.pw_default,
                   "session_timeout": s.session_timeout, "allow_ips": s.allow_ips,
                   "trusted_proxies": s.trusted_proxies,
                   "must_setup": s.pw_default || s.username.eq_ignore_ascii_case("admin") }
@@ -30,8 +28,6 @@ pub(crate) async fn get_settings(
 
 #[derive(serde::Deserialize)]
 pub(crate) struct SettingsReq {
-    #[serde(default)]
-    port: Option<u16>,
     #[serde(default)]
     username: Option<String>,
     /// Password change: client-computed `salt` + `sha256_hex(salt ":" password)`
@@ -49,16 +45,6 @@ pub(crate) struct SettingsReq {
     /// seeing the plaintext. Required when changing the password off the default.
     #[serde(default)]
     pw_check: Option<String>,
-    /// Safe-entry path ("/" disables it). Applied live (no restart).
-    #[serde(default)]
-    entry_path: Option<String>,
-    /// Serve over HTTPS (self-signed). Changing requires a restart.
-    #[serde(default)]
-    https: Option<bool>,
-    /// Allow direct access from any address (bind 0.0.0.0); off = loopback only
-    /// (reach via nginx/SSH tunnel). Changing requires a restart.
-    #[serde(default)]
-    public_access: Option<bool>,
     /// Session inactivity timeout in minutes. Applied live.
     #[serde(default)]
     session_timeout: Option<u32>,
@@ -133,17 +119,11 @@ fn apply_settings_update(
     s: &mut WebSettings,
     req: SettingsReq,
 ) -> Result<SettingsOutcome, Response> {
-    let mut needs_restart = false;
+    // The console binds a fixed loopback port behind the edge now, and HTTPS /
+    // public exposure are owned by the edge + the init wizard — so a settings
+    // change no longer rebinds a listener: nothing here needs a restart.
+    let needs_restart = false;
     let mut new_ttl = None;
-    if let Some(p) = req.port {
-        if !(1..=65535).contains(&p) {
-            return Err(api_err(StatusCode::BAD_REQUEST, "settings.port_range"));
-        }
-        if p != s.port {
-            s.port = p;
-            needs_restart = true;
-        }
-    }
     let password_changed = apply_password_change(s, &req)?;
     if let Some(un) = req.username {
         let un = un.trim();
@@ -164,27 +144,6 @@ fn apply_settings_update(
             ));
         }
         s.username = un.to_string();
-    }
-    // Safe-entry path — applied live (the gate reads it per request).
-    if let Some(ep) = &req.entry_path {
-        match settings::normalize_entry(ep) {
-            Some(norm) => s.entry_path = norm,
-            None => return Err(api_err(StatusCode::BAD_REQUEST, "settings.bad_entry")),
-        }
-    }
-    // HTTPS toggle — needs a restart to rebind the listener.
-    if let Some(h) = req.https {
-        if h != s.https {
-            s.https = h;
-            needs_restart = true;
-        }
-    }
-    // Public-access toggle — needs a restart to rebind (0.0.0.0 vs 127.0.0.1).
-    if let Some(pub_acc) = req.public_access {
-        if pub_acc != s.public_access {
-            s.public_access = pub_acc;
-            needs_restart = true;
-        }
     }
     // Session inactivity timeout (minutes) — applied live to the auth layer.
     if let Some(t) = req.session_timeout {

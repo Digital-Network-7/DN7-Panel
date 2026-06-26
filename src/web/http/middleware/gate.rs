@@ -1,12 +1,12 @@
-//! Safe-entry gate + request-audit header/response redaction + IP allow-list (split from web/server.rs).
+//! Init-token gate + request-audit header/response redaction + IP allow-list (split from web/server.rs).
 use super::super::*;
 use crate::web::http::controllers::index_page;
 
-/// (a) carry a valid session token, (b) carry the matching `dn7_entry` cookie,
-/// or (c) hit the entry path itself are served; everything else gets a bare
-/// 404. Visiting the entry path returns the login page and sets the cookie, so
-/// the SPA's subsequent `/api` + `/ui` requests pass. Defends against scanners
-/// that don't know the secret path (obscurity layer, not a TLS replacement).
+/// Front-door gate: the IP allow-list always applies; then, while the panel is
+/// UNINITIALIZED, only requests bearing the init token (`?init_token=` on first
+/// hit → a `dn7_init` cookie) are served the first-run wizard — everything else
+/// gets a bare 404. Once initialized the gate is transparent (normal auth
+/// protects every endpoint). The name `entry_gate` is kept for the route wiring.
 pub(crate) async fn entry_gate(State(state): State<Shared>, req: Request, next: Next) -> Response {
     // Capture the client IP + sanitized request headers for the audit log, and
     // bind them as a per-request context so any audit record made while handling
@@ -49,8 +49,8 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
         .get::<axum::extract::ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip());
     // Resolve all security decisions under one brief settings lock via the
-    // policy view (allow-list verdict, init-token gate state, cookie Secure attr).
-    let (allow_active, ip_ok, initialized, init_token, secure) = {
+    // policy view (allow-list verdict + init-token gate state).
+    let (allow_active, ip_ok, initialized, init_token) = {
         // A poisoned lock means a thread panicked while holding it. The settings
         // it guards are only ever *read* here (a snapshot for security
         // decisions) and aren't left half-written by a panic, so recovering the
@@ -71,7 +71,6 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
             eff.map(|ip| pol.ip_allowed(ip)),
             pol.initialized(),
             pol.init_token(),
-            pol.cookie_secure_attr(),
         )
     };
     // Authorized-IP allow list (when configured). Loopback is always allowed.
@@ -115,7 +114,7 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
     if q_token.as_deref() == Some(token.as_str()) {
         let mut resp = index_page().await.into_response();
         if let Ok(v) =
-            format!("dn7_init={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400{secure}")
+            format!("dn7_init={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400")
                 .parse()
         {
             resp.headers_mut().append(header::SET_COOKIE, v);
@@ -263,7 +262,6 @@ mod tests {
         let cfg = crate::platform::config::PanelConfig::from_env();
         let settings = serde_json::from_value(serde_json::json!({
             "port": 1080,
-            "entry_path": "/",
             "trusted_proxies": [],
         }))
         .unwrap();

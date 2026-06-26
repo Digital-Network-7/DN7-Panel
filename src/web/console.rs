@@ -1,5 +1,5 @@
-//! Console management API used by the CLI / banner (port, entry path, owner,
-//! reset) and the startup banner info. Reads/writes the persisted web settings.
+//! Console management API used by the CLI / banner (owner check, reset) and the
+//! startup banner info. Reads/writes the persisted web settings.
 use super::settings;
 
 /// Console info for the startup banner. Reads the settings, **seeding them on
@@ -26,60 +26,19 @@ pub fn console_info(default_port: u16) -> ConsoleInfo {
     }
 }
 
-/// The console access URL once initialized (None while the wizard is pending).
-/// Uses the configured external address (falling back to `host`) + the chosen
-/// scheme; the edge serves the console on :80/:443 (no port, no entry path).
-pub fn access_url(host: &str) -> Option<String> {
-    let s = settings::load()?;
-    if !s.initialized {
-        return None;
-    }
-    let scheme = if s.https_mode == "none" { "http" } else { "https" };
-    let h = if s.external_address.is_empty() {
-        host.to_string()
-    } else {
-        s.external_address.clone()
-    };
-    Some(format!("{scheme}://{h}/"))
-}
-
-/// Set the console port (random high port when `None`). Returns the new port.
-pub fn console_port_set(port: Option<u16>) -> anyhow::Result<u16> {
-    let mut s = settings::load()
-        .ok_or_else(|| anyhow::anyhow!("console not initialized — start the panel once first"))?;
-    s.port = port.unwrap_or_else(settings::gen_port);
-    settings::save(&s)?;
-    Ok(s.port)
-}
-
-/// Set the safe-entry path (random when `None`). Returns the new "/<token>".
-pub fn console_entry_set(path: Option<String>) -> anyhow::Result<String> {
-    let mut s = settings::load()
-        .ok_or_else(|| anyhow::anyhow!("console not initialized — start the panel once first"))?;
-    let entry = match path {
-        Some(p) => settings::normalize_entry(&p).ok_or_else(|| {
-            anyhow::anyhow!("invalid entry path (use letters/digits/_- up to 32)")
-        })?,
-        None => settings::gen_entry(),
-    };
-    s.entry_path = entry.clone();
-    settings::save(&s)?;
-    Ok(entry)
-}
-
 /// uid of the OS user that first initialized the console (for the reset
 /// authorization check). None when the console isn't initialized yet.
 pub fn console_owner_uid() -> Option<u32> {
     settings::load().map(|s| s.owner_uid)
 }
 
-/// Reset the console account + password to a freshly-generated default,
-/// returning the new plaintext password (to show once). Caller is responsible
-/// for the owner/root authorization check (see `console_owner_uid`).
+/// Reset the console to the uninitialized state, returning the freshly-armed
+/// init token (so `dn7 panel reset` can print it). Caller is responsible for the
+/// owner/root authorization check (see `console_owner_uid`).
 pub fn reset_console() -> anyhow::Result<String> {
     let mut s = settings::load()
         .ok_or_else(|| anyhow::anyhow!("console not initialized — start the panel once first"))?;
-    let pw = s.reset();
+    let token = s.reset();
     settings::save(&s)?;
-    Ok(pw)
+    Ok(token)
 }

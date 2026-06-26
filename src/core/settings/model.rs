@@ -50,19 +50,6 @@ pub(crate) struct WebSettings {
     pub(crate) totp_secret: String,
     #[serde(default)]
     pub(crate) totp_enabled: bool,
-    /// Secret "safe entry" path that must prefix the URL to reach the login page
-    /// (e.g. "/ab12cd"). "/" disables the gate. Generated random on first run.
-    #[serde(default = "default_entry")]
-    pub(crate) entry_path: String,
-    /// Serve the console over HTTPS with a self-signed cert (default off).
-    #[serde(default)]
-    pub(crate) https: bool,
-    /// Allow the console to be reached directly from any address (bind
-    /// `0.0.0.0`). When **off**, it binds loopback only (`127.0.0.1`) so it's
-    /// reachable only through an nginx reverse proxy or an SSH tunnel on the
-    /// host — the recommended hardening. Default on. Changing needs a restart.
-    #[serde(default = "default_true")]
-    pub(crate) public_access: bool,
 
     // --- Init-flow redesign: the console is fronted by the edge (:80/:443) and
     // bootstrapped via a token-gated wizard instead of a pre-generated
@@ -106,10 +93,6 @@ pub(crate) struct WebSettings {
 
 pub(crate) fn default_username() -> String {
     "admin".to_string()
-}
-
-fn default_entry() -> String {
-    "/".to_string()
 }
 
 fn default_true() -> bool {

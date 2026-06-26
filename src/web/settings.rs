@@ -19,21 +19,6 @@ use rand::Rng;
 pub(crate) use crate::core::settings::{default_timeout, WebSettings};
 pub(crate) use crate::infra::store::settings::{load, save};
 
-/// A random 6-char lowercase-alnum safe-entry path ("/xxxxxx").
-pub fn gen_entry() -> String {
-    const CS: &[u8] = b"abcdefghijkmnpqrstuvwxyz23456789";
-    let mut rng = rand::thread_rng();
-    let tok: String = (0..6)
-        .map(|_| CS[rng.gen_range(0..CS.len())] as char)
-        .collect();
-    format!("/{tok}")
-}
-
-/// A random high TCP port (20000..=60000) for a fresh install.
-pub fn gen_port() -> u16 {
-    rand::thread_rng().gen_range(20000..=60000)
-}
-
 /// A 32-char alphanumeric one-time init token, printed to the launch banner and
 /// required (as `?init_token=`) to reach the first-run wizard.
 pub fn gen_init_token() -> String {
@@ -44,24 +29,6 @@ pub fn gen_init_token() -> String {
         .collect()
 }
 
-/// Validate/normalize a safe-entry path: "/" (disabled) or "/<token>" where the
-/// token is 1..=32 of [A-Za-z0-9_-] and not a reserved route. Returns the
-/// normalized "/<token>" (or "/"), or None if invalid.
-pub fn normalize_entry(s: &str) -> Option<String> {
-    let t = s.trim().trim_start_matches('/').trim_end_matches('/');
-    if t.is_empty() {
-        return Some("/".to_string());
-    }
-    if t.len() > 32
-        || !t
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        || matches!(t, "api" | "ui")
-    {
-        return None;
-    }
-    Some(format!("/{t}"))
-}
 
 /// Validate + normalize an authorized-IP allow list: each non-empty entry must
 /// be an IPv4/IPv6 address or CIDR. Returns the deduped list, or None if any
@@ -172,9 +139,6 @@ pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
         avatar: String::new(),
         totp_secret: String::new(),
         totp_enabled: false,
-        entry_path: "/".to_string(),
-        https: false,
-        public_access: false,
         initialized: false,
         init_token: gen_init_token(),
         external_address: String::new(),
@@ -209,9 +173,6 @@ mod tests {
             avatar: String::new(),
             totp_secret: String::new(),
             totp_enabled: false,
-            entry_path: "/".into(),
-            https: false,
-            public_access: true,
             initialized: false,
             init_token: String::new(),
             external_address: String::new(),
@@ -248,9 +209,6 @@ mod tests {
             avatar: String::new(),
             totp_secret: "SECRET".into(),
             totp_enabled: true,
-            entry_path: "/".into(),
-            https: false,
-            public_access: true,
             initialized: true,
             init_token: String::new(),
             external_address: "panel.example.com".into(),

@@ -1,9 +1,9 @@
 //! Security-boundary configuration as an explicit policy object.
 //!
 //! The console's security posture is spread across a handful of `WebSettings`
-//! fields (https, entry_path, allow_ips, session_timeout). Rather than have the
-//! entry gate, cookie/HSTS headers and session layer each read and interpret
-//! those raw fields, `SecurityPolicy` is a read-only view that exposes the
+//! fields (initialized, init_token, allow_ips, trusted_proxies). Rather than have
+//! the init gate, headers and session layer each read and interpret those raw
+//! fields, `SecurityPolicy` is a read-only view that exposes the
 //! *normalized decisions* they actually need — so the policy lives in one place
 //! and stays testable.
 use super::*;
@@ -17,21 +17,6 @@ pub(crate) struct SecurityPolicy<'a> {
 impl<'a> SecurityPolicy<'a> {
     pub(crate) fn new(s: &'a WebSettings) -> Self {
         Self { s }
-    }
-
-    /// Whether the console is served over HTTPS (drives Secure cookie + HSTS).
-    pub(crate) fn https(&self) -> bool {
-        self.s.https
-    }
-
-    /// The `; Secure` cookie-attribute suffix to append (empty over plain HTTP),
-    /// so an entry token never rides a cleartext request once TLS is on.
-    pub(crate) fn cookie_secure_attr(&self) -> &'static str {
-        if self.s.https {
-            "; Secure"
-        } else {
-            ""
-        }
     }
 
     /// Whether first-run setup is complete. Before it is, the console serves the
@@ -179,19 +164,17 @@ mod tests {
         SecurityPolicy::new(settings)
     }
 
-    fn settings_with(allow: &[&str], https: bool, entry: &str) -> WebSettings {
+    fn settings_with(allow: &[&str]) -> WebSettings {
         serde_json::from_value(serde_json::json!({
             "port": 1080,
             "allow_ips": allow,
-            "https": https,
-            "entry_path": entry,
         }))
         .unwrap()
     }
 
     #[test]
     fn empty_allow_list_permits_any() {
-        let s = settings_with(&[], false, "/");
+        let s = settings_with(&[]);
         let p = pol(&s);
         assert!(!p.allow_list_active());
         assert!(p.ip_allowed("203.0.113.9".parse().unwrap()));
@@ -199,25 +182,13 @@ mod tests {
 
     #[test]
     fn allow_list_matches_exact_and_cidr_and_loopback() {
-        let s = settings_with(&["10.0.0.0/8", "203.0.113.5"], false, "/");
+        let s = settings_with(&["10.0.0.0/8", "203.0.113.5"]);
         let p = pol(&s);
         assert!(p.allow_list_active());
         assert!(p.ip_allowed("10.1.2.3".parse().unwrap())); // CIDR
         assert!(p.ip_allowed("203.0.113.5".parse().unwrap())); // exact
         assert!(p.ip_allowed("127.0.0.1".parse().unwrap())); // loopback always
         assert!(!p.ip_allowed("198.51.100.7".parse().unwrap())); // outside
-    }
-
-    #[test]
-    fn cookie_secure_follows_https() {
-        assert_eq!(
-            pol(&settings_with(&[], true, "/")).cookie_secure_attr(),
-            "; Secure"
-        );
-        assert_eq!(
-            pol(&settings_with(&[], false, "/")).cookie_secure_attr(),
-            ""
-        );
     }
 
     #[test]
@@ -238,7 +209,7 @@ mod tests {
     #[test]
     fn client_ip_only_trusts_xff_from_configured_proxy() {
         use std::net::IpAddr;
-        let mut s = settings_with(&[], false, "/");
+        let mut s = settings_with(&[]);
         s.trusted_proxies = vec!["10.0.0.1".to_string()];
         let p = pol(&s);
         let mut h = header::HeaderMap::new();
@@ -257,7 +228,7 @@ mod tests {
     #[test]
     fn no_trusted_proxies_never_reads_xff() {
         use std::net::IpAddr;
-        let s = settings_with(&[], false, "/"); // trusted_proxies empty
+        let s = settings_with(&[]); // trusted_proxies empty
         let p = pol(&s);
         let mut h = header::HeaderMap::new();
         h.insert("x-forwarded-for", "203.0.113.9".parse().unwrap());
@@ -268,7 +239,7 @@ mod tests {
     #[test]
     fn loopback_proxy_is_trusted_and_resolves_real_client() {
         use std::net::IpAddr;
-        let s = settings_with(&[], false, "/"); // no explicit trusted proxies
+        let s = settings_with(&[]); // no explicit trusted proxies
         let p = pol(&s);
         let lo: IpAddr = "127.0.0.1".parse().unwrap();
         // A same-host (loopback) reverse proxy is trusted automatically, so the

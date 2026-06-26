@@ -19,20 +19,12 @@ function renderSettings(v) {
     </div>
     <div id="setGeneral">
       <div style="max-width:480px">
-        <label class="switch" style="padding:0"><input type="checkbox" id="setPublic" ${s.public_access === false ? '' : 'checked'} /><span class="swbox"></span><span class="swtxt"><b>${tr('set.public_access')}</b><span>${tr('set.public_access_hint')}</span></span></label>
-        <label class="lbl" style="margin-top:16px">${tr('set.port_label')}</label>
-        <input id="setPort" class="field" type="number" value="${esc(String(s.port || ''))}" style="max-width:160px" />
-        <p class="formnote" style="margin-top:6px">${tr('set.port_restart_d')}</p>
-        <label class="lbl" style="margin-top:16px">${tr('set.entry')}</label>
-        <div class="field-suffix"><input id="setEntry" class="field" placeholder="/ab12cd" value="${esc(s.entry_path === '/' ? '' : (s.entry_path || ''))}" /><button type="button" class="suffix-btn" id="setEntryGen">${tr('set.generate')}</button></div>
-        <p class="formnote" style="margin-top:6px">${tr('set.entry_hint')}</p>
-        <label class="lbl" style="margin-top:16px">${tr('set.timeout')}</label>
+        <label class="lbl">${tr('set.timeout')}</label>
         <input id="setTimeout" class="field" type="number" min="1" value="${esc(String(s.session_timeout || 1440))}" style="max-width:160px" />
         <p class="formnote" style="margin-top:6px">${tr('set.timeout_hint')}</p>
         <label class="lbl" style="margin-top:16px">${tr('set.allow_ip')}</label>
         <div class="field-suffix"><input id="setAllowIp" class="field" readonly /><button type="button" class="suffix-btn" id="setAllowIpBtn">${tr('set.allow_ip_set')}</button></div>
         <p class="formnote" style="margin-top:6px">${tr('set.allow_ip_hint')}</p>
-        <label class="switch" style="padding:0;margin-top:16px"><input type="checkbox" id="setHttps" ${s.https ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('set.https')}</b><span>${tr('set.https_hint')}</span></span></label>
       </div>
       <div class="row" style="align-items:center;gap:12px;margin-top:18px"><button class="btn danger" id="setSave">${tr('set.save_restart')}</button><span class="err ok" id="setMsg"></span></div>
     </div>
@@ -78,13 +70,7 @@ function renderSettings(v) {
       $('setAppear').classList.toggle('hidden', b.dataset.s !== 'appear');
     });
 
-    // ---- Console: port / entry path / session timeout / authorized IPs / https ----
-    $('setEntryGen').onclick = () => {
-      const cs = 'abcdefghijkmnpqrstuvwxyz23456789';
-      const a = new Uint8Array(6);
-      if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(a); else for (let i = 0; i < 6; i++) a[i] = Math.floor(Math.random() * 256);
-      $('setEntry').value = '/' + Array.from(a).map((b) => cs[b % cs.length]).join('');
-    };
+    // ---- Console: session timeout / authorized IPs ----
     $('setAllowIp').value = ipDisplay();
     $('setAllowIpBtn').onclick = () => {
       modal(tr('set.allow_ip_modal'), `
@@ -103,17 +89,13 @@ function renderSettings(v) {
     $('setSave').onclick = async () => {
       const m = $('setMsg');
       // Step-up re-auth doubles as the confirmation here: changing the panel's
-      // access/security settings (bind exposure, port, HTTPS, entry path,
-      // authorized IPs, owner password) requires re-entering the password.
+      // access/security settings (session timeout, authorized IPs) requires
+      // re-entering the password.
       const tok = await stepUp(tr('stepup.msg_settings'));
       if (!tok) return;
       const body = {
-        port: Number($('setPort').value),
-        entry_path: $('setEntry').value.trim() || '/',
         session_timeout: Number($('setTimeout').value) || 1440,
         allow_ips: allowIps,
-        https: $('setHttps').checked,
-        public_access: $('setPublic').checked,
       };
       try {
         await SettingsApi.save(body, { 'X-DN7-Stepup': tok });

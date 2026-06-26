@@ -71,9 +71,6 @@ pub(crate) fn build_router(state: Shared) -> Router {
             state.clone(),
             entry_gate,
         ))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            security_headers,
-        ))
+        .layer(axum::middleware::from_fn(security_headers))
         .with_state(state)
 }

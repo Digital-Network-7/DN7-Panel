@@ -42,11 +42,6 @@ pub fn print(cfg: &PanelConfig) {
     println!();
 }
 
-/// Best public-facing host for building an access URL (public IP, else LAN IP).
-pub fn best_host() -> String {
-    public_ip().unwrap_or_else(internal_ip)
-}
-
 /// The host's primary outbound (LAN) IP, via the standard UDP-connect trick:
 /// connecting a UDP socket selects the source address without sending packets.
 fn internal_ip() -> String {

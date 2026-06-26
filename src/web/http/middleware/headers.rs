@@ -10,16 +10,16 @@ use super::super::*;
 /// `'unsafe-inline'` for the bundled inline styles. HSTS is sent only over
 /// HTTPS (browsers ignore it over HTTP, and sending it could strand an
 /// HTTP-only deployment).
-pub(crate) async fn security_headers(
-    State(state): State<Shared>,
-    req: Request,
-    next: Next,
-) -> Response {
-    let https = state
-        .settings
-        .lock()
-        .map(|s| SecurityPolicy::new(&s).https())
-        .unwrap_or(false);
+pub(crate) async fn security_headers(req: Request, next: Next) -> Response {
+    // The console binds loopback behind the edge, which terminates TLS and sets
+    // X-Forwarded-Proto. Send HSTS only when the *external* hop is HTTPS (over
+    // plain HTTP a browser ignores it, and sending it could strand an HTTP-only
+    // deployment).
+    let https = req
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        == Some("https");
     let mut resp = next.run(req).await;
     let h = resp.headers_mut();
     const CSP: &str = "default-src 'self'; script-src 'self'; \
