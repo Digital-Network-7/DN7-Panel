@@ -129,17 +129,19 @@ pub(crate) async fn force_start() -> Result<Value> {
     }
 }
 
-/// Start the in-process edge server at panel startup when the nginx capability
-/// has already been set up: load the current manifest into the route table and
-/// bind :80/:443. A no-op before setup (nothing to serve yet); `spawn()` is
-/// idempotent so this is safe to call alongside the setup flow.
+/// Start the in-process edge server at panel startup. The edge owns :80/:443 on
+/// EVERY boot — it fronts the console (and the pre-init wizard), not just user
+/// websites — so always bind the listener via the idempotent `spawn()`. Only
+/// load the persisted user-site manifests once the website capability is set up;
+/// before that the edge serves the empty-config default_site (and, once wired,
+/// the console route / init wizard).
 pub(crate) async fn edge_autostart() {
     if is_setup() {
         if let Err(e) = edge_reload().await {
             tracing::error!("edge: initial config load failed: {e:#}");
         }
-        crate::edge::spawn();
     }
+    crate::edge::spawn();
 }
 
 /// The on-disk directories the edge server reads cert PEMs and static webroots
