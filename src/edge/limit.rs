@@ -155,6 +155,7 @@ mod tests {
         RateLimit {
             req_per_sec: rps,
             burst,
+            bytes_per_sec: 0,
             autoban_threshold: thresh,
             autoban_window: window,
             autoban_minutes: minutes,

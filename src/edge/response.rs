@@ -4,12 +4,14 @@
 
 use bytes::Bytes;
 use http::{header, HeaderValue, Response, StatusCode};
-use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
+use http_body_util::{combinators::UnsyncBoxBody, BodyExt, Empty, Full};
 
-/// The unified response body every edge handler produces. `BoxBody` erases the
-/// concrete body type (full buffer, streamed proxy response, file stream) so
-/// the listener's service has one return type.
-pub(crate) type ResBody = BoxBody<Bytes, std::io::Error>;
+/// The unified response body every edge handler produces. An *unsync* boxed body
+/// erases the concrete body type (full buffer, streamed proxy response, file
+/// stream, rate-throttled stream) so the listener's service has one return type.
+/// `Send` (not `Sync`) is enough — each connection is served on one task — and
+/// it lets a throttle body hold a `tokio::time::Sleep` (which isn't `Sync`).
+pub(crate) type ResBody = UnsyncBoxBody<Bytes, std::io::Error>;
 
 /// The unified response type used across the edge handlers.
 pub(crate) type Resp = Response<ResBody>;
@@ -18,24 +20,25 @@ pub(crate) type Resp = Response<ResBody>;
 /// `std::io::Error` (proxy/file streams already use io errors).
 pub(crate) fn boxed<B>(body: B) -> ResBody
 where
-    B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
+    B: http_body::Body<Data = Bytes> + Send + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    body.map_err(|e| std::io::Error::other(e.into())).boxed()
+    body.map_err(|e| std::io::Error::other(e.into()))
+        .boxed_unsync()
 }
 
 /// A fully-buffered body from anything `Bytes`-convertible.
 pub(crate) fn full<T: Into<Bytes>>(chunk: T) -> ResBody {
     Full::new(chunk.into())
         .map_err(|never| match never {})
-        .boxed()
+        .boxed_unsync()
 }
 
 /// An empty body.
 pub(crate) fn empty() -> ResBody {
     Empty::<Bytes>::new()
         .map_err(|never| match never {})
-        .boxed()
+        .boxed_unsync()
 }
 
 /// A bare status response with an empty body.

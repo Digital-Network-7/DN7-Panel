@@ -347,12 +347,13 @@ fn build_access(a: &AccessList) -> AccessControl {
 /// Project the site's advanced rate-limit / auto-ban knobs into the edge route.
 /// `None` when neither is configured, so the hot path skips the check entirely.
 fn build_rate_limit(site: &Site) -> Option<RateLimit> {
-    if site.rate_limit_rps == 0 && site.autoban_threshold == 0 {
+    if site.rate_limit_rps == 0 && site.autoban_threshold == 0 && site.bandwidth_kbps == 0 {
         return None;
     }
     Some(RateLimit {
         req_per_sec: site.rate_limit_rps,
         burst: site.rate_limit_burst,
+        bytes_per_sec: site.bandwidth_kbps as u64 * 1024,
         autoban_threshold: site.autoban_threshold,
         autoban_window: site.autoban_window,
         autoban_minutes: site.autoban_minutes,

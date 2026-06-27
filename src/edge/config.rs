@@ -123,6 +123,8 @@ pub(crate) struct RateLimit {
     pub(crate) req_per_sec: u32,
     /// Extra burst allowance above the steady rate.
     pub(crate) burst: u32,
+    /// Per-connection download throttle in bytes/sec (0 = unthrottled).
+    pub(crate) bytes_per_sec: u64,
     /// Auto-ban: `threshold` rate-limit violations within `window` seconds bans
     /// the IP for `minutes` (0 threshold = no auto-ban).
     pub(crate) autoban_threshold: u32,

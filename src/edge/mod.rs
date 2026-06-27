@@ -32,6 +32,7 @@ mod security;
 mod static_files;
 mod status;
 mod store;
+mod throttle_body;
 mod timeout_body;
 mod tls;
 mod validate;

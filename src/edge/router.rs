@@ -21,7 +21,7 @@ use hyper::body::Incoming;
 use super::config::{DefaultRoute, RouteKind, ServerRoute};
 use super::listener::ConnCtx;
 use super::response::{self, Resp};
-use super::{acme, limit, proxy, security, static_files};
+use super::{acme, limit, proxy, security, static_files, throttle_body};
 
 /// The `/.well-known/acme-challenge/` path prefix HTTP-01 validation hits.
 const ACME_PREFIX: &str = "/.well-known/acme-challenge/";
@@ -157,6 +157,17 @@ pub(crate) async fn handle(
                 "503 Service Unavailable",
             ),
         }
+    };
+
+    // 8.5 Download throttle (the "高级功能" bandwidth knob): pace the response
+    //     body to the configured bytes/sec. Loopback (console / same-host) is
+    //     exempt; a 0 rate (or no config) leaves the body untouched.
+    let resp = match route.rate_limit.as_ref().map(|r| r.bytes_per_sec) {
+        Some(rate) if rate > 0 && !client_ip.is_loopback() => {
+            let (parts, body) = resp.into_parts();
+            http::Response::from_parts(parts, throttle_body::throttle(body, rate))
+        }
+        _ => resp,
     };
 
     // 9. Attach HSTS (TLS only) + the route's allowlisted extra headers.
