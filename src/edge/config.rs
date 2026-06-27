@@ -110,6 +110,24 @@ pub(crate) struct ServerRoute {
     /// Extra response headers parsed from an allowlisted `extra_conf`
     /// (`add_header` only — see `build::extra_headers`).
     pub(crate) extra_headers: Vec<(String, String)>,
+    /// Per-IP request rate limit + auto-ban (the "高级功能" knobs). `None` when
+    /// the site configured neither.
+    pub(crate) rate_limit: Option<RateLimit>,
+}
+
+/// Per-IP request-rate limit + auto-ban for a route, enforced by `edge::limit`.
+/// A `0` field means that sub-feature is off.
+#[derive(Clone, Copy)]
+pub(crate) struct RateLimit {
+    /// Steady-state requests/sec per client IP (0 = no rate limit).
+    pub(crate) req_per_sec: u32,
+    /// Extra burst allowance above the steady rate.
+    pub(crate) burst: u32,
+    /// Auto-ban: `threshold` rate-limit violations within `window` seconds bans
+    /// the IP for `minutes` (0 threshold = no auto-ban).
+    pub(crate) autoban_threshold: u32,
+    pub(crate) autoban_window: u32,
+    pub(crate) autoban_minutes: u32,
 }
 
 /// The primary handler kind for a [`ServerRoute`]'s `/` location.

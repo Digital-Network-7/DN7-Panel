@@ -22,6 +22,7 @@ mod acme;
 mod build;
 mod config;
 mod lifecycle;
+mod limit;
 mod listener;
 mod proxy;
 mod reload;
@@ -82,6 +83,9 @@ pub(crate) fn spawn() {
     if RUNNING.swap(true, Ordering::SeqCst) {
         return;
     }
+
+    // Bound the rate-limit/auto-ban state by sweeping idle entries (idempotent).
+    limit::start_sweeper();
 
     tokio::spawn(async {
         if let Err(e) = listener::run().await {

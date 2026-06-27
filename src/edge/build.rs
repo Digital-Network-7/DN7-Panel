@@ -113,6 +113,7 @@ pub(crate) fn build_runtime(input: &ReloadInput) -> Result<RuntimeConfig, String
             kind: build_kind(input, site, strip_auth),
             locations: build_locations(site, strip_auth),
             extra_headers: extra_headers(&site.extra_conf),
+            rate_limit: build_rate_limit(site),
         });
 
         // Index the cert (if any) under each of the site's hostnames.
@@ -178,6 +179,7 @@ fn inject_console_route(cfg: &mut RuntimeConfig, input: &ReloadInput) {
             kind: RouteKind::Proxy(mk_target()),
             locations: Vec::new(),
             extra_headers: Vec::new(),
+            rate_limit: None,
         })
     };
 
@@ -340,6 +342,21 @@ fn build_access(a: &AccessList) -> AccessControl {
         rules,
         realm: a.name.clone(),
     }
+}
+
+/// Project the site's advanced rate-limit / auto-ban knobs into the edge route.
+/// `None` when neither is configured, so the hot path skips the check entirely.
+fn build_rate_limit(site: &Site) -> Option<RateLimit> {
+    if site.rate_limit_rps == 0 && site.autoban_threshold == 0 {
+        return None;
+    }
+    Some(RateLimit {
+        req_per_sec: site.rate_limit_rps,
+        burst: site.rate_limit_burst,
+        autoban_threshold: site.autoban_threshold,
+        autoban_window: site.autoban_window,
+        autoban_minutes: site.autoban_minutes,
+    })
 }
 
 /// Build the trusted-proxy real-IP config: the operator's CIDR list, or the

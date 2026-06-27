@@ -21,7 +21,7 @@ use hyper::body::Incoming;
 use super::config::{DefaultRoute, RouteKind, ServerRoute};
 use super::listener::ConnCtx;
 use super::response::{self, Resp};
-use super::{acme, proxy, security, static_files};
+use super::{acme, limit, proxy, security, static_files};
 
 /// The `/.well-known/acme-challenge/` path prefix HTTP-01 validation hits.
 const ACME_PREFIX: &str = "/.well-known/acme-challenge/";
@@ -83,6 +83,35 @@ pub(crate) async fn handle(
 
     // 4. The real client IP, recovered through any trusted front proxy.
     let client_ip = security::real_ip(ctx, req.headers(), route.trust_proxy.as_ref());
+
+    // 4.5 Per-IP rate limit + auto-ban (the "高级功能" knobs). Loopback (the
+    //     console / same-host) is exempt; a banned IP is dropped before any
+    //     other work (even the force-SSL redirect).
+    if let Some(rl) = route.rate_limit.as_ref() {
+        if !client_ip.is_loopback() {
+            match limit::check(&route.id, client_ip, rl) {
+                limit::Verdict::Allow => {}
+                limit::Verdict::Banned => {
+                    return finish(
+                        response::status(http::StatusCode::FORBIDDEN),
+                        &route,
+                        ctx.tls,
+                    );
+                }
+                limit::Verdict::RateLimited => {
+                    let mut resp = response::text(
+                        http::StatusCode::TOO_MANY_REQUESTS,
+                        "429 Too Many Requests",
+                    );
+                    resp.headers_mut().insert(
+                        http::header::RETRY_AFTER,
+                        http::HeaderValue::from_static("1"),
+                    );
+                    return finish(resp, &route, ctx.tls);
+                }
+            }
+        }
+    }
 
     // 5. Force-SSL: redirect plain HTTP to the canonical https URL (path+query).
     if route.force_ssl && !ctx.tls {

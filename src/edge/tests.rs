@@ -256,6 +256,7 @@ mod edge_tests {
             kind,
             locations: Vec::new(),
             extra_headers: Vec::new(),
+            rate_limit: None,
         });
         let mut hosts = HashMap::new();
         hosts.insert(host.to_string(), route);
