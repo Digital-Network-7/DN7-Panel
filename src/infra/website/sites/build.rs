@@ -30,6 +30,22 @@ pub(crate) fn sanitize_trusted_cidrs(input: &str) -> Result<String> {
     Ok(out.join(" "))
 }
 
+/// Clamp an optional signed count from the wire into a bounded `u32` (a negative
+/// or absent value becomes 0 = "feature off").
+fn clamp_u32(v: Option<i64>, max: u32) -> u32 {
+    v.unwrap_or(0).clamp(0, max as i64) as u32
+}
+
+/// Normalize the IP-access-control mode to one of `""` (off) | `"allow"` | `"deny"`.
+fn norm_acl_mode(m: Option<&str>) -> String {
+    match m.map(str::trim) {
+        Some("allow") => "allow",
+        Some("deny") => "deny",
+        _ => "",
+    }
+    .to_string()
+}
+
 pub(crate) fn valid_local_root(p: &str) -> Result<String> {
     let path = std::path::Path::new(p);
     if !path.is_absolute() {
@@ -108,6 +124,21 @@ pub(crate) fn site_from_req(form: &SiteForm) -> Result<Site> {
         hsts_sub: form.hsts_sub.unwrap_or(false),
         trust_proxy: form.trust_proxy.unwrap_or(false),
         trust_proxy_cidrs: sanitize_trusted_cidrs(form.trust_proxy_cidrs.as_deref().unwrap_or(""))?,
+        rate_limit_rps: clamp_u32(form.rate_limit_rps, 100_000),
+        rate_limit_burst: clamp_u32(form.rate_limit_burst, 100_000),
+        bandwidth_kbps: clamp_u32(form.bandwidth_kbps, 10_000_000),
+        conn_per_ip: clamp_u32(form.conn_per_ip, 100_000),
+        autoban_threshold: clamp_u32(form.autoban_threshold, 100_000),
+        autoban_window: clamp_u32(form.autoban_window, 86_400),
+        autoban_minutes: clamp_u32(form.autoban_minutes, 525_600),
+        ip_acl_mode: norm_acl_mode(form.ip_acl_mode.as_deref()),
+        ip_acl_list: sanitize_trusted_cidrs(form.ip_acl_list.as_deref().unwrap_or(""))?,
+        hotlink_referers: form
+            .hotlink_referers
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_string(),
         locations: Vec::new(),
         extra_conf: String::new(),
         access_id: String::new(),

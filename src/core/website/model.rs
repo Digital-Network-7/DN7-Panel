@@ -71,6 +71,37 @@ pub(crate) struct Site {
     /// allowlist from this field; other directives are stored but not applied.
     #[serde(default)]
     pub(crate) extra_conf: String,
+    // --- Advanced features ("高级功能" tab). Stored per-site; the edge enforces
+    // each feature-by-feature. `0` / `""` means the feature is off. ---
+    /// Per-IP request rate limit (requests/sec) + extra burst allowance.
+    #[serde(default)]
+    pub(crate) rate_limit_rps: u32,
+    #[serde(default)]
+    pub(crate) rate_limit_burst: u32,
+    /// Per-connection download cap (KB/s).
+    #[serde(default)]
+    pub(crate) bandwidth_kbps: u32,
+    /// Max concurrent connections per IP.
+    #[serde(default)]
+    pub(crate) conn_per_ip: u32,
+    /// Auto-ban: `threshold` violations within `window` seconds → block the IP
+    /// for `minutes`.
+    #[serde(default)]
+    pub(crate) autoban_threshold: u32,
+    #[serde(default)]
+    pub(crate) autoban_window: u32,
+    #[serde(default)]
+    pub(crate) autoban_minutes: u32,
+    /// IP access control: mode `""` (off) | `"allow"` | `"deny"`, over a
+    /// whitespace-separated IP/CIDR list.
+    #[serde(default)]
+    pub(crate) ip_acl_mode: String,
+    #[serde(default)]
+    pub(crate) ip_acl_list: String,
+    /// Hotlink protection: whitespace-separated allowed Referer domains
+    /// (empty == off).
+    #[serde(default)]
+    pub(crate) hotlink_referers: String,
     /// Access list id controlling this site (HTTP Basic Auth + IP allow/deny).
     /// Empty == publicly accessible.
     #[serde(default)]

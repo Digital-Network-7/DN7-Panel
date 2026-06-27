@@ -692,3 +692,41 @@ table.nettbl td .clamp1 { display: -webkit-box; -webkit-box-orient: vertical; -w
   nav button .t { display: none; }
   aside .foot { display: none; }
 }
+
+/* ---- Advanced-features cards ("高级功能" site tab) ---- */
+.afstack { display:flex; flex-direction:column; gap:9px; }
+.afbar { display:flex; align-items:center; gap:9px; padding:9px 12px; margin-bottom:12px; border:1px solid var(--line); border-radius:10px; background:var(--panel2); font-size:12px; color:var(--mut); }
+.afbar > i { color:var(--cy); font-size:16px; flex:0 0 auto; }
+.afbar b { color:var(--fg); font-weight:600; }
+.afbar .afpips { margin-left:auto; display:flex; gap:5px; }
+.afbar .afpip { width:8px; height:8px; border-radius:50%; opacity:.3; transition:opacity .2s; }
+.afcard { border:1px solid var(--line); border-radius:12px; background:var(--panel2); overflow:hidden; transition:border-color .16s, box-shadow .16s; }
+.afcard.on { border-color:rgba(34,211,238,.34); box-shadow:0 0 0 1px rgba(34,211,238,.10), 0 6px 18px rgba(0,0,0,.2); }
+.afhead { display:flex; align-items:center; gap:12px; padding:12px 14px; cursor:pointer; user-select:none; }
+.afic { width:34px; height:34px; flex:0 0 auto; border-radius:9px; display:flex; align-items:center; justify-content:center; font-size:17px; }
+.afic.cy { background:rgba(34,211,238,.13); color:var(--cy); }
+.afic.br { background:rgba(59,130,246,.13); color:var(--br); }
+.afic.vio { background:rgba(139,92,246,.13); color:var(--vio); }
+.afic.wn { background:rgba(251,191,36,.13); color:var(--warn); }
+.afic.er { background:rgba(251,113,133,.13); color:var(--err); }
+.afic.mu { background:rgba(130,148,176,.13); color:var(--mut); }
+.afm { flex:1; min-width:0; }
+.afm b { display:block; font-size:13.5px; font-weight:600; }
+.afm span { display:block; font-size:11.5px; color:var(--mut); margin-top:1px; }
+.afsw { position:relative; width:40px; height:22px; flex:0 0 auto; cursor:pointer; }
+.afsw input { position:absolute; opacity:0; width:0; height:0; }
+.afsb { position:absolute; inset:0; border-radius:99px; background:var(--hov); border:1px solid var(--line2); transition:background .18s, border-color .18s; }
+.afsb::after { content:''; position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:var(--mut); transition:transform .18s, background .18s; }
+.afsw input:checked + .afsb { background:linear-gradient(135deg,rgba(34,211,238,.6),rgba(139,92,246,.6)); border-color:transparent; }
+.afsw input:checked + .afsb::after { transform:translateX(18px); background:#fff; }
+.afbody { display:none; padding:2px 14px 14px; border-top:1px solid var(--line); }
+.afcard.on .afbody { display:block; }
+.afgrid { display:flex; gap:14px; flex-wrap:wrap; padding-top:12px; }
+.affld { flex:1; min-width:118px; }
+.affld.spacer { visibility:hidden; }
+.affld > label { display:block; font-size:11.5px; color:var(--mut); margin-bottom:6px; }
+.afbody > .aflabel { display:block; font-size:11.5px; color:var(--mut); margin:12px 0 6px; }
+.afnote { font-size:11px; color:var(--mut); margin:9px 0 0; display:flex; align-items:flex-start; gap:6px; line-height:1.5; }
+.afnote i { margin-top:1px; flex:0 0 auto; }
+.afchips { display:flex; flex-wrap:wrap; gap:6px; padding-top:12px; }
+.afchip { font-size:11px; color:var(--err); border:1px solid rgba(251,113,133,.34); background:rgba(251,113,133,.10); border-radius:99px; padding:3px 9px; }

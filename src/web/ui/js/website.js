@@ -118,6 +118,35 @@ function sslLabel(s, modes) {
   return `<span class="chip on">${tr('ng.yes')}</span>`;
 }
 
+// Feather-style line icons for the advanced-feature cards (the app draws icons
+// as inline SVG, not an icon font). stroke=currentColor inherits the accent.
+const AF_ICONS = {
+  rl: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  bw: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
+  conn: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  ban: '<circle cx="12" cy="12" r="10"/><path d="M4.93 4.93l14.14 14.14"/>',
+  acl: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
+  hot: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/>',
+  waf: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+  code: '<path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  warn: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+};
+function afsvg(k, sz) { return `<svg viewBox="0 0 24 24" width="${sz || 18}" height="${sz || 18}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${AF_ICONS[k]}</svg>`; }
+
+// One advanced-feature card: accent icon + title + master switch; the body
+// (config) shows only while the switch is on. `swId` is the persisted control.
+function afCard(feat, color, icon, title, desc, swId, body, checked) {
+  return `<div class="afcard" data-feat="${feat}">
+    <div class="afhead">
+      <span class="afic ${color}">${afsvg(icon)}</span>
+      <span class="afm"><b>${title}</b><span>${desc}</span></span>
+      <label class="afsw"><input type="checkbox" id="${swId}"${checked ? ' checked' : ''} /><span class="afsb"></span></label>
+    </div>
+    <div class="afbody">${body}</div>
+  </div>`;
+}
+
 function ngAddSite(reload, site) {
   const editing = !!site;
   modal(editing ? tr('ng.edit_site_title') : tr('ng.add_site_title'), `
@@ -125,7 +154,7 @@ function ngAddSite(reload, site) {
       <button class="on" data-t="detail">${tr('ng.tab_detail')}</button>
       <button data-t="rules">${tr('ng.tab_rules')}</button>
       <button data-t="ssl">${tr('ng.tab_ssl')}</button>
-      <button data-t="conf">${tr('ng.tab_conf')}</button>
+      <button data-t="conf">${tr('ng.tab_adv')}</button>
     </div>
     <div class="ftab-pane on" data-p="detail">
       <div class="formgrid">
@@ -140,7 +169,6 @@ function ngAddSite(reload, site) {
       <div style="margin-top:14px"><label class="lbl">${tr('ng.access_label')}</label><select id="nsAccess" class="field"><option value="">${tr('ng.access_public')}</option></select><p class="formnote" style="margin-top:6px">${tr('ng.access_hint')}</p></div>
       <div class="switchrow" style="margin-top:8px;gap:2px 18px">
         <label class="switch"><input type="checkbox" id="nsCache" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.sw_cache')}</b><span>${tr('ng.sw_cache_d')}</span></span></label>
-        <label class="switch"><input type="checkbox" id="nsBlock" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.sw_block')}</b><span>${tr('ng.sw_block_d')}</span></span></label>
         <label class="switch"><input type="checkbox" id="nsWs" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.sw_ws')}</b><span>${tr('ng.sw_ws_d')}</span></span></label>
       </div>
       <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="nsGo">${editing ? tr('ng.save') : tr('ng.create')}</button></div>
@@ -179,15 +207,61 @@ function ngAddSite(reload, site) {
       </div>
     </div>
     <div class="ftab-pane" data-p="conf">
-      <p class="mut" style="font-size:12.5px;margin:0 0 10px">${tr('ng.conf_intro')}</p>
-      <textarea id="nsConf" class="field mono confbox" rows="13" spellcheck="false" placeholder="${tr('ng.conf_ph')}"></textarea>
-      <p class="formnote">${tr('ng.conf_note')}</p>
+      <div class="afbar">${afsvg('waf', 16)}<span><b id="nsAfCount">0</b> ${tr('ng.af_active')}</span>
+        <span class="afpips"><span class="afpip" data-feat="rl" style="background:var(--cy)"></span><span class="afpip" data-feat="bw" style="background:var(--br)"></span><span class="afpip" data-feat="ban" style="background:var(--warn)"></span><span class="afpip" data-feat="acl" style="background:var(--vio)"></span><span class="afpip" data-feat="waf" style="background:var(--err)"></span></span></div>
+      <div class="afstack" id="nsAdv">
+        ${afCard('rl', 'cy', 'rl', tr('ng.af_rl'), tr('ng.af_rl_d'), 'nsRlOn',
+          `<div class="afgrid">
+            <div class="affld"><label>${tr('ng.af_rl_rps')}</label><div class="field-suffix"><input id="nsRlRps" class="field" type="number" min="0" value="10" /><span class="suffix-tag">req/s</span></div></div>
+            <div class="affld"><label>${tr('ng.af_rl_burst')}</label><div class="field-suffix"><input id="nsRlBurst" class="field" type="number" min="0" value="20" /><span class="suffix-tag">${tr('ng.af_u_times')}</span></div></div>
+          </div><p class="afnote">${afsvg('info', 14)}${tr('ng.af_rl_note')}</p>`)}
+        ${afCard('bw', 'br', 'bw', tr('ng.af_bw'), tr('ng.af_bw_d'), 'nsBwOn',
+          `<div class="afgrid"><div class="affld"><label>${tr('ng.af_bw_rate')}</label><div class="field-suffix"><input id="nsBwKbps" class="field" type="number" min="0" value="1024" /><span class="suffix-tag">KB/s</span></div></div><div class="affld spacer"></div></div>`)}
+        ${afCard('conn', 'br', 'conn', tr('ng.af_conn'), tr('ng.af_conn_d'), 'nsConnOn',
+          `<div class="afgrid"><div class="affld"><label>${tr('ng.af_conn_max')}</label><div class="field-suffix"><input id="nsConnIp" class="field" type="number" min="0" value="50" /><span class="suffix-tag">${tr('ng.af_u_conn')}</span></div></div><div class="affld spacer"></div></div>`)}
+        ${afCard('ban', 'wn', 'ban', tr('ng.af_ban'), tr('ng.af_ban_d'), 'nsBanOn',
+          `<div class="afgrid">
+            <div class="affld"><label>${tr('ng.af_ban_thresh')}</label><div class="field-suffix"><input id="nsBanThresh" class="field" type="number" min="0" value="10" /><span class="suffix-tag">${tr('ng.af_u_times')}</span></div></div>
+            <div class="affld"><label>${tr('ng.af_ban_window')}</label><div class="field-suffix"><input id="nsBanWindow" class="field" type="number" min="0" value="60" /><span class="suffix-tag">${tr('ng.af_u_sec')}</span></div></div>
+            <div class="affld"><label>${tr('ng.af_ban_dur')}</label><div class="field-suffix"><input id="nsBanMin" class="field" type="number" min="0" value="10" /><span class="suffix-tag">${tr('ng.af_u_min')}</span></div></div>
+          </div>`)}
+        ${afCard('acl', 'vio', 'acl', tr('ng.af_acl'), tr('ng.af_acl_d'), 'nsAclOn',
+          `<div class="aflabel">${tr('ng.af_acl_mode')}</div><div class="segbtns" id="nsAclSeg"><button type="button" class="on" data-m="allow">${tr('ng.af_acl_allow')}</button><button type="button" data-m="deny">${tr('ng.af_acl_deny')}</button></div>
+           <div class="aflabel">${tr('ng.af_acl_list')}</div><textarea id="nsAclList" class="field mono" rows="2" spellcheck="false" placeholder="203.0.113.0/24"></textarea>`)}
+        ${afCard('hot', 'vio', 'hot', tr('ng.af_hot'), tr('ng.af_hot_d'), 'nsHotOn',
+          `<div class="aflabel">${tr('ng.af_hot_ref')}</div><input id="nsHotlink" class="field" placeholder="example.com  *.example.com" />`)}
+        ${afCard('waf', 'er', 'waf', tr('ng.af_waf'), tr('ng.af_waf_d'), 'nsBlock',
+          `<div class="afchips"><span class="afchip">${tr('ng.af_waf_sqli')}</span><span class="afchip">${tr('ng.af_waf_xss')}</span><span class="afchip">${tr('ng.af_waf_trav')}</span><span class="afchip">${tr('ng.af_waf_scan')}</span></div>`)}
+        ${afCard('code', 'mu', 'code', tr('ng.af_expert'), tr('ng.af_expert_d'), 'nsConfOn',
+          `<textarea id="nsConf" class="field mono confbox" rows="6" spellcheck="false" placeholder="${tr('ng.conf_ph')}"></textarea><p class="afnote">${afsvg('warn', 14)}${tr('ng.conf_note')}</p>`)}
+      </div>
     </div>`, (close) => {
     document.querySelectorAll('#nsTabs button').forEach((b) => b.onclick = () => {
       document.querySelectorAll('#nsTabs button').forEach((x) => x.className = x === b ? 'on' : '');
       document.querySelectorAll('.ftab-pane').forEach((p) => p.className = 'ftab-pane' + (p.dataset.p === b.dataset.t ? ' on' : ''));
       if (b.dataset.t === 'ssl' && $('nsSsl').checked && certMethod === 'auto') loadCertList();
     });
+
+    // Advanced-feature cards: the head toggles its master switch + reveals the
+    // body; the summary bar counts active features. (No inline handlers — the
+    // CSP forbids them.) afSync() is called once after the edit-prefill below.
+    const afSync = () => {
+      let n = 0;
+      document.querySelectorAll('#nsAdv .afcard').forEach((c) => {
+        const on = c.querySelector('.afsw input').checked;
+        c.classList.toggle('on', on);
+        const pip = document.querySelector(`.afpip[data-feat="${c.dataset.feat}"]`);
+        if (pip) pip.style.opacity = on ? '1' : '.3';
+        if (on) n++;
+      });
+      $('nsAfCount').textContent = n;
+    };
+    document.querySelectorAll('#nsAdv .afhead').forEach((h) => h.onclick = (e) => {
+      if (e.target.closest('.afsw')) return;
+      const cb = h.querySelector('.afsw input'); cb.checked = !cb.checked; afSync();
+    });
+    document.querySelectorAll('#nsAdv .afsw input').forEach((cb) => cb.onchange = afSync);
+    document.querySelectorAll('#nsAclSeg button').forEach((b) => b.onclick = () => document.querySelectorAll('#nsAclSeg button').forEach((x) => x.classList.toggle('on', x === b)));
 
     // SSL state: 'auto' (Let's Encrypt — reuse a matching cert or issue one) or
     // 'self' (self-signed). `selectedCert` is the chosen library cert name, ''
@@ -341,7 +415,18 @@ function ngAddSite(reload, site) {
       $('nsBlock').checked = !!site.block_attacks;
       $('nsWs').checked = site.websockets !== false;
       $('nsConf').value = site.extra_conf || '';
+      const sv = (id, v) => { const e = $(id); if (e) e.value = v; };
+      const so = (id, v) => { const e = $(id); if (e) e.checked = v; };
+      sv('nsRlRps', site.rate_limit_rps || 10); sv('nsRlBurst', site.rate_limit_burst || 20); so('nsRlOn', !!site.rate_limit_rps);
+      sv('nsBwKbps', site.bandwidth_kbps || 1024); so('nsBwOn', !!site.bandwidth_kbps);
+      sv('nsConnIp', site.conn_per_ip || 50); so('nsConnOn', !!site.conn_per_ip);
+      sv('nsBanThresh', site.autoban_threshold || 10); sv('nsBanWindow', site.autoban_window || 60); sv('nsBanMin', site.autoban_minutes || 10); so('nsBanOn', !!site.autoban_threshold);
+      sv('nsAclList', site.ip_acl_list || ''); so('nsAclOn', !!site.ip_acl_mode);
+      document.querySelectorAll('#nsAclSeg button').forEach((x) => x.classList.toggle('on', x.dataset.m === (site.ip_acl_mode || 'allow')));
+      sv('nsHotlink', site.hotlink_referers || ''); so('nsHotOn', !!site.hotlink_referers);
+      so('nsConfOn', !!site.extra_conf);
     }
+    afSync();
     $('nsKind').onchange = kindFields; kindFields(); prefillKind();
 
     const locRow = (v) => {
@@ -412,7 +497,19 @@ function ngAddSite(reload, site) {
 
     $('nsGo').onclick = async () => {
       const k = $('nsKind').value;
-      const body = { op: editing ? 'update_site' : 'add_site', server_name: $('nsName').value.trim(), kind: k, ssl: $('nsSsl').checked, cache: $('nsCache').checked, block_attacks: $('nsBlock').checked, websockets: $('nsWs').checked, locations: collectLocs(), extra_conf: $('nsConf').value, access_id: ($('nsAccess') ? $('nsAccess').value : '') };
+      const body = { op: editing ? 'update_site' : 'add_site', server_name: $('nsName').value.trim(), kind: k, ssl: $('nsSsl').checked, cache: $('nsCache').checked, block_attacks: $('nsBlock').checked, websockets: $('nsWs').checked, locations: collectLocs(), extra_conf: ($('nsConfOn').checked ? $('nsConf').value : ''), access_id: ($('nsAccess') ? $('nsAccess').value : '') };
+      // Advanced features — each value is sent only when its card is enabled.
+      const afN = (onId, valId) => ($(onId).checked ? Number($(valId).value) || 0 : 0);
+      body.rate_limit_rps = afN('nsRlOn', 'nsRlRps');
+      body.rate_limit_burst = afN('nsRlOn', 'nsRlBurst');
+      body.bandwidth_kbps = afN('nsBwOn', 'nsBwKbps');
+      body.conn_per_ip = afN('nsConnOn', 'nsConnIp');
+      body.autoban_threshold = afN('nsBanOn', 'nsBanThresh');
+      body.autoban_window = afN('nsBanOn', 'nsBanWindow');
+      body.autoban_minutes = afN('nsBanOn', 'nsBanMin');
+      body.ip_acl_mode = $('nsAclOn').checked ? ((document.querySelector('#nsAclSeg button.on') || {}).dataset || {}).m || 'allow' : '';
+      body.ip_acl_list = $('nsAclOn').checked ? $('nsAclList').value.trim() : '';
+      body.hotlink_referers = $('nsHotOn').checked ? $('nsHotlink').value.trim() : '';
       if (editing) body.site_id = site.id;
       if (!body.server_name) return toast(tr('ng.need_domain'), 'err');
       if (k === 'proxy_host') { body.scheme = $('nsScheme').value; const p = $('nsTarget').value.trim(); if (!p) return toast(tr('ng.need_host_port'), 'err'); body.target_url = /^\d+$/.test(p) ? '127.0.0.1:' + p : p; }

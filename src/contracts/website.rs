@@ -109,6 +109,27 @@ pub(crate) struct SiteForm {
     pub(crate) locations: Option<Vec<Location>>,
     #[serde(default)]
     pub(crate) extra_conf: Option<String>,
+    // --- Advanced features ("高级功能" tab). ---
+    #[serde(default)]
+    pub(crate) rate_limit_rps: Option<i64>,
+    #[serde(default)]
+    pub(crate) rate_limit_burst: Option<i64>,
+    #[serde(default)]
+    pub(crate) bandwidth_kbps: Option<i64>,
+    #[serde(default)]
+    pub(crate) conn_per_ip: Option<i64>,
+    #[serde(default)]
+    pub(crate) autoban_threshold: Option<i64>,
+    #[serde(default)]
+    pub(crate) autoban_window: Option<i64>,
+    #[serde(default)]
+    pub(crate) autoban_minutes: Option<i64>,
+    #[serde(default)]
+    pub(crate) ip_acl_mode: Option<String>,
+    #[serde(default)]
+    pub(crate) ip_acl_list: Option<String>,
+    #[serde(default)]
+    pub(crate) hotlink_referers: Option<String>,
     #[serde(default)]
     pub(crate) access_id: Option<String>,
 }
