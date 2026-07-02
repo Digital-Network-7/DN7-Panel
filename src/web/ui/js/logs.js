@@ -32,10 +32,8 @@ function logOp(action) {
 }
 
 function logFmtTime(ts) {
-  const d = new Date((Number(ts) || 0) * 1000);
   if (!ts) return '-';
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return fmtTsFull(ts); // configured display timezone (falls back to local)
 }
 
 const LOG_PAGE_SIZE = 15;

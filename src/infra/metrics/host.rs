@@ -11,76 +11,111 @@ pub(crate) fn os_label() -> String {
     }
 }
 
-/// Best-effort memory hardware description via `dmidecode -t memory`. Reads the
-/// first populated DIMM's manufacturer + type + speed (e.g. "Samsung DDR5
-/// 4800 MT/s"). Requires root + dmidecode; returns "" when unavailable (most
-/// containers/cloud VMs), which the UI treats as "unknown" and simply omits.
+/// Best-effort memory hardware description (e.g. "Samsung DDR5 4800 MT/s") by
+/// parsing the SMBIOS DMI tables directly from `/sys/firmware/dmi/tables/DMI` —
+/// PURE RUST, no `dmidecode` shell-out. Returns "" when the tables are absent or
+/// unreadable (most containers/cloud VMs; needs root), which the UI omits.
 pub(crate) fn detect_mem_model() -> String {
-    // Only meaningful on Linux with dmidecode present; cheap to attempt.
-    let out = match std::process::Command::new("dmidecode")
-        .args(["-t", "memory"])
-        .output()
-    {
-        Ok(o) if o.status.success() => o.stdout,
-        _ => return String::new(),
-    };
-    let text = String::from_utf8_lossy(&out);
-    // dmidecode prints one block per "Memory Device". Pick the first populated
-    // one (Size not "No Module Installed").
-    let mut manufacturer = String::new();
-    let mut ram_type = String::new();
-    let mut speed = String::new();
-    let mut installed = false;
-    let mut in_device = false;
-    for line in text.lines() {
-        let l = line.trim();
-        if l == "Memory Device" {
-            // Starting a new device block: if the previous one was populated and
-            // had enough info, stop here.
-            if installed && (!ram_type.is_empty() || !manufacturer.is_empty()) {
-                break;
-            }
-            in_device = true;
-            installed = false;
-            manufacturer.clear();
-            ram_type.clear();
-            speed.clear();
-            continue;
+    std::fs::read("/sys/firmware/dmi/tables/DMI")
+        .map(|d| parse_smbios_mem(&d))
+        .unwrap_or_default()
+}
+
+/// Parse raw SMBIOS table bytes for the first populated DIMM's description
+/// (manufacturer + DDR type + speed). Factored out so it's unit-testable without
+/// the root-only `/sys/firmware/dmi/tables/DMI`.
+fn parse_smbios_mem(data: &[u8]) -> String {
+    // Walk SMBIOS structures: header [type:u8, length:u8, handle:u16], a formatted
+    // area of `length` bytes, then a double-NUL-terminated set of strings (string
+    // refs in the formatted area are 1-based indices into that set).
+    let mut i = 0usize;
+    while i + 4 <= data.len() {
+        let typ = data[i];
+        let len = data[i + 1] as usize;
+        if len < 4 || i + len > data.len() {
+            break;
         }
-        if !in_device {
-            continue;
+        let formatted = &data[i..i + len];
+        // The string set runs from the end of the formatted area to the first
+        // double-NUL (`\0\0`); each string is NUL-separated within it.
+        let sset_start = i + len;
+        let mut j = sset_start;
+        while j + 1 < data.len() && !(data[j] == 0 && data[j + 1] == 0) {
+            j += 1;
         }
-        if let Some(v) = l.strip_prefix("Size:") {
-            let v = v.trim();
-            installed = !v.is_empty() && v != "No Module Installed" && v != "0";
-        } else if let Some(v) = l.strip_prefix("Type:") {
-            let v = v.trim();
-            if v != "Unknown" && v != "Other" {
-                ram_type = v.to_string();
+        let strings: Vec<&[u8]> = data[sset_start..j.min(data.len())]
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .collect();
+        let str_at = |idx: usize| -> String {
+            idx.checked_sub(1)
+                .and_then(|k| strings.get(k))
+                .map(|b| String::from_utf8_lossy(b).trim().to_string())
+                .unwrap_or_default()
+        };
+        let word = |off: usize| -> u16 {
+            if off + 1 < formatted.len() {
+                u16::from_le_bytes([formatted[off], formatted[off + 1]])
+            } else {
+                0
             }
-        } else if let Some(v) = l.strip_prefix("Manufacturer:") {
-            let v = v.trim();
-            if !v.is_empty() && v != "Unknown" && !v.starts_with("Not ") {
-                manufacturer = v.to_string();
-            }
-        } else if let Some(v) = l.strip_prefix("Configured Memory Speed:") {
-            let v = v.trim();
-            if v != "Unknown" && !v.is_empty() {
-                speed = v.to_string();
-            }
-        } else if let Some(v) = l.strip_prefix("Speed:") {
-            // Fallback to rated Speed when Configured isn't reported.
-            let v = v.trim();
-            if speed.is_empty() && v != "Unknown" && !v.is_empty() {
-                speed = v.to_string();
+        };
+
+        // Type 17 = Memory Device. Offsets per the SMBIOS spec.
+        if typ == 17 && len > 0x17 {
+            let size = word(0x0C);
+            let installed = size != 0 && size != 0xFFFF;
+            if installed {
+                let manufacturer = str_at(formatted[0x17] as usize);
+                let ram_type = mem_type_name(formatted.get(0x12).copied().unwrap_or(0));
+                // Configured Memory Speed (0x20, SMBIOS 2.7+) preferred, else rated.
+                let cfg = if len > 0x21 { word(0x20) } else { 0 };
+                let rated = word(0x15);
+                let mts = if cfg != 0 && cfg != 0xFFFF {
+                    cfg
+                } else {
+                    rated
+                };
+                let speed = if mts != 0 && mts != 0xFFFF {
+                    format!("{mts} MT/s")
+                } else {
+                    String::new()
+                };
+                let parts: Vec<String> = [manufacturer, ram_type, speed]
+                    .into_iter()
+                    .filter(|s| !s.is_empty() && s != "Unknown" && !s.starts_with("Not "))
+                    .collect();
+                if !parts.is_empty() {
+                    return parts.join(" ");
+                }
             }
         }
+        if typ == 127 {
+            break; // end-of-table marker
+        }
+        i = j + 2; // skip the terminating double-NUL to the next structure
     }
-    let parts: Vec<&str> = [manufacturer.as_str(), ram_type.as_str(), speed.as_str()]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect();
-    parts.join(" ")
+    String::new()
+}
+
+/// SMBIOS Memory Device "Type" byte → a human name (the common DDR variants);
+/// "" for unknown/other.
+fn mem_type_name(b: u8) -> String {
+    match b {
+        0x12 => "DDR",
+        0x13 => "DDR2",
+        0x14 => "DDR2 FB-DIMM",
+        0x18 => "DDR3",
+        0x1A => "DDR4",
+        0x1B => "LPDDR",
+        0x1C => "LPDDR2",
+        0x1D => "LPDDR3",
+        0x1E => "LPDDR4",
+        0x22 => "DDR5",
+        0x23 => "LPDDR5",
+        _ => "",
+    }
+    .to_string()
 }
 
 /// Best-effort local IP discovery by opening a UDP socket to a public address.
@@ -124,30 +159,16 @@ pub(crate) fn detect_container() -> bool {
 /// "cores" are the host's, scheduled by the hypervisor/host). Best-effort,
 /// Linux-focused; conservative — returns false when nothing indicates a VM.
 ///
-/// Signals, in order:
+/// Signals, in order (all pure-Rust — no `systemd-detect-virt` shell-out):
 ///   1. containers are always vCPU;
-///   2. `systemd-detect-virt -q` exits 0 when virtualized;
-///   3. the `hypervisor` flag in `/proc/cpuinfo` (set by most hypervisors);
-///   4. `/sys/hypervisor/type` (Xen) or DMI product/vendor naming a hypervisor.
+///   2. the `hypervisor` flag in `/proc/cpuinfo` (set by most hypervisors);
+///   3. `/sys/hypervisor/type` (Xen) or DMI product/vendor naming a hypervisor.
 pub(crate) fn detect_virtual_cpu(is_container: bool) -> bool {
     if is_container {
         return true;
     }
-    // systemd-detect-virt is the most reliable when present.
-    if let Ok(status) = std::process::Command::new("systemd-detect-virt")
-        .arg("-q")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-    {
-        // Exit 0 => some virtualization detected; non-zero => bare metal/none.
-        if status.success() {
-            return true;
-        }
-        // A definitive "none" answer — trust it.
-        return false;
-    }
-    // Fallback: the hypervisor CPU flag (KVM/VMware/Hyper-V/Xen HVM all set it).
+    // Pure-Rust detection only (no `systemd-detect-virt` shell-out).
+    // The hypervisor CPU flag (KVM/VMware/Hyper-V/Xen HVM all set it).
     if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
         for line in cpuinfo.lines() {
             if line.starts_with("flags") && line.contains(" hypervisor") {
@@ -194,7 +215,33 @@ pub(crate) fn detect_virtual_cpu(is_container: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_physical_fs, is_virtual_mount};
+    use super::{is_physical_fs, is_virtual_mount, parse_smbios_mem};
+
+    #[test]
+    fn smbios_parses_populated_dimm() {
+        // A synthetic SMBIOS type-17 (Memory Device) structure: DDR4, 3200 MT/s,
+        // manufacturer string #1 = "Samsung", followed by the end-of-table marker.
+        let mut s = vec![0u8; 0x22]; // 34-byte formatted area
+        s[0] = 17; // type = Memory Device
+        s[1] = 0x22; // length
+        s[2] = 0x01; // handle lo
+        s[0x0C] = 0x00;
+        s[0x0D] = 0x20; // Size = 0x2000 (populated, != 0 / 0xFFFF)
+        s[0x12] = 0x1A; // Memory Type = DDR4
+        s[0x15] = 0x80;
+        s[0x16] = 0x0C; // Speed = 3200 (0x0C80)
+        s[0x17] = 0x01; // Manufacturer = string #1
+        s[0x20] = 0x80;
+        s[0x21] = 0x0C; // Configured Speed = 3200
+        let mut blob = s;
+        blob.extend_from_slice(b"Samsung\0\0"); // string set (#1) + terminator
+        blob.extend_from_slice(&[127, 4, 0, 0, 0, 0]); // type 127 end-of-table
+
+        assert_eq!(parse_smbios_mem(&blob), "Samsung DDR4 3200 MT/s");
+        // Empty / garbage input is safe and yields "".
+        assert_eq!(parse_smbios_mem(&[]), "");
+        assert_eq!(parse_smbios_mem(&[17, 2, 0]), "");
+    }
 
     #[test]
     fn physical_fs_filter() {

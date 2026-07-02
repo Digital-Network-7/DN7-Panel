@@ -12,24 +12,12 @@
 //! wizard. `dn7 panel reset` (install owner / root only) clears the account and
 //! re-arms a fresh init token so the wizard can be re-run.
 
-use rand::Rng;
-
 /// The console settings entity now lives in the domain layer; re-exported so
 /// call sites (`crate::web::settings::WebSettings`) stay stable while this
 /// module keeps the credential/reset behaviour and validation. Persistence is
 /// delegated to infra/store.
 pub(crate) use crate::core::settings::{default_timeout, WebSettings};
 pub(crate) use crate::infra::store::settings::{load, save};
-
-/// A 32-char alphanumeric one-time init token, printed to the launch banner and
-/// required (as `?init_token=`) to reach the first-run wizard.
-pub fn gen_init_token() -> String {
-    const CS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let mut rng = rand::thread_rng();
-    (0..32)
-        .map(|_| CS[rng.gen_range(0..CS.len())] as char)
-        .collect()
-}
 
 /// Validate + normalize an authorized-IP allow list: each non-empty entry must
 /// be an IPv4/IPv6 address or CIDR. Returns the deduped list, or None if any
@@ -103,9 +91,10 @@ impl WebSettings {
         self.initialized = false;
         self.external_address = String::new();
         self.https_mode = "none".to_string();
-        let token = gen_init_token();
-        self.init_token = token.clone();
-        token
+        // First-run setup re-runs via the interactive CLI wizard on the next
+        // launch — there's no web init token any more.
+        self.init_token = String::new();
+        String::new()
     }
 }
 
@@ -125,7 +114,7 @@ pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
     // generated (and printed to the launch banner). The `port` field is now
     // vestigial (the console binds the fixed loopback const); kept for the model.
     let s = WebSettings {
-        port: crate::edge::CONSOLE_LOOPBACK_PORT,
+        port: dn7_edge::CONSOLE_LOOPBACK_PORT,
         username: String::new(),
         pw_hash: String::new(),
         pw_salt: String::new(),
@@ -138,9 +127,11 @@ pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
         totp_secret: String::new(),
         totp_enabled: false,
         initialized: false,
-        init_token: gen_init_token(),
+        init_token: String::new(),
         external_address: String::new(),
         https_mode: "none".to_string(),
+        language: String::new(),
+        timezone: String::new(),
         session_timeout: default_timeout(),
         allow_ips: Vec::new(),
         trusted_proxies: Vec::new(),
@@ -148,7 +139,9 @@ pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
     if let Err(e) = save(&s) {
         tracing::warn!("could not persist web settings: {e}");
     }
-    tracing::info!("web console seeded (uninitialized — init token shown in the launch banner)");
+    tracing::info!(
+        "web console seeded (uninitialized — run `dn7-panel` in a terminal to initialize)"
+    );
     (s, None)
 }
 
@@ -175,6 +168,8 @@ mod tests {
             init_token: String::new(),
             external_address: String::new(),
             https_mode: "none".into(),
+            language: String::new(),
+            timezone: String::new(),
             session_timeout: 1440,
             allow_ips: Vec::new(),
             trusted_proxies: Vec::new(),
@@ -211,26 +206,22 @@ mod tests {
             init_token: String::new(),
             external_address: "panel.example.com".into(),
             https_mode: "le".into(),
+            language: String::new(),
+            timezone: String::new(),
             session_timeout: 1440,
             allow_ips: Vec::new(),
             trusted_proxies: Vec::new(),
         };
         let token = s.reset();
-        // Credentials + setup state cleared; owner preserved; fresh 32-char token.
+        // Credentials + setup state cleared; owner preserved; no web init token
+        // (first-run setup re-runs via the CLI).
         assert!(s.username.is_empty() && s.pw_hash.is_empty() && s.totp_secret.is_empty());
         assert!(!s.initialized);
         assert!(s.external_address.is_empty());
         assert_eq!(s.https_mode, "none");
         assert_eq!(s.owner_uid, 1000);
-        assert_eq!(token.len(), 32);
-        assert_eq!(s.init_token, token);
-    }
-
-    #[test]
-    fn init_token_is_random_and_32_chars() {
-        let a = gen_init_token();
-        assert_eq!(a.len(), 32);
-        assert_ne!(a, gen_init_token());
+        assert!(token.is_empty());
+        assert!(s.init_token.is_empty());
     }
 
     #[test]

@@ -143,6 +143,30 @@ function fmtBytes(n) {
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return n.toFixed(i ? (n < 10 ? 2 : 1) : 0) + ' ' + u[i];
 }
+
+// Timezone the console displays times in (operator-set at init; empty = the
+// viewer's local browser time). Injected server-side into __BRAND__.timezone.
+function dn7Tz() { return (window.__BRAND__ && window.__BRAND__.timezone) || ''; }
+
+// Split a unix-seconds timestamp into zero-padded {Y,M,D,h,m,s} in the configured
+// display timezone, falling back to the browser's local time (or on a bad tz).
+function dn7TsParts(ts) {
+  const d = new Date((Number(ts) || 0) * 1000);
+  const tz = dn7Tz();
+  if (tz) {
+    try {
+      const o = {};
+      new Intl.DateTimeFormat('en-CA', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        .formatToParts(d).forEach((x) => { o[x.type] = x.value; });
+      if (o.year) return { Y: o.year, M: o.month, D: o.day, h: o.hour, m: o.minute, s: o.second };
+    } catch (e) { /* invalid tz → fall through to local */ }
+  }
+  const p = (n) => String(n).padStart(2, '0');
+  return { Y: String(d.getFullYear()), M: p(d.getMonth() + 1), D: p(d.getDate()), h: p(d.getHours()), m: p(d.getMinutes()), s: p(d.getSeconds()) };
+}
+
+// "YYYY-MM-DD HH:MM:SS" in the configured display timezone.
+function fmtTsFull(ts) { const t = dn7TsParts(ts); return `${t.Y}-${t.M}-${t.D} ${t.h}:${t.m}:${t.s}`; }
 // Toast notification. `kind`: 'ok' | 'err' | 'warn' | 'info' (default 'info').
 // Each kind gets its own accent colour + icon so success/info/warnings don't
 // all read as errors.

@@ -5,7 +5,7 @@
 //! by the web console via `list_ops` / `op_log` until done/error. The registry
 //! is process-global so an op survives client reconnects.
 //!
-//! The docker / nginx / mysql modules each used to carry a near-identical copy
+//! The docker / website modules each used to carry a near-identical copy
 //! of this registry; they now share one [`OpRegistry`], differing only in their
 //! id prefix, progress-percent estimator, dismiss policy, and the extra result
 //! fields they attach on completion (e.g. `result_image`, `inst_id`).
@@ -29,10 +29,8 @@ const MAX_FINISHED_OPS: usize = 100;
 /// Whether [`OpRegistry::dismiss`] may forget a still-running op.
 #[derive(Clone, Copy)]
 pub(crate) enum Dismiss {
-    /// Remove any op, running or not (docker / nginx).
+    /// Remove any op, running or not (docker / website).
     Any,
-    /// Only forget finished ops; a running op stays (mysql).
-    FinishedOnly,
 }
 
 #[derive(Clone)]
@@ -167,7 +165,6 @@ impl OpRegistry {
         if let Ok(mut m) = self.ops.lock() {
             let remove = match self.dismiss {
                 Dismiss::Any => true,
-                Dismiss::FinishedOnly => m.get(id).map(|o| o.status != "running").unwrap_or(false),
             };
             if remove {
                 m.remove(id);
@@ -228,7 +225,7 @@ impl OpRegistry {
 }
 
 /// Generate the per-capability op-registry forwarders that are byte-identical
-/// across the docker / nginx / mysql wrappers. Each wrapper still hand-writes
+/// across the docker / website wrappers. Each wrapper still hand-writes
 /// the parts that genuinely differ — its `reg()` (prefix + pct estimator +
 /// dismiss policy), its `op_finish` (different extra-field shape), and
 /// `op_running` (only where used) — and invokes this macro for the rest.
@@ -282,8 +279,8 @@ pub(crate) fn indeterminate_pct(_lines: &[String], _status: &str) -> i64 {
 /// layer by its phase (downloading → download-complete → extracting → complete)
 /// and averaging across all layers seen. Returns -1 when indeterminate. This
 /// makes the bar advance steadily during download/extract instead of only
-/// jumping when whole layers finish. Shared by the docker / mysql modules
-/// (their image pulls log the same docker progress lines).
+/// jumping when whole layers finish. Used by the docker module's image pulls
+/// (which log these progress lines).
 pub(crate) fn pull_pct(lines: &[String], status: &str) -> i64 {
     if status == "done" {
         return 100;

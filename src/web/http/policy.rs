@@ -25,14 +25,6 @@ impl<'a> SecurityPolicy<'a> {
         self.s.initialized
     }
 
-    /// The one-time init token, or `None` once setup is complete (token cleared).
-    /// While set, the init gate requires it (`?init_token=` → `dn7_init` cookie)
-    /// before serving anything — the wizard's bootstrap secret.
-    pub(crate) fn init_token(&self) -> Option<String> {
-        let t = self.s.init_token.trim();
-        (!t.is_empty()).then(|| t.to_string())
-    }
-
     /// Whether an authorized-IP allow list is configured. When it is, a request
     /// whose source IP can't be determined must fail closed.
     pub(crate) fn allow_list_active(&self) -> bool {
@@ -192,18 +184,13 @@ mod tests {
     }
 
     #[test]
-    fn init_token_gate_state() {
+    fn initialized_state_reads_through() {
         let from = |v: serde_json::Value| -> WebSettings { serde_json::from_value(v).unwrap() };
-        // No token → init_token() None; uninitialized by default.
-        let s = from(serde_json::json!({ "port": 1080 }));
-        assert_eq!(pol(&s).init_token(), None);
-        assert!(!pol(&s).initialized());
-        // Token set, still uninitialized → Some(token) (the gate requires it).
-        let s = from(serde_json::json!({ "port": 1080, "init_token": "abc123" }));
-        assert_eq!(pol(&s).init_token().as_deref(), Some("abc123"));
-        // Initialized → gate is off (the caller checks initialized() first).
-        let s = from(serde_json::json!({ "port": 1080, "initialized": true, "init_token": "x" }));
-        assert!(pol(&s).initialized());
+        assert!(!pol(&from(serde_json::json!({ "port": 1080 }))).initialized());
+        assert!(pol(&from(
+            serde_json::json!({ "port": 1080, "initialized": true })
+        ))
+        .initialized());
     }
 
     #[test]

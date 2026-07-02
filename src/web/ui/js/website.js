@@ -187,13 +187,17 @@ function ngAddSite(reload, site) {
           <button type="button" class="on" data-m="auto">${tr('ng.cm_auto')}</button>
           <button type="button" data-m="self">${tr('ng.cm_self')}</button>
         </div>
+        <div id="nsKeyTypeWrap" style="margin-top:14px">
+          <label class="lbl">${tr('ng.key_type')}</label>
+          <select id="nsKeyType" class="field"><option value="ecdsa-p256">${tr('ng.key_type_p256')}</option><option value="ecdsa-p384">${tr('ng.key_type_p384')}</option></select>
+          <p class="formnote" style="margin-top:4px">${tr('ng.key_type_hint')}</p>
+        </div>
         <div id="nsAutoWrap" style="margin-top:14px">
           <label class="lbl">${tr('ng.same_domain_certs')}</label>
           <div id="nsCertList" class="certlist"></div>
         </div>
         <div class="ssltoggles" style="margin-top:16px">
           <label class="switch"><input type="checkbox" id="nsForceSsl" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.force_ssl')}</b><span>${tr('ng.force_ssl_d')}</span></span></label>
-          <label class="switch"><input type="checkbox" id="nsHttp2" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.http2')}</b><span>${tr('ng.http2_d')}</span></span></label>
           <label class="switch"><input type="checkbox" id="nsHsts" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.hsts')}</b><span>${tr('ng.hsts_d')}</span></span></label>
           <label class="switch"><input type="checkbox" id="nsHstsSub" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.hsts_sub')}</b><span>${tr('ng.hsts_sub_d')}</span></span></label>
           <label class="switch"><input type="checkbox" id="nsTrustProxy" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.trust_proxy')}</b><span>${tr('ng.trust_proxy_d')}</span></span></label>
@@ -476,8 +480,8 @@ function ngAddSite(reload, site) {
       $('nsCertMethod').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.m === certMethod));
       $('nsAutoWrap').classList.toggle('hidden', certMethod !== 'auto');
       selectedCert = site.cert_name ? site.cert_name : (site.cert_mode === 'le' ? '' : null);
+      if (site.key_type) $('nsKeyType').value = site.key_type;
       $('nsForceSsl').checked = site.force_ssl !== false;
-      $('nsHttp2').checked = site.http2 !== false;
       $('nsHsts').checked = !!site.hsts;
       $('nsHstsSub').checked = !!site.hsts_sub;
       $('nsTrustProxy').checked = !!site.trust_proxy;
@@ -523,8 +527,10 @@ function ngAddSite(reload, site) {
         } else {
           body.cert_mode = 'le'; // auto, no existing cert → issue Let's Encrypt
         }
+        // Key type applies only to freshly-generated certs (self/le), not an
+        // existing library cert (named) which already has its own key.
+        if (body.cert_mode === 'self' || body.cert_mode === 'le') body.key_type = $('nsKeyType').value;
         body.force_ssl = $('nsForceSsl').checked;
-        body.http2 = $('nsHttp2').checked;
         body.hsts = $('nsHsts').checked;
         body.hsts_sub = $('nsHstsSub').checked;
         body.trust_proxy = $('nsTrustProxy').checked;

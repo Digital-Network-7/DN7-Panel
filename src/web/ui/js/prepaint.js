@@ -26,9 +26,13 @@
     // language, with no flicker.
     var SUP = ['en', 'zh-CN', 'zh-TW', 'ja'];
     var saved = localStorage.getItem('dn7_lang');
+    // The operator's init-wizard choice, injected server-side into __BRAND__.
+    var serverDefault = (window.__BRAND__ && window.__BRAND__.default_lang) || '';
     var lang;
     if (SUP.indexOf(saved) >= 0) {
-      lang = saved;
+      lang = saved; // an explicit in-console choice always wins
+    } else if (SUP.indexOf(serverDefault) >= 0) {
+      lang = serverDefault; // else the operator-configured console default
     } else {
       var ls = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || ''];
       lang = 'en';

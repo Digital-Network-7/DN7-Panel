@@ -190,14 +190,21 @@ pub(crate) async fn users_update(
     }
     // Sync the OS password to the new panel password (system user).
     if pw.is_some() {
+        // An admin password reset must immediately cut off the target's existing
+        // sessions/tickets (a takeover survives a reset otherwise). The panel
+        // verifier is already persisted, so revoke BEFORE the OS sync — that way
+        // a failed OS sync (early-return below) still can't leave a live session.
+        state.auth.revoke_user(&req.username, None);
         if let Some(p) = &req.password {
             if !p.is_empty() {
-                let _ = crate::infra::system::set_system_password(&req.username, p).await;
+                // Surface a failed OS password sync instead of swallowing it: the
+                // panel verifier is already persisted, so a silent failure would
+                // leave the OS account on the OLD password and report success.
+                if let Err(e) = crate::infra::system::set_system_password(&req.username, p).await {
+                    return Json(op_err_body(e)).into_response();
+                }
             }
         }
-        // An admin password reset must immediately cut off the target's existing
-        // sessions/tickets (a takeover survives a reset otherwise).
-        state.auth.revoke_user(&req.username, None);
     }
     audit::record(&actor.username, "user.update", &req.username, true, "");
     Json(json!({ "ok": true })).into_response()
@@ -239,6 +246,9 @@ fn parse_pw_update(req: &UpdateUserReq) -> Result<Option<(String, String, String
         }
     }
     let kdf = req.pw_kdf.clone().unwrap_or_default();
+    if !crate::app::users::valid_pw_kdf(&kdf) {
+        return Err(map_core_err(crate::core::Error::PasswordMalformed));
+    }
     // Store Argon2id(verifier), not the raw verifier, so a leaked file can't be
     // replayed as a login.
     let stored = crate::infra::auth::hash_verifier(&hash.to_lowercase())

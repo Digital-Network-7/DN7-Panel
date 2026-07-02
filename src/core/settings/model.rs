@@ -74,6 +74,16 @@ pub(crate) struct WebSettings {
     /// (Let's Encrypt — only when `external_address` is a domain).
     #[serde(default = "default_https_mode")]
     pub(crate) https_mode: String,
+    /// Default console UI language for browsers that haven't chosen one: one of
+    /// "zh-CN" | "zh-TW" | "en" | "ja". Empty = follow the browser (legacy).
+    #[serde(default)]
+    pub(crate) language: String,
+    /// IANA timezone (e.g. "Asia/Shanghai") the console displays times in. Empty =
+    /// the viewer's browser-local time (legacy). Also written to the host
+    /// (`/etc/localtime` + `/etc/timezone`) at init so server-side / container /
+    /// journald times match.
+    #[serde(default)]
+    pub(crate) timezone: String,
 
     /// Session inactivity timeout, in minutes (default 1440 = 24h). Applied
     /// live to the auth layer.

@@ -31,7 +31,7 @@ pub(crate) fn load_opt<T: DeserializeOwned>(path: &Path) -> Option<T> {
 // ---------------------------------------------------------------------------
 // (mtime, len)-validated parse cache
 //
-// Read-heavy stores (users.json on every authenticated request, nginx sites /
+// Read-heavy stores (users.json on every authenticated request, website sites /
 // access) were re-read + re-parsed from disk per call. Memoize the parsed value
 // keyed by the file's (mtime, len). The save helpers (`save_pretty`/
 // `save_private`) call `invalidate_cache`, so an **in-process write busts the

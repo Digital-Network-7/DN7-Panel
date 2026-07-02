@@ -1,7 +1,7 @@
 // Docker: networks + daemon settings tabs (split from docker.js).
 function dkNetworks() {
   const body = $('dkBody');
-  body.innerHTML = `<div class="sechead">${dkVerChips()}<span class="sp"></span><button class="btn sm" id="dkNetNew">${tr('dk.create_network')}</button><button class="btn sec sm" id="dkRefN">${tr('dk.refresh')}</button></div><div id="dkNList">` + loading() + '</div>';
+  body.innerHTML = `<div class="sechead"><span class="sp"></span><button class="btn sm" id="dkNetNew">${tr('dk.create_network')}</button><button class="btn sec sm" id="dkRefN">${tr('dk.refresh')}</button></div><div id="dkNList">` + loading() + '</div>';
   $('dkRefN').onclick = dkNetworks;
   $('dkNetNew').onclick = () => modal(tr('dk.create_network'), `
     <div class="formgrid">
@@ -90,49 +90,4 @@ function dkNetIpPool(name) {
     };
     load();
   });
-}
-
-// ---- Settings tab (daemon.json knobs; mirror/registry lists live under Images → Advanced) ----
-function dkSettings() {
-  const body = $('dkBody');
-  body.innerHTML = loading();
-  op('docker', { op: 'get_settings' }).then((s) => {
-    const cg = s.cgroup_driver || 'systemd';
-    body.innerHTML = `
-      <div style="max-width:560px">
-        <div class="sechead" style="margin-top:0"><h3>${tr('dk.set_daemon')}</h3></div>
-        <p class="formnote" style="margin:0 0 14px">${tr('dk.set_daemon_d')}</p>
-        <div class="formgrid">
-          <div><label class="lbl">${tr('dk.set_cgroup')}</label><select id="dkCgroup" class="field"><option value="systemd"${cg === 'systemd' ? ' selected' : ''}>systemd</option><option value="cgroupfs"${cg === 'cgroupfs' ? ' selected' : ''}>cgroupfs</option></select></div>
-          <div><label class="lbl">${tr('dk.set_socket')}</label><input id="dkSocket" class="field mono" value="${esc(s.socket_path || '/var/run/docker.sock')}" /></div>
-          <div><label class="lbl">${tr('dk.set_logsize')}</label><input id="dkLogSize" class="field" value="${esc(s.log_max_size || '10m')}" placeholder="10m" /></div>
-          <div><label class="lbl">${tr('dk.set_logfile')}</label><input id="dkLogFile" class="field" type="number" min="1" value="${esc(String(s.log_max_file != null ? s.log_max_file : 3))}" /></div>
-        </div>
-        <div class="switchrow" style="margin-top:16px;gap:2px 24px">
-          <label class="switch" style="padding:7px 0"><input type="checkbox" id="dkLogRotate" ${s.log_rotate ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.set_logrotate')}</b><span>${tr('dk.set_logrotate_d')}</span></span></label>
-          <label class="switch" style="padding:7px 0"><input type="checkbox" id="dkGzip6" ${s.ipv6 ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.set_ipv6')}</b><span>${tr('dk.set_ipv6_d')}</span></span></label>
-          <label class="switch" style="padding:7px 0"><input type="checkbox" id="dkIptables" ${s.iptables ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.set_iptables')}</b><span>${tr('dk.set_iptables_d')}</span></span></label>
-          <label class="switch" style="padding:7px 0"><input type="checkbox" id="dkLiveRestore" ${s.live_restore ? 'checked' : ''} /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.set_live')}</b><span>${tr('dk.set_live_d')}</span></span></label>
-        </div>
-        <div class="row" style="align-items:center;gap:12px;margin-top:18px"><button class="btn danger" id="dkSaveDaemon" disabled>${tr('dk.set_apply')}</button><span class="err ok" id="dkDaemonMsg"></span></div>
-        <p class="formnote" style="margin-top:10px">${tr('dk.set_daemon_warn')}</p>
-      </div>`;
-
-    const collect = () => ({
-      ipv6: $('dkGzip6').checked,
-      iptables: $('dkIptables').checked,
-      live_restore: $('dkLiveRestore').checked,
-      cgroup_driver: $('dkCgroup').value,
-      log_rotate: $('dkLogRotate').checked,
-      log_max_size: $('dkLogSize').value.trim(),
-      log_max_file: Number($('dkLogFile').value) || 3,
-      socket_path: $('dkSocket').value.trim(),
-    });
-    $('dkSaveDaemon').onclick = async () => {
-      if (!await confirmDanger(tr('dk.set_restart_confirm'))) return;
-      const m = $('dkDaemonMsg'); m.className = 'err ok'; m.textContent = tr('dk.set_applying'); $('dkSaveDaemon').disabled = true;
-      op('docker', { op: 'set_settings', settings: collect() }).then(() => { m.className = 'err ok'; m.textContent = tr('common.saved'); if ($('dkSaveDaemon')._dirtyReset) $('dkSaveDaemon')._dirtyReset(); }).catch((e) => { m.className = 'err'; m.textContent = e.message; $('dkSaveDaemon').disabled = false; });
-    };
-    bindDirty('dkSaveDaemon', 'dkBody');
-  }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }

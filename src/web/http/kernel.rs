@@ -15,6 +15,11 @@ pub struct WebState {
     pub(crate) collector: Mutex<Collector>,
     /// Runtime config (used by the self-update endpoints).
     pub(crate) cfg: PanelConfig,
+    /// Root-only control token for the local `dn7` CLI: presented over a DIRECT
+    /// loopback connection (no `X-Forwarded-For`) it authenticates as the
+    /// super-admin owner, so the CLI drives the same API the web console uses
+    /// without a login. The token file is 0600 (only root can read it).
+    pub(crate) cli_token: String,
 }
 
 pub(crate) type Shared = Arc<WebState>;
@@ -40,11 +45,13 @@ pub fn spawn(cfg: PanelConfig) {
     let ttl_secs = (s.session_timeout.max(1) as u64) * 60;
     let auth = AuthState::with_store();
     auth.set_ttl_secs(ttl_secs);
+    let cli_token = load_or_make_cli_token(&cfg.data_dir);
     let state: Shared = Arc::new(WebState {
         auth,
         settings: std::sync::Mutex::new(s),
         collector: Mutex::new(Collector::new()),
         cfg,
+        cli_token,
     });
     // Periodically prune expired sessions/challenges/tickets/rate-limit entries
     // so memory doesn't depend solely on the prune-on-insert paths.
@@ -72,7 +79,7 @@ pub fn spawn(cfg: PanelConfig) {
 /// loopback — see `security::real_ip`).
 pub(crate) async fn serve(state: Shared) -> anyhow::Result<()> {
     let app = crate::web::routes::build_router(state);
-    let addr = SocketAddr::from(([127, 0, 0, 1], crate::edge::CONSOLE_LOOPBACK_PORT));
+    let addr = SocketAddr::from(([127, 0, 0, 1], dn7_edge::CONSOLE_LOOPBACK_PORT));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "web console listening (loopback; fronted by the edge)");
     axum::serve(
@@ -95,11 +102,88 @@ pub(crate) fn bearer(headers: &header::HeaderMap) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
+/// The authenticated username for this request, or `None`. The root-only CLI
+/// control token — presented over a DIRECT loopback connection (no proxy
+/// headers) — resolves to the super-admin owner; otherwise the normal bearer
+/// session token is resolved.
+pub(crate) fn authed_user(state: &Shared, headers: &header::HeaderMap) -> Option<String> {
+    let token = bearer(headers).unwrap_or_default();
+    if token.is_empty() {
+        return None;
+    }
+    if !state.cli_token.is_empty()
+        && ct_eq(token.as_bytes(), state.cli_token.as_bytes())
+        && is_direct_loopback(headers)
+    {
+        // The CLI control token authenticates as the super-admin owner.
+        let su = state.settings_guard();
+        if su.initialized && !su.username.is_empty() {
+            return Some(su.username.clone());
+        }
+        return None;
+    }
+    state.auth.identity(&token)
+}
+
+/// A direct loopback connection (the local CLI talking straight to the console),
+/// not an edge-forwarded external request. The edge stamps a dedicated
+/// `X-DN7-Forwarded` marker (overwriting any client copy) on EVERY request it
+/// proxies, and also sets `X-Forwarded-For` / `X-Real-IP`; the absence of all
+/// three means a genuinely direct hit. The CLI control token is only honoured
+/// here, so a leaked token can't be replayed through the public edge — and the
+/// positive marker means a future change that drops `X-Forwarded-For` on some
+/// edge path still can't be mistaken for a direct hit.
+fn is_direct_loopback(headers: &header::HeaderMap) -> bool {
+    headers.get("x-dn7-forwarded").is_none()
+        && headers.get("x-forwarded-for").is_none()
+        && headers.get("x-real-ip").is_none()
+}
+
+/// Constant-time byte-slice equality (length-aware) for the control token.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Generate (once) or load the root-only CLI control token (`<data>/cli.token`,
+/// 0600). The local `dn7` CLI reads it to drive the API as super-admin, so the
+/// whole boundary rests on the file being root-only: an existing token is reused
+/// ONLY if it is still tight (no group/other bits) — a loose-perm file (e.g.
+/// restored from a backup under a wide umask) is distrusted and re-minted. The
+/// write goes through `write_private` (O_EXCL temp + 0600 + atomic rename), which
+/// re-establishes the mode on every overwrite and can't follow a planted symlink.
+fn load_or_make_cli_token(data_dir: &std::path::Path) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let path = data_dir.join("cli.token");
+    if let Ok(s) = std::fs::read_to_string(&path) {
+        let token = s.trim().to_string();
+        let tight = std::fs::metadata(&path)
+            .map(|m| m.permissions().mode() & 0o077 == 0)
+            .unwrap_or(false);
+        if !token.is_empty() && tight {
+            return token;
+        }
+        if !token.is_empty() {
+            tracing::warn!("cli.token had loose permissions; re-minting a fresh token");
+        }
+    }
+    let token = dn7_cred::random_token();
+    if let Err(e) = crate::platform::paths::write_private(&path, token.as_bytes()) {
+        tracing::warn!("could not persist cli.token: {e}");
+    }
+    token
+}
+
 /// Require a valid session; returns `Some(response)` to short-circuit when
 /// unauthorized, `None` when the request may proceed.
 pub(crate) fn require_auth(state: &Shared, headers: &header::HeaderMap) -> Option<Response> {
-    let token = bearer(headers).unwrap_or_default();
-    if state.auth.valid(&token) {
+    if authed_user(state, headers).is_some() {
         None
     } else {
         Some(api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"))
@@ -171,8 +255,7 @@ pub(crate) fn current_account(
     state: &Shared,
     headers: &header::HeaderMap,
 ) -> Result<Account, Response> {
-    let token = bearer(headers).unwrap_or_default();
-    match state.auth.identity(&token) {
+    match authed_user(state, headers) {
         Some(user) => resolve_account(state, &user)
             .ok_or_else(|| api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized")),
         None => Err(api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized")),
@@ -239,5 +322,36 @@ pub(crate) fn require_stepup(
         None
     } else {
         Some(api_err(StatusCode::FORBIDDEN, "auth.stepup_required"))
+    }
+}
+
+#[cfg(test)]
+mod control_token_gate_tests {
+    use super::{ct_eq, is_direct_loopback};
+    use axum::http::header::HeaderMap;
+
+    #[test]
+    fn direct_loopback_only_with_no_proxy_markers() {
+        assert!(
+            is_direct_loopback(&HeaderMap::new()),
+            "a bare hit is direct"
+        );
+        // ANY of the edge's forwarding signals means NOT direct → CLI token rejected.
+        for marker in ["x-dn7-forwarded", "x-forwarded-for", "x-real-ip"] {
+            let mut h = HeaderMap::new();
+            h.insert(marker, "1".parse().unwrap());
+            assert!(
+                !is_direct_loopback(&h),
+                "{marker} present must read as edge-forwarded"
+            );
+        }
+    }
+
+    #[test]
+    fn ct_eq_matches_only_equal_slices() {
+        assert!(ct_eq(b"abc", b"abc"));
+        assert!(!ct_eq(b"abc", b"abd"));
+        assert!(!ct_eq(b"abc", b"ab"));
+        assert!(ct_eq(b"", b""));
     }
 }

@@ -106,21 +106,8 @@ pub(crate) fn check_abs(path: &str) -> Result<()> {
     }
 }
 
-/// Shell script (POSIX sh) that lists a directory as tab-separated
-/// `type\tsize\tname` lines. Shared by the container exec path and the
-/// run-as-user host path. The directory is `$1` (a separate argv entry).
-pub(crate) const LIST_SCRIPT: &str = r#"cd "$1" 2>/dev/null || exit 7
-for name in * .[!.]* ..?*; do
-  [ -e "$name" ] || [ -L "$name" ] || continue
-  if [ -d "$name" ]; then
-    printf 'd\t0\t%s\n' "$name"
-  else
-    sz=$(stat -c %s "$name" 2>/dev/null || stat -f %z "$name" 2>/dev/null || echo 0)
-    printf 'f\t%s\t%s\n' "$sz" "$name"
-  fi
-done"#;
-
-/// Parse the `LIST_SCRIPT` output into sorted directory entries (dirs first).
+/// Parse the privilege-dropped lister's output (tab-separated `type\tsize\tname`
+/// lines, type `d`/`f`) into sorted directory entries (dirs first).
 pub(crate) fn parse_list_output(stdout: &str, dir: &str) -> serde_json::Value {
     let mut entries = Vec::new();
     for line in stdout.lines() {
@@ -148,24 +135,25 @@ pub(crate) fn parse_list_output(stdout: &str, dir: &str) -> serde_json::Value {
     serde_json::json!({ "path": dir, "entries": entries })
 }
 
-/// Run a POSIX-sh script **as another system user** via `su` (root → user needs
-/// no password). `arg` is passed as `$1` (a separate argv entry — no shell
-/// injection). Optional `stdin` is streamed in. Returns (exit_code, stdout).
-/// Used so a non-admin panel user's file operations run with *their* uid and the
-/// OS enforces access (no privilege escalation).
-pub(crate) async fn run_as_user(
+/// Run a single host file operation **as another system user** by re-exec'ing the
+/// panel binary as a privilege-dropping `__fshelper` (see
+/// [`crate::infra::file::run_fs_helper_main`]) — the pure-Rust replacement for
+/// `su` (no `su`, no `/bin/sh`). `op` is one of `list`/`mkdir`/`remove`; `path`
+/// is a separate argv entry (no shell). Returns (exit_code, stdout bytes). The
+/// helper drops to `user` (initgroups+setgid+setuid) so the OS enforces access.
+pub(crate) async fn run_fs_helper(
     user: &str,
-    script: &str,
-    arg: &str,
+    op: &str,
+    path: &str,
     stdin: Option<&[u8]>,
 ) -> Result<(i32, Vec<u8>)> {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
-    let mut cmd = tokio::process::Command::new("su");
-    // options first, then user, then positional args ($0, $1...) for `-c`.
-    cmd.args(["-s", "/bin/sh", "-c", script, user, "sh", arg]);
+    let exe = std::env::current_exe().map_err(|e| anyhow!("无法定位自身：{e}"))?;
+    let mut cmd = tokio::process::Command::new(exe);
+    cmd.args(["__fshelper", op, user, path]);
     cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
+    cmd.stderr(Stdio::null());
     cmd.stdin(if stdin.is_some() {
         Stdio::piped()
     } else {

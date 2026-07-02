@@ -1,7 +1,7 @@
 //! Append-only audit log of privileged panel actions (Owner-visible).
 //!
 //! Every security-relevant action — logins, account/user management, settings
-//! changes, and Docker/Nginx/MySQL mutations — appends one JSON line to
+//! changes, and container/website mutations — appends one JSON line to
 //! `<data>/audit.log` (0600). The file is size-capped (trimmed in place,
 //! keeping the most recent tail) so it can't grow without bound. Only the
 //! super-admin (Owner) can read it via the web console.
@@ -9,6 +9,14 @@
 //! Records are best-effort: a logging failure never blocks the underlying
 //! action. Read-only/poll operations are intentionally NOT recorded (the
 //! caller decides) to keep the log meaningful.
+//!
+//! For a few highest-blast-radius exit/security paths — clearing the log,
+//! applying a self-update, mutating a capability — the fire-and-forget append
+//! isn't good enough: the process may crash or exec away between the HTTP 200
+//! and the blocking pool picking up the write, losing the record. Those call
+//! sites use the `*_durable` async variants, which AWAIT the disk append so the
+//! record is on disk before success is reported. Everything else stays on the
+//! non-blocking `record`/`record_op` path (no per-request latency).
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -67,7 +75,7 @@ pub struct Entry {
     pub ts: i64,
     /// Acting account (panel username), or "?" when unknown.
     pub actor: String,
-    /// Stable action key, e.g. "auth.login", "user.create", "mysql.install".
+    /// Stable action key, e.g. "auth.login", "user.create", "website.add_site".
     pub action: String,
     /// Optional target (username / instance / domain / …).
     #[serde(default)]
@@ -145,9 +153,34 @@ pub fn record_ip(actor: &str, action: &str, target: &str, ok: bool, detail: &str
     });
 }
 
-/// Record a channel op (docker/nginx/mysql) including a sanitized response.
-pub fn record_op(actor: &str, action: &str, target: &str, ok: bool, detail: &str, response: &str) {
-    write_entry(EntryArgs {
+/// Durable variant of [`record`]: awaits the disk append before returning, so
+/// the record survives a crash/exec between HTTP 200 and the append. For the
+/// highest-blast-radius exit/security paths only (see the module doc).
+pub async fn record_durable(actor: &str, action: &str, target: &str, ok: bool, detail: &str) {
+    write_entry_durable(EntryArgs {
+        actor,
+        action,
+        target,
+        ok,
+        detail,
+        ip: "",
+        response: "",
+    })
+    .await;
+}
+
+/// Durable variant of [`record`] that also carries a sanitized channel-op
+/// `response`: awaits the disk append before returning. For the highest-blast-
+/// radius exit/security paths only (see the module doc).
+pub async fn record_op_durable(
+    actor: &str,
+    action: &str,
+    target: &str,
+    ok: bool,
+    detail: &str,
+    response: &str,
+) {
+    write_entry_durable(EntryArgs {
         actor,
         action,
         target,
@@ -155,10 +188,14 @@ pub fn record_op(actor: &str, action: &str, target: &str, ok: bool, detail: &str
         detail,
         ip: "",
         response,
-    });
+    })
+    .await;
 }
 
-fn write_entry(a: EntryArgs) {
+/// Build the serialized log line from `a` + the current request context. Must be
+/// called synchronously in the caller's task (so it captures the request ctx /
+/// timestamp) before any `.await`. Returns `None` if serialization fails.
+fn build_line(a: EntryArgs) -> Option<String> {
     let ip = if a.ip.is_empty() {
         ctx_ip()
     } else {
@@ -179,9 +216,13 @@ fn write_entry(a: EntryArgs) {
         headers: clip(&ctx_headers(), 2000),
         response: clip(a.response, 4000),
     };
-    let line = match serde_json::to_string(&entry) {
-        Ok(s) => s,
-        Err(_) => return,
+    serde_json::to_string(&entry).ok()
+}
+
+fn write_entry(a: EntryArgs) {
+    let line = match build_line(a) {
+        Some(s) => s,
+        None => return,
     };
     // The entry is built synchronously (so its timestamp/context are accurate),
     // but the file append + size-trim are blocking I/O. Offload them to the
@@ -194,6 +235,19 @@ fn write_entry(a: EntryArgs) {
         }
         Err(_) => append_and_trim(&line),
     }
+}
+
+/// Durable append: builds the line synchronously (capturing the request ctx),
+/// then AWAITS the blocking file work so the record is on disk before the
+/// caller reports success. A blocking-pool join failure is as unrecoverable as
+/// the best-effort case, so it's swallowed (never panics) — the line is still
+/// built and, on the common path, written.
+async fn write_entry_durable(a: EntryArgs<'_>) {
+    let line = match build_line(a) {
+        Some(s) => s,
+        None => return,
+    };
+    let _ = tokio::task::spawn_blocking(move || append_and_trim(&line)).await;
 }
 
 /// Append one already-serialized line to the log and trim it if oversized.

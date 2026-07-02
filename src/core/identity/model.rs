@@ -108,6 +108,21 @@ pub(crate) fn valid_pw_format(salt: &str, hash: &str) -> bool {
         && hash.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Minimum accepted client KDF iteration count (the JS client default is
+/// `s256:30000`).
+pub(crate) const MIN_PW_KDF_ITERS: u32 = 30_000;
+
+/// Whether a client-supplied KDF descriptor is acceptable for a NEW credential:
+/// it must be `s256:N` with `N >= MIN_PW_KDF_ITERS`. A tampered client could
+/// otherwise persist a cheaply brute-forceable at-rest verifier (e.g. `s256:1`).
+/// This gates only what the server newly stores — already-stored legacy creds
+/// (empty kdf) still verify on login.
+pub(crate) fn valid_pw_kdf(kdf: &str) -> bool {
+    kdf.strip_prefix("s256:")
+        .and_then(|n| n.parse::<u32>().ok())
+        .is_some_and(|n| n >= MIN_PW_KDF_ITERS)
+}
+
 /// Whether a cleartext secret is safe to hand to a line-oriented OS tool
 /// (`chpasswd`, which reads `user:password` records separated by newlines).
 /// A control character — notably `\n`/`\r`/`\0` — would let the value forge an
@@ -115,6 +130,48 @@ pub(crate) fn valid_pw_format(salt: &str, hash: &str) -> bool {
 /// or DEL byte is rejected. An empty secret is "safe" (it is simply not synced).
 pub(crate) fn valid_os_secret(s: &str) -> bool {
     !s.bytes().any(|b| b < 0x20 || b == 0x7f)
+}
+
+/// Name of the marker file DN7 drops in a home dir when it *creates* the backing
+/// account, so a later create can tell a leftover DN7 account (safe to re-adopt)
+/// apart from a foreign service account it must never touch.
+pub(crate) const DN7_OWNED_MARKER: &str = ".dn7-owned";
+
+/// A pre-existing system account's provenance, evaluated when a panel user is
+/// created for a name that *already* resolves in `/etc/passwd`. Pure inputs so
+/// the adoption decision is unit-testable without `getpwnam`/filesystem I/O.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AccountProvenance {
+    /// A panel record with this name already exists in `users.json` — the panel
+    /// created/owns it (e.g. a store entry whose OS side was half-provisioned).
+    pub(crate) recorded_in_store: bool,
+    /// The DN7 marker file (`DN7_OWNED_MARKER`) is present in the account's home
+    /// dir — DN7 seeded this account.
+    pub(crate) has_owned_marker: bool,
+}
+
+/// Whether a **pre-existing** system account may be *adopted* by a create. Only
+/// a leftover DN7 account is adoptable — either already recorded in `users.json`
+/// or carrying the DN7 marker file. A foreign service account (`postgres`,
+/// `www-data`, `daemon`, …) matches neither, so it is refused: the panel must
+/// never reset its password, add it to sudo, or later delete it + its home.
+///
+/// Callers only invoke this once `getpwnam` has confirmed the account exists;
+/// for a name with no system account, provisioning creates a fresh DN7 account
+/// and this check does not apply.
+pub(crate) fn system_account_adoptable(p: AccountProvenance) -> bool {
+    p.recorded_in_store || p.has_owned_marker
+}
+
+/// Bilingual (zh / en) message for refusing to adopt a foreign system account.
+/// Surfaced as the `Persist` detail so the admin sees *why* the create failed
+/// (a plain "name taken" would wrongly imply a panel-user collision).
+pub(crate) fn foreign_account_refused_msg(username: &str) -> String {
+    format!(
+        "系统已存在同名账户「{username}」且非 DN7 创建，拒绝接管（避免改动/删除系统服务账户）。\
+         A system account named \"{username}\" already exists and was not created by DN7; \
+         refusing to adopt it (to avoid altering or deleting a real service account)."
+    )
 }
 
 #[cfg(test)]
@@ -153,5 +210,37 @@ mod tests {
         assert!(!valid_pw_format("short", hash));
         assert!(!valid_pw_format(salt, "xyz"));
         assert!(!valid_pw_format(&salt[..31], hash)); // wrong length
+    }
+
+    #[test]
+    fn foreign_system_account_is_not_adoptable() {
+        // A real service account (e.g. `postgres`/`www-data`): not in the store,
+        // no DN7 marker → MUST be refused, never adopted.
+        assert!(!system_account_adoptable(AccountProvenance {
+            recorded_in_store: false,
+            has_owned_marker: false,
+        }));
+    }
+
+    #[test]
+    fn leftover_dn7_account_is_adoptable() {
+        // Already recorded in users.json (half-provisioned store entry).
+        assert!(system_account_adoptable(AccountProvenance {
+            recorded_in_store: true,
+            has_owned_marker: false,
+        }));
+        // Carries the DN7 marker file (seeded by a prior DN7 create).
+        assert!(system_account_adoptable(AccountProvenance {
+            recorded_in_store: false,
+            has_owned_marker: true,
+        }));
+    }
+
+    #[test]
+    fn foreign_refusal_message_is_bilingual() {
+        let m = foreign_account_refused_msg("postgres");
+        assert!(m.contains("postgres"));
+        assert!(m.contains("拒绝接管")); // zh
+        assert!(m.contains("refusing to adopt")); // en
     }
 }

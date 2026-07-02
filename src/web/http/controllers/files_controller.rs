@@ -64,6 +64,147 @@ pub(crate) fn transfer_sem() -> std::sync::Arc<tokio::sync::Semaphore> {
         .clone()
 }
 
+/// Wraps a download/export byte stream so a *closed* audit entry is written when
+/// the transfer terminates. A 200 + `Body::from_stream` is already committed
+/// before the first byte, so a mid-stream failure would otherwise send a
+/// truncated attachment with no record of the outcome. This adapter records:
+///   - `ok=true`  on a clean EOF (the whole file was streamed);
+///   - `ok=false` if any chunk yields an error (a truncated download); or
+///   - `ok=false` ("aborted") if the response body is dropped before EOF
+///     (client disconnect / cancelled download).
+///
+/// Exactly one record is emitted (the first terminal event wins). The transfer
+/// permit is carried inside so it stays held for the whole stream lifetime.
+struct AuditedStream<S> {
+    inner: S,
+    actor: String,
+    action: &'static str,
+    target: String,
+    /// Set once a terminal outcome has been recorded, so `Drop` doesn't double-log.
+    recorded: bool,
+    /// Kept alive for the whole stream (the concurrent-transfer permit).
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl<S> AuditedStream<S> {
+    fn new(
+        inner: S,
+        actor: String,
+        action: &'static str,
+        target: String,
+        permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    ) -> Self {
+        Self {
+            inner,
+            actor,
+            action,
+            target,
+            recorded: false,
+            _permit: permit,
+        }
+    }
+
+    /// Emit the single terminal audit record (idempotent).
+    fn record(&mut self, ok: bool, detail: &str) {
+        if self.recorded {
+            return;
+        }
+        self.recorded = true;
+        audit::record(&self.actor, self.action, &self.target, ok, detail);
+    }
+}
+
+impl<S> futures::Stream for AuditedStream<S>
+where
+    S: futures::Stream<Item = std::io::Result<bytes::Bytes>> + Unpin,
+{
+    type Item = std::io::Result<bytes::Bytes>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use std::task::Poll;
+        // `Self: Unpin` (all fields are), so we can take a plain `&mut Self`.
+        let this = self.get_mut();
+        match std::pin::Pin::new(&mut this.inner).poll_next(cx) {
+            Poll::Ready(Some(Ok(chunk))) => Poll::Ready(Some(Ok(chunk))),
+            Poll::Ready(Some(Err(e))) => {
+                let detail = e.to_string();
+                this.record(false, &detail);
+                Poll::Ready(Some(Err(e)))
+            }
+            Poll::Ready(None) => {
+                this.record(true, "");
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<S> Drop for AuditedStream<S> {
+    fn drop(&mut self) {
+        // Terminal state never reached (clean EOF / error) => the client aborted
+        // before the transfer completed. Close the trail as a failed download.
+        self.record(false, "aborted");
+    }
+}
+
+/// Serves an already-staged temp file (a verified docker export/backup) as a
+/// byte stream, then removes the temp when the response terminates — on clean
+/// EOF, a read error, or a client abort (the `Drop` fires in every case). The
+/// transfer permit is carried inside so it stays held for the whole response,
+/// mirroring [`AuditedStream`]. The export outcome is already known before the
+/// 200 here (the stage either fully succeeded or returned an error), so no
+/// completion audit is needed on this path.
+struct TempFileStream {
+    inner: tokio_util::io::ReaderStream<tokio::fs::File>,
+    /// The staged temp file to unlink once the response is done (best-effort).
+    temp: std::path::PathBuf,
+    /// Kept alive for the whole stream (the concurrent-transfer permit).
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl TempFileStream {
+    fn new(
+        file: tokio::fs::File,
+        temp: std::path::PathBuf,
+        permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    ) -> Self {
+        Self {
+            inner: tokio_util::io::ReaderStream::new(file),
+            temp,
+            _permit: permit,
+        }
+    }
+}
+
+impl futures::Stream for TempFileStream {
+    type Item = std::io::Result<bytes::Bytes>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        // `Self: Unpin` (ReaderStream over a File is Unpin), so a plain `&mut`.
+        let this = self.get_mut();
+        std::pin::Pin::new(&mut this.inner).poll_next(cx)
+    }
+}
+
+impl Drop for TempFileStream {
+    fn drop(&mut self) {
+        // Best-effort cleanup once the response drains / is dropped. The open fd
+        // in `inner` is closed as this struct drops; unlink the path so a partial
+        // (aborted) or completed download leaves nothing behind on the data volume.
+        let temp = std::mem::take(&mut self.temp);
+        tokio::spawn(async move {
+            let _ = tokio::fs::remove_file(&temp).await;
+        });
+    }
+}
+
 /// Stream a request body to a host temp file, enforcing `cap` (bounded memory).
 /// Returns the temp path, or an error response (and removes the partial temp).
 pub(crate) async fn stream_body_to_temp(
@@ -214,7 +355,6 @@ pub(crate) async fn files_download(
     State(state): State<Shared>,
     Query(q): Query<DownloadQuery>,
 ) -> Response {
-    use futures::StreamExt;
     let user = match state.auth.consume_ticket(&q.ticket, "download") {
         Some(u) => u,
         None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
@@ -237,26 +377,44 @@ pub(crate) async fn files_download(
     let res = crate::app::files::read_stream(&caller, &q.path, ctn).await;
     match res {
         Ok((name, stream)) => {
-            // Keep the permit alive for the lifetime of the response stream.
-            let guarded = stream.map(move |item| {
-                let _hold = &permit;
-                item
-            });
+            // Wrap the stream so a completed/failed/aborted audit entry is written
+            // when the download terminates (the 200 is already committed here, so
+            // this closes the trail even on a mid-stream failure). The permit is
+            // carried inside, staying held for the stream's lifetime.
+            let audited = AuditedStream::new(
+                stream,
+                acct.username.clone(),
+                "files.download",
+                audit_target(&q.path, ctn),
+                permit,
+            );
             let disp = format!("attachment; filename=\"{}\"", sanitize_filename(&name));
             (
                 [
                     (header::CONTENT_TYPE, "application/octet-stream".to_string()),
                     (header::CONTENT_DISPOSITION, disp),
                 ],
-                axum::body::Body::from_stream(guarded),
+                axum::body::Body::from_stream(audited),
             )
                 .into_response()
         }
-        Err(crate::app::files::FsError::Forbidden) => {
-            api_err(StatusCode::FORBIDDEN, "auth.forbidden")
-        }
-        Err(crate::app::files::FsError::Op(e)) => {
-            (StatusCode::BAD_REQUEST, e.to_string()).into_response()
+        Err(e) => {
+            // The op never started streaming — record the failure now (no 200 sent).
+            audit::record(
+                &acct.username,
+                "files.download",
+                &audit_target(&q.path, ctn),
+                false,
+                &fs_err_detail(&e),
+            );
+            match e {
+                crate::app::files::FsError::Forbidden => {
+                    api_err(StatusCode::FORBIDDEN, "auth.forbidden")
+                }
+                crate::app::files::FsError::Op(e) => {
+                    (StatusCode::BAD_REQUEST, e.to_string()).into_response()
+                }
+            }
         }
     }
 }
@@ -282,7 +440,6 @@ pub(crate) async fn docker_download(
     State(state): State<Shared>,
     Query(q): Query<DockerDownloadQuery>,
 ) -> Response {
-    use futures::StreamExt;
     let user = match state.auth.consume_ticket(&q.ticket, "download") {
         Some(u) => u,
         None => return api_err(StatusCode::UNAUTHORIZED, "auth.unauthorized"),
@@ -296,29 +453,93 @@ pub(crate) async fn docker_download(
         return api_err(StatusCode::FORBIDDEN, "auth.forbidden");
     }
     let permit = transfer_sem().acquire_owned().await.ok();
+    // Self-describing audit target: `backup:<name>/<file>` or `image:<ref>`.
+    let target = match q.kind.as_str() {
+        "backup" => format!("backup:{}/{}", q.name, q.backup),
+        "image" => format!("image:{}", q.reference),
+        other => format!("{other}:?"),
+    };
     let res = match q.kind.as_str() {
         "backup" => crate::infra::docker::backup_read_stream(&q.name, &q.backup).await,
         "image" => crate::infra::docker::image_export_stream(&q.reference).await,
         _ => Err(anyhow::anyhow!("invalid download kind")),
     };
-    match res {
-        Ok((name, stream)) => {
-            let guarded = stream.map(move |item| {
-                let _hold = &permit;
-                item
-            });
-            let disp = format!("attachment; filename=\"{}\"", sanitize_filename(&name));
-            (
-                [
-                    (header::CONTENT_TYPE, "application/octet-stream".to_string()),
-                    (header::CONTENT_DISPOSITION, disp),
-                ],
-                axum::body::Body::from_stream(guarded),
-            )
-                .into_response()
+    let (name, stream) = match res {
+        Ok(v) => v,
+        Err(e) => {
+            // Never started exporting — record the failure now (no 200 sent).
+            audit::record(
+                &acct.username,
+                "docker.export",
+                &target,
+                false,
+                &e.to_string(),
+            );
+            return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
         }
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
-    }
+    };
+
+    // High-value export/backup paths: stage the FULL export to a verified temp
+    // file first, so a mid-stream daemon/IO failure yields an *error* (not a
+    // truncated 200 the user mistakes for a good backup). See
+    // `infra::docker::stage_export`.
+    let staged = match crate::infra::docker::stage_export(stream).await {
+        Ok(s) => s,
+        Err(e) => {
+            // The stage cleaned up its own temp; record the failure (no 200 sent)
+            // and return a plain error — the caller never sees a truncated file.
+            audit::record(
+                &acct.username,
+                "docker.export",
+                &target,
+                false,
+                &e.to_string(),
+            );
+            return (StatusCode::BAD_GATEWAY, e.to_string()).into_response();
+        }
+    };
+
+    // The staged file is complete + checksummed. Open it and serve it with an
+    // accurate Content-Length and an X-DN7-SHA256 the client can verify. Record
+    // the (successful) export now — the outcome is already known, unlike the old
+    // streaming path that had to close the trail from inside the body.
+    let file = match tokio::fs::File::open(&staged.path).await {
+        Ok(f) => f,
+        Err(e) => {
+            crate::infra::docker::StagedExport::cleanup(&staged.path);
+            audit::record(
+                &acct.username,
+                "docker.export",
+                &target,
+                false,
+                &e.to_string(),
+            );
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+    audit::record(
+        &acct.username,
+        "docker.export",
+        &target,
+        true,
+        &staged.sha256_hex,
+    );
+
+    // Body reads the staged file; the wrapper unlinks the temp (best-effort) and
+    // releases the transfer permit once the response drains or the client aborts.
+    let body = TempFileStream::new(file, staged.path.clone(), permit);
+    let disp = format!("attachment; filename=\"{}\"", sanitize_filename(&name));
+    let sha_header = header::HeaderName::from_static("x-dn7-sha256");
+    (
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::CONTENT_LENGTH, staged.len.to_string()),
+            (header::CONTENT_DISPOSITION, disp),
+            (sha_header, staged.sha256_hex),
+        ],
+        axum::body::Body::from_stream(body),
+    )
+        .into_response()
 }
 
 /// POST /api/docker/image-upload — load a local image archive (docker load).
@@ -478,5 +699,104 @@ pub(crate) async fn website_static_upload(
     match res {
         Ok(n) => Json(json!({ "ok": true, "files": n })).into_response(),
         Err(e) => Json(op_err_body(e)).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::Stream;
+    use std::pin::Pin;
+    use std::sync::Mutex;
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    // Both tests mutate the process-global `DN7_RUNTIME_DIR` (to redirect the audit
+    // log to a private dir) and then read it back, so they must not run
+    // concurrently — serialize them on this lock.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    // A no-op waker so we can drive a synchronous (always-Ready) stream by hand,
+    // without spinning up an async runtime.
+    fn noop_waker() -> Waker {
+        fn no_op(_: *const ()) {}
+        fn clone(_: *const ()) -> RawWaker {
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+        // SAFETY: the vtable's fns are all no-ops / return a fresh RawWaker, so the
+        // waker is trivially valid and never dereferences its (null) data pointer.
+        unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
+    }
+
+    // Point the audit log (and every other path helper) at a private temp dir so
+    // the test's audit writes stay hermetic. Returns the dir (kept for cleanup).
+    fn temp_data_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dn7-audit-test-{:016x}-{:016x}",
+            rand::random::<u64>(),
+            rand::random::<u64>()
+        ));
+        std::env::set_var("DN7_RUNTIME_DIR", &dir);
+        let _ = std::fs::create_dir_all(dir.join("data"));
+        dir
+    }
+
+    fn chunk(b: &str) -> std::io::Result<bytes::Bytes> {
+        Ok(bytes::Bytes::from(b.to_string()))
+    }
+
+    // Drain an AuditedStream to its terminal state via manual polling.
+    fn drain<S>(mut s: AuditedStream<S>) -> Vec<u8>
+    where
+        S: Stream<Item = std::io::Result<bytes::Bytes>> + Unpin,
+    {
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut out = Vec::new();
+        loop {
+            match Pin::new(&mut s).poll_next(&mut cx) {
+                Poll::Ready(Some(Ok(b))) => out.extend_from_slice(&b),
+                Poll::Ready(Some(Err(_))) => { /* keep draining */ }
+                Poll::Ready(None) => break,
+                Poll::Pending => unreachable!("stream::iter is always Ready"),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn audited_stream_records_ok_on_clean_eof() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = temp_data_dir();
+        let inner = futures::stream::iter(vec![chunk("hel"), chunk("lo")]);
+        let s = AuditedStream::new(inner, "owner".into(), "files.download", "/x".into(), None);
+        // Bytes are forwarded transparently…
+        assert_eq!(drain(s).as_slice(), b"hello");
+        // …and a single ok=true record is written for the completed download.
+        let entries = crate::infra::support::audit::read(50);
+        let rec = entries
+            .iter()
+            .find(|e| e.action == "files.download" && e.target == "/x")
+            .expect("audit record for completed download");
+        assert!(rec.ok, "clean EOF must record ok=true");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audited_stream_records_failure_on_mid_stream_error() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = temp_data_dir();
+        let err = || -> std::io::Result<bytes::Bytes> { Err(std::io::Error::other("boom")) };
+        let inner = futures::stream::iter(vec![chunk("hel"), err()]);
+        let s = AuditedStream::new(inner, "owner".into(), "files.download", "/y".into(), None);
+        let _ = drain(s);
+        let entries = crate::infra::support::audit::read(50);
+        let rec = entries
+            .iter()
+            .find(|e| e.action == "files.download" && e.target == "/y")
+            .expect("audit record for failed download");
+        assert!(!rec.ok, "a mid-stream error must record ok=false");
+        assert_eq!(rec.detail, "boom");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

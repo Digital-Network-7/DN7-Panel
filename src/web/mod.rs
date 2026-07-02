@@ -11,7 +11,7 @@ mod branding;
 mod console;
 mod http;
 mod routes;
-mod settings;
+pub(crate) mod settings;
 pub(crate) mod terminal;
 
 pub use console::*;

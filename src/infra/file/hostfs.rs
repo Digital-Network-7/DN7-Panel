@@ -13,7 +13,7 @@ pub async fn web_host_list(path: &str, as_user: Option<&str>) -> Result<serde_js
     let dir = if path.trim().is_empty() { "/" } else { path };
     if let Some(u) = as_user {
         check_abs(dir)?;
-        let (code, out) = run_as_user(u, LIST_SCRIPT, dir, None).await?;
+        let (code, out) = run_fs_helper(u, "list", dir, None).await?;
         if code != 0 {
             return Err(anyhow!("目录不存在或无权限"));
         }
@@ -51,7 +51,7 @@ pub async fn web_host_mkdir(path: &str, as_user: Option<&str>) -> Result<()> {
     }
     if let Some(u) = as_user {
         check_abs(path)?;
-        let (code, _) = run_as_user(u, "mkdir -p -- \"$1\"", path, None).await?;
+        let (code, _) = run_fs_helper(u, "mkdir", path, None).await?;
         return if code == 0 {
             Ok(())
         } else {
@@ -77,7 +77,7 @@ pub async fn web_host_delete(path: &str, as_user: Option<&str>) -> Result<()> {
     }
     if let Some(u) = as_user {
         check_abs(path)?;
-        let (code, _) = run_as_user(u, "rm -rf -- \"$1\"", path, None).await?;
+        let (code, _) = run_fs_helper(u, "remove", path, None).await?;
         return if code == 0 {
             Ok(())
         } else {
@@ -115,16 +115,11 @@ pub async fn web_host_read_stream(
     if let Some(u) = as_user {
         use std::process::Stdio;
         check_abs(path)?;
-        let mut child = tokio::process::Command::new("su")
-            .args([
-                "-s",
-                "/bin/sh",
-                "-c",
-                "[ -f \"$1\" ] || exit 9; exec cat -- \"$1\"",
-                u,
-                "sh",
-                path,
-            ])
+        // Re-exec the privilege-dropping `__fshelper read` (replaces `su … cat`):
+        // the helper drops to user `u` and streams the file to stdout.
+        let exe = std::env::current_exe().map_err(|e| anyhow!("无法定位自身：{e}"))?;
+        let mut child = tokio::process::Command::new(exe)
+            .args(["__fshelper", "read", u, path])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -158,11 +153,14 @@ pub async fn web_host_write_file(dest: &str, temp: &Path, as_user: Option<&str>)
         use std::process::Stdio;
         use tokio::io::AsyncWriteExt;
         check_abs(dest)?;
-        let mut child = tokio::process::Command::new("su")
-            .args(["-s", "/bin/sh", "-c", "cat > \"$1\"", u, "sh", dest])
+        // Re-exec the privilege-dropping `__fshelper write` (replaces `su … cat >`):
+        // the helper drops to user `u` and streams stdin into the destination.
+        let exe = std::env::current_exe().map_err(|e| anyhow!("无法定位自身：{e}"))?;
+        let mut child = tokio::process::Command::new(exe)
+            .args(["__fshelper", "write", u, dest])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| anyhow!("无法以用户身份写入：{e}"))?;
         if let Some(mut si) = child.stdin.take() {

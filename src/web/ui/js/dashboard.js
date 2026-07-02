@@ -109,19 +109,15 @@ function cssVar(name, fallback) {
   return v || fallback;
 }
 
-// Local HH:MM (and MM-DD for multi-day ranges) tick label for a unix-second ts.
+// HH:MM (and MM-DD for multi-day ranges) tick label for a unix-second ts, in the
+// configured display timezone.
 function histClock(ts, range) {
-  const d = new Date(ts * 1000);
-  const p = (n) => (n < 10 ? '0' + n : '' + n);
-  const hm = p(d.getHours()) + ':' + p(d.getMinutes());
-  return (range === '1d' || range === '7d') ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}` : hm;
+  const t = dn7TsParts(ts);
+  const hm = `${t.h}:${t.m}`;
+  return (range === '1d' || range === '7d') ? `${t.M}-${t.D} ${hm}` : hm;
 }
 
-function histFullTime(ts) {
-  const d = new Date(ts * 1000);
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
+function histFullTime(ts) { return fmtTsFull(ts); }
 
 const HIST_RANGE_SECS = { '15m': 900, '1h': 3600, '6h': 21600, '1d': 86400, '7d': 604800 };
 const HIST_PAD = { l: 52, r: 14, t: 14, b: 24 };

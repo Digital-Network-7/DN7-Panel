@@ -1,15 +1,12 @@
 // Docker: images + volumes tabs (split from docker.js).
 function dkImages(info) {
   const body = $('dkBody');
-  body.innerHTML = `<div class="sechead">${dkVerChips()}<span class="sp"></span><button class="btn sm" id="dkPull">${tr('dk.pull_image')}</button><button class="btn sec sm" id="dkRefI">${tr('dk.refresh')}</button><button class="btn sec sm" id="dkAdv">${tr('dk.advanced')} ▾</button></div><div id="dkIList">` + loading() + '</div>';
+  body.innerHTML = `<div class="sechead"><span class="sp"></span><button class="btn sm" id="dkPull">${tr('dk.pull_image')}</button><button class="btn sec sm" id="dkRefI">${tr('dk.refresh')}</button><button class="btn sec sm" id="dkAdv">${tr('dk.advanced')} ▾</button></div><div id="dkIList">` + loading() + '</div>';
   $('dkRefI').onclick = () => dkImages(info);
   $('dkPull').onclick = dkPullForm;
   mkHoverPanel($('dkAdv'), [
     { label: tr('dk.img_import'), fn: () => dkImportForm(info) },
     { label: tr('dk.pull_tasks'), fn: () => dkPullTasks() },
-    { sep: true },
-    { label: tr('dk.set_mirrors'), fn: () => dkRegistryListForm('mirror') },
-    { label: tr('dk.set_registries'), fn: () => dkRegistryListForm('registry') },
   ]);
   op('docker', { op: 'list_images' }).then((d) => {
     const list = d.images || [];
@@ -126,53 +123,16 @@ function dkImportForm(info) {
   });
 }
 
-// Edit the panel-side mirror / private-registry lists (used by the pull dialog).
-// `which` is 'mirror' or 'registry'. Saved without touching the Docker daemon.
-function dkRegistryListForm(which) {
-  const isMirror = which === 'mirror';
-  const title = isMirror ? tr('dk.set_mirrors') : tr('dk.set_registries');
-  const hint = isMirror ? tr('dk.set_mirrors_d') : tr('dk.set_registries_d');
-  const ph = isMirror ? 'docker.m.daocloud.io' : 'registry.example.com:5000';
-  modal(title, `
-    <label class="lbl">${title}</label>
-    <textarea id="rlList" class="field mono" rows="5" spellcheck="false" placeholder="${ph}"></textarea>
-    <p class="formnote">${hint}</p>
-    <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="rlGo" disabled>${tr('ng.save')}</button></div>`, (close) => {
-    let other = [];
-    op('docker', { op: 'get_settings' }).then((s) => {
-      $('rlList').value = ((isMirror ? s.mirrors : s.registries) || []).join('\n');
-      other = (isMirror ? s.registries : s.mirrors) || [];
-      bindDirty('rlGo', 'rlList');
-    }).catch(() => {});
-    $('rlGo').onclick = () => {
-      const lines = $('rlList').value.split('\n').map((x) => x.trim()).filter(Boolean);
-      const settings = isMirror ? { mirrors: lines, registries: other } : { mirrors: other, registries: lines };
-      op('docker', { op: 'set_registry_lists', settings }).then(() => { toast(tr('common.saved'), 'ok'); close(); }).catch((e) => toast(e.message, 'err'));
-    };
-  });
-}
-
 function dkPullForm() {
   modal(tr('dk.pull_image'), `
     <label class="lbl">${tr('dk.img_name_label')}</label>
-    <div class="row" style="gap:8px;margin-bottom:12px"><select id="plReg" class="field" style="max-width:180px"><option value="">Docker Hub</option></select><input id="plImg" class="field" placeholder="nginx:latest" style="flex:1" /></div>
-    <div id="plMirrorWrap"><label class="lbl">${tr('dk.mirror_label')}</label>
-    <select id="plMirror" class="field" style="margin-bottom:16px"><option value="">${tr('dk.mirror_none')}</option></select></div>
+    <div class="row" style="gap:8px;margin-bottom:12px"><input id="plImg" class="field" placeholder="alpine:latest" style="flex:1" /></div>
     <div class="row" style="justify-content:flex-end"><button class="btn" id="plGo">${tr('dk.pull_start')}</button></div>
     <div class="hidden" id="plJob" style="margin-top:14px"></div>`, (close) => {
-    // Load configured mirrors + private registries.
-    op('docker', { op: 'get_settings' }).then((s) => {
-      (s.mirrors || []).forEach((m) => { const o = document.createElement('option'); o.value = m; o.textContent = m; $('plMirror').appendChild(o); });
-      (s.registries || []).forEach((r) => { const o = document.createElement('option'); o.value = r; o.textContent = r; $('plReg').appendChild(o); });
-    }).catch(() => {});
-    // Mirrors only apply to Docker Hub; hide them when a private registry is picked.
-    $('plReg').onchange = () => $('plMirrorWrap').classList.toggle('hidden', !!$('plReg').value);
     $('plGo').onclick = () => {
       const image = $('plImg').value.trim(); if (!image) return toast(tr('dk.need_image_name'), 'err');
-      const registry = $('plReg').value || undefined;
-      const mirror = registry ? undefined : ($('plMirror').value || undefined);
       $('plGo').disabled = true; $('plJob').classList.remove('hidden');
-      op('docker', { op: 'pull_image', image, mirror, registry }).then((r) => renderJob($('plJob'), 'docker', r.op_id, '', { onDone: () => { toast(tr('dk.pull_done'), 'ok'); close(); if (UI.tab === 'docker') renderDocker($('view')); }, onError: () => { $('plGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('plGo').disabled = false; });
+      op('docker', { op: 'pull_image', image }).then((r) => renderJob($('plJob'), 'docker', r.op_id, '', { onDone: () => { toast(tr('dk.pull_done'), 'ok'); close(); if (UI.tab === 'docker') renderDocker($('view')); }, onError: () => { $('plGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('plGo').disabled = false; });
     };
     bindDirty('plGo');
   });
@@ -227,7 +187,7 @@ function dkPullTasks() {
 // ---- Volumes tab ----
 function dkVolumes() {
   const body = $('dkBody');
-  body.innerHTML = `<div class="sechead">${dkVerChips()}<span class="sp"></span><button class="btn sm" id="dkVolNew">${tr('dk.vol_new')}</button><button class="btn sec sm" id="dkRefV">${tr('dk.refresh')}</button></div><div id="dkVList">${loading()}</div>`;
+  body.innerHTML = `<div class="sechead"><span class="sp"></span><button class="btn sm" id="dkVolNew">${tr('dk.vol_new')}</button><button class="btn sec sm" id="dkRefV">${tr('dk.refresh')}</button></div><div id="dkVList">${loading()}</div>`;
   $('dkRefV').onclick = dkVolumes;
   $('dkVolNew').onclick = () => modal(tr('dk.vol_new'), `
     <label class="lbl">${tr('dk.vol_name')}</label>

@@ -19,11 +19,8 @@ pub(crate) fn build_router(state: Shared) -> Router {
         .route("/ui/*path", get(ui_asset))
         .route("/api/login/challenge", get(login_challenge))
         .route("/api/login", post(login))
-        // First-run init wizard (pre-auth; only reachable while UNINITIALIZED and
-        // past the init-token gate). Step 2 flips `initialized`.
-        .route("/api/init/status", get(init_status))
-        .route("/api/init/step1", post(init_step1))
-        .route("/api/init/step2", post(init_step2))
+        // First-run setup is done via the interactive CLI wizard (platform::
+        // init_cli) before the panel ever serves — there are no web init routes.
         // Authenticated API.
         .route("/api/logout", post(logout))
         .route("/api/ticket", post(mint_ticket))
@@ -55,7 +52,6 @@ pub(crate) fn build_router(state: Shared) -> Router {
         .route("/api/update/apply", post(update_apply))
         .route("/api/docker", post(docker_op))
         .route("/api/website", post(website_op))
-        .route("/api/mysql", post(mysql_op))
         .route("/api/terminal", get(terminal_ws))
         .route("/api/container/terminal", get(container_terminal_ws))
         .route("/api/container/privileged", post(container_privileged))

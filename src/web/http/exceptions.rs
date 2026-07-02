@@ -32,7 +32,7 @@ pub(crate) fn api_err_detail(
 }
 
 /// Build the JSON body for a capability-op failure. Fixed validation errors
-/// from the docker/nginx/mysql modules carry a stable code as `ERR_CODE:<code>`
+/// from the docker/website modules carry a stable code as `ERR_CODE:<code>`
 /// in their message; split it into a `code` field the client localizes
 /// (`err.<code>`). Dynamic/operational errors pass through as plain text.
 pub(crate) fn op_err_body(e: anyhow::Error) -> Value {

@@ -34,7 +34,7 @@ function parsePullPct(lines) {
 }
 
 // Render a job UI into `host` and poll it. `slot` is the persistence key
-// (e.g. "docker:install"). Returns nothing; calls cb.onDone / cb.onError.
+// (e.g. "website:cert"). Returns nothing; calls cb.onDone / cb.onError.
 function renderJob(host, kind, opId, slot, cb) {
   cb = cb || {};
   host.innerHTML = `

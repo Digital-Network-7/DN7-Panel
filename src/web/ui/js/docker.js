@@ -59,12 +59,6 @@ function attachPathSuggest(input) {
   input.addEventListener('blur', () => setTimeout(() => { hide(); window.removeEventListener('scroll', onScroll, true); }, 150));
 }
 
-// Docker engine + API version chips shown in each list tab's header (in place
-// of a redundant title). Populated by renderDocker from the `info` response.
-let DK_INFO = {};
-function dkVerChips() {
-  return `<span class="chip">Docker ${esc(DK_INFO.server_version || '')}</span><span class="chip">API ${esc(DK_INFO.client_version || '')}</span>`;
-}
 // Actions-column width: English/Japanese labels are wider than CJK, so the
 // frozen Actions column needs more room or buttons overflow it. `base` is the
 // compact (zh) width; widen it for the longer-label languages.
@@ -74,48 +68,18 @@ function ngActW(base) {
 }
 
 function renderDocker(v) {
-  v.innerHTML = `<div style="padding:8px">${loading(tr('dk.detecting'))}</div>`;
-  // If an install job is still running (user left + came back), re-attach.
-  if (getJob('docker:install')) {
-    v.innerHTML = `<div class="card"><h3>${tr('dk.installing')}</h3><div id="dkInstallJob"></div></div>`;
-    reattachJob($('dkInstallJob'), 'docker:install', { onDone: () => setTimeout(() => renderDocker(v), 800) });
-    return;
-  }
+  v.innerHTML = `<div style="padding:8px">${loading()}</div>`;
   op('docker', { op: 'info' }).then((info) => {
-    if (!info.installed) {
-      v.innerHTML = `<div class="card" style="max-width:520px"><h3>Docker</h3><p class="mut">${tr('dk.not_found')}</p>
-        <label class="lbl">${tr('dk.install_method')}</label>
-        <select id="dkChannel" class="field" style="margin-bottom:10px">
-          <option value="distro">${tr('dk.ch_distro')}</option>
-          <option value="ce">${tr('dk.ch_ce')}</option>
-        </select>
-        <label class="lbl">${tr('dk.network_region')}</label>
-        <select id="dkRegion" class="field" style="margin-bottom:14px">
-          <option value="auto">${tr('dk.rg_auto')}</option>
-          <option value="cn">${tr('dk.rg_cn')}</option>
-          <option value="global">${tr('dk.rg_global')}</option>
-        </select>
-        <button class="btn" id="dkInstall">${tr('dk.install_btn')}</button>
-        <div id="dkInstallJob" class="hidden" style="margin-top:14px"></div></div>`;
-      $('dkInstall').onclick = () => {
-        $('dkInstall').disabled = true; $('dkInstallJob').classList.remove('hidden');
-        const body = { op: 'install', channel: $('dkChannel').value, region: $('dkRegion').value };
-        op('docker', body).then((r) => renderJob($('dkInstallJob'), 'docker', r.op_id, 'docker:install', { onDone: () => setTimeout(() => renderDocker(v), 800), onError: () => { $('dkInstall').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('dkInstall').disabled = false; });
-      };
-      return;
-    }
     v.innerHTML = `
       <div class="subtabs" id="dkTabs">
         <button data-t="containers" class="on">${tr('dk.tab_containers')}</button>
         <button data-t="images">${tr('dk.tab_images')}</button>
         <button data-t="volumes">${tr('dk.tab_volumes')}</button>
         <button data-t="networks">${tr('dk.tab_networks')}</button>
-        <button data-t="settings">${tr('dk.tab_settings')}</button>
       </div>
       <div id="dkBody"></div>`;
-    DK_INFO = info;
     const tabs = $('dkTabs');
-    const sel = (t) => { tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === t)); if (t === 'containers') dkContainers(); else if (t === 'images') dkImages(info); else if (t === 'volumes') dkVolumes(); else if (t === 'settings') dkSettings(); else dkNetworks(); };
+    const sel = (t) => { tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === t)); if (t === 'containers') dkContainers(); else if (t === 'images') dkImages(info); else if (t === 'volumes') dkVolumes(); else dkNetworks(); };
     tabs.querySelectorAll('button').forEach((b) => b.onclick = () => sel(b.dataset.t));
     sel('containers');
   }).catch((e) => { v.innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; });
@@ -124,7 +88,7 @@ function renderDocker(v) {
 function dkContainers() {
   document.querySelectorAll('.dk-pop').forEach((p) => p.remove());
   const body = $('dkBody');
-  body.innerHTML = `<div class="sechead">${dkVerChips()}<span class="sp"></span><button class="btn sm" id="dkNew">${tr('dk.create_container')}</button><button class="btn sec sm" id="dkRefC">${tr('dk.refresh')}</button></div><div id="dkCList">` + loading() + '</div>';
+  body.innerHTML = `<div class="sechead"><span class="sp"></span><button class="btn sm" id="dkNew">${tr('dk.create_container')}</button><button class="btn sec sm" id="dkRefC">${tr('dk.refresh')}</button></div><div id="dkCList">` + loading() + '</div>';
   $('dkRefC').onclick = dkContainers;
   $('dkNew').onclick = () => dkCreateForm();
   op('docker', { op: 'list_containers' }).then((d) => {

@@ -36,6 +36,8 @@ pub(crate) async fn logs_clear(
     if let Err(e) = audit::clear() {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
-    audit::record(&actor.username, "logs.clear", "", true, "");
+    // Durable: the record that erased the trail must itself survive a crash
+    // between the truncate and the append (see audit module doc).
+    audit::record_durable(&actor.username, "logs.clear", "", true, "").await;
     Json(json!({ "ok": true })).into_response()
 }

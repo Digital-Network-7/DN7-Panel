@@ -127,7 +127,7 @@ fn esc(s: &str) -> String {
 
 /// Render the static `index.html` template with this install's branding baked
 /// in, so the page arrives already-branded (no flash).
-pub fn render_index(tmpl: &str, b: &Branding) -> String {
+pub fn render_index(tmpl: &str, b: &Branding, default_lang: &str, timezone: &str) -> String {
     let name = esc(&b.panel_name);
     let favicon_href = if b.logo.is_empty() {
         DEFAULT_FAVICON.to_string()
@@ -144,6 +144,10 @@ pub fn render_index(tmpl: &str, b: &Branding) -> String {
         "logo": b.logo,
         "accent": b.accent,
         "theme": b.theme_default,
+        // Operator-chosen console defaults (init wizard): the default UI language
+        // for browsers that haven't picked one, and the display timezone.
+        "default_lang": default_lang,
+        "timezone": timezone,
     }))
     .unwrap_or_else(|_| "{}".into())
     .replace('<', "\\u003c");
@@ -227,9 +231,11 @@ mod tests {
     #[test]
     fn render_default_keeps_builtin_mark_and_name() {
         let tmpl = "<title>DN7 Panel</title><!--__DN7_HEAD__--><span><!--__DN7_BRAND_MARK__--></span><h1>__DN7_BRAND_NAME__</h1>";
-        let out = render_index(tmpl, &Branding::default());
+        let out = render_index(tmpl, &Branding::default(), "zh-CN", "Asia/Shanghai");
         // Brand config is a CSP-safe JSON data block (not an inline script).
         assert!(out.contains("id=\"__dn7_brand__\""));
+        assert!(out.contains("Asia/Shanghai")); // injected display timezone
+        assert!(out.contains("zh-CN")); // injected default language
         assert!(out.contains("<svg")); // built-in mark
         assert!(out.contains(">DN7 Panel</h1>"));
         assert!(!out.contains("__DN7_BRAND_NAME__"));
@@ -245,7 +251,7 @@ mod tests {
             theme_default: "light".into(),
         };
         let tmpl = "<title>DN7 Panel</title><!--__DN7_HEAD__--><span><!--__DN7_BRAND_MARK__--></span><h1>__DN7_BRAND_NAME__</h1>";
-        let out = render_index(tmpl, &b);
+        let out = render_index(tmpl, &b, "", "");
         assert!(out.contains("&lt;Acme&gt;")); // escaped name in markup
         assert!(out.contains("<img src=")); // custom logo mark
         assert!(out.contains("--br:#ff0000")); // accent override

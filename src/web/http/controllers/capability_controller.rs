@@ -1,8 +1,8 @@
-//! Capability dispatch (docker/nginx/mysql JSON protocol) (split from web/server.rs).
+//! Capability dispatch (docker/website JSON protocol) (split from web/server.rs).
 use super::super::*;
 
 // ---------------------------------------------------------------------------
-// Capability dispatch (docker / nginx / mysql) — same JSON protocol as relays
+// Capability dispatch (docker / website) — same JSON protocol as relays
 // ---------------------------------------------------------------------------
 
 /// The audit-relevant facts about a capability request, extracted from the body
@@ -48,14 +48,18 @@ pub(crate) async fn dispatch(
             Ok(v) => (String::new(), redact_response(v)),
             Err(e) => (e.to_string(), String::new()),
         };
-        audit::record_op(
+        // Durable: capability mutations change the security posture, so the
+        // record must be on disk before the response is returned (see audit
+        // module doc).
+        audit::record_op_durable(
             &acct.username,
             &format!("{chan}.{}", meta.op),
             &meta.target,
             res.is_ok(),
             &detail,
             &response,
-        );
+        )
+        .await;
     }
     match res {
         Ok(data) => Json(json!({ "ok": true, "data": data })).into_response(),
@@ -142,20 +146,6 @@ pub(crate) async fn website_op(
     let meta = op_meta(&body);
     let fut = crate::app::website::dispatch(&body);
     dispatch(&acct, "website", meta, fut).await
-}
-
-pub(crate) async fn mysql_op(
-    State(state): State<Shared>,
-    headers: header::HeaderMap,
-    Json(body): Json<Value>,
-) -> Response {
-    let acct = match require_admin(&state, &headers) {
-        Ok(a) => a,
-        Err(r) => return r,
-    };
-    let meta = op_meta(&body);
-    let fut = crate::app::mysql::dispatch(&body);
-    dispatch(&acct, "mysql", meta, fut).await
 }
 
 #[cfg(test)]

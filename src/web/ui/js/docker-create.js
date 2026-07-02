@@ -1,4 +1,8 @@
 // Docker: create-container form/modal + helpers (split from docker.js).
+
+// "Generate random" dice icon for the per-network MAC / IPv4 randomize buttons.
+const DICE_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="9" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="9" r="1.2" fill="currentColor" stroke="none"/><circle cx="9" cy="15" r="1.2" fill="currentColor" stroke="none"/><circle cx="15" cy="15" r="1.2" fill="currentColor" stroke="none"/></svg>';
+
 function dkCreateForm() {
   // Fetch host capacity (CPU/mem caps), networks and volumes up front so the
   // Resources / Network / Volumes tabs can be populated.
@@ -149,8 +153,8 @@ function dkCreateModal(info, networks, opts) {
       const row = el('div', { class: 'netrow' });
       const allOpts = netList.map((n) => `<option value="${esc(n.name)}" data-subnet="${esc(n.subnet)}">${esc(n.name)}</option>`).join('');
       row.innerHTML = `<select class="nr-net field">${allOpts}</select>`
-        + `<div class="ifield"><input class="nr-mac field mono" placeholder="${tr('dk.mac_addr')}" /><button type="button" class="ifield-btn nr-macgen" title="${tr('dk.gen_random')}">${MY_DICE}</button></div>`
-        + `<div class="ifield"><input class="nr-ip field mono" placeholder="${tr('dk.ipv4_addr')}" /><button type="button" class="ifield-btn nr-ipgen" title="${tr('dk.gen_random')}">${MY_DICE}</button></div>`
+        + `<div class="ifield"><input class="nr-mac field mono" placeholder="${tr('dk.mac_addr')}" /><button type="button" class="ifield-btn nr-macgen" title="${tr('dk.gen_random')}">${DICE_ICON}</button></div>`
+        + `<div class="ifield"><input class="nr-ip field mono" placeholder="${tr('dk.ipv4_addr')}" /><button type="button" class="ifield-btn nr-ipgen" title="${tr('dk.gen_random')}">${DICE_ICON}</button></div>`
         + `<button type="button" class="rm">×</button>`;
       const sel = row.querySelector('.nr-net'), mac = row.querySelector('.nr-mac'), ip = row.querySelector('.nr-ip');
       const ipgenBtn = row.querySelector('.nr-ipgen');
@@ -308,12 +312,12 @@ function dkHuman(n) {
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return (i === 0 ? n : n.toFixed(2)) + u[i];
 }
-function dkFmtTime(secs) { return secs ? new Date(secs * 1000).toLocaleString() : '-'; }
-// Absolute YYYY-MM-DD HH:MM:SS from epoch seconds (number) or an ISO string.
+function dkFmtTime(secs) { return secs ? fmtTsFull(secs) : '-'; }
+// Absolute YYYY-MM-DD HH:MM:SS (configured display timezone) from epoch seconds
+// (number) or an ISO string.
 function fmtDateTime(v) {
   if (v == null || v === '' || v === 0) return '-';
   const d = (typeof v === 'number') ? new Date(v * 1000) : new Date(v);
   if (isNaN(d.getTime())) return (typeof v === 'string' ? v : '-');
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return fmtTsFull(d.getTime() / 1000);
 }

@@ -32,6 +32,7 @@ function ngCreateCert(reload) {
     <div class="formgrid">
       <div class="full"><label class="lbl">${tr('ng.cert_mode')}</label><select id="ccMode" class="field"><option value="le">${tr('ng.cm_le')}</option><option value="manual">${tr('ng.cm_manual')}</option><option value="self">${tr('ng.cm_self')}</option></select></div>
       <div class="full" id="ccDomainWrap"><label class="lbl">${tr('ng.domain')}</label><input id="ccDomain" class="field" placeholder="example.com" /></div>
+      <div class="full" id="ccKeyTypeWrap"><label class="lbl">${tr('ng.key_type')}</label><select id="ccKeyType" class="field"><option value="ecdsa-p256">${tr('ng.key_type_p256')}</option><option value="ecdsa-p384">${tr('ng.key_type_p384')}</option></select></div>
       <div class="full hidden" id="ccManual">
         <label class="lbl">${tr('ng.cert_key_file')}</label>
         <div class="filepick"><button type="button" class="btn sm sec" id="ccKeyBtn">${tr('ng.choose_file')}</button><span class="fp-name" id="ccKeyName">${tr('ng.no_file')}</span></div>
@@ -50,6 +51,9 @@ function ngCreateCert(reload) {
     const sync = () => {
       const m = $('ccMode').value;
       $('ccManual').classList.toggle('hidden', m !== 'manual');
+      // Key type only applies to auto-generated (le/self) certs; a manual cert
+      // already carries its own key.
+      $('ccKeyTypeWrap').classList.toggle('hidden', m === 'manual');
       $('ccHint').textContent = m === 'le' ? tr('ng.hint_le') : m === 'self' ? tr('ng.hint_self') : tr('ng.hint_manual');
     };
     $('ccMode').onchange = sync; sync();
@@ -77,6 +81,8 @@ function ngCreateCert(reload) {
         if (!pem.key || !pem.cert) return toast(tr('ng.need_cert_files'), 'err');
         body.cert_pem = pem.cert + (pem.chain ? '\n' + pem.chain : '');
         body.key_pem = pem.key;
+      } else {
+        body.key_type = $('ccKeyType').value;
       }
       $('ccGo').disabled = true; $('ccJob').classList.remove('hidden'); $('ccJob').innerHTML = `<div class="mut">${tr('ng.submitting')}</div>`;
       op('website', body).then((r) => {

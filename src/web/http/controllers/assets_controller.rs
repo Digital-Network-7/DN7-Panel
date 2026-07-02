@@ -7,9 +7,14 @@ use super::super::*;
 
 pub(crate) async fn index_page() -> Html<String> {
     let b = branding::load();
+    let (lang, tz) = crate::web::settings::load()
+        .map(|s| (s.language, s.timezone))
+        .unwrap_or_default();
     Html(branding::render_index(
         include_str!("../../ui/index.html"),
         &b,
+        &lang,
+        &tz,
     ))
 }
 

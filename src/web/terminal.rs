@@ -71,14 +71,18 @@ pub async fn run_web_pty(
 ) -> Result<()> {
     use axum::extract::ws::Message as AxumMsg;
 
-    // Run as the mapped system user when set (non-admin panel users): `su -`
-    // gives a login shell as that user — root may do this without a password —
-    // so the OS enforces their privileges. The super-admin (None) gets the
-    // panel's own shell (root).
+    // Run as the mapped system user when set (non-admin panel users). Instead of
+    // shelling out to `su -`, we re-exec ourselves as `__webshell <user>`, which
+    // drops to that user in a fresh single-threaded process and execs their login
+    // shell (the OS then enforces their privileges) — no external program. The
+    // super-admin (None) gets the panel's own shell (root).
     let mut cmd = match &login_user {
         Some(user) => {
-            let mut c = CommandBuilder::new("su");
-            c.arg("-");
+            let exe = std::env::current_exe()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| "/proc/self/exe".to_string());
+            let mut c = CommandBuilder::new(exe);
+            c.arg("__webshell");
             c.arg(user);
             c
         }
@@ -191,6 +195,13 @@ pub async fn run_web_container_exec(
         return Err(anyhow!("invalid container reference"));
     }
 
+    // In-house runtime: bridge the WS to a dn7 PTY exec (Linux-only) instead of a
+    // Docker exec; everything else falls through to the bollard path below.
+    #[cfg(target_os = "linux")]
+    if matches!(std::env::var("DN7_RUNTIME").as_deref(), Ok("dn7")) {
+        return run_dn7_container_exec(socket, container).await;
+    }
+
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     let dkr = crate::infra::docker::dkr()?;
@@ -278,6 +289,90 @@ pub async fn run_web_container_exec(
 
     let _ = ws_tx.close().await;
     Ok(())
+}
+
+/// Bridge a WebSocket to a dn7 PTY exec (the in-house runtime's web terminal).
+/// Opens a PTY-backed shell inside the container's namespaces and shuttles bytes
+/// both ways; `{"type":"resize"}` frames drive `TIOCSWINSZ`.
+#[cfg(target_os = "linux")]
+async fn run_dn7_container_exec(
+    socket: axum::extract::ws::WebSocket,
+    container: &str,
+) -> Result<()> {
+    use axum::extract::ws::Message as AxumMsg;
+    use std::os::fd::AsRawFd;
+    use tokio::io::unix::AsyncFd;
+
+    let id = dn7_container::container::resolve(container)
+        .map_err(|_| anyhow!("no such container: {container}"))?;
+    // Prefer bash, then sh, then ash (busybox) — whatever the image ships.
+    let shell = vec![
+        "/bin/sh".to_string(),
+        "-c".to_string(),
+        "for s in /bin/bash /bin/sh /bin/ash; do [ -x \"$s\" ] && exec \"$s\"; done; exec /bin/sh"
+            .to_string(),
+    ];
+    let mut session = dn7_container::container::exec_pty(&id, &shell)
+        .map_err(|e| anyhow!("无法创建容器会话：{e}"))?;
+    let mfd = session.master.as_raw_fd();
+    // Non-blocking master so reads/writes integrate with the async readiness loop.
+    // SAFETY: fcntl on our own fd.
+    unsafe {
+        let fl = libc::fcntl(mfd, libc::F_GETFL);
+        libc::fcntl(mfd, libc::F_SETFL, fl | libc::O_NONBLOCK);
+    }
+    let afd = AsyncFd::new(mfd).map_err(|e| anyhow!("{e}"))?;
+
+    let (mut ws_tx, mut ws_rx) = socket.split();
+    let mut buf = [0u8; 8192];
+    loop {
+        tokio::select! {
+            r = afd.readable() => {
+                let mut g = match r { Ok(g) => g, Err(_) => break };
+                let read = g.try_io(|fd| {
+                    // SAFETY: read into our stack buffer from the (valid) master fd.
+                    let n = unsafe { libc::read(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+                    if n < 0 { Err(std::io::Error::last_os_error()) } else { Ok(n as usize) }
+                });
+                match read {
+                    Ok(Ok(0)) | Ok(Err(_)) => break,          // EOF / read error
+                    Ok(Ok(n)) => {
+                        if ws_tx.send(AxumMsg::Binary(buf[..n].to_vec())).await.is_err() { break; }
+                    }
+                    Err(_would_block) => {}                    // readiness was spurious
+                }
+            }
+            msg = ws_rx.next() => {
+                match msg {
+                    Some(Ok(AxumMsg::Text(t))) => match parse_frame(&t) {
+                        Frame::Resize { cols, rows } => session.resize(cols, rows),
+                        Frame::Data(bytes) => write_fd(mfd, &bytes),
+                        Frame::Ping(t) => {
+                            let pong = format!("{{\"type\":\"pong\",\"t\":{t}}}");
+                            if ws_tx.send(AxumMsg::Text(pong)).await.is_err() { break; }
+                        }
+                    },
+                    Some(Ok(AxumMsg::Binary(b))) => write_fd(mfd, &b),
+                    Some(Ok(AxumMsg::Ping(_))) | Some(Ok(AxumMsg::Pong(_))) => {}
+                    Some(Ok(AxumMsg::Close(_))) | None => break,
+                    Some(Err(_)) => break,
+                }
+            }
+        }
+    }
+    session.kill();
+    let _ = ws_tx.close().await;
+    Ok(())
+}
+
+/// Best-effort write of (small, keystroke-sized) terminal input to the pty master.
+#[cfg(target_os = "linux")]
+fn write_fd(fd: std::os::fd::RawFd, buf: &[u8]) {
+    // SAFETY: write our buffer to the (valid) master fd; partial writes of tiny
+    // keystroke input don't occur in practice on a fresh pty.
+    unsafe {
+        let _ = libc::write(fd, buf.as_ptr().cast(), buf.len());
+    }
 }
 
 #[cfg(test)]

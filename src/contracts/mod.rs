@@ -6,7 +6,6 @@
 //! base types, but must NOT depend on `app` / `infra` / `web`, and must not
 //! carry derived business rules (that's `domain`). This keeps the wire protocol
 //! out of both the handlers and the infra adapters, so it can evolve in one
-//! place. Capabilities are migrated here incrementally (nginx first).
+//! place. Capabilities are migrated here incrementally (website first).
 
-pub(crate) mod mysql;
 pub(crate) mod website;

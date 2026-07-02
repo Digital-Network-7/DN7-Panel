@@ -1,6 +1,5 @@
 //! Init-token gate + request-audit header/response redaction + IP allow-list (split from web/server.rs).
 use super::super::*;
-use crate::web::http::controllers::index_page;
 
 /// Front-door gate: the IP allow-list always applies; then, while the panel is
 /// UNINITIALIZED, only requests bearing the init token (`?init_token=` on first
@@ -49,8 +48,8 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
         .get::<axum::extract::ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip());
     // Resolve all security decisions under one brief settings lock via the
-    // policy view (allow-list verdict + init-token gate state).
-    let (allow_active, ip_ok, initialized, init_token) = {
+    // policy view (allow-list verdict + initialized state).
+    let (allow_active, ip_ok, initialized) = {
         // A poisoned lock means a thread panicked while holding it. The settings
         // it guards are only ever *read* here (a snapshot for security
         // decisions) and aren't left half-written by a panic, so recovering the
@@ -70,7 +69,6 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
             pol.allow_list_active(),
             eff.map(|ip| pol.ip_allowed(ip)),
             pol.initialized(),
-            pol.init_token(),
         )
     };
     // Authorized-IP allow list (when configured). Loopback is always allowed.
@@ -86,86 +84,13 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
             return (StatusCode::FORBIDDEN, "Forbidden").into_response();
         }
     }
-    // Init-token gate: while the panel is UNINITIALIZED the console serves only
-    // the token-gated wizard. Once initialized there's no gate (normal auth
-    // protects every endpoint). This replaces the old secret safe-entry path.
-    if initialized {
-        return next.run(req).await;
+    // First-run setup runs via the CLI BEFORE the panel ever serves (see
+    // platform::init_cli), so a serving panel is always initialized. Defensively
+    // refuse to serve if it somehow isn't, rather than expose anything pre-init.
+    if !initialized {
+        return (StatusCode::NOT_FOUND, "Not Found").into_response();
     }
-    let token = match init_token {
-        Some(t) => t,
-        // Uninitialized with no token shouldn't happen — load_or_init always
-        // seeds one on a fresh install. Treat a missing token as an anomaly and
-        // fail CLOSED rather than expose the wizard to anyone (`dn7 panel reset`
-        // re-arms a token to recover).
-        None => return (StatusCode::NOT_FOUND, "Not Found").into_response(),
-    };
-    let headers = req.headers();
-    // The wizard SPA + /api/init both ride the `dn7_init` cookie set on the first
-    // tokened hit. Constant-time compares — it's the bootstrap secret.
-    if cookie_value(headers, "dn7_init")
-        .map(|c| ct_eq(c.as_bytes(), token.as_bytes()))
-        .unwrap_or(false)
-    {
-        return next.run(req).await;
-    }
-    // First arrival with `?init_token=<token>`: serve the SPA (wizard) and set the
-    // cookie so its subsequent /ui + /api/init requests pass.
-    let q_token = req.uri().query().and_then(|q| {
-        q.split('&')
-            .find_map(|kv| kv.strip_prefix("init_token="))
-            .map(str::to_string)
-    });
-    if q_token
-        .map(|q| ct_eq(q.as_bytes(), token.as_bytes()))
-        .unwrap_or(false)
-    {
-        // `Secure` when the external hop is HTTPS (the edge sets X-Forwarded-Proto;
-        // the console is loopback-only) so the token never rides a cleartext
-        // request once TLS is on. Init is normally http, so this is usually empty.
-        let secure = if headers
-            .get("x-forwarded-proto")
-            .and_then(|v| v.to_str().ok())
-            == Some("https")
-        {
-            "; Secure"
-        } else {
-            ""
-        };
-        let mut resp = index_page().await.into_response();
-        if let Ok(v) =
-            format!("dn7_init={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400{secure}")
-                .parse()
-        {
-            resp.headers_mut().append(header::SET_COOKIE, v);
-        }
-        return resp;
-    }
-    // No valid token → 404 (don't reveal the console exists to a blind scan).
-    (StatusCode::NOT_FOUND, "Not Found").into_response()
-}
-
-/// Constant-time byte-slice equality (length-aware). The length of the init
-/// token is fixed/known, so only the *content* comparison needs to avoid an
-/// early-exit timing signal on the bootstrap secret.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
-/// Read a named cookie value from the request headers.
-pub(crate) fn cookie_value(headers: &header::HeaderMap, name: &str) -> Option<String> {
-    let raw = headers.get(header::COOKIE)?.to_str().ok()?;
-    let pfx = format!("{name}=");
-    raw.split(';')
-        .map(|p| p.trim())
-        .find_map(|p| p.strip_prefix(&pfx).map(|v| v.to_string()))
+    next.run(req).await
 }
 
 /// Serialize request headers to a "Name: value" block for the audit log,
@@ -304,6 +229,7 @@ mod tests {
             settings: std::sync::Mutex::new(settings),
             collector: Mutex::new(crate::infra::metrics::Collector::new()),
             cfg,
+            cli_token: String::new(),
         });
         let mut req = HttpRequest::builder()
             .uri("/api/website")

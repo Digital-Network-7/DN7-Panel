@@ -201,6 +201,9 @@ fn apply_password_change(s: &mut WebSettings, req: &SettingsReq) -> Result<bool,
         }
     }
     let kdf = req.pw_kdf.clone().unwrap_or_default();
+    if !crate::app::users::valid_pw_kdf(&kdf) {
+        return Err(map_core_err(crate::core::Error::PasswordMalformed));
+    }
     // Store Argon2id(verifier), not the raw verifier, so a leaked file can't be
     // replayed as a login.
     let stored = crate::infra::auth::hash_verifier(&hash.to_lowercase())

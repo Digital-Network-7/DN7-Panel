@@ -16,11 +16,14 @@ use bytes::Bytes;
 use crate::core::path::normalize_lexical;
 
 mod ctn;
+mod ctn_dn7;
 mod ctnfs;
+mod fshelper;
 mod hostfs;
 mod ops;
 
 use ctn::*;
 pub(crate) use ctnfs::*;
+pub(crate) use fshelper::{run_fs_helper_main, run_web_shell_main};
 pub(crate) use hostfs::*;
 pub(crate) use ops::*;

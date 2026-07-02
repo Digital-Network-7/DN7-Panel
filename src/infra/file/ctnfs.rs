@@ -6,6 +6,9 @@ pub async fn web_ctn_list(container: &str, path: &str) -> Result<serde_json::Val
     if !valid_container_ref(container) {
         return Err(anyhow!("invalid container reference"));
     }
+    if super::ctn_dn7::active() {
+        return super::ctn_dn7::list(container, path).await;
+    }
     let dir = if path.trim().is_empty() { "/" } else { path };
     check_abs(dir)?;
     let script = r#"cd "$1" 2>/dev/null || exit 7
@@ -53,6 +56,9 @@ pub async fn web_ctn_mkdir(container: &str, path: &str) -> Result<()> {
     if !valid_container_ref(container) {
         return Err(anyhow!("invalid container reference"));
     }
+    if super::ctn_dn7::active() {
+        return super::ctn_dn7::mkdir(container, path).await;
+    }
     ctn_exec_ok(container, "mkdir -p \"$1\"", path).await
 }
 
@@ -60,6 +66,9 @@ pub async fn web_ctn_mkdir(container: &str, path: &str) -> Result<()> {
 pub async fn web_ctn_delete(container: &str, path: &str) -> Result<()> {
     if !valid_container_ref(container) {
         return Err(anyhow!("invalid container reference"));
+    }
+    if super::ctn_dn7::active() {
+        return super::ctn_dn7::delete(container, path).await;
     }
     if is_protected_path(path) {
         return Err(anyhow!("该系统目录受保护，禁止删除"));
@@ -76,6 +85,9 @@ pub async fn web_ctn_read_stream(container: &str, path: &str) -> Result<(String,
 
     if !valid_container_ref(container) {
         return Err(anyhow!("invalid container reference"));
+    }
+    if super::ctn_dn7::active() {
+        return super::ctn_dn7::read_stream(container, path).await;
     }
     check_abs(path)?;
     let dkr = crate::infra::docker::dkr()?;
@@ -161,6 +173,9 @@ pub async fn web_ctn_read_stream(container: &str, path: &str) -> Result<(String,
 pub async fn web_ctn_write_file(container: &str, dest_path: &str, temp: &Path) -> Result<()> {
     if !valid_container_ref(container) {
         return Err(anyhow!("invalid container reference"));
+    }
+    if super::ctn_dn7::active() {
+        return super::ctn_dn7::write_file(container, dest_path, temp).await;
     }
     check_abs(dest_path)?;
     ctn_upload_file(container, temp, dest_path).await
