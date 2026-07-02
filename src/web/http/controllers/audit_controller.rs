@@ -24,7 +24,10 @@ pub(crate) async fn logs_list(
     Json(json!({ "ok": true, "data": { "entries": entries } })).into_response()
 }
 
-/// POST /api/logs/clear — erase the audit log. Owner only.
+/// POST /api/logs/clear — erase the audit log. Owner only, plus a fresh
+/// step-up re-auth: wiping the trail is as audit-hostile as it gets, so a
+/// stolen session alone must not be able to do it (same gate as settings /
+/// update apply).
 pub(crate) async fn logs_clear(
     State(state): State<Shared>,
     headers: header::HeaderMap,
@@ -33,6 +36,9 @@ pub(crate) async fn logs_clear(
         Ok(a) => a,
         Err(r) => return r,
     };
+    if let Some(r) = require_stepup(&state, &headers, &actor.username) {
+        return r;
+    }
     if let Err(e) = audit::clear() {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
