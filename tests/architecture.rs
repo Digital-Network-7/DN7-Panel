@@ -62,6 +62,112 @@ fn arch_allow_marker_ok(line: &str) -> bool {
     !reason.trim().is_empty()
 }
 
+/// Expand a single-line grouped `use` into its flattened member paths so a
+/// per-token substring deny cannot be evaded by brace-grouping. In
+/// `use crate::{app::x, core::y};` the members share the prefix `crate::`, so the
+/// raw line contains `crate::{app` (never `crate::app`) and slips past a
+/// `crate::app` deny. Given a source line, this returns the flattened member
+/// paths — `crate::app::x`, `crate::core::y` — to be checked *in addition to* the
+/// raw line (non-grouped forms are still caught by the raw-line scan). A line
+/// without a `use … ::{` group yields nothing.
+///
+/// std-only, no regex. The member split is brace-depth aware and recurses into
+/// nested groups, so a (currently unused) `use a::{b::{c, d}, e}` still flattens
+/// to `a::b::c`, `a::b::d`, `a::e` rather than a garbled substring.
+fn expand_grouped_use(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    // Only `use` statements group this way; bail early on anything else.
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with("use ") && !trimmed.starts_with("pub") {
+        return out;
+    }
+    expand_group_into(trimmed, &mut out);
+    out
+}
+
+/// Flatten the FIRST `<prefix>::{ … }` group found in `seg` into `out`, recursing
+/// for members that are themselves groups. `seg` is a `<prefix>::{ members }`
+/// fragment (or a whole `use` line); the trailing `;`, `as …` rename, and outer
+/// `use`/`pub(…)` keywords are harmless because we only key off `::{`.
+fn expand_group_into(seg: &str, out: &mut Vec<String>) {
+    let open = match seg.find("::{") {
+        Some(idx) => idx,
+        None => return,
+    };
+    let prefix = &seg[..open]; // e.g. `use crate` / `crate::foo`
+                               // Strip the leading `use `/`pub(...) ` keywords off the prefix so the
+                               // flattened member reads as a clean path (`crate::app::x`, not `use crate::app::x`).
+    let prefix = prefix
+        .trim_start()
+        .trim_start_matches("pub")
+        .trim_start()
+        .trim_start_matches("(crate)")
+        .trim_start_matches("(super)")
+        .trim_start()
+        .trim_start_matches("use ")
+        .trim_start();
+    let body_start = open + "::{".len();
+    // Find the matching close brace for this group (depth-aware).
+    let mut depth = 1usize;
+    let bytes = seg.as_bytes();
+    let mut i = body_start;
+    let mut close = None;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let end = match close {
+        Some(e) => e,
+        None => return, // unbalanced (e.g. a multi-line group) — nothing to flatten here
+    };
+    let body = &seg[body_start..end];
+    for member in split_top_level(body) {
+        let member = member.trim();
+        // Drop a `self`/glob member; only real leaf paths interest the deny scan.
+        if member.is_empty() || member == "self" || member == "*" {
+            continue;
+        }
+        let full = format!("{prefix}::{member}");
+        if member.contains("::{") {
+            // Nested group — recurse so `b::{c, d}` flattens under the prefix too.
+            expand_group_into(&full, out);
+        } else {
+            out.push(full);
+        }
+    }
+}
+
+/// Split a brace group body on top-level commas only (commas inside a nested
+/// `{ … }` stay with their member). std-only.
+fn split_top_level(body: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, ch) in body.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(body[start..i].to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(body[start..].to_string());
+    parts
+}
+
 /// (governed directory relative to crate root, forbidden substrings).
 const RULES: &[(&str, &[&str])] = &[
     (
@@ -132,8 +238,12 @@ fn scan(dir: &Path, forbidden: &[&str], violations: &mut Vec<String>) {
             if line.starts_with("//") || arch_allow_marker_ok(raw) {
                 continue;
             }
+            // Also flatten a single-line grouped `use` (`use crate::{app::x,
+            // core::y};`) so a shared prefix cannot hide a forbidden member from
+            // the raw substring check below.
+            let expanded = expand_grouped_use(line);
             for tok in forbidden {
-                if line.contains(tok) {
+                if line.contains(tok) || expanded.iter().any(|m| m.contains(tok)) {
                     violations.push(format!(
                         "{}:{}: forbidden `{tok}` (rule for {dir})",
                         p.display(),
@@ -328,6 +438,10 @@ const FILE_SIZE_WHITELIST: &[(&str, &str)] = &[
     (
         "src/platform/supervisor/supervise.rs",
         "supervisor lifecycle: spawn/respawn + self-update one-shot rollback + graceful stop",
+    ),
+    (
+        "crates/dn7-container/src/image/mod.rs",
+        "OCI image pull/load: manifest+index resolution, blob store, and size-capped streaming (DoS cap)",
     ),
 ];
 
