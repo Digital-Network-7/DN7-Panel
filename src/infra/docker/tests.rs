@@ -59,18 +59,6 @@ fn mirror_whitelist() {
 }
 
 #[test]
-fn host_line_and_log_validation() {
-    assert!(valid_host_line("registry.example.com:5000"));
-    assert!(valid_host_line("docker.m.daocloud.io"));
-    assert!(!valid_host_line("https://x.com"));
-    assert!(!valid_host_line("a b"));
-    assert!(valid_log_size("10m"));
-    assert!(valid_log_size("512k"));
-    assert!(!valid_log_size("10"));
-    assert!(!valid_log_size("abc"));
-}
-
-#[test]
 fn op_registry_lifecycle() {
     let id = "test-op-1";
     op_create(id, "pull", "nginx:latest");
@@ -90,7 +78,6 @@ fn mk_req(image: &str) -> Req {
         image: Some(image.into()),
         mirror: None,
         registry: None,
-        settings: None,
         reference: None,
         tail: None,
         op_id: None,
@@ -125,8 +112,6 @@ fn mk_req(image: &str) -> Req {
         interactive: None,
         cpus: None,
         memory: None,
-        channel: None,
-        region: None,
     }
 }
 
@@ -137,21 +122,6 @@ fn restart_whitelist() {
     assert!(restart_allowed("always"));
     assert!(!restart_allowed("on-failure"));
     assert!(!restart_allowed("; rm -rf /"));
-}
-
-#[test]
-fn install_script_selection() {
-    // distro channel → native package per family
-    assert!(build_install_script("debian", "distro", "global").contains("docker.io"));
-    assert!(build_install_script("rhel", "distro", "global").contains("install docker"));
-    assert!(build_install_script("arch", "distro", "cn").contains("pacman"));
-    assert!(build_install_script("alpine", "distro", "cn").contains("apk add"));
-    // ce channel + unknown distro → official convenience script
-    assert!(build_install_script("debian", "ce", "global").contains("get.docker.com"));
-    assert!(build_install_script("unknown", "distro", "global").contains("get.docker.com"));
-    // CN networks add the Aliyun package mirror; global does not.
-    assert!(get_docker_script("cn").contains("--mirror Aliyun"));
-    assert!(!get_docker_script("global").contains("--mirror"));
 }
 
 #[test]

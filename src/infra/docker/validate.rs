@@ -116,6 +116,15 @@ pub(crate) fn validate_path(s: &str) -> Result<()> {
     if bad {
         return Err(docker_err(DockerError::PathBadChars));
     }
+    // Reject any `..` component so a container-destination or bind path can't
+    // traverse out of the container rootfs / an allowed bind subtree. The
+    // absolute-path prefix above doesn't stop `/data/../../etc`.
+    if std::path::Path::new(s)
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        return Err(docker_err(DockerError::PathBadChars));
+    }
     Ok(())
 }
 
@@ -193,5 +202,20 @@ mod tests {
         assert!(validate_bind_source("relative/path").is_err());
         // A benign, non-existent absolute path passes (canonicalize skipped on ENOENT).
         assert!(validate_bind_source("/srv/dn7-nonexistent-bindsrc-test").is_ok());
+    }
+
+    #[test]
+    fn path_rejects_parent_dir_traversal() {
+        // `..` in either a container destination or a host source could escape
+        // the rootfs / an allowed bind subtree — reject every form.
+        for p in ["/../etc/x", "/data/../../etc", "/a/b/../../../etc"] {
+            assert!(validate_path(p).is_err(), "{p} must be rejected");
+        }
+        // Plain absolute paths still pass.
+        assert!(validate_path("/data/foo").is_ok());
+        assert!(validate_path("/var/lib/x").is_ok());
+        // The existing bad-char / non-absolute checks still hold.
+        assert!(validate_path("/srv:data").is_err());
+        assert!(validate_path("relative/path").is_err());
     }
 }

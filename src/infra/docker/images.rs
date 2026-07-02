@@ -49,9 +49,6 @@ pub(crate) async fn add_image_tags(req: &Req) -> Result<Value> {
 /// first so the image always keeps at least one tag while old ones are dropped.
 pub(crate) async fn retag_image(req: &Req) -> Result<Value> {
     let reference = need_ref(req)?;
-    if managed_image_guard(&reference).await {
-        return Err(docker_err(DockerError::ImageInUseBuiltin));
-    }
     let desired = parse_desired_tags(req)?;
     let dkr = dkr()?;
     let info = dkr
@@ -128,10 +125,8 @@ async fn apply_tag_changes(
 
 pub(crate) async fn list_images() -> Result<Value> {
     let dkr = dkr()?;
-    // Determine which images are managed (used by a panel service container) and
-    // which are in use by any container, in ONE container listing pass — these
-    // used to be two separate list_containers calls iterating the same list.
-    let (managed_images, used_images) = image_ref_sets(&dkr).await;
+    // Which images are in use by any container (running or stopped).
+    let used_images = used_image_refs(&dkr).await;
     let opts = bollard::image::ListImagesOptions::<String> {
         all: false,
         ..Default::default()
@@ -172,7 +167,7 @@ pub(crate) async fn list_images() -> Result<Value> {
             "size": human_size(img.size.max(0) as u64),
             "created": human_since(img.created),
             "created_ts": img.created,
-            "managed": managed_images.contains(&name) || managed_images.contains(&short_id),
+            "managed": false,
             "in_use": used_images.contains(&name) || used_images.contains(&short_id),
         }));
     }
@@ -198,32 +193,10 @@ fn collect_image_refs(
     }
 }
 
-/// Whether a container is a DN7 Panel-managed service (the managed MySQL service).
-fn is_managed_container(c: &bollard::models::ContainerSummary) -> bool {
-    let name = c
-        .names
-        .as_ref()
-        .and_then(|n| n.first())
-        .map(|s| s.trim_start_matches('/'))
-        .unwrap_or_default();
-    let has_mysql_label = c
-        .labels
-        .as_ref()
-        .map(|l| l.contains_key("dn7.mysql"))
-        .unwrap_or(false);
-    name == crate::infra::mysql::CONTAINER || has_mysql_label
-}
-
-/// Compute, in a SINGLE container-listing pass, both (managed-image refs, all
-/// in-use image refs). `list_images` needs both; doing it in one pass halves the
-/// Docker round-trips and the iteration on that UI-polled endpoint.
-async fn image_ref_sets(
-    dkr: &Docker,
-) -> (
-    std::collections::HashSet<String>,
-    std::collections::HashSet<String>,
-) {
-    let mut managed = std::collections::HashSet::new();
+/// All image refs (repo:tag + short id) in use by any container (running or
+/// stopped), in a single container-listing pass. `list_images` uses this to mark
+/// the "in use" column on that UI-polled endpoint.
+async fn used_image_refs(dkr: &Docker) -> std::collections::HashSet<String> {
     let mut used = std::collections::HashSet::new();
     let opts = bollard::container::ListContainersOptions::<String> {
         all: true,
@@ -231,36 +204,12 @@ async fn image_ref_sets(
     };
     let containers = match dkr.list_containers(Some(opts)).await {
         Ok(c) => c,
-        Err(_) => return (managed, used),
+        Err(_) => return used,
     };
     for c in &containers {
         collect_image_refs(c, &mut used);
-        if is_managed_container(c) {
-            collect_image_refs(c, &mut managed);
-        }
     }
-    (managed, used)
-}
-
-/// The set of image refs (repo:tag) + short ids used by DN7 Panel-managed service
-/// containers (the managed MySQL service). Used to mark those images "内置" and protect
-/// them from removal.
-pub(crate) async fn managed_image_refs(dkr: &Docker) -> std::collections::HashSet<String> {
-    let mut out = std::collections::HashSet::new();
-    let opts = bollard::container::ListContainersOptions::<String> {
-        all: true,
-        ..Default::default()
-    };
-    let containers = match dkr.list_containers(Some(opts)).await {
-        Ok(c) => c,
-        Err(_) => return out,
-    };
-    for c in &containers {
-        if is_managed_container(c) {
-            collect_image_refs(c, &mut out);
-        }
-    }
-    out
+    used
 }
 
 /// If `reference` (a repo:tag or short id) is used by any container (running or

@@ -86,7 +86,3 @@ pub(crate) async fn remove_volume_op(req: &Req) -> Result<Value> {
     })?;
     Ok(json!({ "removed": name }))
 }
-
-// ---- Panel-side docker settings store (mirrors/registries + daemon knobs) ----
-
-pub(crate) const DEFAULT_SOCKET: &str = "/var/run/docker.sock";

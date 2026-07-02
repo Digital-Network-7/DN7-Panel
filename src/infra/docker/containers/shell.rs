@@ -97,6 +97,11 @@ pub(crate) async fn container_has_shell(dkr: &Docker, id: &str) -> bool {
 /// create guardrail). Inspect failure is treated as "privileged" (fail closed):
 /// if we can't prove a container is safe, don't expose it to a non-super admin.
 pub(crate) async fn container_is_privileged(reference: &str) -> bool {
+    // dn7 runtime: there's no Docker daemon to inspect — read the in-house state
+    // instead (otherwise inspect always fails → every container looks privileged).
+    if dn7_container::selected() {
+        return dn7_is_privileged(reference);
+    }
     let dkr = match dkr() {
         Ok(d) => d,
         Err(_) => return true,
@@ -122,6 +127,45 @@ pub(crate) async fn container_is_privileged(reference: &str) -> bool {
         return true;
     }
     false
+}
+
+/// dn7 equivalent of [`container_is_privileged`]: dn7 rejects `--privileged` at
+/// create (so `StateMeta.privileged` is always false, but we honor it), and the
+/// only host-equivalent exposure is host networking — `net_mode == "host"` makes
+/// `spec_gen` omit the network namespace, so the container shares the host stack.
+/// The canonical mode is the `dn7.net` OCI annotation in the bundle config.
+/// Fail closed (privileged) when the container or its config can't be read.
+#[cfg(target_os = "linux")]
+fn dn7_is_privileged(reference: &str) -> bool {
+    let id = match dn7_container::container::resolve(reference) {
+        Ok(id) => id,
+        Err(_) => return true,
+    };
+    if let Ok(s) = dn7_container::container::state(&id) {
+        if s.meta.privileged {
+            return true;
+        }
+    }
+    let cfg = dn7_container::container::bundle_dir(&id).join("config.json");
+    let mode = std::fs::read(&cfg)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| {
+            v.get("annotations")
+                .and_then(|a| a.get("dn7.net"))
+                .and_then(|m| m.as_str())
+                .map(str::to_string)
+        });
+    match mode.as_deref() {
+        Some("host") => true, // shares the host network namespace
+        Some(_) => false,     // bridge / none → isolated netns, not privileged
+        None => true,         // mode unknown → fail closed
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn dn7_is_privileged(_reference: &str) -> bool {
+    true
 }
 #[cfg(test)]
 mod tests {

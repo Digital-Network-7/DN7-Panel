@@ -40,19 +40,12 @@ pub(crate) async fn container_action(req: &Req, action: &str) -> Result<Value> {
             "resumed"
         }
         "kill" => {
-            if let Some(why) = managed_container_guard(&r).await {
-                return Err(anyhow!(why));
-            }
             dkr.kill_container(&r, None::<KillContainerOptions<String>>)
                 .await
                 .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
             "killed"
         }
         "remove" => {
-            // Managed service containers must be removed from their own pages.
-            if let Some(why) = managed_container_guard(&r).await {
-                return Err(anyhow!(why));
-            }
             let opts = RemoveContainerOptions {
                 force: true,
                 ..Default::default()

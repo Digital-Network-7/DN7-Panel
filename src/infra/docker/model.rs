@@ -37,9 +37,6 @@ pub(crate) struct Req {
     /// Pull from a configured private registry (host prefix); empty = Docker Hub.
     #[serde(default)]
     pub(crate) registry: Option<String>,
-    /// Docker settings payload (set_settings).
-    #[serde(default)]
-    pub(crate) settings: Option<Value>,
     #[serde(default, rename = "ref")]
     pub(crate) reference: Option<String>,
     #[serde(default)]
@@ -126,11 +123,6 @@ pub(crate) struct Req {
     pub(crate) cpus: Option<String>,
     #[serde(default)]
     pub(crate) memory: Option<String>,
-    // docker install options
-    #[serde(default)]
-    pub(crate) channel: Option<String>, // "distro" (docker.io, default) | "ce" (official latest)
-    #[serde(default)]
-    pub(crate) region: Option<String>, // "auto" (default) | "cn" | "global"
 }
 
 #[derive(Debug, Deserialize, Clone)]

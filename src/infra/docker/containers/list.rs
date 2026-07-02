@@ -61,15 +61,8 @@ fn container_row(c: bollard::models::ContainerSummary, has_shell: bool) -> Value
         .map(|s| s.trim_start_matches('/').to_string())
         .unwrap_or_default();
     let state = c.state.clone().unwrap_or_default();
-    // DN7 Panel-managed service containers (the managed MySQL service) are marked so the UI
-    // can show "内置" and hide direct controls (the panel also refuses ops on
-    // them — see `managed_container_guard`).
-    let has_mysql_label = c
-        .labels
-        .as_ref()
-        .map(|l| l.contains_key("dn7.mysql"))
-        .unwrap_or(false);
-    let managed = name == crate::infra::mysql::CONTAINER || has_mysql_label;
+    // No built-in/managed service containers exist, so none are marked "内置".
+    let managed = false;
     // Every attached network's IPv4, formatted "ip (network)". A container can
     // have several NICs, so the UI shows one per line. Sorted by network name.
     let mut ip_list: Vec<String> = Vec::new();

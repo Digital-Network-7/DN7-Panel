@@ -25,8 +25,3 @@ pub(crate) fn op_finish(op_id: &str, status: &str, error: &str, result_image: &s
         json!({ "result_image": result_image }),
     );
 }
-
-/// Whether an op with this id exists and is still running.
-pub(crate) fn op_running(op_id: &str) -> bool {
-    reg().running(op_id)
-}

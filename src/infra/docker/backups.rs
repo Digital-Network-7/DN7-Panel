@@ -357,6 +357,163 @@ pub(crate) fn now_stamp() -> String {
     format!("{millis}")
 }
 
+// ---------------------------------------------------------------------------
+// Staged, verified exports (audit P3)
+//
+// A docker image export / container backup download used to stream straight to
+// the client with the 200 already committed, so a mid-stream daemon/IO failure
+// yielded a *truncated* attachment the user mistook for a good backup. For these
+// high-value paths we instead stage the whole export to a verified temp file
+// under `<data>/tmp` first: if the export fails mid-write we can still return an
+// error (no 200), and on success we serve the complete file with an accurate
+// Content-Length + a SHA-256 the client can verify. The temp is always cleaned
+// up (on failure here, on success after the response body drains).
+// ---------------------------------------------------------------------------
+
+/// Staging directory for in-flight exports (`<data>/tmp`). Created on demand.
+fn export_staging_dir() -> std::path::PathBuf {
+    crate::platform::paths::data_dir().join("tmp")
+}
+
+/// A fully-staged export: the on-disk temp file, its exact byte length, and the
+/// hex SHA-256 of its contents (for the `X-DN7-SHA256` header / sidecar).
+pub struct StagedExport {
+    pub path: std::path::PathBuf,
+    pub len: u64,
+    pub sha256_hex: String,
+}
+
+impl StagedExport {
+    /// Best-effort removal of the staged temp file (on success after the
+    /// response drains, or on any error path).
+    pub fn cleanup(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Sane fraction of currently-available disk we're willing to spend staging one
+/// export, so a huge (or runaway) export can't fill the data volume. Checked
+/// against `fs2::available_space` up front and again as the running total grows.
+const STAGE_DISK_FRACTION: u64 = 4; // ≤ 1/4 of free space
+
+/// Drain a docker export/backup byte stream into a freshly-created temp file
+/// under `<data>/tmp`, hashing as we go. Returns the staged file + its length +
+/// SHA-256 on success. On **any** failure (stream error, IO error, cap/disk
+/// guard) the partial temp is removed and an error is returned — so the caller
+/// can respond with an error status instead of a truncated 200.
+///
+/// `stream` yields `std::io::Result<Bytes>` (the shape of
+/// [`crate::infra::file::ByteStream`]); a per-chunk error aborts the stage.
+pub async fn stage_export<S>(mut stream: S) -> Result<StagedExport>
+where
+    S: futures::Stream<Item = std::io::Result<bytes::Bytes>> + Unpin,
+{
+    use sha2::{Digest, Sha256};
+    use tokio::io::AsyncWriteExt;
+
+    let dir = export_staging_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| anyhow!("无法创建暂存目录：{e}"))?;
+    // Bound the stage to a fraction of free space (guard against filling the
+    // volume). If we can't stat the fs, fall back to no explicit cap.
+    let cap = fs2::available_space(&dir)
+        .ok()
+        .map(|avail| avail / STAGE_DISK_FRACTION);
+
+    // Fresh, unpredictable temp name in the staging dir (O_EXCL, 0600) — a local
+    // low-priv user can't pre-plant a symlink to hijack the write.
+    let (f, tmp) = create_staging_file(&dir)?;
+    let mut f = tokio::fs::File::from_std(f);
+    let mut hasher = Sha256::new();
+    let mut total: u64 = 0;
+
+    // Any early return past this point must remove the partial temp; do it via a
+    // small helper so we never leak a half-written file.
+    let fail = |tmp: &std::path::Path, e: anyhow::Error| -> anyhow::Error {
+        StagedExport::cleanup(tmp);
+        e
+    };
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => return Err(fail(&tmp, anyhow!("导出流失败：{e}"))),
+        };
+        total += chunk.len() as u64;
+        if let Some(cap) = cap {
+            if total > cap {
+                return Err(fail(&tmp, anyhow!("导出体积超出可用磁盘限制")));
+            }
+        }
+        if let Err(e) = f.write_all(&chunk).await {
+            return Err(fail(&tmp, anyhow!("写入暂存文件失败：{e}")));
+        }
+        hasher.update(&chunk);
+    }
+    if let Err(e) = f.flush().await {
+        return Err(fail(&tmp, anyhow!("写入暂存文件失败：{e}")));
+    }
+    drop(f);
+
+    Ok(StagedExport {
+        path: tmp,
+        len: total,
+        sha256_hex: hex_lower(&hasher.finalize()),
+    })
+}
+
+/// Create a fresh staging file (O_EXCL + 0600) in `dir` with an unpredictable
+/// random name. Mirrors [`crate::infra::file::create_temp_upload`] but lets us
+/// place the temp under `<data>/tmp` (on the data volume) rather than the system
+/// temp dir, so a multi-GB export doesn't land on a small `/tmp` tmpfs.
+fn create_staging_file(dir: &std::path::Path) -> Result<(std::fs::File, std::path::PathBuf)> {
+    let mut last_err = None;
+    for _ in 0..16 {
+        let path = dir.join(format!(
+            "dn7-export-{:016x}{:016x}.part",
+            rand::random::<u64>(),
+            rand::random::<u64>()
+        ));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true); // O_CREAT | O_EXCL
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        match opts.open(&path) {
+            Ok(f) => return Ok((f, path)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_err = Some(e);
+                continue;
+            }
+            Err(e) => return Err(anyhow!("无法创建暂存文件：{e}")),
+        }
+    }
+    Err(anyhow!(
+        "无法创建暂存文件：{}",
+        last_err.map(|e| e.to_string()).unwrap_or_default()
+    ))
+}
+
+/// An unpredictable staging *path* under `dir` (128-bit random name) that is
+/// **not** yet created. Used when a downstream helper wants to open the file
+/// itself with `O_EXCL` (e.g. `archive::save`), so we hand it a fresh name it
+/// can exclusively create rather than a pre-existing empty file.
+#[cfg(target_os = "linux")]
+fn staging_path(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join(format!(
+        "dn7-export-{:016x}{:016x}.tar",
+        rand::random::<u64>(),
+        rand::random::<u64>()
+    ))
+}
+
+/// Lowercase-hex encode a digest (no extra dep; matches the hex idiom used
+/// elsewhere in this module, e.g. `runtime_dn7::short_hash`).
+fn hex_lower(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Open a container backup file for streaming download. Validates the
 /// name/file to keep the read inside the backups directory.
 pub async fn backup_read_stream(
@@ -383,6 +540,9 @@ pub async fn import_image_upload<S>(body: S) -> Result<Value>
 where
     S: futures::Stream<Item = bytes::Bytes> + Send + 'static,
 {
+    if dn7_container::selected() {
+        return dn7_import_image(body).await;
+    }
     let dkr = dkr()?;
     let mut loaded: Vec<String> = Vec::new();
     let mut stream =
@@ -408,6 +568,9 @@ where
 pub async fn image_export_stream(image: &str) -> Result<(String, crate::infra::file::ByteStream)> {
     use futures::StreamExt;
     validate_token(image)?;
+    if dn7_container::selected() {
+        return dn7_export_image(image).await;
+    }
     let dkr = dkr()?;
     // Confirm the image exists (gives a clean error instead of an empty stream).
     dkr.inspect_image(image)
@@ -418,4 +581,187 @@ pub async fn image_export_stream(image: &str) -> Result<(String, crate::infra::f
         .export_image(image)
         .map(|r| r.map_err(|e| std::io::Error::other(e.to_string())));
     Ok((format!("{safe}.tar"), Box::pin(stream)))
+}
+
+/// dn7: export an image to an OCI tar, then stream it. The tar is staged under
+/// `<data>/tmp` with an unpredictable name (not `/tmp/dn7-export-<millis>`, which
+/// a local user could predict + pre-plant a symlink for); `archive::save` opens
+/// it O_EXCL/0600 so it can't follow a planted symlink either. The temp is
+/// unlinked immediately after opening so the fd auto-cleans on EOF/error.
+#[cfg(target_os = "linux")]
+async fn dn7_export_image(image: &str) -> Result<(String, crate::infra::file::ByteStream)> {
+    use futures::StreamExt;
+    let image_owned = image.to_string();
+    let dir = export_staging_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| anyhow!("无法创建暂存目录：{e}"))?;
+    let tmp = staging_path(&dir);
+    let tmp2 = tmp.clone();
+    let saved = tokio::task::spawn_blocking(move || {
+        let store = dn7_container::image::Store::open().map_err(|e| anyhow!("dn7 store: {e}"))?;
+        dn7_container::image::archive::save(&store, &image_owned, &tmp2)
+            .map_err(|e| anyhow!("dn7 save: {e}"))
+    })
+    .await
+    .map_err(|e| anyhow!("export task: {e}"));
+    // A save failure (or join error) must not leave the staged tar behind.
+    if let Err(e) | Ok(Err(e)) = saved {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    let f = match tokio::fs::File::open(&tmp).await {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(anyhow!("无法打开导出文件：{e}"));
+        }
+    };
+    let _ = std::fs::remove_file(&tmp); // unlink; the open fd keeps the data
+    let safe = image.replace([':', '/'], "_");
+    let stream = tokio_util::codec::FramedRead::new(f, tokio_util::codec::BytesCodec::new())
+        .map(|r| r.map(|b| b.freeze()));
+    Ok((format!("{safe}.tar"), Box::pin(stream)))
+}
+#[cfg(not(target_os = "linux"))]
+async fn dn7_export_image(_image: &str) -> Result<(String, crate::infra::file::ByteStream)> {
+    Err(anyhow!("dn7 runtime is Linux-only"))
+}
+
+/// dn7: load an uploaded OCI tar into the store under a generated reference. The
+/// upload is staged to an O_EXCL/0600 temp under `<data>/tmp` (not a predictable
+/// `/tmp/dn7-import-<millis>` a local user could pre-plant), capped to a fraction
+/// of free disk so a proxied upload can't fill the volume. The temp is removed on
+/// every exit path.
+#[cfg(target_os = "linux")]
+async fn dn7_import_image<S>(body: S) -> Result<Value>
+where
+    S: futures::Stream<Item = bytes::Bytes> + Send + 'static,
+{
+    use futures::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let ts = now_stamp();
+    let dir = export_staging_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| anyhow!("无法创建暂存目录：{e}"))?;
+    // Cap the drained upload to a fraction of free space (guard against filling
+    // the data volume). Falls back to no explicit cap if the fs can't be stat'd.
+    let cap = fs2::available_space(&dir)
+        .ok()
+        .map(|avail| avail / STAGE_DISK_FRACTION);
+    let (f, tmp) = create_staging_file(&dir)?;
+
+    let drained = async {
+        let mut f = tokio::fs::File::from_std(f);
+        let mut body = std::pin::pin!(body);
+        let mut total: u64 = 0;
+        while let Some(chunk) = body.next().await {
+            total += chunk.len() as u64;
+            if let Some(cap) = cap {
+                if total > cap {
+                    return Err(anyhow!("上传体积超出可用磁盘限制"));
+                }
+            }
+            f.write_all(&chunk)
+                .await
+                .map_err(|e| anyhow!("写入上传失败：{e}"))?;
+        }
+        f.flush().await.map_err(|e| anyhow!("写入上传失败：{e}"))?;
+        Ok(())
+    }
+    .await;
+    if let Err(e) = drained {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+
+    let reference = format!("imported:{ts}");
+    let tmp2 = tmp.clone();
+    let ref2 = reference.clone();
+    let rec = tokio::task::spawn_blocking(move || {
+        let store = dn7_container::image::Store::open().map_err(|e| anyhow!("dn7 store: {e}"))?;
+        dn7_container::image::archive::load(&store, &tmp2, &ref2)
+            .map_err(|e| anyhow!("dn7 load: {e}"))
+    })
+    .await
+    .map_err(|e| anyhow!("import task: {e}"));
+    let _ = std::fs::remove_file(&tmp);
+    let rec = rec??;
+    Ok(json!({ "loaded": [rec.reference] }))
+}
+#[cfg(not(target_os = "linux"))]
+async fn dn7_import_image<S>(_body: S) -> Result<Value>
+where
+    S: futures::Stream<Item = bytes::Bytes> + Send + 'static,
+{
+    Err(anyhow!("dn7 runtime is Linux-only"))
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+    use std::sync::LazyLock;
+    use tokio::sync::Mutex;
+
+    // `stage_export` resolves the staging dir through `data_dir()`, which honors
+    // the process-global `DN7_RUNTIME_DIR`. The tests set/read it, so serialize
+    // them (and restore the previous value) to stay hermetic under a parallel
+    // test runner.
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    // Point `data_dir()` (hence the staging dir) at a private temp dir; returns
+    // the base so the caller can assert paths / clean up.
+    fn redirect_data_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dn7-stage-test-{:016x}{:016x}",
+            rand::random::<u64>(),
+            rand::random::<u64>()
+        ));
+        std::env::set_var("DN7_RUNTIME_DIR", &dir);
+        dir
+    }
+
+    fn ok_chunk(b: &[u8]) -> std::io::Result<bytes::Bytes> {
+        Ok(bytes::Bytes::copy_from_slice(b))
+    }
+
+    #[tokio::test]
+    async fn stage_export_success_stages_and_checksums() {
+        let _g = ENV_LOCK.lock().await;
+        let base = redirect_data_dir();
+        let stream = futures::stream::iter(vec![ok_chunk(b"hel"), ok_chunk(b"lo")]);
+        let staged = stage_export(stream).await.expect("stage should succeed");
+
+        // Length + checksum are computed over the full "hello".
+        assert_eq!(staged.len, 5);
+        // SHA-256("hello"), lowercase hex.
+        assert_eq!(
+            staged.sha256_hex,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+        // The temp landed under `<data>/tmp` and its bytes match.
+        assert!(staged.path.starts_with(base.join("data").join("tmp")));
+        assert_eq!(std::fs::read(&staged.path).unwrap(), b"hello");
+
+        // Caller-driven cleanup removes the staged temp.
+        StagedExport::cleanup(&staged.path);
+        assert!(!staged.path.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn stage_export_mid_stream_error_cleans_up() {
+        let _g = ENV_LOCK.lock().await;
+        let base = redirect_data_dir();
+        let boom = || -> std::io::Result<bytes::Bytes> { Err(std::io::Error::other("boom")) };
+        let stream = futures::stream::iter(vec![ok_chunk(b"hel"), boom()]);
+        let res = stage_export(stream).await;
+
+        // A mid-stream failure must surface as an error (never a truncated file).
+        assert!(res.is_err(), "mid-stream error must fail the stage");
+        // …and the partial temp must be gone (no leaked `.part` under staging).
+        let staging = base.join("data").join("tmp");
+        let leaked = std::fs::read_dir(&staging)
+            .map(|rd| rd.flatten().count())
+            .unwrap_or(0);
+        assert_eq!(leaked, 0, "the partial temp must be cleaned up");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

@@ -88,12 +88,8 @@ pub(crate) async fn create_container(spec: CreateSpec) -> Result<(String, bool)>
     Ok((id, spec.start))
 }
 
-/// Force-remove the container `old` is replacing (edit/upgrade). Refuses to
-/// touch a DN7 Panel-managed service container.
+/// Force-remove the container `old` is replacing (edit/upgrade).
 pub(crate) async fn remove_replaced_container(dkr: &Docker, old: &str) -> Result<()> {
-    if let Some(why) = managed_container_guard(old).await {
-        return Err(anyhow!(why));
-    }
     let opts = bollard::container::RemoveContainerOptions {
         force: true,
         ..Default::default()
