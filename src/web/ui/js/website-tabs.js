@@ -13,13 +13,30 @@ function ngCertsTab(v) {
         const modeLabel = { le: tr('ng.mode_le'), self: tr('ng.mode_self'), manual: tr('ng.mode_manual') }[c.cert_mode] || c.cert_mode;
         const used = (c.used_by && c.used_by.length) ? esc(c.used_by.join('、')) : `<span class="mut">${tr('ng.unused')}</span>`;
         const renewBtn = c.cert_mode === 'manual' ? '' : `<button class="btn sm sec" data-renew="${esc(c.name)}">${tr('ng.renew_now')}</button>`;
-        h += `<tr><td><b>${esc(c.domain || c.name)}</b>${c.has_cert ? '' : ` <span class="chip amber">${tr('ng.missing')}</span>`}</td><td class="mut">${esc(modeLabel)}</td><td class="mono" style="font-size:12px">${esc(c.not_after || '-')}</td><td style="font-size:12px">${used}</td><td class="act">${renewBtn}<button class="btn sm danger" data-del="${esc(c.name)}">${tr('ng.delete')}</button></td></tr>`;
+        const hl = ngCertHealth(c);
+        const dateStyle = hl === 'expired' ? ';color:var(--err)' : hl === 'expiring' ? ';color:var(--warn)' : '';
+        h += `<tr><td><b>${esc(c.domain || c.name)}</b>${c.has_cert ? '' : ` <span class="chip amber">${tr('ng.missing')}</span>`}</td><td class="mut">${esc(modeLabel)}</td><td class="mono" style="font-size:12px${dateStyle}">${esc(c.not_after || '-')}</td><td style="font-size:12px">${used}</td><td class="act">${renewBtn}<button class="btn sm danger" data-del="${esc(c.name)}">${tr('ng.delete')}</button></td></tr>`;
       });
       h += '</table>';
     }
-    body.innerHTML = '<div class="tablewrap">' + h + '</div>';
+    body.innerHTML = `<div class="hidden" id="ngRenewWrap" style="margin-bottom:12px"><div class="card"><h3>${tr('ng.renewing')}</h3><div id="ngRenewJob"></div></div></div><div class="tablewrap">` + h + '</div>';
     $('ngCertNew').onclick = () => ngCreateCert(load);
-    document.querySelectorAll('#ngBody [data-renew]').forEach((b) => b.onclick = () => op('website', { op: 'renew_cert', cert_name: b.dataset.renew }).then((r) => { toast(r.op_id ? tr('ng.renewing') : tr('ng.renewed'), 'ok'); setTimeout(load, r.op_id ? 4000 : 300); }).catch((e) => toast(e.message, 'err')));
+    // ACME renewals run through the persisted job slot so a slow/failed renewal
+    // is actually reported (progress + error line) instead of a blind reload.
+    const renewBtns = (dis) => document.querySelectorAll('#ngBody [data-renew]').forEach((x) => { x.disabled = dis; if (!dis) x.textContent = tr('ng.renew_now'); });
+    const renewCbs = {
+      onDone: () => { toast(tr('ng.renewed'), 'ok'); load(); },
+      onError: (e) => { toast(codeMsg(e || '') || tr('job.failed'), 'err'); renewBtns(false); },
+    };
+    document.querySelectorAll('#ngBody [data-renew]').forEach((b) => b.onclick = () => {
+      b.disabled = true; b.textContent = tr('ng.renewing');
+      op('website', { op: 'renew_cert', cert_name: b.dataset.renew }).then((r) => {
+        if (r.op_id) { renewBtns(true); $('ngRenewWrap').classList.remove('hidden'); renderJob($('ngRenewJob'), 'website', r.op_id, 'website:renew', renewCbs); }
+        else { toast(tr('ng.renewed'), 'ok'); setTimeout(load, 300); }
+      }).catch((e) => { toast(e.message, 'err'); b.disabled = false; b.textContent = tr('ng.renew_now'); });
+    });
+    // A renewal started earlier (or on a previous visit) keeps reporting here.
+    if (getJob('website:renew')) { renewBtns(true); $('ngRenewWrap').classList.remove('hidden'); reattachJob($('ngRenewJob'), 'website:renew', renewCbs); }
     document.querySelectorAll('#ngBody [data-del]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('ng.confirm_del_cert', { name: b.dataset.del }))) op('website', { op: 'delete_cert', cert_name: b.dataset.del }).then(() => { toast(tr('common.deleted'), 'ok'); load(); }).catch((e) => toast(e.message, 'err')); });
   }).catch((e) => { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; });
   body.innerHTML = loading();

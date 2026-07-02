@@ -7,12 +7,18 @@ use super::super::*;
 
 pub(crate) async fn get_settings(
     State(state): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: header::HeaderMap,
 ) -> Response {
     if let Err(r) = require_super(&state, &headers) {
         return r;
     }
     let s = state.settings_snapshot();
+    // The requester's IP exactly as the panel attributes it (direct peer, or the
+    // forwarded client behind a trusted proxy) — the Authorized-IPs editor shows
+    // it so an operator can tell whether a new allow list still covers themselves
+    // before saving a lockout.
+    let client_ip = client_ip(peer.ip(), &headers, &SecurityPolicy::new(&s)).to_string();
     // The password is intentionally NOT returned: a session should never be able
     // to read back the reusable console password. The form sends a new password
     // only when the operator chooses to change it.
@@ -20,7 +26,7 @@ pub(crate) async fn get_settings(
         "ok": true,
         "data": { "username": s.username, "pw_default": s.pw_default,
                   "session_timeout": s.session_timeout, "allow_ips": s.allow_ips,
-                  "trusted_proxies": s.trusted_proxies,
+                  "trusted_proxies": s.trusted_proxies, "client_ip": client_ip,
                   "must_setup": s.pw_default || s.username.eq_ignore_ascii_case("admin") }
     }))
     .into_response()

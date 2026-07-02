@@ -40,7 +40,7 @@ function renderWebsite(v) {
       else if (t === 'certs') ngCertsTab(v);
       else if (t === 'default') ngDefaultTab(v);
       else if (t === 'settings') ngSettingsTab(v);
-      else ngHostsTab(v);
+      else ngHostsTab(v, info);
     };
     tabs.querySelectorAll('button').forEach((b) => b.onclick = () => sel(b.dataset.t));
     sel(ngTab);
@@ -80,15 +80,28 @@ function wireForceStart(v) {
 }
 
 // ---- Tab 1: Proxy Hosts (the managed site list) ----
-function ngHostsTab(v) {
+function ngHostsTab(v, info) {
   const body = $('ngBody');
-  body.innerHTML = `<div class="row" style="margin-bottom:14px"><span class="chip on">${tr('ng.running')}</span><span class="sp" style="flex:1"></span><button class="btn sm" id="ngAdd">${tr('ng.add_site')}</button><button class="btn sec sm" id="ngRef">${tr('ng.refresh')}</button></div><div id="ngSites">${loading()}</div>`;
-  $('ngRef').onclick = () => ngHostsTab(v);
-  $('ngAdd').onclick = () => ngAddSite(() => ngHostsTab(v));
+  // Status chip reflects the server state instead of a hard-coded green:
+  // a port conflict means the sites below are in fact not being served.
+  const bad = !!(info && (info.port_conflict || info.host_owns_ports === false));
+  const ports = (info && info.conflict_ports && info.conflict_ports.length) ? info.conflict_ports.join('、') : '80/443';
+  const st = bad
+    ? `<span class="chip warn" title="${esc(tr('ng.conflict_msg', { ports }))}">${esc(tr('ng.conflict_title'))}</span>`
+    : `<span class="chip on">${tr('ng.running')}</span>`;
+  body.innerHTML = `<div class="row" style="margin-bottom:14px">${st}<span class="sp" style="flex:1"></span><button class="btn sm" id="ngAdd">${tr('ng.add_site')}</button><button class="btn sec sm" id="ngRef">${tr('ng.refresh')}</button></div><div class="hidden" id="ngIssueWrap" style="margin-bottom:14px"><div class="card"><h3>${tr('site.issuing')}</h3><div id="ngIssueJob"></div></div></div><div id="ngSites">${loading()}</div>`;
+  $('ngRef').onclick = () => ngHostsTab(v, info);
+  $('ngAdd').onclick = () => ngAddSite(() => ngHostsTab(v, info));
+  // A site create/update (possibly with an ACME issuance) persisted in the job
+  // store keeps reporting here even after its modal was closed.
+  if (getJob('website:issue')) {
+    $('ngIssueWrap').classList.remove('hidden');
+    reattachJob($('ngIssueJob'), 'website:issue', { onDone: () => setTimeout(() => ngHostsTab(v, info), 800) });
+  }
   Promise.all([op('website', { op: 'list_sites' }), op('website', { op: 'list_named_certs' }), op('website', { op: 'list_access' })]).then(([d, cd, ad]) => {
     const sites = d.sites || [];
     const modes = {};
-    (cd.certs || []).forEach((c) => { modes[c.name] = c.cert_mode; });
+    (cd.certs || []).forEach((c) => { modes[c.name] = c; });
     const accById = {};
     (ad.access || []).forEach((a) => { accById[a.id] = a.name; });
     if (!sites.length) { $('ngSites').innerHTML = `<div class="empty">${tr('ng.no_sites')}</div>`; return; }
@@ -101,21 +114,41 @@ function ngHostsTab(v) {
       h += `<tr><td><b>${esc(s.server_name)}</b></td><td class="mut">${esc(kindLabel(s.kind))}</td><td class="mono" style="font-size:12px">${target}</td><td>${acc}</td><td>${sslLabel(s, modes)}</td><td class="act"><button class="btn sm sec" data-edit="${esc(s.id)}">${tr('ng.edit_site')}</button><button class="btn sm danger" data-rm="${esc(s.id)}">${tr('ng.delete')}</button></td></tr>`;
     });
     $('ngSites').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
-    document.querySelectorAll('#ngSites [data-edit]').forEach((b) => b.onclick = () => { const s = sites.find((x) => String(x.id) === b.dataset.edit); if (s) ngAddSite(() => ngHostsTab(v), s); });
-    document.querySelectorAll('#ngSites [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('ng.confirm_rm_site'))) op('website', { op: 'remove_site', site_id: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); ngHostsTab(v); }).catch((e) => toast(e.message, 'err')); });
+    document.querySelectorAll('#ngSites [data-edit]').forEach((b) => b.onclick = () => { const s = sites.find((x) => String(x.id) === b.dataset.edit); if (s) ngAddSite(() => ngHostsTab(v, info), s); });
+    document.querySelectorAll('#ngSites [data-rm]').forEach((b) => b.onclick = async () => { const s = sites.find((x) => String(x.id) === b.dataset.rm); if (await confirmDanger(tr('site.confirm_del', { name: (s && s.server_name) || b.dataset.rm }))) op('website', { op: 'remove_site', site_id: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); ngHostsTab(v, info); }).catch((e) => toast(e.message, 'err')); });
   }).catch((e) => { $('ngSites').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
 function kindLabel(k) { return { proxy_host: tr('ng.kind_proxy_host'), proxy_container: tr('ng.kind_proxy_container'), static: tr('ng.kind_static') }[k] || k; }
 
+// Health of a library cert entry: 'missing' | 'expired' | 'expiring' (within
+// 14 days) | null (healthy or unknown). `not_after` is "YYYY-MM-DD".
+function ngCertHealth(c) {
+  if (!c) return null;
+  if (!c.has_cert) return 'missing';
+  const t = Date.parse(c.not_after || '');
+  if (isNaN(t)) return null;
+  if (t < Date.now()) return 'expired';
+  if (t - Date.now() < 14 * 864e5) return 'expiring';
+  return null;
+}
+
 // SSL column label: show the certificate kind (Let's Encrypt / self-signed /
-// custom) instead of a plain yes/no. `modes` maps a library cert name → mode.
-function sslLabel(s, modes) {
+// custom) instead of a plain yes/no, plus a health chip when the referenced
+// library cert is missing/expired/expiring. `certs` maps cert name → cert.
+function sslLabel(s, certs) {
   if (!s.ssl) return `<span class="chip">${tr('ng.ssl_off')}</span>`;
-  const m = (s.cert_name && modes[s.cert_name]) || s.cert_mode || 'named';
-  if (m === 'le') return `<span class="chip on">Let's Encrypt</span>`;
-  if (m === 'self') return `<span class="chip">${tr('ng.cm_self')}</span>`;
-  if (m === 'manual') return `<span class="chip on">${tr('ng.cm_manual')}</span>`;
-  return `<span class="chip on">${tr('ng.yes')}</span>`;
+  const c = (s.cert_name && certs[s.cert_name]) || null;
+  const m = (c && c.cert_mode) || s.cert_mode || 'named';
+  let base;
+  if (m === 'le') base = `<span class="chip on">Let's Encrypt</span>`;
+  else if (m === 'self') base = `<span class="chip">${tr('ng.cm_self')}</span>`;
+  else if (m === 'manual') base = `<span class="chip on">${tr('ng.cm_manual')}</span>`;
+  else base = `<span class="chip on">${tr('ng.yes')}</span>`;
+  const hl = (s.cert_name && !c) ? 'missing' : ngCertHealth(c); // named cert gone from the library counts as missing
+  if (hl === 'missing') base += ` <span class="chip err">${tr('ng.missing')}</span>`;
+  else if (hl === 'expired') base += ` <span class="chip err" title="${esc(c.not_after || '')}">${tr('site.cert_expired')}</span>`;
+  else if (hl === 'expiring') base += ` <span class="chip warn" title="${esc(c.not_after || '')}">${tr('site.cert_expiring')}</span>`;
+  return base;
 }
 
 // Feather-style line icons for the advanced-feature cards (the app draws icons
@@ -171,8 +204,6 @@ function ngAddSite(reload, site) {
         <label class="switch"><input type="checkbox" id="nsCache" /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.sw_cache')}</b><span>${tr('ng.sw_cache_d')}</span></span></label>
         <label class="switch"><input type="checkbox" id="nsWs" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.sw_ws')}</b><span>${tr('ng.sw_ws_d')}</span></span></label>
       </div>
-      <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="nsGo">${editing ? tr('ng.save') : tr('ng.create')}</button></div>
-      <div class="hidden" id="nsJob" style="margin-top:14px"></div>
     </div>
     <div class="ftab-pane" data-p="rules">
       <p class="mut" style="font-size:12.5px;margin:0 0 12px">${tr('ng.rules_intro')}</p>
@@ -195,6 +226,7 @@ function ngAddSite(reload, site) {
         <div id="nsAutoWrap" style="margin-top:14px">
           <label class="lbl">${tr('ng.same_domain_certs')}</label>
           <div id="nsCertList" class="certlist"></div>
+          <p class="formnote hidden" id="nsLeHint">${tr('ng.hint_le')}</p>
         </div>
         <div class="ssltoggles" style="margin-top:16px">
           <label class="switch"><input type="checkbox" id="nsForceSsl" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('ng.force_ssl')}</b><span>${tr('ng.force_ssl_d')}</span></span></label>
@@ -239,6 +271,10 @@ function ngAddSite(reload, site) {
         ${afCard('code', 'mu', 'code', tr('ng.af_expert'), tr('ng.af_expert_d'), 'nsConfOn',
           `<textarea id="nsConf" class="field mono confbox" rows="6" spellcheck="false" placeholder="${tr('ng.conf_ph')}"></textarea><p class="afnote">${afsvg('warn', 14)}${tr('ng.conf_note')}</p>`)}
       </div>
+    </div>
+    <div class="modal-foot">
+      <div class="hidden" id="nsJob" style="width:100%"></div>
+      <button class="btn" id="nsGo">${editing ? tr('ng.save') : tr('ng.create')}</button>
     </div>`, (close) => {
     document.querySelectorAll('#nsTabs button').forEach((b) => b.onclick = () => {
       document.querySelectorAll('#nsTabs button').forEach((x) => x.className = x === b ? 'on' : '');
@@ -270,21 +306,27 @@ function ngAddSite(reload, site) {
     // SSL state: 'auto' (Let's Encrypt — reuse a matching cert or issue one) or
     // 'self' (self-signed). `selectedCert` is the chosen library cert name, ''
     // means "issue a new Let's Encrypt cert", null means "not yet decided".
+    // `userPicked` pins an explicit select choice; `sitePrefill` seeds the edit
+    // form's saved cert once — both yield to a re-match when the domain changes.
     let certMethod = 'auto';
     let selectedCert = null;
+    let userPicked = false;
+    let sitePrefill = editing && !!site.cert_name;
     let domainCerts = [];
-    const baseDomain = (d) => { const p = (d || '').split('.').filter(Boolean); return p.length <= 2 ? p.join('.') : p.slice(-2).join('.'); };
     const certCovers = (cd, host) => {
       if (!cd || !host) return false;
       if (cd === host) return true;
       if (cd.startsWith('*.')) return host.endsWith(cd.slice(1)) && host.split('.').length === cd.split('.').length;
       return false;
     };
+    // The Let's Encrypt preconditions hint (port 80 reachable, DNS pointing
+    // here) shows whenever "issue a new LE cert" is the effective choice.
+    const syncLeHint = () => { const e = $('nsLeHint'); if (e) e.classList.toggle('hidden', !(certMethod === 'auto' && selectedCert === '')); };
     const renderCertList = () => {
       const list = $('nsCertList'); if (!list) return;
       const host = $('nsName').value.trim();
       if (selectedCert === null) {
-        if (editing && site.cert_name) selectedCert = site.cert_name;
+        if (sitePrefill) selectedCert = site.cert_name;
         else { const m = domainCerts.find((c) => certCovers(c.domain, host)); selectedCert = m ? m.name : ''; }
       }
       const names = domainCerts.map((c) => c.name);
@@ -299,7 +341,8 @@ function ngAddSite(reload, site) {
         opts += `<option value="${esc(selectedCert)}" selected data-sub="${esc(selectedCert)}">${esc(selectedCert)}</option>`;
       }
       list.innerHTML = `<select id="nsCertSel" class="field" data-selx-search>${opts}</select>`;
-      $('nsCertSel').onchange = () => { selectedCert = $('nsCertSel').value; };
+      $('nsCertSel').onchange = () => { selectedCert = $('nsCertSel').value; userPicked = true; syncLeHint(); };
+      syncLeHint();
     };
     const loadCertList = () => {
       $('nsCertList').innerHTML = loading();
@@ -382,10 +425,10 @@ function ngAddSite(reload, site) {
     const wireStaticPickers = () => {
       const drop = $('nsDrop');
       drop.onclick = () => $('nsZip').click();
-      $('nsZip').onchange = (e) => { const f = e.target.files[0]; if (!f) return; staticUpload.mode = 'zip'; staticUpload.zip = f; $('nsUpList').innerHTML = tr('ng.sel_zip', { name: esc(f.name), size: fmtBytes(f.size) }); };
+      $('nsZip').onchange = (e) => { const f = e.target.files[0]; if (!f) return; if (!/\.zip$/i.test(f.name)) return toast(tr('site.zip_only'), 'warn'); staticUpload.mode = 'zip'; staticUpload.zip = f; $('nsUpList').innerHTML = tr('ng.sel_zip', { name: esc(f.name), size: fmtBytes(f.size) }); };
       ['dragover', 'dragenter'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('drag'); }));
       ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('drag'); }));
-      drop.addEventListener('drop', (e) => { const f = (e.dataTransfer.files || [])[0]; if (f && /\.zip$/i.test(f.name)) { staticUpload.mode = 'zip'; staticUpload.zip = f; $('nsUpList').innerHTML = tr('ng.sel_zip', { name: esc(f.name), size: fmtBytes(f.size) }); } });
+      drop.addEventListener('drop', (e) => { const f = (e.dataTransfer.files || [])[0]; if (f && /\.zip$/i.test(f.name)) { staticUpload.mode = 'zip'; staticUpload.zip = f; $('nsUpList').innerHTML = tr('ng.sel_zip', { name: esc(f.name), size: fmtBytes(f.size) }); } else if (f) toast(tr('site.zip_only'), 'warn'); });
     };
 
     // Prefill the kind-specific fields when editing (re-run after kindFields()
@@ -472,6 +515,12 @@ function ngAddSite(reload, site) {
       $('nsCertMethod').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
       $('nsAutoWrap').classList.toggle('hidden', certMethod !== 'auto');
       if (certMethod === 'auto') loadCertList();
+      syncLeHint();
+    });
+    // Re-run the domain→cert auto-match when the domain changes after the SSL
+    // tab picked one (stale otherwise) — unless the user explicitly chose.
+    $('nsName').addEventListener('input', () => {
+      if ($('nsSsl').checked && certMethod === 'auto' && !userPicked) { sitePrefill = false; selectedCert = null; renderCertList(); }
     });
     if (editing && site.ssl) {
       $('nsSsl').checked = true;
@@ -542,12 +591,14 @@ function ngAddSite(reload, site) {
         if (k === 'static' && staticSource === 'upload' && staticUpload.mode) { $('nsJob').innerHTML = `<div class="mut">${tr('ng.uploading')}</div>`; await uploadStatic(body.root, staticUpload); }
       } catch (e) { toast(tr('ng.upload_failed') + '：' + e.message, 'err'); $('nsJob').innerHTML = ''; $('nsGo').disabled = false; return; }
       op('website', body).then((r) => {
-        if (r.op_id) renderJob($('nsJob'), 'website', r.op_id, '', { onDone: () => { toast(okMsg, 'ok'); close(); reload(); }, onError: () => { $('nsGo').disabled = false; } });
+        // Persisted slot: closing the modal mid-issuance doesn't orphan the op —
+        // ngHostsTab re-attaches 'website:issue' and keeps reporting.
+        if (r.op_id) renderJob($('nsJob'), 'website', r.op_id, 'website:issue', { onDone: () => { toast(okMsg, 'ok'); close(); reload(); }, onError: () => { $('nsGo').disabled = false; } });
         else { toast(okMsg, 'ok'); close(); reload(); }
       }).catch((e) => { toast(e.message, 'err'); $('nsJob').innerHTML = ''; $('nsGo').disabled = false; });
     };
     bindDirty('nsGo');
-  });
+  }, { onDismiss: () => { if (getJob('website:issue')) reload(); } });
 }
 
 // Upload staged static content to a site's webroot. ZIP → one extract request;
