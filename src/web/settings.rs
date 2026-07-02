@@ -17,7 +17,7 @@
 /// module keeps the credential/reset behaviour and validation. Persistence is
 /// delegated to infra/store.
 pub(crate) use crate::core::settings::{default_timeout, WebSettings};
-pub(crate) use crate::infra::store::settings::{load, save};
+pub(crate) use crate::infra::store::settings::{load, load_strict, save};
 
 /// Validate + normalize an authorized-IP allow list: each non-empty entry must
 /// be an IPv4/IPv6 address or CIDR. Returns the deduped list, or None if any
@@ -102,11 +102,37 @@ impl WebSettings {
 /// init token). The `Option<String>` return is vestigial (always `None` now — the
 /// old auto-generated password is gone); kept so call sites stay stable.
 pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
-    // A persisted file (initialized or not) is returned verbatim — a seeded but
-    // not-yet-initialized install keeps the SAME init token across reboots.
-    if let Some(s) = load() {
-        return (s, None);
-    }
+    // Base-read STRICT so a corrupt web.json is NOT collapsed into "absent" and
+    // then seeded-and-saved over: web.json holds the superadmin verifier + TOTP
+    // secret + IP allow-list — the most sensitive store — so one disk
+    // corruption / transient EIO must not silently erase the owner account.
+    //   - Ok(Some(s)) → a persisted file (initialized or not) is returned
+    //     verbatim; a seeded-but-not-initialized install keeps the SAME init
+    //     token across reboots.
+    //   - Ok(None)    → the file is genuinely ABSENT (fresh install) → seed.
+    //   - Err(e)      → the file was present but UNPARSEABLE. load_strict has
+    //     already QUARANTINED it aside to web.json.corrupt-<ts>; we must NOT
+    //     resurrect an empty uninitialized default at web.json (that would enter
+    //     the restart-as-uninitialized loop and bury the quarantined data). We
+    //     return an UNINITIALIZED seed WITHOUT persisting it, so run_panel's
+    //     `!initialized` gate refuses to serve and exits the process non-zero
+    //     (the process exit is owned by the crate root, never the web layer) —
+    //     the service shows failed and the operator can restore the quarantine
+    //     copy or re-run the CLI wizard, far better than a silent clobber.
+    let corrupt = match load_strict() {
+        Ok(Some(s)) => return (s, None),
+        Ok(None) => false,
+        Err(e) => {
+            tracing::error!(
+                "web.json 已损坏且无法解析（已隔离备份，原文件已移到旁边）：{e:#} — \
+                 拒绝以未初始化状态覆盖它。请恢复隔离副本或在终端运行 `dn7-panel` 重新初始化。 \
+                 web.json is corrupt and unparseable (a quarantine copy was moved aside): \
+                 refusing to overwrite it with a fresh uninitialized default. Restore the \
+                 quarantine copy or run `dn7-panel` in a terminal to re-initialize."
+            );
+            true
+        }
+    };
     let _ = default_port;
     // Fresh install: seed an UNINITIALIZED record. No account, password, secret
     // entry path, or random public port — the operator bootstraps through the
@@ -136,6 +162,13 @@ pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
         allow_ips: Vec::new(),
         trusted_proxies: Vec::new(),
     };
+    if corrupt {
+        // Base file was corrupt (now quarantined): return the uninitialized seed
+        // but do NOT save over web.json. run_panel refuses to serve on
+        // `!initialized` and exits non-zero; the quarantined owner credentials
+        // stay recoverable.
+        return (s, None);
+    }
     if let Err(e) = save(&s) {
         tracing::warn!("could not persist web settings: {e}");
     }
