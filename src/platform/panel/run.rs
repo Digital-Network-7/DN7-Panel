@@ -4,7 +4,10 @@
 //! supervisor with the `panel` subcommand) simply:
 //!   * writes its pid/heartbeat and guards the supervisor (mutual resurrection),
 //!   * starts the local web management console,
-//!   * idles forever (the console serves requests in its own tasks).
+//!   * drops a boot-ok marker once the console listener is up (so the supervisor
+//!     can confirm a self-update build came up healthy), and
+//!   * idles until a SIGTERM/SIGINT triggers a clean exit(0) (the console serves
+//!     requests in its own tasks the whole time).
 //!
 //! The web console reuses the per-capability dispatchers directly on the host
 //! (`docker::web_dispatch`, `website::web_dispatch`, …) — no relay, no token.
@@ -66,14 +69,91 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     // "update available" hint warm.
     crate::platform::update::spawn_periodic(cfg.clone());
 
+    // Boot-success handshake: once the web console listener is actually accepting
+    // connections, drop the boot-ok marker. The supervisor watches for this to
+    // confirm a freshly-installed self-update build came up healthy (and rolls
+    // back the binary if a post-update child dies before it appears).
+    spawn_boot_marker();
+
     tracing::info!("DN7 Panel role started");
+
+    // A clean-shutdown signal (SIGTERM/SIGINT) from the supervisor's graceful
+    // stop. We don't drain in-flight requests (the console does its work in
+    // detached tasks); a prompt, orderly exit(0) is far better than being
+    // SIGKILL'd mid-write, and lets the supervisor observe a normal exit.
+    let mut shutdown = shutdown_signal();
 
     // Keep the role alive and our heartbeat fresh so the supervisor knows we're
     // up. The console does the real work in background tasks.
     let mut ticker = tokio::time::interval(Duration::from_secs(cfg.supervise_interval_secs.max(1)));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        ticker.tick().await;
-        guardian::touch_own_heartbeat(&cfg);
+        tokio::select! {
+            _ = ticker.tick() => {
+                guardian::touch_own_heartbeat(&cfg);
+            }
+            _ = shutdown.recv() => {
+                tracing::info!("panel received shutdown signal; exiting cleanly");
+                // Plain code-0 exit: the supervisor treats it as a normal stop
+                // (not EXIT_UPDATED), and — when the whole pair is being torn
+                // down — it has already stopped respawning us.
+                std::process::exit(0);
+            }
+        }
     }
+}
+
+/// Poll the loopback console port until it accepts a connection (the listener is
+/// up), then write the boot-ok marker exactly once. Bounded to a short window so
+/// a console that never binds simply never marks booted (the supervisor then
+/// treats a post-update child as failed and can roll back) rather than looping
+/// forever. Runs in the background so it never blocks the role's main loop.
+fn spawn_boot_marker() {
+    tokio::spawn(async move {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+        let addr = SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            dn7_edge::CONSOLE_LOOPBACK_PORT,
+        );
+        // ~30 attempts * 500ms ≈ 15s: comfortably longer than a normal bind, but
+        // still bounded so we don't spin indefinitely on a wedged console.
+        for _ in 0..30 {
+            if tokio::net::TcpStream::connect(addr).await.is_ok() {
+                let marker = crate::platform::paths::boot_marker();
+                if let Some(dir) = marker.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                match std::fs::write(&marker, crate::platform::procfile::now_secs().to_string()) {
+                    Ok(_) => tracing::info!(?marker, "console up; wrote boot-ok marker"),
+                    Err(e) => tracing::warn!("could not write boot-ok marker: {e}"),
+                }
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        tracing::warn!("console listener did not come up in time; boot-ok marker not written");
+    });
+}
+
+/// Receiver that fires once on the first SIGTERM/SIGINT — the supervisor's
+/// graceful-stop signal. Mirrors the supervisor's own `signal_stream`.
+fn shutdown_signal() -> tokio::sync::mpsc::Receiver<()> {
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    tokio::spawn(async move {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let mut int = match signal(SignalKind::interrupt()) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = int.recv() => {}
+        }
+        let _ = tx.send(()).await;
+    });
+    rx
 }

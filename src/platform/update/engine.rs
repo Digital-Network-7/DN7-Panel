@@ -274,6 +274,35 @@ pub async fn install_verified(bytes: &[u8], target: &Path) -> Result<()> {
             return Err(anyhow!("could not read downloaded binary version: {e}"));
         }
     }
+    // Preserve the outgoing binary as a `.prev` sibling of the target (0755) so
+    // the supervisor can restore it (one-shot) if the new build fails to come up.
+    // Best-effort: a copy failure must never block a legitimate update — the
+    // boot-success handshake still gates the swap, we just lose the rollback net.
+    // Deriving the path from `target` (not a fresh `stable_bin()`) keeps the copy
+    // on the same filesystem as the binary we're replacing.
+    let prev = dir.join(format!(
+        "{}.prev",
+        target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("dn7-panel")
+    ));
+    match tokio::fs::copy(target, &prev).await {
+        Ok(_) => {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = tokio::fs::set_permissions(&prev, std::fs::Permissions::from_mode(0o755)).await;
+            tracing::info!(?prev, "self-update: saved previous binary for rollback");
+        }
+        Err(e) => {
+            tracing::warn!("self-update: could not save previous binary ({e}); proceeding without rollback backup");
+        }
+    }
+    // Clear any stale boot-ok marker: the marker's *reappearance* (written by the
+    // next panel role once its console is up) is how the supervisor confirms this
+    // new build booted. Absence-of-marker + presence-of-`.prev` is the on-disk
+    // "update pending verification" state that survives the supervisor re-exec.
+    let _ = tokio::fs::remove_file(crate::platform::paths::boot_marker()).await;
+
     tokio::fs::rename(&tmp, target)
         .await
         .context("install (rename) binary")?;

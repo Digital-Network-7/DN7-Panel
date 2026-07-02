@@ -20,6 +20,10 @@ use std::path::PathBuf;
 pub const INSTALL_DIR: &str = "/var/dn7/panel";
 /// Canonical panel binary path.
 pub const INSTALL_BIN: &str = "/var/dn7/panel/dn7-panel";
+/// Sibling copy of the *previous* panel binary, saved just before a self-update
+/// renames the new binary over [`INSTALL_BIN`]. Kept so the supervisor can
+/// restore it (one-shot) if the freshly-installed build fails to come up.
+pub const PREV_BIN: &str = "/var/dn7/panel/dn7-panel.prev";
 
 /// Subdirectory names under the base dir:
 ///   - `data/` : values that must persist (settings, version, sessions)
@@ -177,6 +181,25 @@ pub fn stable_bin() -> PathBuf {
         return canonical;
     }
     current_exe_clean()
+}
+
+/// Path of the saved *previous* binary (see [`PREV_BIN`]). Resolved as a sibling
+/// of the canonical install binary so it lives on the same filesystem (a plain
+/// `rename` back into place is atomic and can't cross a mount).
+pub fn prev_bin() -> PathBuf {
+    let target = stable_bin();
+    match (target.parent(), target.file_name().and_then(|n| n.to_str())) {
+        (Some(dir), Some(name)) => dir.join(format!("{name}.prev")),
+        _ => PathBuf::from(PREV_BIN),
+    }
+}
+
+/// Boot-success marker file (`<run>/panel.booted`). The panel role creates it
+/// once the web console listener is confirmed up; the supervisor uses its
+/// (re)appearance to know a freshly-installed self-update build came up healthy.
+/// A best-effort touch file — not sensitive, no atomic-write needed.
+pub fn boot_marker() -> PathBuf {
+    run_dir().join("panel.booted")
 }
 
 /// `current_exe()` with a trailing " (deleted)" removed. Linux appends that

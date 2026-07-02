@@ -98,6 +98,11 @@ async fn supervise_loop(
     mut shutdown: tokio::sync::mpsc::Receiver<()>,
 ) -> Result<()> {
     let mut child: Option<Child> = None;
+    // One-shot post-update rollback cap for this supervisor's lifetime. The
+    // physical `.prev` removal in `rollback_to_prev` already makes a rollback
+    // unrepeatable across re-execs; this flag additionally stops a second
+    // rollback within a single supervisor process (belt and braces).
+    let mut rolled_back = false;
 
     // Periodically check whether a self-update replaced the on-disk binary with
     // a newer version than this (long-lived) supervisor is running. If so,
@@ -109,6 +114,13 @@ async fn supervise_loop(
     version_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
+        // Once a (post-update) build has confirmed it booted, drop the saved
+        // previous binary so a *later*, unrelated crash can never be mistaken for
+        // a failed update and roll us back onto stale code.
+        if boot_marker_present() {
+            clear_prev_backup();
+        }
+
         if child.is_none() {
             match spawn_panel() {
                 Ok(c) => {
@@ -132,6 +144,37 @@ async fn supervise_loop(
                     Err(e) => tracing::warn!("panel wait error: {e}; restarting"),
                 }
                 child = None;
+
+                // Failed-update detection: a post-update build (a `.prev` backup
+                // exists) that died WITHOUT writing its boot-ok marker never came
+                // up healthy. Roll the binary back to the saved previous build —
+                // once — then re-exec onto it. `updated` exits are a *further*
+                // self-update, not a failed boot, so they skip this. The rollback
+                // is capped by both this flag and the physical `.prev` removal, so
+                // a genuinely-broken previous build can't loop forever; after the
+                // single attempt we fall through to a plain respawn.
+                if should_rollback(updated, rolled_back, update_pending_verify()) {
+                    tracing::error!(
+                        "post-update panel died before confirming boot; rolling back to previous binary"
+                    );
+                    rolled_back = true;
+                    if rollback_to_prev() {
+                        lock.release();
+                        reexec_supervisor();
+                        if !lock.reacquire() {
+                            tracing::error!("rollback re-exec failed and role lock lost; exiting");
+                            return Ok(());
+                        }
+                        tracing::error!("rollback re-exec failed; continuing on current binary");
+                    } else {
+                        tracing::error!(
+                            "rollback could not restore a previous binary; respawning current build"
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_secs(cfg.restart_backoff_secs)).await;
+                    continue;
+                }
+
                 // If the panel exited because a self-update swapped in a newer
                 // binary (signalled by EXIT_UPDATED), re-exec the supervisor
                 // *now* so both halves come up on the new version in a single
@@ -163,8 +206,7 @@ async fn supervise_loop(
                     // the (new) supervisor binary in our place. Release our role
                     // lock first — the locked fd is inherited across exec, so
                     // the replacement would otherwise see the lock still held.
-                    let _ = c.start_kill();
-                    let _ = c.wait().await;
+                    graceful_stop(c).await;
                     lock.release();
                     reexec_supervisor();
                     // reexec only returns on failure; re-acquire the lock we just
@@ -179,14 +221,112 @@ async fn supervise_loop(
             }
             _ = shutdown.recv() => {
                 tracing::info!("shutdown signal received; terminating panel");
-                let _ = c.start_kill();
-                let _ = c.wait().await;
+                graceful_stop(c).await;
                 break;
             }
         }
     }
 
     Ok(())
+}
+
+/// Grace period the supervisor gives a panel child to exit on SIGTERM before
+/// escalating to SIGKILL.
+const STOP_GRACE_SECS: u64 = 5;
+
+/// Stop the panel child gracefully: send SIGTERM (the panel installs a handler
+/// that exits 0 cleanly), wait up to [`STOP_GRACE_SECS`], and escalate to
+/// SIGKILL only if it hasn't exited by then. Always awaits the child so it's
+/// reaped (no zombie). Unlike the old unconditional `start_kill()` (SIGKILL),
+/// this lets the panel shut its listeners down in an orderly way; the escalation
+/// guarantees the stop still completes if the child is wedged.
+async fn graceful_stop(c: &mut Child) {
+    // SIGTERM via the child's pid (tokio's `start_kill` only sends SIGKILL). A
+    // `None` pid means the child already exited — nothing to signal; the wait
+    // below just reaps it.
+    if let Some(pid) = c.id() {
+        const SIGTERM: i32 = 15;
+        crate::platform::procfile::signal_pid(pid, SIGTERM);
+    }
+    if tokio::time::timeout(Duration::from_secs(STOP_GRACE_SECS), c.wait())
+        .await
+        .is_err()
+    {
+        tracing::warn!("panel did not exit within {STOP_GRACE_SECS}s of SIGTERM; sending SIGKILL");
+        let _ = c.start_kill();
+        let _ = c.wait().await;
+    }
+}
+
+/// Whether a fresh boot-ok marker exists — i.e. the currently-running panel build
+/// confirmed its web console came up. Used to gate the one-shot post-update
+/// rollback: a just-installed build that never writes this (its child dies first)
+/// is treated as a failed update.
+fn boot_marker_present() -> bool {
+    crate::platform::paths::boot_marker().exists()
+}
+
+/// True when an update is *pending verification*: a saved previous binary exists
+/// but the new build hasn't written its boot-ok marker yet. This on-disk state
+/// survives the supervisor re-exec that a self-update performs, so the (new)
+/// supervisor that spawns the first post-update panel can recognise it's on
+/// probation without any in-memory flag.
+fn update_pending_verify() -> bool {
+    crate::platform::paths::prev_bin().exists() && !boot_marker_present()
+}
+
+/// Pure decision for the one-shot post-update rollback (extracted so it's unit-
+/// testable without touching the filesystem or spawning processes):
+///   * `exited_updated` — the child left with `EXIT_UPDATED` (a *further* self-
+///     update, not a failed boot): never a rollback.
+///   * `already_rolled_back` — we already spent our single rollback this
+///     supervisor lifetime: don't loop.
+///   * `pending_verify` — a `.prev` backup exists and the new build never wrote
+///     its boot-ok marker: the update did not come up healthy.
+///
+/// We roll back only when a genuinely-unverified update child died on its own.
+fn should_rollback(exited_updated: bool, already_rolled_back: bool, pending_verify: bool) -> bool {
+    !exited_updated && !already_rolled_back && pending_verify
+}
+
+/// Restore the saved previous binary over the canonical target (one-shot
+/// rollback after a failed update). Removes the `.prev` copy afterwards so the
+/// rollback can never repeat — a genuinely-broken previous build must not cause
+/// an infinite restore loop. Returns true on success.
+fn rollback_to_prev() -> bool {
+    let prev = crate::platform::paths::prev_bin();
+    let target = crate::platform::paths::stable_bin();
+    if !prev.exists() {
+        return false;
+    }
+    // `rename` within the same dir is atomic; the running (deleted-inode) child
+    // is already gone by the time we roll back, so replacing the file is safe.
+    match std::fs::rename(&prev, &target) {
+        Ok(_) => {
+            tracing::error!(
+                ?target,
+                "self-update rollback: restored previous binary after the new build failed to boot"
+            );
+            true
+        }
+        Err(e) => {
+            tracing::error!("self-update rollback: could not restore previous binary: {e}");
+            // Drop the (possibly bad) copy so we don't retry endlessly.
+            let _ = std::fs::remove_file(&prev);
+            false
+        }
+    }
+}
+
+/// Drop a confirmed-good update's saved previous binary. Called once the new
+/// build's boot-ok marker appears, so a *later* unrelated crash can never be
+/// misread as a failed update and trigger a rollback.
+fn clear_prev_backup() {
+    let prev = crate::platform::paths::prev_bin();
+    if prev.exists() {
+        let _ = std::fs::remove_file(&prev);
+        tracing::info!("self-update confirmed healthy; cleared previous-binary backup");
+    }
 }
 
 /// Whether the on-disk canonical binary reports a strictly newer version than
@@ -338,7 +478,32 @@ fn signal_stream() -> Result<tokio::sync::mpsc::Receiver<()>> {
 
 #[cfg(test)]
 mod tests {
-    use super::version_gt;
+    use super::{should_rollback, version_gt};
+
+    // The one-shot post-update rollback must fire exactly once, and only for an
+    // unverified update child that died on its own — never for a `EXIT_UPDATED`
+    // (further self-update) exit, an already-spent rollback, or a build that
+    // confirmed boot (no pending-verify). This pins that decision table so a
+    // genuinely-broken previous binary can't drive an infinite restore loop.
+    #[test]
+    fn rollback_fires_once_for_a_failed_update_only() {
+        // Fresh failed update: not an update-exit, not yet rolled back, pending.
+        assert!(should_rollback(false, false, true));
+
+        // A further self-update (EXIT_UPDATED) is never a failed boot.
+        assert!(!should_rollback(true, false, true));
+
+        // Already used our single rollback this lifetime → don't loop.
+        assert!(!should_rollback(false, true, true));
+
+        // Nothing pending verification (marker present or no `.prev`): no rollback
+        // even on an ordinary crash.
+        assert!(!should_rollback(false, false, false));
+
+        // Combined guards all hold simultaneously.
+        assert!(!should_rollback(true, true, true));
+        assert!(!should_rollback(true, true, false));
+    }
 
     #[test]
     fn newer_than_running_triggers() {

@@ -325,6 +325,10 @@ const FILE_SIZE_WHITELIST: &[(&str, &str)] = &[
         "crates/dn7-container/src/net/nft.rs",
         "hand-rolled nftables netlink encoder (replaces GPL/bindgen rustables)",
     ),
+    (
+        "src/platform/supervisor/supervise.rs",
+        "supervisor lifecycle: spawn/respawn + self-update one-shot rollback + graceful stop",
+    ),
 ];
 
 /// True if a `.rs` file is a test file that the size gate skips: named
