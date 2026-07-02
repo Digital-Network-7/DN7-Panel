@@ -2,6 +2,7 @@
 name = "dn7-container"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-only"
 description = "DN7 self-contained container runtime (no Docker) — P1: OCI runtime core."
 publish = false
 

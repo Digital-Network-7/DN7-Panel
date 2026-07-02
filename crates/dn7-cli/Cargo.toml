@@ -2,6 +2,7 @@
 name = "dn7-cli"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-only"
 description = "DN7 unified on-box CLI logic (`dn7`) — linked INTO dn7-panel; invoked via the `dn7` symlink."
 publish = false
 

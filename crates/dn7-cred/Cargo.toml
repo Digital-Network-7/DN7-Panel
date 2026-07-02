@@ -2,6 +2,7 @@
 name = "dn7-cred"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-only"
 description = "DN7 password credential KDF — the single byte-exact source of truth for the s256 verifier, shared by the panel init wizard and the dn7 CLI (matches the browser core.js deriveVerifier)."
 publish = false
 

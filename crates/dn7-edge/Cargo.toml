@@ -2,6 +2,8 @@
 name = "dn7-edge"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-only"
+publish = false
 
 # The in-process reverse proxy / edge server (the pure-Rust nginx replacement),
 # extracted from the panel as a self-contained crate. Like dn7-container, it owns
