@@ -106,22 +106,9 @@ pub(crate) fn check_abs(path: &str) -> Result<()> {
     }
 }
 
-/// Parse the privilege-dropped lister's output (tab-separated `type\tsize\tname`
-/// lines, type `d`/`f`) into sorted directory entries (dirs first).
-pub(crate) fn parse_list_output(stdout: &str, dir: &str) -> serde_json::Value {
-    let mut entries = Vec::new();
-    for line in stdout.lines() {
-        let mut it = line.splitn(3, '\t');
-        let t = it.next().unwrap_or("");
-        let sz = it.next().unwrap_or("0");
-        let name = match it.next() {
-            Some(n) if !n.is_empty() => n,
-            _ => continue,
-        };
-        let is_dir = t == "d";
-        let size: u64 = sz.trim().parse().unwrap_or(0);
-        entries.push(serde_json::json!({ "name": name, "is_dir": is_dir, "size": size }));
-    }
+/// Standard listing order shared by every lister: directories first, then by
+/// name within each group.
+pub(crate) fn sort_entries(entries: &mut [serde_json::Value]) {
     entries.sort_by(|a, b| {
         let ad = a["is_dir"].as_bool().unwrap_or(false);
         let bd = b["is_dir"].as_bool().unwrap_or(false);
@@ -132,6 +119,62 @@ pub(crate) fn parse_list_output(stdout: &str, dir: &str) -> serde_json::Value {
                 .cmp(b["name"].as_str().unwrap_or(""))
         })
     });
+}
+
+/// Build one listing entry from filesystem metadata. `lmd` is the entry's own
+/// (no-follow) metadata — `mode` (octal permission string), `mtime` (unix secs)
+/// and `is_symlink` come from it; `fmd` is the *followed* metadata a caller may
+/// resolve for symlinks (None for plain entries) — `is_dir`/`size` prefer it so
+/// a link to a directory navigates like a directory.
+pub(crate) fn fs_entry_json(
+    name: &str,
+    lmd: Option<&std::fs::Metadata>,
+    fmd: Option<&std::fs::Metadata>,
+) -> serde_json::Value {
+    use std::os::unix::fs::MetadataExt;
+    let eff = fmd.or(lmd);
+    let is_dir = eff.map(|m| m.is_dir()).unwrap_or(false);
+    let size = if is_dir {
+        0
+    } else {
+        eff.map(|m| m.len()).unwrap_or(0)
+    };
+    serde_json::json!({
+        "name": name,
+        "is_dir": is_dir,
+        "size": size,
+        "mtime": lmd.map(|m| m.mtime()).unwrap_or(0),
+        "mode": lmd.map(|m| format!("{:o}", m.mode() & 0o7777)).unwrap_or_default(),
+        "is_symlink": lmd.map(|m| m.file_type().is_symlink()).unwrap_or(false),
+    })
+}
+
+/// Parse a text lister's output (tab-separated `type\tsize\tmtime\tmode\tname`
+/// lines; type `d`/`f`, with an `l` prefix for symlinks) into sorted directory
+/// entries (dirs first). Tolerates the legacy 3-field `type\tsize\tname` shape
+/// (mtime/mode default to 0/empty).
+pub(crate) fn parse_list_output(stdout: &str, dir: &str) -> serde_json::Value {
+    let mut entries = Vec::new();
+    for line in stdout.lines() {
+        let cols: Vec<&str> = line.splitn(5, '\t').collect();
+        let (t, sz, mt, md, name) = match cols[..] {
+            [t, sz, mt, md, name] => (t, sz, mt, md, name),
+            [t, sz, name] => (t, sz, "0", "", name),
+            _ => continue,
+        };
+        if name.is_empty() {
+            continue;
+        }
+        entries.push(serde_json::json!({
+            "name": name,
+            "is_dir": t.ends_with('d'),
+            "size": sz.trim().parse::<u64>().unwrap_or(0),
+            "mtime": mt.trim().parse::<i64>().unwrap_or(0),
+            "mode": md.trim(),
+            "is_symlink": t.starts_with('l'),
+        }));
+    }
+    sort_entries(&mut entries);
     serde_json::json!({ "path": dir, "entries": entries })
 }
 
@@ -288,6 +331,31 @@ mod tests {
         assert_eq!(normalize_lexical("/etc/.."), "/");
         assert_eq!(normalize_lexical("/../../etc"), "/etc");
         assert_eq!(normalize_lexical("/etc/nginx/conf.d"), "/etc/nginx/conf.d");
+    }
+
+    #[test]
+    fn parse_list_output_five_and_legacy_three_field() {
+        use super::parse_list_output;
+        // New 5-field shape: type\tsize\tmtime\tmode\tname (l prefix = symlink)…
+        let out = "f\t42\t1700000000\t644\tb.txt\nd\t0\t1700000001\t755\tsub\nlf\t7\t0\t777\tlink";
+        let v = parse_list_output(out, "/x");
+        let entries = v["entries"].as_array().unwrap();
+        // …sorted dirs-first, then by name.
+        assert_eq!(entries[0]["name"], "sub");
+        assert_eq!(entries[0]["is_dir"], true);
+        assert_eq!(entries[0]["mode"], "755");
+        assert_eq!(entries[1]["name"], "b.txt");
+        assert_eq!(entries[1]["size"], 42);
+        assert_eq!(entries[1]["mtime"], 1700000000i64);
+        assert_eq!(entries[1]["is_symlink"], false);
+        assert_eq!(entries[2]["name"], "link");
+        assert_eq!(entries[2]["is_symlink"], true);
+        // Legacy 3-field lines still parse (mtime/mode default).
+        let v = parse_list_output("f\t9\told.txt", "/y");
+        let e = &v["entries"].as_array().unwrap()[0];
+        assert_eq!(e["size"], 9);
+        assert_eq!(e["mtime"], 0);
+        assert_eq!(e["mode"], "");
     }
 
     #[test]

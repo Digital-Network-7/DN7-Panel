@@ -1,7 +1,10 @@
 //! In-container filesystem operations (list/mkdir/delete/read/write) (split from file.rs).
 use super::*;
 
-/// List a container directory → `{ path, entries:[{name,is_dir,size}] }`.
+/// List a container directory → `{ path, entries:[{name,is_dir,size,mtime,
+/// mode,is_symlink}] }`. The in-container script emits the 5-field lines
+/// [`parse_list_output`] expects (`t\tsize\tmtime\tmode\tname`, `l` prefix =
+/// symlink); a missing/limited `stat` degrades to zeros, never fails the list.
 pub async fn web_ctn_list(container: &str, path: &str) -> Result<serde_json::Value> {
     if !valid_container_ref(container) {
         return Err(anyhow!("invalid container reference"));
@@ -14,41 +17,65 @@ pub async fn web_ctn_list(container: &str, path: &str) -> Result<serde_json::Val
     let script = r#"cd "$1" 2>/dev/null || exit 7
 for name in * .[!.]* ..?*; do
   [ -e "$name" ] || [ -L "$name" ] || continue
-  if [ -d "$name" ]; then
-    printf 'd\t0\t%s\n' "$name"
-  else
-    sz=$(stat -c %s "$name" 2>/dev/null || stat -f %z "$name" 2>/dev/null || echo 0)
-    printf 'f\t%s\t%s\n' "$sz" "$name"
-  fi
+  t=f; [ -d "$name" ] && t=d
+  [ -L "$name" ] && t=l$t
+  set -- $(stat -c '%s %Y %a' "$name" 2>/dev/null || echo 0 0 0)
+  sz=$1
+  case "$t" in
+    d|ld) sz=0;;
+    lf) sz=$(stat -Lc %s "$name" 2>/dev/null || echo 0);;
+  esac
+  printf '%s\t%s\t%s\t%s\t%s\n' "$t" "$sz" "$2" "$3" "$name"
 done"#;
-    let (code, stdout) = ctn_exec_collect(container, script, dir).await?;
+    let (code, stdout) = ctn_exec_collect(container, script, &[dir]).await?;
     if code != 0 {
         return Err(anyhow!("目录不存在或无权限"));
     }
-    let mut entries = Vec::new();
-    for line in stdout.lines() {
-        let mut it = line.splitn(3, '\t');
-        let t = it.next().unwrap_or("");
-        let sz = it.next().unwrap_or("0");
-        let name = match it.next() {
-            Some(n) if !n.is_empty() => n,
-            _ => continue,
-        };
-        let is_dir = t == "d";
-        let size: u64 = sz.trim().parse().unwrap_or(0);
-        entries.push(serde_json::json!({ "name": name, "is_dir": is_dir, "size": size }));
+    Ok(parse_list_output(&stdout, dir))
+}
+
+/// Whether a path exists inside a container (upload-conflict checks).
+pub async fn web_ctn_exists(container: &str, path: &str) -> Result<bool> {
+    if !valid_container_ref(container) {
+        return Err(anyhow!("invalid container reference"));
     }
-    entries.sort_by(|a, b| {
-        let ad = a["is_dir"].as_bool().unwrap_or(false);
-        let bd = b["is_dir"].as_bool().unwrap_or(false);
-        bd.cmp(&ad).then_with(|| {
-            a["name"]
-                .as_str()
-                .unwrap_or("")
-                .cmp(b["name"].as_str().unwrap_or(""))
-        })
-    });
-    Ok(serde_json::json!({ "path": dir, "entries": entries }))
+    if super::ctn_dn7::active() {
+        return super::ctn_dn7::exists(container, path).await;
+    }
+    check_abs(path)?;
+    let (code, _) = ctn_exec_collect(container, r#"[ -e "$1" ] || [ -L "$1" ]"#, &[path]).await?;
+    Ok(code == 0)
+}
+
+/// Rename/move a path inside a container (`to` is the full new path), refusing
+/// protected system dirs on both ends and an existing destination.
+pub async fn web_ctn_rename(container: &str, from: &str, to: &str) -> Result<()> {
+    if !valid_container_ref(container) {
+        return Err(anyhow!("invalid container reference"));
+    }
+    if super::ctn_dn7::active() {
+        return super::ctn_dn7::rename(container, from, to).await;
+    }
+    if is_protected_path(from) || is_protected_path(to) {
+        return Err(anyhow!("该系统目录受保护，禁止移动"));
+    }
+    check_abs(from)?;
+    check_abs(to)?;
+    // `{ a || b; } && exit 8`: refuse an existing destination (no clobber).
+    let script = r#"{ [ -e "$2" ] || [ -L "$2" ]; } && exit 8; mv "$1" "$2""#;
+    let (code, out) = ctn_exec_collect(container, script, &[from, to]).await?;
+    match code {
+        0 => Ok(()),
+        8 => Err(anyhow!("目标已存在")),
+        _ => {
+            let msg = out.trim();
+            Err(anyhow!(if msg.is_empty() {
+                "重命名失败".to_string()
+            } else {
+                msg.chars().take(300).collect::<String>()
+            }))
+        }
+    }
 }
 
 /// Create a directory inside a container.
@@ -59,7 +86,7 @@ pub async fn web_ctn_mkdir(container: &str, path: &str) -> Result<()> {
     if super::ctn_dn7::active() {
         return super::ctn_dn7::mkdir(container, path).await;
     }
-    ctn_exec_ok(container, "mkdir -p \"$1\"", path).await
+    ctn_exec_ok(container, "mkdir -p \"$1\"", &[path]).await
 }
 
 /// Delete a path inside a container (refusing protected system dirs).
@@ -73,7 +100,7 @@ pub async fn web_ctn_delete(container: &str, path: &str) -> Result<()> {
     if is_protected_path(path) {
         return Err(anyhow!("该系统目录受保护，禁止删除"));
     }
-    ctn_exec_ok(container, "rm -rf \"$1\"", path).await
+    ctn_exec_ok(container, "rm -rf \"$1\"", &[path]).await
 }
 
 /// Open a file in a container for **streaming** download → (file name, byte

@@ -29,6 +29,8 @@ pub(crate) fn run_fs_helper_main() -> i32 {
         "remove" => op_remove(path),
         "read" => op_read(path),
         "write" => op_write(path),
+        "stat" => op_stat(path),
+        "rename" => op_rename(path),
         _ => 2,
     }
 }
@@ -161,9 +163,12 @@ fn drop_privileges(user: &str) -> Result<(), ()> {
     Ok(())
 }
 
-/// List a directory as tab-delimited `<d|f>\t<size>\t<name>` lines (the format
-/// [`super::parse_list_output`] expects). Exit 7 when the dir can't be read.
+/// List a directory as tab-delimited `<d|f|ld|lf>\t<size>\t<mtime>\t<mode>\t<name>`
+/// lines (the format [`super::parse_list_output`] expects; `l` prefix marks a
+/// symlink, mode is the octal permission bits, mtime unix secs). Exit 7 when
+/// the dir can't be read.
 fn op_list(path: &str) -> i32 {
+    use std::os::unix::fs::MetadataExt;
     let rd = match std::fs::read_dir(path) {
         Ok(r) => r,
         Err(_) => return 7,
@@ -174,16 +179,39 @@ fn op_list(path: &str) -> i32 {
         if name.contains('\n') || name.contains('\t') {
             continue; // a name with our delimiters would corrupt the row
         }
-        // metadata() follows symlinks (matches the old `[ -d ]`/`stat` script);
-        // a broken link → Err → treated as a 0-byte file.
-        let md = ent.metadata().ok();
-        let is_dir = md.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-        if is_dir {
-            out.push_str(&format!("d\t0\t{name}\n"));
+        // DirEntry::metadata is no-follow (lstat): mode/mtime/link flag describe
+        // the entry itself; symlinks resolve once more (running as the target
+        // user, so the OS still enforces access) so a link to a directory lists
+        // as a directory. A broken link keeps its lstat and reads as a file.
+        let lmd = ent.metadata().ok();
+        let is_link = lmd
+            .as_ref()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        let fmd = if is_link {
+            std::fs::metadata(ent.path()).ok()
         } else {
-            let size = md.as_ref().map(|m| m.len()).unwrap_or(0);
-            out.push_str(&format!("f\t{size}\t{name}\n"));
-        }
+            None
+        };
+        let eff = fmd.as_ref().or(lmd.as_ref());
+        let is_dir = eff.map(|m| m.is_dir()).unwrap_or(false);
+        let size = if is_dir {
+            0
+        } else {
+            eff.map(|m| m.len()).unwrap_or(0)
+        };
+        let mtime = lmd.as_ref().map(|m| m.mtime()).unwrap_or(0);
+        let mode = lmd
+            .as_ref()
+            .map(|m| format!("{:o}", m.mode() & 0o7777))
+            .unwrap_or_default();
+        let t = match (is_link, is_dir) {
+            (true, true) => "ld",
+            (true, false) => "lf",
+            (false, true) => "d",
+            (false, false) => "f",
+        };
+        out.push_str(&format!("{t}\t{size}\t{mtime}\t{mode}\t{name}\n"));
     }
     write_stdout(out.as_bytes())
 }
@@ -242,6 +270,36 @@ fn op_write(path: &str) -> i32 {
     let mut si = std::io::stdin();
     match std::io::copy(&mut si, &mut f) {
         Ok(_) => f.flush().is_err() as i32,
+        Err(_) => 1,
+    }
+}
+
+/// Existence probe (no-follow lstat): exit 0 when `path` exists, 7 when not.
+fn op_stat(path: &str) -> i32 {
+    if std::fs::symlink_metadata(path).is_ok() {
+        0
+    } else {
+        7
+    }
+}
+
+/// Rename/move `path` to the destination path supplied on stdin. Exit 8 when
+/// the destination already exists (no silent clobber), 2 on a malformed
+/// destination, 1 on failure.
+fn op_rename(path: &str) -> i32 {
+    let mut dest = String::new();
+    if std::io::Read::read_to_string(&mut std::io::stdin(), &mut dest).is_err() {
+        return 2;
+    }
+    let dest = dest.trim_end_matches('\n');
+    if dest.is_empty() || !dest.starts_with('/') {
+        return 2;
+    }
+    if std::fs::symlink_metadata(dest).is_ok() {
+        return 8;
+    }
+    match std::fs::rename(path, dest) {
+        Ok(()) => 0,
         Err(_) => 1,
     }
 }

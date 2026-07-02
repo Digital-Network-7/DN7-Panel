@@ -105,6 +105,35 @@ pub(crate) async fn delete(
     )
 }
 
+/// Rename/move a path (`to` is the full new path, same scope as `path`).
+pub(crate) async fn rename(
+    caller: &Caller<'_>,
+    path: &str,
+    to: &str,
+    container: Option<&str>,
+) -> Result<(), FsError> {
+    fs_dispatch!(
+        caller,
+        container,
+        |c| crate::infra::file::web_ctn_rename(c, path, to),
+        |u| crate::infra::file::web_host_rename(path, to, u),
+    )
+}
+
+/// Whether a path already exists (upload-conflict detection; no-follow).
+pub(crate) async fn exists(
+    caller: &Caller<'_>,
+    path: &str,
+    container: Option<&str>,
+) -> Result<bool, FsError> {
+    fs_dispatch!(
+        caller,
+        container,
+        |c| crate::infra::file::web_ctn_exists(c, path),
+        |u| crate::infra::file::web_host_exists(path, u),
+    )
+}
+
 /// Write an already-streamed temp file into place (host or container).
 pub(crate) async fn write_file(
     caller: &Caller<'_>,

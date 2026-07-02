@@ -7,8 +7,9 @@ use super::*;
 // daemon exec / archive helpers above. Used by `web::server`.
 // ---------------------------------------------------------------------------
 
-/// List a host directory → `{ path, entries:[{name,is_dir,size}] }`. When
-/// `as_user` is set, the listing runs as that system user (OS perms enforced).
+/// List a host directory → `{ path, entries:[{name,is_dir,size,mtime,mode,
+/// is_symlink}] }`. When `as_user` is set, the listing runs as that system
+/// user (OS perms enforced).
 pub async fn web_host_list(path: &str, as_user: Option<&str>) -> Result<serde_json::Value> {
     let dir = if path.trim().is_empty() { "/" } else { path };
     if let Some(u) = as_user {
@@ -23,22 +24,29 @@ pub async fn web_host_list(path: &str, as_user: Option<&str>) -> Result<serde_js
     let mut rd = tokio::fs::read_dir(dir).await?;
     while let Some(ent) = rd.next_entry().await? {
         let name = ent.file_name().to_string_lossy().to_string();
-        let md = ent.metadata().await.ok();
-        let is_dir = md.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-        let size = md.as_ref().map(|m| m.len()).unwrap_or(0);
-        entries.push(serde_json::json!({ "name": name, "is_dir": is_dir, "size": size }));
+        // No-follow metadata for the entry itself; resolve symlinks once more
+        // so a link to a directory navigates like a directory.
+        let lmd = ent.metadata().await.ok();
+        let fmd = match &lmd {
+            Some(m) if m.file_type().is_symlink() => tokio::fs::metadata(ent.path()).await.ok(),
+            _ => None,
+        };
+        entries.push(fs_entry_json(&name, lmd.as_ref(), fmd.as_ref()));
     }
-    entries.sort_by(|a, b| {
-        let ad = a["is_dir"].as_bool().unwrap_or(false);
-        let bd = b["is_dir"].as_bool().unwrap_or(false);
-        bd.cmp(&ad).then_with(|| {
-            a["name"]
-                .as_str()
-                .unwrap_or("")
-                .cmp(b["name"].as_str().unwrap_or(""))
-        })
-    });
+    sort_entries(&mut entries);
     Ok(serde_json::json!({ "path": dir, "entries": entries }))
+}
+
+/// Whether a host path exists (no-follow lstat), for upload-conflict checks.
+/// Runs as `as_user` when set, so the probe can't leak paths the caller's own
+/// OS permissions wouldn't reveal.
+pub async fn web_host_exists(path: &str, as_user: Option<&str>) -> Result<bool> {
+    if let Some(u) = as_user {
+        check_abs(path)?;
+        let (code, _) = run_fs_helper(u, "stat", path, None).await?;
+        return Ok(code == 0);
+    }
+    Ok(tokio::fs::symlink_metadata(path).await.is_ok())
 }
 
 /// Create a host directory (recursive). Runs as `as_user` when set.
@@ -101,6 +109,48 @@ pub async fn web_host_delete(path: &str, as_user: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Rename/move a host path (`to` is the full new path). Refuses protected
+/// system trees on BOTH ends and an existing destination (no silent clobber).
+/// Runs as `as_user` when set (OS perms enforced).
+pub async fn web_host_rename(from: &str, to: &str, as_user: Option<&str>) -> Result<()> {
+    if from.trim().is_empty() || to.trim().is_empty() {
+        return Err(anyhow!("路径不能为空"));
+    }
+    if is_protected_host_mutation(from) || is_protected_host_mutation(to) {
+        return Err(anyhow!("该系统目录受保护，禁止移动"));
+    }
+    check_abs(from)?;
+    check_abs(to)?;
+    if let Some(u) = as_user {
+        // Destination travels on stdin (the helper takes ONE path argv slot).
+        let (code, _) = run_fs_helper(u, "rename", from, Some(to.as_bytes())).await?;
+        return match code {
+            0 => Ok(()),
+            8 => Err(anyhow!("目标已存在")),
+            _ => Err(anyhow!("重命名失败（无权限？）")),
+        };
+    }
+    // Root path: refuse either end resolving into a protected tree via a
+    // symlinked ancestor (the lexical guard above can't see symlinks).
+    if resolves_into_protected(from).await || resolves_into_protected(to).await {
+        return Err(anyhow!("该系统目录受保护，禁止移动"));
+    }
+    if tokio::fs::symlink_metadata(to).await.is_ok() {
+        return Err(anyhow!("目标已存在"));
+    }
+    if let Err(e) = tokio::fs::rename(from, to).await {
+        // A rename across filesystems fails with EXDEV (os error 18); the raw
+        // message ("Invalid cross-device link") is opaque. Surface a stable code
+        // the client localizes into "download & re-upload" guidance. A copy+
+        // unlink fallback is out of scope — the clear error is enough.
+        if e.raw_os_error() == Some(18) {
+            return Err(anyhow!("ERR_CODE:files.cross_device"));
+        }
+        return Err(e.into());
+    }
+    Ok(())
+}
+
 /// Open a host file for **streaming** download → (file name, byte stream).
 /// Refuses directories. When `as_user` is set the read runs as that system
 /// user (a `su` child whose stdout is streamed; OS perms enforced).
@@ -113,6 +163,7 @@ pub async fn web_host_read_stream(
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "download".to_string());
     if let Some(u) = as_user {
+        use futures::StreamExt;
         use std::process::Stdio;
         check_abs(path)?;
         // Re-exec the privilege-dropping `__fshelper read` (replaces `su … cat`):
@@ -126,11 +177,44 @@ pub async fn web_host_read_stream(
             .spawn()
             .map_err(|e| anyhow!("无法以用户身份读取：{e}"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("无法读取文件"))?;
-        // Reap the child once its stdout is drained (avoids a zombie).
-        tokio::spawn(async move {
-            let _ = child.wait().await;
-        });
-        return Ok((name, Box::pin(tokio_util::io::ReaderStream::new(stdout))));
+        // Forward the helper's stdout, THEN observe its exit code at EOF: the
+        // `read` op exits non-zero (9) for a missing file / no permission / dir
+        // while emitting zero bytes. The old fire-and-forget `wait()` discarded
+        // that, so a failed read looked like a clean empty file — the editor
+        // showed "" AND the audit recorded success. Surface the non-zero exit as
+        // a stream error so the buffered read (files_read) returns Err → the
+        // client sees a real failure and the audit records false. The download
+        // path drains this same stream inside `AuditedStream`, which likewise
+        // turns the trailing error into an `ok=false` record (a valid file exits
+        // 0, so its bytes are forwarded unchanged).
+        let reader = tokio_util::io::ReaderStream::new(stdout);
+        let s = futures::stream::unfold(
+            (reader, Some(child), false),
+            |(mut reader, mut child, done)| async move {
+                if done {
+                    return None;
+                }
+                match reader.next().await {
+                    Some(chunk) => Some((chunk, (reader, child, false))),
+                    // stdout drained: reap the child and check its exit status.
+                    None => {
+                        let ok = match child.as_mut() {
+                            Some(c) => c.wait().await.map(|s| s.success()).unwrap_or(false),
+                            None => true,
+                        };
+                        if ok {
+                            None
+                        } else {
+                            Some((
+                                Err(std::io::Error::other("ERR_CODE:files.read_failed")),
+                                (reader, None, true),
+                            ))
+                        }
+                    }
+                }
+            },
+        );
+        return Ok((name, Box::pin(s)));
     }
     let md = tokio::fs::metadata(path).await?;
     if md.is_dir() {

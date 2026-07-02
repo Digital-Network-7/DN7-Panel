@@ -1,31 +1,33 @@
 //! In-container exec + tar upload/parse helpers (split from file.rs).
 use super::*;
 
-/// Run `sh -c '<script>' sh "<arg>"` inside the container via the daemon exec
-/// API. `arg` becomes `$1` (a separate argv entry — no shell injection). Returns
-/// (exit_code, stdout, stderr-ish combined). No `docker` CLI required.
+/// Run `sh -c '<script>' sh "<args…>"` inside the container via the daemon exec
+/// API. `args` become `$1`, `$2`, … (separate argv entries — no shell
+/// injection). Returns (exit_code, stdout, stderr-ish combined). No `docker`
+/// CLI required.
 pub(crate) async fn ctn_exec_collect(
     container: &str,
     script: &str,
-    arg: &str,
+    args: &[&str],
 ) -> Result<(i64, String)> {
     use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
     use futures::StreamExt;
 
     let dkr = crate::infra::docker::dkr()?;
+    let mut cmd = vec![
+        "/bin/sh".to_string(),
+        "-c".to_string(),
+        script.to_string(),
+        "sh".to_string(),
+    ];
+    cmd.extend(args.iter().map(|s| s.to_string()));
     let exec = dkr
         .create_exec(
             container,
             CreateExecOptions {
                 attach_stdout: Some(true),
                 attach_stderr: Some(true),
-                cmd: Some(vec![
-                    "/bin/sh".to_string(),
-                    "-c".to_string(),
-                    script.to_string(),
-                    "sh".to_string(),
-                    arg.to_string(),
-                ]),
+                cmd: Some(cmd),
                 ..Default::default()
             },
         )
@@ -60,10 +62,13 @@ pub(crate) async fn ctn_exec_collect(
     Ok((code, buf))
 }
 
-/// Run a container script expecting a zero exit (mkdir/delete).
-pub(crate) async fn ctn_exec_ok(container: &str, script: &str, arg: &str) -> Result<()> {
-    check_abs(arg)?;
-    let (code, out) = ctn_exec_collect(container, script, arg).await?;
+/// Run a container script expecting a zero exit (mkdir/delete/rename). Every
+/// arg must be an absolute path (so it can't read as a flag).
+pub(crate) async fn ctn_exec_ok(container: &str, script: &str, args: &[&str]) -> Result<()> {
+    for arg in args {
+        check_abs(arg)?;
+    }
+    let (code, out) = ctn_exec_collect(container, script, args).await?;
     if code == 0 {
         Ok(())
     } else {

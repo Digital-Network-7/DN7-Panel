@@ -6,9 +6,10 @@ use super::super::*;
 pub(crate) fn fs_err_response(e: crate::app::files::FsError) -> Response {
     match e {
         crate::app::files::FsError::Forbidden => api_err(StatusCode::FORBIDDEN, "auth.forbidden"),
-        crate::app::files::FsError::Op(e) => {
-            Json(json!({ "ok": false, "error": e.to_string() })).into_response()
-        }
+        // Split an `ERR_CODE:<code>` op error into a localizable `code` field (as
+        // the capability ops do) — e.g. `files.cross_device` / `files.read_failed`
+        // — while plain messages pass through unchanged as `{ ok:false, error }`.
+        crate::app::files::FsError::Op(e) => Json(op_err_body(e)).into_response(),
     }
 }
 
@@ -339,6 +340,230 @@ pub(crate) async fn files_delete(
     }
 }
 
+/// Body for rename/move: the source path and the FULL new path (`to`), with
+/// the same optional container scope as the other file ops.
+#[derive(serde::Deserialize)]
+pub(crate) struct FileRenameReq {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    to: String,
+    #[serde(default)]
+    container: Option<String>,
+}
+
+/// POST /api/files/rename — rename or move (one endpoint; `to` is the full
+/// destination path). The infra layer refuses protected system trees on both
+/// ends and an existing destination (no silent clobber).
+pub(crate) async fn files_rename(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<FileRenameReq>,
+) -> Response {
+    let acct = match current_account(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let caller = crate::app::files::Caller {
+        is_admin: acct.is_admin,
+        system_user: acct.system_user.as_deref(),
+    };
+    let ctn = req
+        .container
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let res = crate::app::files::rename(&caller, &req.path, &req.to, ctn).await;
+    audit::record(
+        &acct.username,
+        "files.rename",
+        &format!("{} -> {}", audit_target(&req.path, ctn), req.to),
+        res.is_ok(),
+        &res.as_ref().err().map(fs_err_detail).unwrap_or_default(),
+    );
+    match res {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => fs_err_response(e),
+    }
+}
+
+/// Cap for the inline editor's read/write payloads (1 MiB). The viewer is for
+/// configs / small logs — bulk transfer stays on download/upload.
+pub(crate) const EDIT_CAP: usize = 1024 * 1024;
+
+/// Drain up to `EDIT_CAP` (+1 probe byte) from a file stream → (bytes ≤ CAP,
+/// truncated). Dropping the stream early aborts the underlying source.
+async fn read_capped(
+    mut stream: crate::infra::file::ByteStream,
+) -> std::io::Result<(Vec<u8>, bool)> {
+    use futures::StreamExt;
+    let cap = EDIT_CAP + 1;
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let c = chunk?;
+        let room = cap - buf.len();
+        buf.extend_from_slice(&c[..c.len().min(room)]);
+        if buf.len() >= cap {
+            break;
+        }
+    }
+    let truncated = buf.len() > EDIT_CAP;
+    if truncated {
+        buf.truncate(EDIT_CAP);
+    }
+    Ok((buf, truncated))
+}
+
+/// Decode capped file bytes for the editor → `(content, binary)`. A multi-byte
+/// char split by the cap cut is trimmed (still text); any other invalid UTF-8
+/// marks the file binary.
+fn edit_decode(buf: Vec<u8>, truncated: bool) -> (String, bool) {
+    match String::from_utf8(buf) {
+        Ok(s) => (s, false),
+        Err(e) => {
+            let err = e.utf8_error();
+            // error_len() == None ⇔ an incomplete sequence at the very end —
+            // forgivable only when we cut the read ourselves.
+            if !(truncated && err.error_len().is_none()) {
+                return (String::new(), true);
+            }
+            let valid = err.valid_up_to();
+            let mut bytes = e.into_bytes();
+            bytes.truncate(valid);
+            (String::from_utf8(bytes).unwrap_or_default(), false)
+        }
+    }
+}
+
+/// POST /api/files/read — fetch a text file's content for the inline viewer/
+/// editor. Reads at most `EDIT_CAP` bytes → `{ content, size, truncated }`, or
+/// `{ binary:true, size, truncated }` when the bytes aren't valid UTF-8
+/// (`size` = bytes actually returned). Scope/permission checks ride the same
+/// `app::files` read path as downloads.
+pub(crate) async fn files_read(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<FileOpReq>,
+) -> Response {
+    let acct = match current_account(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let caller = crate::app::files::Caller {
+        is_admin: acct.is_admin,
+        system_user: acct.system_user.as_deref(),
+    };
+    let target = audit_target(&req.path, ctn_ref(&req));
+    let res = match crate::app::files::read_stream(&caller, &req.path, ctn_ref(&req)).await {
+        Ok((_, s)) => read_capped(s)
+            .await
+            .map_err(|e| crate::app::files::FsError::Op(anyhow::anyhow!(e))),
+        Err(e) => Err(e),
+    };
+    match res {
+        Ok((buf, truncated)) => {
+            audit::record(&acct.username, "files.read", &target, true, "");
+            let size = buf.len() as u64;
+            let (content, binary) = edit_decode(buf, truncated);
+            let data = if binary {
+                json!({ "binary": true, "size": size, "truncated": truncated })
+            } else {
+                json!({ "content": content, "size": size, "truncated": truncated })
+            };
+            Json(json!({ "ok": true, "data": data })).into_response()
+        }
+        Err(e) => {
+            audit::record(
+                &acct.username,
+                "files.read",
+                &target,
+                false,
+                &fs_err_detail(&e),
+            );
+            fs_err_response(e)
+        }
+    }
+}
+
+/// Body for the inline editor's save: full text content (capped at `EDIT_CAP`).
+#[derive(serde::Deserialize)]
+pub(crate) struct FileWriteReq {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    container: Option<String>,
+}
+
+/// Stage in-memory editor content to a temp file (the shared write path takes
+/// a staged temp, mirroring upload). Returns the temp path.
+async fn stage_content_to_temp(content: &[u8]) -> Result<std::path::PathBuf, Response> {
+    use tokio::io::AsyncWriteExt;
+    let (f, tmp) = match crate::infra::file::create_temp_upload() {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(api_err_detail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "common.save_failed",
+                e,
+            ))
+        }
+    };
+    let mut f = tokio::fs::File::from_std(f);
+    if f.write_all(content).await.is_err() || f.flush().await.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(api_err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "common.save_failed",
+        ));
+    }
+    Ok(tmp)
+}
+
+/// POST /api/files/write — create-or-overwrite a text file from the inline
+/// editor. Content capped at `EDIT_CAP` (1 MiB); the write reuses the upload
+/// path's staging + scope/jail checks.
+pub(crate) async fn files_write(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<FileWriteReq>,
+) -> Response {
+    let acct = match current_account(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if req.content.len() > EDIT_CAP {
+        return api_err(StatusCode::PAYLOAD_TOO_LARGE, "files.edit_too_large");
+    }
+    let ctn = req
+        .container
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let tmp = match stage_content_to_temp(req.content.as_bytes()).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let caller = crate::app::files::Caller {
+        is_admin: acct.is_admin,
+        system_user: acct.system_user.as_deref(),
+    };
+    let res = crate::app::files::write_file(&caller, &req.path, ctn, &tmp).await;
+    let _ = tokio::fs::remove_file(&tmp).await;
+    audit::record(
+        &acct.username,
+        "files.write",
+        &audit_target(&req.path, ctn),
+        res.is_ok(),
+        &res.as_ref().err().map(fs_err_detail).unwrap_or_default(),
+    );
+    match res {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => fs_err_response(e),
+    }
+}
+
 /// Download query: a one-time ticket (browser can't set Authorization on a
 /// direct link), path, optional container.
 #[derive(serde::Deserialize)]
@@ -590,13 +815,17 @@ pub(crate) fn sanitize_filename(name: &str) -> String {
 
 /// Upload: multipart-free — the path/container come as query params and the raw
 /// file bytes are the request body (kept simple; the UI sends one file at a
-/// time). Caps the body at `UPLOAD_CAP` (256 MiB) to bound memory.
+/// time). Caps the body at `UPLOAD_CAP` (256 MiB) to bound memory. Without
+/// `overwrite=1`, an existing target is refused with a stable 409
+/// (`files.exists`) so the client can prompt before clobbering.
 #[derive(serde::Deserialize)]
 pub(crate) struct UploadQuery {
     #[serde(default)]
     path: String,
     #[serde(default)]
     container: Option<String>,
+    #[serde(default)]
+    overwrite: Option<String>,
 }
 
 pub(crate) async fn files_upload(
@@ -627,6 +856,20 @@ pub(crate) async fn files_upload(
         is_admin: acct.is_admin,
         system_user: acct.system_user.as_deref(),
     };
+    // Conflict guard: without overwrite=1 an existing target is a 409 (stable
+    // code `files.exists`) so the client can prompt. Checked after the body is
+    // staged so the response always lands cleanly (no mid-upload reset); an
+    // inconclusive probe falls through — the write itself still enforces perms.
+    let overwrite = q.overwrite.as_deref() == Some("1");
+    if !overwrite
+        && matches!(
+            crate::app::files::exists(&caller, &q.path, ctn).await,
+            Ok(true)
+        )
+    {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return api_err(StatusCode::CONFLICT, "files.exists");
+    }
     let res = crate::app::files::write_file(&caller, &q.path, ctn, &tmp).await;
     let _ = tokio::fs::remove_file(&tmp).await;
     audit::record(
