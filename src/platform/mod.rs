@@ -16,6 +16,7 @@ pub(crate) mod init_cli;
 pub(crate) mod logrotate;
 pub(crate) mod panel;
 pub(crate) mod paths;
+pub(crate) mod privilege;
 pub(crate) mod procfile;
 pub(crate) mod signing;
 pub(crate) mod supervisor;

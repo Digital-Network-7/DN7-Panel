@@ -85,6 +85,16 @@ fn main() -> Result<()> {
         return result;
     }
 
+    // Serving the console, binding :80/:443, and host management (accounts,
+    // containers, firewall) all require root. Resolve privilege up front: a
+    // non-root interactive launch re-execs under sudo (prompting for the
+    // password); a non-root launch with no TTY/sudo aborts loudly here. This
+    // stops a half-working non-root panel that only fails later when the operator
+    // starts the web server. Utility subcommands already short-circuited above,
+    // so only the serving/install launch is escalated. Once we return, we're root
+    // (or on the sudo path we never return — the re-run comes back in as root).
+    platform::privilege::ensure_root_or_reexec()?;
+
     let is_panel = role.as_deref() == Some("panel");
 
     // Install to the canonical location (/var/dn7/panel/dn7-panel) on the
