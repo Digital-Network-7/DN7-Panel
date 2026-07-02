@@ -276,14 +276,65 @@ fn create_inner(id: &str, bundle_dir: &Path, bundle: &Bundle, meta: StateMeta) -
         let _ = cg.delete();
         return Err(e);
     }
+    // The init is a direct child of this (resident) process — reap it so an exited
+    // container flips to Stopped with a real exit code instead of lingering as a
+    // Running zombie. Spawn AFTER the state is persisted so the reaper's later
+    // load→update→save sees a record to update.
+    spawn_reaper(id.to_string(), pid.as_raw());
     drop(stack);
     Ok(())
+}
+
+/// Spawn a dedicated thread that blocking-`waitpid`s ONLY the given container
+/// init pid (never `-1` — a global reaper would steal the exit status of the
+/// panel's other children: CLI shell-outs, fshelper, tokio `Command`). When the
+/// init exits, record its real exit code and mark the container `Stopped`, under
+/// the per-container [`State::lock`] so it doesn't race a concurrent lifecycle
+/// verb. One parked thread per running container, like other runtimes.
+///
+/// Best-effort throughout: if the caller is not the init's parent (e.g. `start`
+/// ran in a different process than `create`), `waitpid` returns ECHILD and the
+/// thread simply exits — [`state::pid_alive`]'s zombie check still downgrades the
+/// status, only without the precise exit code.
+fn spawn_reaper(id: String, init_pid: i32) {
+    std::thread::spawn(move || {
+        let code = match waitpid(Pid::from_raw(init_pid), None) {
+            Ok(WaitStatus::Exited(_, code)) => code,
+            Ok(WaitStatus::Signaled(_, sig, _)) => 128 + sig as i32,
+            // Any other status (or ECHILD — not our child) leaves the record to
+            // pid_alive's zombie downgrade; nothing to write.
+            _ => return,
+        };
+        let _guard = match State::lock(&id) {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        // The record may already be gone (delete raced us) — that's fine.
+        let Ok(mut s) = State::load(&id) else { return };
+        // Don't clobber a fresh init: a rerun replaces the state dir + pid, so only
+        // record against the record still bearing THIS pid.
+        if s.pid != init_pid {
+            return;
+        }
+        s.status = Status::Stopped;
+        s.meta.exit_code = code;
+        s.meta.paused = false;
+        let _ = s.save();
+    });
 }
 
 /// `start`: open the exec FIFO's read end, which unblocks the parked init and
 /// lets it `execve` the user process.
 pub fn start(id: &str) -> Result<()> {
     let _guard = State::lock(id)?;
+    start_locked(id)
+}
+
+/// `start` without taking the per-container lock — the caller already holds it
+/// (e.g. [`rerun`], which owns the lock across its whole load→teardown→create→
+/// start sequence). Taking [`State::lock`] here too would self-deadlock (flock is
+/// per-open-fd, not recursive).
+fn start_locked(id: &str) -> Result<()> {
     let mut state = State::load(id)?;
     if state.status != Status::Created {
         return Err(Error::BadState {
@@ -322,6 +373,14 @@ pub fn stop(id: &str, timeout: std::time::Duration) -> Result<()> {
         let _ = cg.kill_all();
         wait_drained(&cg);
     }
+    // Release the container's firewall (DNAT) + IP lease now the init is dead:
+    // otherwise the dn7:<id> prerouting rule stays live pointing at a now-free IP,
+    // and — because the port-conflict check only counts *Running* containers — a
+    // new container could publish the same host port yet be shadowed by this stale
+    // rule. `teardown` is idempotent, so a later `rerun`/`delete` is unaffected.
+    if let Some(net) = &s.net {
+        NetworkManager::new().teardown(id, net);
+    }
     s.status = Status::Stopped;
     s.meta.paused = false;
     s.save()
@@ -336,6 +395,11 @@ pub fn kill_now(id: &str) -> Result<()> {
         let cg = Cgroup::at(&s.cgroup);
         let _ = cg.kill_all();
         wait_drained(&cg);
+    }
+    // Tear down networking (same rationale as `stop`): drop the stale DNAT + lease
+    // so a reused host port isn't shadowed by a rule pointing at the dead IP.
+    if let Some(net) = &s.net {
+        NetworkManager::new().teardown(id, net);
     }
     s.status = Status::Stopped;
     s.meta.paused = false;
@@ -372,7 +436,21 @@ pub fn unpause(id: &str) -> Result<()> {
 /// bundle, keeping the overlay upper so its filesystem changes persist (Docker
 /// restart semantics). Tears down the dead init's networking + empty cgroup
 /// first, then re-creates + starts a fresh init. Bumps `restart_count`.
+///
+/// Holds the per-container lock across the WHOLE destructive load→teardown→
+/// remove→create→start sequence: without it two concurrent restart clicks race,
+/// and the loser's rollback (`remove_dir`) would delete the winner's freshly
+/// written `state.json`, orphaning a live init. The lock file now lives outside
+/// the state dir (see [`state`]), so `remove_dir` can't unlink the lock we hold.
 pub fn rerun(id: &str) -> Result<()> {
+    let _guard = State::lock(id)?;
+    rerun_locked(id)
+}
+
+/// `rerun` body, run with the per-container lock already held. Calls the
+/// lock-free create/start internals so it never re-takes (and self-deadlocks on)
+/// the lock it owns.
+fn rerun_locked(id: &str) -> Result<()> {
     let mut s = State::load(id)?;
     if s.refresh_status() == Status::Running {
         return Err(Error::BadState {
@@ -390,8 +468,10 @@ pub fn rerun(id: &str) -> Result<()> {
     meta.paused = false;
     meta.restart_count = meta.restart_count.saturating_add(1);
     State::remove_dir(id)?;
+    // `create_with_meta` does not take the lock (it's a create-path leaf), so it's
+    // safe to call while we hold it; `start_locked` likewise skips the lock.
     create_with_meta(id, &bundle, meta)?;
-    start(id)
+    start_locked(id)
 }
 
 /// `start` for the lifecycle UI: release a freshly-`created` container, or
@@ -479,9 +559,10 @@ pub fn exec(id: &str, args: &[String]) -> Result<i32> {
         });
     }
     let ns = open_ns_fds(s.pid)?;
+    let sec = load_bundle_spec(&s.bundle).and_then(|spec| sec_downgrade_for(&spec));
     let mut cmd = std::process::Command::new(&args[0]);
     cmd.args(&args[1..]);
-    enter_namespaces(&mut cmd, ns, open_cgroup_procs(&s.cgroup));
+    enter_namespaces(&mut cmd, ns, open_cgroup_procs(&s.cgroup), sec);
     let status = cmd
         .status()
         .map_err(|e| Error::Other(format!("exec: {e}")))?;
@@ -540,6 +621,177 @@ pub(crate) fn open_cgroup_procs(cgroup_rel: &str) -> Option<std::os::fd::OwnedFd
         .map(std::os::fd::OwnedFd::from)
 }
 
+/// The security downgrade an exec must re-apply after joining the container's
+/// namespaces, so an exec'd shell is no more privileged than the container's
+/// PID 1 (which `init` confined at start). All fields are pre-computed BEFORE the
+/// fork so applying them inside `pre_exec` is allocation-free / async-signal-safe.
+///
+/// Conservative subset of the init's setup: match PID 1's uid/gid(+groups) and
+/// cap the bounding/effective/permitted/inheritable sets to the spec's `bounding`
+/// list, then `NO_NEW_PRIVS`. We do NOT re-raise ambient caps or install seccomp
+/// (see [`sec_downgrade_for`] notes) — those only *reduce or match* privilege, so
+/// omitting them keeps exec strictly ≤ PID 1 and never breaks a working shell.
+#[derive(Clone)]
+pub(crate) struct SecDowngrade {
+    uid: u32,
+    gid: u32,
+    groups: Vec<u32>,
+    /// Bit i set ⇒ keep capability i (in every base set + bounding).
+    keep_caps: u64,
+    no_new_privs: bool,
+}
+
+/// Build the [`SecDowngrade`] for container `id` from its persisted bundle spec —
+/// the same `config.json` the init read. `None` if the bundle/spec/process is
+/// unreadable (exec then runs without the extra downgrade, as before — no worse
+/// than the pre-existing behavior, and the container's uid/caps still apply to
+/// PID 1; a shell is a super-admin-initiated action).
+///
+/// Deferred vs. the init: (1) ambient caps — re-raising them would *add* back
+/// privilege a non-root exec dropped, so we skip it (net effect: exec keeps no
+/// ambient caps, ≤ PID 1). (2) seccomp — the init installs it last; re-deriving
+/// the BPF here is heavier and only ever narrows the syscall surface, so it is
+/// left for a follow-up. Capabilities + uid/gid (the primary escalation vector)
+/// are applied.
+pub(crate) fn sec_downgrade_for(spec: &crate::oci::spec::Spec) -> Option<SecDowngrade> {
+    use caps::CapSet;
+    let process = spec.process.as_ref()?;
+
+    // Keep-mask: the spec's bounding set (what PID 1 was confined to). An absent
+    // capabilities block ⇒ keep nothing (drop all) — the safe default for a
+    // downgrade. Cap indices > 63 are ignored (the u64 mask covers CAP_LAST_CAP on
+    // every current kernel).
+    let mut keep_caps: u64 = 0;
+    if let Some(c) = process.capabilities.as_ref() {
+        for name in &c.bounding {
+            if let Ok(cap) = name.parse::<caps::Capability>() {
+                keep_caps |= 1u64 << cap.index();
+            }
+        }
+    }
+    // If the container runs as root (uid 0) with no explicit capability block,
+    // fall back to the current bounding set so we don't accidentally strip a
+    // legitimately-privileged (but non-`--privileged`, since those are rejected)
+    // container's caps from its own shell.
+    if process.capabilities.is_none() && process.user.uid == 0 {
+        if let Ok(cur) = caps::read(None, CapSet::Bounding) {
+            for cap in cur {
+                keep_caps |= 1u64 << cap.index();
+            }
+        }
+    }
+
+    Some(SecDowngrade {
+        uid: process.user.uid,
+        gid: process.user.gid,
+        groups: process.user.additional_gids.clone(),
+        keep_caps,
+        // Force NNP when the container had a seccomp filter or asked for it — an
+        // exec must not be able to regain privilege via a setuid binary either.
+        no_new_privs: process.no_new_privileges
+            || spec.linux.as_ref().is_some_and(|l| l.seccomp.is_some()),
+    })
+}
+
+/// Load the container's bundle spec (for [`sec_downgrade_for`]). Separate from the
+/// state load so callers can build the downgrade pre-fork.
+fn load_bundle_spec(bundle: &Path) -> Option<crate::oci::spec::Spec> {
+    Bundle::load(bundle).ok().map(|b| b.spec)
+}
+
+/// The `capset(2)` header/data structs (Linux `_LINUX_CAPABILITY_VERSION_3`),
+/// mirrored here so the downgrade can call the raw syscall inside `pre_exec`
+/// without the `caps` crate's allocating wrappers. The fields are read by the
+/// *kernel* through the raw pointer we pass, not by Rust — hence `dead_code`.
+#[repr(C)]
+#[allow(dead_code)]
+struct CapHeader {
+    version: u32,
+    pid: i32,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+struct CapData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+
+impl SecDowngrade {
+    /// Apply the downgrade in the forked child, pre-`execve`. Async-signal-safe:
+    /// only raw syscalls, no allocation (the groups vec is read, not built here).
+    /// On any failure returns the errno so the parent sees the exec fail rather
+    /// than silently running an over-privileged shell.
+    ///
+    /// # Safety
+    /// Must run post-fork / pre-exec in a context where these syscalls are valid
+    /// (after the namespaces are joined).
+    unsafe fn apply(&self) -> std::io::Result<()> {
+        // 1. Drop every bounding capability we are NOT keeping, so it can't be
+        //    regained across execve/setuid. Ignore EINVAL for indices past the
+        //    kernel's CAP_LAST_CAP (the kernel rejects unknown ones harmlessly).
+        for i in 0..64u32 {
+            if self.keep_caps & (1u64 << i) == 0 {
+                libc::prctl(libc::PR_CAPBSET_DROP, i as libc::c_ulong, 0, 0, 0);
+            }
+        }
+
+        // 2. Set the three base capability sets to the keep-mask (done while still
+        //    privileged, before the uid drop). capset takes two 32-bit words.
+        let hdr = CapHeader {
+            version: LINUX_CAPABILITY_VERSION_3,
+            pid: 0, // 0 = the calling thread
+        };
+        let lo = (self.keep_caps & 0xffff_ffff) as u32;
+        let hi = (self.keep_caps >> 32) as u32;
+        let data = [
+            CapData {
+                effective: lo,
+                permitted: lo,
+                inheritable: lo,
+            },
+            CapData {
+                effective: hi,
+                permitted: hi,
+                inheritable: hi,
+            },
+        ];
+        if libc::syscall(
+            libc::SYS_capset as libc::c_long,
+            &hdr as *const CapHeader,
+            data.as_ptr(),
+        ) < 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        // 3. gid, supplementary groups, then uid — same order the init uses (can't
+        //    setgroups after dropping uid). setgroups is best-effort when empty.
+        if libc::setgroups(
+            self.groups.len(),
+            self.groups.as_ptr() as *const libc::gid_t,
+        ) < 0
+            && !self.groups.is_empty()
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::setresgid(self.gid, self.gid, self.gid) < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::setresuid(self.uid, self.uid, self.uid) < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        // 4. no_new_privileges last, mirroring the init.
+        if self.no_new_privs && libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
 /// Make `cmd` `setns(2)` into the container's namespaces right before `execve`
 /// (no `nsenter` binary). The exec'd program is resolved + run inside the
 /// container's mount namespace. NOTE: `setns` of a PID namespace places the
@@ -552,16 +804,21 @@ pub(crate) fn open_cgroup_procs(cgroup_rel: &str) -> Option<std::os::fd::OwnedFd
 /// accounted + limited by the container's cgroup (a tenant shell must not escape
 /// the memory limit). Best-effort: a write failure leaves the exec unaccounted but
 /// still running.
+///
+/// `sec` (when present) re-applies the container's uid/gid/capability downgrade
+/// AFTER joining the namespaces, so an exec shell is not more privileged than the
+/// container's PID 1 (see [`SecDowngrade`]). A downgrade failure aborts the exec.
 pub(crate) fn enter_namespaces(
     cmd: &mut std::process::Command,
     ns_fds: Vec<std::os::fd::OwnedFd>,
     cgroup_procs: Option<std::os::fd::OwnedFd>,
+    sec: Option<SecDowngrade>,
 ) {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
     // SAFETY: runs in the forked child before exec; `setns`/`as_raw_fd`/`write`/
-    // `getpid` are async-signal-safe and allocate nothing (the fd vec is built
-    // pre-fork; the pid is formatted into a stack buffer).
+    // `getpid`/`capset`/`setres*id`/`prctl` are async-signal-safe and allocate
+    // nothing (the fd vec + groups vec are built pre-fork).
     unsafe {
         cmd.pre_exec(move || {
             for fd in &ns_fds {
@@ -576,6 +833,12 @@ pub(crate) fn enter_namespaces(
                 let mut buf = [0u8; 24];
                 let n = fmt_pid(libc::getpid(), &mut buf);
                 let _ = libc::write(procs.as_raw_fd(), buf.as_ptr() as *const libc::c_void, n);
+            }
+            // Re-apply PID 1's security downgrade (caps + uid/gid), so the exec is
+            // no more privileged than the container itself. Done AFTER setns +
+            // cgroup-join, while we still hold enough privilege to capset/setuid.
+            if let Some(sec) = &sec {
+                sec.apply()?;
             }
             Ok(())
         });
@@ -598,12 +861,13 @@ pub fn exec_capture(id: &str, argv: &[String], env: &[(String, String)]) -> Resu
         });
     }
     let ns = open_ns_fds(s.pid)?;
+    let sec = load_bundle_spec(&s.bundle).and_then(|spec| sec_downgrade_for(&spec));
     let mut cmd = std::process::Command::new(&argv[0]);
     cmd.args(&argv[1..]);
     for (k, v) in env {
         cmd.env(k, v);
     }
-    enter_namespaces(&mut cmd, ns, open_cgroup_procs(&s.cgroup));
+    enter_namespaces(&mut cmd, ns, open_cgroup_procs(&s.cgroup), sec);
     let out = cmd
         .output()
         .map_err(|e| Error::Other(format!("exec: {e}")))?;

@@ -18,6 +18,12 @@ use crate::error::{Error, Result};
 /// container's `/var/lib` data).
 const RUNTIME_ROOT: &str = "/var/lib/dn7-container/state";
 
+/// Per-container advisory lock files live here — a SIBLING of the state dir, NOT
+/// inside it, so `remove_dir` (which wipes `<state>/<id>`, formerly including the
+/// lock) can never unlink a lock a live verb is holding. That mattered for
+/// `rerun`, which deletes+recreates the state dir while still under its own lock.
+const LOCKS_ROOT: &str = "/var/lib/dn7-container/locks";
+
 /// The container lifecycle states (the OCI status values).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -74,8 +80,10 @@ pub struct StateMeta {
     /// The panel "recreate body" (container_create_body JSON) so backups + the
     /// edit form round-trip when DN7_RUNTIME=dn7.
     pub create_spec: Option<serde_json::Value>,
-    /// Last observed exit code (0 until a supervisor reaps the init — dn7 has none
-    /// yet, so this stays 0/unknown for detached containers).
+    /// Last observed exit code of the container init. Recorded by the per-container
+    /// reaper thread (see `container::spawn_reaper`) when the init exits — `128 +
+    /// signal` for a signalled exit. Stays `0` only until the first exit is reaped
+    /// (or if the reaping process wasn't the init's parent).
     pub exit_code: i32,
     pub restart_count: u32,
     /// Whether the container is currently frozen (`pause`d) — overlays the
@@ -134,8 +142,10 @@ impl State {
         Self::dir(id).join("state.json")
     }
 
+    /// The lock file for `id`, under the stable [`LOCKS_ROOT`] (never inside the
+    /// deletable state dir).
     fn lock_file(id: &str) -> PathBuf {
-        Self::dir(id).join(".lock")
+        Path::new(LOCKS_ROOT).join(format!("{id}.lock"))
     }
 
     /// The exec FIFO path the init parks on between `create` and `start`.
@@ -175,8 +185,11 @@ impl State {
     /// load→mutate→save sequence in it so two writers (panel + CLI) can't race on
     /// the same container — mirrors `net::ipam`'s flock discipline.
     pub fn lock(id: &str) -> Result<FlockGuard> {
-        let dir = Self::dir(id);
-        std::fs::create_dir_all(&dir).map_err(Error::io(&dir))?;
+        // Create the SHARED locks dir (not the per-container state dir): a lock can
+        // be taken for a container whose state dir was just removed (the reaper
+        // after `delete`) without resurrecting an empty state dir.
+        let locks = Path::new(LOCKS_ROOT);
+        std::fs::create_dir_all(locks).map_err(Error::io(locks))?;
         let lp = Self::lock_file(id);
         let file = OpenOptions::new()
             .create(true)
@@ -277,12 +290,38 @@ fn atomic_write_json<T: Serialize>(dir: &Path, name: &str, value: &T) -> Result<
     Ok(())
 }
 
-/// Is `pid` still a live process? `kill(pid, 0)` probes without signalling.
+/// Is `pid` still a live (non-zombie) process? `kill(pid, 0)` probes without
+/// signalling, but a *reaped-pending* zombie keeps its PID slot and so answers
+/// `Ok` — which would wrongly read as "alive". So after the ESRCH check we also
+/// reject a zombie by reading its `/proc/<pid>/stat` state char (`Z`): an exited
+/// container init we haven't `waitpid`'d yet must count as stopped, or `stop()`
+/// burns its whole timeout on a corpse and the record shows Running forever.
 pub fn pid_alive(pid: i32) -> bool {
     use nix::sys::signal::kill;
     use nix::unistd::Pid;
-    // ESRCH ⇒ gone; EPERM ⇒ exists but not ours (still "alive"); Ok ⇒ alive.
-    !matches!(kill(Pid::from_raw(pid), None), Err(nix::Error::ESRCH))
+    // ESRCH ⇒ gone. EPERM ⇒ exists but not ours (still "alive"); Ok ⇒ the slot is
+    // present (but may be a zombie — checked next).
+    if matches!(kill(Pid::from_raw(pid), None), Err(nix::Error::ESRCH)) {
+        return false;
+    }
+    !pid_is_zombie(pid)
+}
+
+/// Whether `/proc/<pid>/stat` reports the process in state `Z` (a defunct/zombie
+/// that still holds its PID until reaped). Absent `stat` (raced away) ⇒ not a
+/// zombie (the ESRCH check already handled "gone"); an unparsable line ⇒ likewise
+/// conservative false, so we never flip a live process to "dead" on a read glitch.
+fn pid_is_zombie(pid: i32) -> bool {
+    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    // The state char is the field after the (possibly paren-containing) comm,
+    // i.e. the first token past the last ')'. Format: `pid (comm) S ...`.
+    match stat.rsplit_once(')') {
+        Some((_, rest)) => rest.trim_start().starts_with('Z'),
+        None => false,
+    }
 }
 
 /// Format a Unix timestamp (seconds, UTC) as `YYYY-MM-DDThh:mm:ssZ`, using
