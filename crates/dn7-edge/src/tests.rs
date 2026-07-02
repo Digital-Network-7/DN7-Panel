@@ -586,6 +586,7 @@ mod edge_tests {
             tls: false,
             sni: None,
             peer,
+            conn_permit: None,
         };
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", "1.2.3.4".parse().unwrap());

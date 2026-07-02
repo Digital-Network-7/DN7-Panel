@@ -21,7 +21,7 @@ use std::time::Duration;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_rustls::TlsAcceptor;
 
 use super::{router, store, tls};
@@ -172,11 +172,17 @@ pub(crate) async fn serve_plain(listener: tokio::net::TcpListener) -> anyhow::Re
         set_keepalive(&stream);
 
         tokio::spawn(async move {
-            let _permit = permit; // released when this connection finishes
+            // The connection slot rides inside ConnCtx as a refcounted permit so
+            // that on a WebSocket upgrade the detached tunnel task can keep a
+            // clone alive past serve_conn's return — live tunnels then count
+            // against MAX_CONNECTIONS instead of freeing the slot the instant the
+            // empty 101 drains (which let one client open unbounded tunnels for
+            // free). For a plain request it drops exactly when serve_conn ends.
             let ctx = ConnCtx {
                 tls: false,
                 sni: None,
                 peer,
+                conn_permit: Some(Arc::new(permit)),
             };
             serve_conn(TokioIo::new(stream), ctx).await;
         });
@@ -211,10 +217,11 @@ pub(crate) async fn serve_tls(
 
         let acceptor = acceptor.clone();
         tokio::spawn(async move {
-            let _permit = permit; // released when this connection finishes
-                                  // Terminate TLS under a deadline so a slow/incomplete handshake
-                                  // (slowloris on :443) can't pin the task/fd. A failed or timed-out
-                                  // handshake is per-connection: log and drop.
+            // Terminate TLS under a deadline so a slow/incomplete handshake
+            // (slowloris on :443) can't pin the task/fd. A failed or timed-out
+            // handshake is per-connection: log and drop — `permit` is still owned
+            // by this task, so it releases the slot on those early returns; on
+            // success it moves into ConnCtx below (see serve_plain for why).
             let tls_stream =
                 match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
                     Ok(Ok(s)) => s,
@@ -237,6 +244,7 @@ pub(crate) async fn serve_tls(
                 tls: true,
                 sni,
                 peer,
+                conn_permit: Some(Arc::new(permit)),
             };
             serve_conn(TokioIo::new(tls_stream), ctx).await;
         });
@@ -293,6 +301,11 @@ pub(crate) struct ConnCtx {
     pub(crate) sni: Option<String>,
     /// The peer socket address (the immediate TCP client).
     pub(crate) peer: std::net::SocketAddr,
+    /// The global connection-slot permit for this connection, refcounted so a
+    /// WebSocket tunnel can keep it alive for the tunnel's lifetime (moved into
+    /// the detached copy task). `None` only on synthetic contexts (tests) that
+    /// never went through the accept-loop limiter.
+    pub(crate) conn_permit: Option<Arc<OwnedSemaphorePermit>>,
 }
 
 /// Type alias kept so other modules can name the shared config handle.

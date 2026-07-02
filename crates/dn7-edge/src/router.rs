@@ -200,22 +200,35 @@ pub(crate) async fn handle(
     //    precedence over the site's main handler; locations are pre-sorted
     //    longest-prefix-first by the builder, so the first match is the most
     //    specific one.
-    let resp = if let Some(loc) = route
+    //
+    //    The per-IP `conn_guard` is handed to `proxy::handle`, which returns it so
+    //    step 8.7 can thread it into the response body — EXCEPT on a WebSocket
+    //    upgrade, where it returns `None` because it moved the guard into the
+    //    detached tunnel task (so the slot is held for the tunnel's lifetime, not
+    //    just the empty 101 body). The non-proxy handlers don't touch the guard,
+    //    so it passes straight through to 8.7 there.
+    let (resp, conn_guard) = if let Some(loc) = route
         .locations
         .iter()
         .find(|l| location_matches(&l.path, &match_path))
     {
-        proxy::handle(req, &loc.target, ctx, client_ip, &cfg.tuning).await
+        proxy::handle(req, &loc.target, ctx, client_ip, &cfg.tuning, conn_guard).await
     } else {
         match &route.kind {
             RouteKind::Proxy(target) => {
-                proxy::handle(req, target, ctx, client_ip, &cfg.tuning).await
+                proxy::handle(req, target, ctx, client_ip, &cfg.tuning, conn_guard).await
             }
-            RouteKind::Static(root) => static_files::handle(&req, root, &cfg.tuning).await,
+            RouteKind::Static(root) => (
+                static_files::handle(&req, root, &cfg.tuning).await,
+                conn_guard,
+            ),
             // The maintenance stub: upstream unresolvable at build time.
-            RouteKind::Maintenance => response::text(
-                http::StatusCode::SERVICE_UNAVAILABLE,
-                "503 Service Unavailable",
+            RouteKind::Maintenance => (
+                response::text(
+                    http::StatusCode::SERVICE_UNAVAILABLE,
+                    "503 Service Unavailable",
+                ),
+                conn_guard,
             ),
         }
     };

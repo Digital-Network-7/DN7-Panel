@@ -34,9 +34,10 @@ use hyper::Request;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedSemaphorePermit, RwLock};
 
 use super::config::{ProxyTarget, Tuning, Upstream};
+use super::conn_limit::ConnGuard;
 use super::listener::ConnCtx;
 use super::response::{self, Resp};
 use super::timeout_body::ProxyReqBody;
@@ -63,6 +64,24 @@ const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// body can't hold a connection open. Resets on every byte, so a slow-but-steady
 /// large upload is fine.
 const BODY_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Upstream response-header timeout (nginx `proxy_read_timeout` for the
+/// time-to-first-byte): bound how long we wait for the upstream to return its
+/// response *head*. An upstream that accepts the request but never answers (a
+/// deadlocked worker whose TCP still ACKs, so connect/keepalive never fire) would
+/// otherwise pin the request task — and the per-IP `ConnGuard` wrapped around the
+/// response body — forever. On elapse we abandon the request and return 504.
+const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Upstream response-body inactivity timeout (the streaming half of
+/// `proxy_read_timeout`): once headers are in, bound the gap between response
+/// body frames the same way [`BODY_INACTIVITY_TIMEOUT`] bounds the request side.
+/// An upstream that sends headers and then stalls mid-body (again, TCP still
+/// ACKs, so keepalive never fires) would otherwise hold the request task and its
+/// `ConnGuard` open indefinitely; the timer resets on every frame, so a
+/// slow-but-steady download is untouched. Aborting the body drops the guard,
+/// releasing the per-IP slot instead of leaking it toward the global ceiling.
+const RESPONSE_BODY_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Hop-by-hop headers (RFC 7230 §6.1) that are scoped to a single transport hop
 /// and must not be forwarded through a proxy. Stripped from both the request we
@@ -135,13 +154,23 @@ fn client() -> &'static Client<HttpsConnector, ProxyReqBody> {
 
 /// Proxy `req` to `target`. `client_ip` is the already-resolved real client IP
 /// (post real_ip), `ctx` carries the inbound scheme for `X-Forwarded-Proto`.
+///
+/// `conn_guard` is the per-IP concurrency slot the router acquired for this
+/// request (`None` when the route is unlimited / loopback-exempt). It is returned
+/// so the router can thread it into the response body — EXCEPT on a WebSocket
+/// upgrade, where the tunnel outlives this response: there the guard is moved
+/// INTO the detached tunnel task and this returns `None`, so the per-IP slot is
+/// held for the tunnel's whole lifetime instead of dropping the instant the empty
+/// `101` body drains (which would let one client open unbounded long-lived
+/// tunnels for free).
 pub(crate) async fn handle(
     mut req: Request<Incoming>,
     target: &ProxyTarget,
     ctx: &ConnCtx,
     client_ip: IpAddr,
     tuning: &Tuning,
-) -> Resp {
+    conn_guard: Option<ConnGuard>,
+) -> (Resp, Option<ConnGuard>) {
     // Enforce `client_max_body_size` early via the declared Content-Length, so an
     // oversized upload is rejected with 413 before we dial the upstream. This is
     // the fast path only: a chunked / HTTP-2 body carries no length up front, so
@@ -158,9 +187,12 @@ pub(crate) async fn handle(
             .and_then(|s| s.parse::<u64>().ok())
         {
             if len > tuning.client_max_body_size {
-                return response::text(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "413 Request Entity Too Large",
+                return (
+                    response::text(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "413 Request Entity Too Large",
+                    ),
+                    conn_guard,
                 );
             }
         }
@@ -172,7 +204,12 @@ pub(crate) async fn handle(
     // signal: serve 503, not a hard 502.
     let authority = match resolve_authority(&target.upstream).await {
         Some(a) => a,
-        None => return response::status(StatusCode::SERVICE_UNAVAILABLE),
+        None => {
+            return (
+                response::status(StatusCode::SERVICE_UNAVAILABLE),
+                conn_guard,
+            )
+        }
     };
 
     // Detect the WebSocket (Upgrade) handshake up front: it needs a dedicated
@@ -193,7 +230,7 @@ pub(crate) async fn handle(
     let uri_str = format!("{}://{}{}", target.scheme, authority, path_and_query);
     let new_uri = match uri_str.parse::<http::Uri>() {
         Ok(u) => u,
-        Err(_) => return response::status(StatusCode::BAD_GATEWAY),
+        Err(_) => return (response::status(StatusCode::BAD_GATEWAY), conn_guard),
     };
     *req.uri_mut() = new_uri;
 
@@ -201,8 +238,14 @@ pub(crate) async fn handle(
     // WS upgrade we must NOT strip connection/upgrade — they carry the handshake.
     rewrite_request_headers(req.headers_mut(), &authority, ctx, client_ip, target, is_ws);
 
-    let mut resp = if is_ws {
-        proxy_websocket(req, target, &authority).await
+    // `leftover_guard` is the per-IP slot the router should thread into the
+    // response body. On the WS path it is moved into the tunnel task (so it lives
+    // for the tunnel, not just the empty 101) and `None` is left here.
+    let (mut resp, leftover_guard) = if is_ws {
+        (
+            proxy_websocket(req, target, &authority, conn_guard, ctx.conn_permit.clone()).await,
+            None,
+        )
     } else {
         // The upstream (a managed site or the loopback console) speaks HTTP/1.
         // The inbound request may be HTTP/2 — the edge's TLS listener negotiates
@@ -210,7 +253,10 @@ pub(crate) async fn handle(
         // reject it ("Connection is HTTP/1, but request requires HTTP/2" ->
         // 502). Terminate the client's protocol here and speak h1 to the backend.
         *req.version_mut() = http::Version::HTTP_11;
-        proxy_plain(req, tuning.client_max_body_size).await
+        (
+            proxy_plain(req, tuning.client_max_body_size).await,
+            conn_guard,
+        )
     };
     // Only cache a SUCCESSFUL asset response — never a transient upstream error
     // (502/503/504) or a 404, which would otherwise be pinned for a week.
@@ -223,7 +269,7 @@ pub(crate) async fn handle(
             );
         }
     }
-    resp
+    (resp, leftover_guard)
 }
 
 /// Static-asset file extensions that get a long cache lifetime under the proxy
@@ -382,18 +428,188 @@ async fn proxy_plain(req: Request<Incoming>, max_body: u64) -> Resp {
         // no Content-Length.
         super::limit_body::limit(body, max_body)
     });
-    match client().request(req).await {
+    // Bound the wait for the upstream response *head* (time-to-first-byte). The
+    // pooled client only carries a connect timeout + TCP keepalive; an upstream
+    // that accepts the request and then deadlocks (still ACKing, so keepalive
+    // never fires) would otherwise pin this task — and the per-IP `ConnGuard`
+    // threaded into the response body downstream — forever. On elapse we abandon
+    // the request future (dropping it cancels the in-flight upstream request) and
+    // return 504.
+    //
+    // The bound is applied ONLY to a bodyless request (the GET/HEAD common case).
+    // A body-bearing request folds the *upload* time into `client().request()` —
+    // a legitimate large upload (up to `client_max_body_size`, default 1 GiB) over
+    // a slow link can steadily take far longer than this timeout, and killing it
+    // mid-upload would be a regression. Its send phase is already bounded by the
+    // request-body *inactivity* timeout above (a stalled upload aborts), and its
+    // response read is bounded by the response-body inactivity timeout below, so
+    // the absolute header cap is unnecessary — and unsafe — for that shape.
+    let request = client().request(req);
+    let sent = if carries_body {
+        request.await
+    } else {
+        match tokio::time::timeout(RESPONSE_HEADER_TIMEOUT, request).await {
+            Ok(r) => r,
+            Err(_) => {
+                tracing::warn!("edge proxy: upstream response-header timeout");
+                return response::status(StatusCode::GATEWAY_TIMEOUT);
+            }
+        }
+    };
+    match sent {
         Ok(upstream) => {
             let (mut parts, body) = upstream.into_parts();
             strip_hop_by_hop(&mut parts.headers, false);
             // Stream the body back without buffering; `boxed` adapts the legacy
             // client's body into the unified `ResBody`. `Parts` carries no body
             // type, so re-pairing it with our boxed body is a plain `from_parts`.
-            http::Response::from_parts(parts, response::boxed(body))
+            // The body is then wrapped in a response-side inactivity timeout so a
+            // mid-stream stall aborts the body (and drops the downstream
+            // `ConnGuard`) instead of hanging forever.
+            let body = resp_timeout::wrap(response::boxed(body), RESPONSE_BODY_INACTIVITY_TIMEOUT);
+            http::Response::from_parts(parts, body)
         }
         Err(e) => {
             tracing::warn!(error = %e, "edge proxy: upstream request failed");
             response::status(StatusCode::BAD_GATEWAY)
+        }
+    }
+}
+
+/// A response-side inactivity-timeout body wrapper — the streaming half of nginx's
+/// `proxy_read_timeout`. It mirrors [`super::timeout_body::TimeoutBody`] (the
+/// request-side guard) but over the response body type ([`ResBody`], whose error
+/// is `std::io::Error`): if the upstream makes no progress (data/trailers/EOF)
+/// within the window, the body errors out, tearing down a stalled response and,
+/// crucially, dropping any per-IP `ConnGuard` wrapped further out so its slot is
+/// released rather than leaked. A body that keeps making progress is never
+/// interrupted (the timer resets on every frame).
+mod resp_timeout {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use http_body::{Body, Frame, SizeHint};
+    use http_body_util::BodyExt;
+
+    use super::response::ResBody;
+
+    struct RespTimeoutBody {
+        inner: ResBody,
+        timeout: Duration,
+        sleep: Pin<Box<tokio::time::Sleep>>,
+    }
+
+    impl Body for RespTimeoutBody {
+        type Data = Bytes;
+        type Error = std::io::Error;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, std::io::Error>>> {
+            // `RespTimeoutBody` is `Unpin` (UnsyncBoxBody + Pin<Box<Sleep>> +
+            // Duration), so we can take a plain `&mut`.
+            let this = self.get_mut();
+            match Pin::new(&mut this.inner).poll_frame(cx) {
+                Poll::Ready(v) => {
+                    // Progress made — reset the inactivity deadline.
+                    let next = tokio::time::Instant::now() + this.timeout;
+                    this.sleep.as_mut().reset(next);
+                    Poll::Ready(v)
+                }
+                Poll::Pending => match this.sleep.as_mut().poll(cx) {
+                    Poll::Ready(()) => Poll::Ready(Some(Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "upstream response inactivity timeout",
+                    )))),
+                    Poll::Pending => Poll::Pending,
+                },
+            }
+        }
+
+        fn is_end_stream(&self) -> bool {
+            self.inner.is_end_stream()
+        }
+
+        fn size_hint(&self) -> SizeHint {
+            self.inner.size_hint()
+        }
+    }
+
+    /// Wrap a response body with an inactivity deadline (resets on every frame).
+    /// Boxed via `boxed_unsync` (not `response::boxed`) because `RespTimeoutBody`'s
+    /// error is already `std::io::Error` — re-wrapping through `boxed`'s `map_err`
+    /// would flatten the timeout's `ErrorKind::TimedOut` into `Other` and add a
+    /// redundant box layer.
+    pub(super) fn wrap(inner: ResBody, timeout: Duration) -> ResBody {
+        RespTimeoutBody {
+            inner,
+            timeout,
+            sleep: Box::pin(tokio::time::sleep(timeout)),
+        }
+        .boxed_unsync()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::response::boxed;
+        use http_body_util::{BodyExt, Full};
+
+        /// A body that yields `first` (if any) once and then stalls forever
+        /// (`Pending`, never `Ready`) — models an upstream that sends some bytes
+        /// and then deadlocks mid-stream while its TCP still ACKs.
+        struct StallBody {
+            first: Option<Bytes>,
+        }
+
+        impl Body for StallBody {
+            type Data = Bytes;
+            type Error = std::io::Error;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Bytes>, std::io::Error>>> {
+                match self.first.take() {
+                    Some(b) => Poll::Ready(Some(Ok(Frame::data(b)))),
+                    // No waker registered: the body never makes progress again.
+                    None => Poll::Pending,
+                }
+            }
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn errors_when_upstream_body_stalls() {
+            // Headers already arrived; the body yields one chunk then hangs. With a
+            // short inactivity window the wrapper must surface an error (which, in
+            // the router, drops the ConnGuard) rather than block forever. Paused
+            // time auto-advances once the task can make no other progress, firing
+            // the inactivity sleep deterministically.
+            let inner = boxed(StallBody {
+                first: Some(Bytes::from_static(b"partial")),
+            });
+            let err = wrap(inner, Duration::from_millis(50))
+                .collect()
+                .await
+                .expect_err("a stalled response body must error out, not hang");
+            assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn passes_a_complete_body_through_untouched() {
+            // A body that completes promptly is delivered verbatim — the timeout
+            // is armed but never fires because EOF arrives first.
+            let data = b"the whole response body";
+            let inner = boxed(Full::new(Bytes::from_static(data)));
+            let got = wrap(inner, Duration::from_secs(60))
+                .collect()
+                .await
+                .expect("a complete body must not error")
+                .to_bytes();
+            assert_eq!(got.as_ref(), data);
         }
     }
 }
@@ -403,10 +619,16 @@ async fn proxy_plain(req: Request<Incoming>, max_body: u64) -> Resp {
 /// upgrade future *before* consuming the request, open a one-shot upstream
 /// connection (plain TCP or rustls), forward the handshake, and on a `101` spawn
 /// a task that copies bytes both ways once both upgrades complete.
+/// `conn_guard` is the per-IP concurrency slot for this request; on a successful
+/// `101` it is moved into the tunnel copy task so the slot is held for the whole
+/// tunnel lifetime. On any pre-101 failure it simply drops here (the request is
+/// over, so there is nothing to keep the slot alive for).
 async fn proxy_websocket(
     mut req: Request<Incoming>,
     target: &ProxyTarget,
     authority: &str,
+    conn_guard: Option<ConnGuard>,
+    conn_permit: Option<Arc<OwnedSemaphorePermit>>,
 ) -> Resp {
     use tokio::net::TcpStream;
 
@@ -440,9 +662,9 @@ async fn proxy_websocket(
                 return response::status(StatusCode::BAD_GATEWAY);
             }
         };
-        ws_handshake(TokioIo::new(tls), req, inbound).await
+        ws_handshake(TokioIo::new(tls), req, inbound, conn_guard, conn_permit).await
     } else {
-        ws_handshake(TokioIo::new(tcp), req, inbound).await
+        ws_handshake(TokioIo::new(tcp), req, inbound, conn_guard, conn_permit).await
     }
 }
 
@@ -450,7 +672,13 @@ async fn proxy_websocket(
 /// TLS-wrapped) IO, forward the upgrade request, and wire up the bidirectional
 /// copy on a `101`. Generic over the upstream IO so the http and https branches
 /// share this code.
-async fn ws_handshake<I>(io: I, req: Request<Incoming>, inbound: hyper::upgrade::OnUpgrade) -> Resp
+async fn ws_handshake<I>(
+    io: I,
+    req: Request<Incoming>,
+    inbound: hyper::upgrade::OnUpgrade,
+    conn_guard: Option<ConnGuard>,
+    conn_permit: Option<Arc<OwnedSemaphorePermit>>,
+) -> Resp
 where
     I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
 {
@@ -502,7 +730,20 @@ where
 
     // Bridge the two streams once both upgrades resolve. Spawned detached so the
     // service can return the 101 immediately and let hyper finish the upgrade.
+    //
+    // Both the per-IP `ConnGuard` AND the global connection permit are MOVED into
+    // this task and only dropped when it returns (i.e. when `copy_bidirectional`
+    // finishes). Because the connection's service returns the empty 101
+    // immediately — which drops the router-side response body and lets
+    // serve_conn's connection future complete — the tunnel would otherwise be
+    // counted by NO limiter: one client could open unbounded long-lived tunnels.
+    // Holding the per-IP guard makes `conn_per_ip` count active tunnels, and
+    // holding the refcounted global permit keeps the tunnel counted against
+    // `MAX_CONNECTIONS`, closing both halves of that hole.
     tokio::spawn(async move {
+        // Both held for the tunnel lifetime; released (slots freed) on task return.
+        let _conn_guard = conn_guard;
+        let _conn_permit = conn_permit;
         let (client_io, server_io) = match tokio::try_join!(inbound, upstream_upgrade) {
             Ok(pair) => pair,
             Err(e) => {
