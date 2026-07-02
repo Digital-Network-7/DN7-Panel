@@ -88,7 +88,25 @@ pub(crate) fn build_runtime(input: &ReloadInput) -> Result<RuntimeConfig, String
         // (mirrors `degrade_if_cert_missing`: one cert-less site must not break
         // the whole reload).
         let cert = if site.ssl {
-            load_site_cert(input, site)
+            let ck = load_site_cert(input, site);
+            // Degrade one cert-less site to plaintext, but LOUDLY: an ssl=true
+            // site whose cert is missing/unparseable silently drops to HTTP (and
+            // force_ssl/HSTS go false with it), so make the downgrade observable
+            // the way the ACL path warns on a bad rule instead of failing open.
+            if ck.is_none() {
+                tracing::warn!(
+                    site = %site.id,
+                    host = %primary_host(&site.server_name),
+                    cert = %if site.cert_name.is_empty() {
+                        format!("{}.crt/.key", site.id)
+                    } else {
+                        format!("cert-{}.crt/.key", site.cert_name)
+                    },
+                    "edge build: site requests SSL but its cert is missing or unparseable; \
+                     serving it as plaintext HTTP (no TLS, no force-SSL redirect)"
+                );
+            }
+            ck
         } else {
             None
         };
@@ -247,6 +265,12 @@ fn split_names(server_name: &str) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .collect()
+}
+
+/// The first hostname of a (possibly multi-host) `server_name`, for log context.
+/// `"?"` when the field is blank so a warn line always names *something*.
+fn primary_host(server_name: &str) -> &str {
+    server_name.split_whitespace().next().unwrap_or("?")
 }
 
 /// Index a cert under a hostname (exact or `*.suffix` wildcard).
