@@ -19,7 +19,7 @@
 //! Once a new build boots healthy the pending marker is cleared, so a later,
 //! unrelated event can never move a good version onto the skiplist.
 
-use super::{parse_semver, UpdateState};
+use super::{is_newer, parse_semver, UpdateState};
 
 /// Pure skip decision (unit-testable without touching the filesystem): a version
 /// is refused if it is in the failed-boot skiplist. Comparison is on the parsed
@@ -78,6 +78,39 @@ pub fn clear_attempted_version() {
     if let Err(e) = st.save() {
         tracing::warn!("could not clear attempted-update marker: {e}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Rollback-state accessors (read by /api/update/status)
+// ---------------------------------------------------------------------------
+
+/// The version the last update attempt was rolled back FROM, if the panel is
+/// currently running a rolled-back (older) build: the most recently skiplisted
+/// version that is still newer than us. `None` once a later build installs
+/// healthily (nothing on the list is newer than the running version any more),
+/// so the UI banner clears itself without extra state.
+pub fn rolled_back_from() -> Option<String> {
+    let current = env!("CARGO_PKG_VERSION");
+    UpdateState::load()
+        .failed_versions
+        .iter()
+        .rev()
+        .find(|v| is_newer(current, v.as_str()))
+        .cloned()
+}
+
+/// Whether a just-installed update is still awaiting its boot confirmation:
+/// the `.prev` rollback backup exists and the boot-ok marker hasn't
+/// (re)appeared — the same on-disk state the supervisor keys its one-shot
+/// rollback on (`supervise.rs`).
+pub fn update_pending_verify() -> bool {
+    crate::platform::paths::prev_bin().exists() && !crate::platform::paths::boot_marker().exists()
+}
+
+/// The persisted failed-boot skiplist, surfaced so operators can see WHY the
+/// checker refuses a version instead of silently never offering it.
+pub fn failed_versions() -> Vec<String> {
+    UpdateState::load().failed_versions
 }
 
 #[cfg(test)]

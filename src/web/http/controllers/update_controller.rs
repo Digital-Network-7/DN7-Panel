@@ -14,6 +14,11 @@ pub(crate) async fn update_status(
     if let Err(r) = require_admin(&state, &headers) {
         return r;
     }
+    // Rollback visibility: all read from the persisted update.json + on-disk
+    // markers (they survive the supervisor re-exec a rollback performs), so the
+    // UI can say "update to X was rolled back" instead of silently sitting on
+    // the old version.
+    let rollback_from = crate::platform::update::rolled_back_from();
     Json(json!({
         "ok": true,
         "data": {
@@ -23,6 +28,10 @@ pub(crate) async fn update_status(
             "total_bytes": crate::platform::update::total_bytes(),
             "in_progress": crate::platform::update::in_progress(),
             "current": env!("CARGO_PKG_VERSION"),
+            "rolled_back": rollback_from.is_some(),
+            "rollback_from": rollback_from,
+            "update_pending_verify": crate::platform::update::update_pending_verify(),
+            "failed_versions": crate::platform::update::failed_versions(),
         }
     }))
     .into_response()
