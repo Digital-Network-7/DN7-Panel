@@ -1,53 +1,200 @@
 // =========================================================================
-// Dashboard — one screen: live stat cards + a history chart (CPU / 内存 / 网络
-// over 15m / 1h / 6h / 1d / 7d), drawn on a plain <canvas> (no chart lib).
+// Dashboard — bento grid: four live stat tiles (with rolling sparklines), a
+// system tile (host identity + per-mount disks) and a history chart hero
+// (CPU / 内存 / 网络 over 15m / 1h / 6h / 1d / 7d) drawn on a plain <canvas>
+// (no chart lib). Chart selection, last payload and the sparkline buffers
+// live at module scope so tab switches don't reset them.
 // =========================================================================
+const DASH = {
+  H: { metric: 'cpu', range: '15m', data: null, hover: null }, // history chart state
+  spark: { rx: [], tx: [], cpu: [], mem: [], disk: [] },       // rolling sample buffers
+};
+const DASH_SPARK_MAX = 40;
+const HIST_RX = '#38bdf8', HIST_TX = '#f59e0b'; // download / upload series
+
+// warn ≥80%, err ≥92% — class suffix for bars and big numbers.
+function dashSev(pct) { return pct >= 92 ? 'err' : pct >= 80 ? 'warn' : ''; }
+
+// "14d 3h" style uptime from seconds (unit strings are locale keys).
+function fmtUptime(s) {
+  s = Math.max(0, Number(s) || 0);
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  if (d) return tr('dash.up_d', { d, h });
+  if (h) return tr('dash.up_h', { h, m });
+  return tr('dash.up_m', { m });
+}
+
 function renderDash(v) {
+  const H = DASH.H;
+  H.hover = null;
+  // First-paint skeletons: every tile shimmers until the first poll lands.
+  const skel = `
+    <div class="skel" style="height:12px;width:42%"></div>
+    <div class="skel" style="height:24px;width:58%;margin-top:12px"></div>
+    <div class="skel" style="height:12px;width:78%;margin-top:10px"></div>`;
+  const stat = (id, cls) => `<div class="card stattile tile-3${cls || ''}" id="${id}">${skel}</div>`;
   v.innerHTML = `
-    <div class="dash">
-      <div class="statrow" id="cards"></div>
-      <div class="card histcard">
-        <div class="hist-head">
-          <div class="subtabs hist-metric" id="histMetric">
-            <button data-m="cpu" class="on">CPU</button>
-            <button data-m="mem">${tr('dash.mem')}</button>
-            <button data-m="net">${tr('dash.net')}</button>
+    <div class="dash" id="dashRoot">
+      <div class="dash-grid">
+        ${stat('dCpu')}${stat('dMem')}${stat('dDisk')}${stat('dNet', ' netcard')}
+        <div class="card histcard tile-hero with-side">
+          <div class="hist-head">
+            <div class="subtabs hist-metric" id="histMetric">
+              <button data-m="cpu"${H.metric === 'cpu' ? ' class="on"' : ''}>CPU</button>
+              <button data-m="mem"${H.metric === 'mem' ? ' class="on"' : ''}>${tr('dash.mem')}</button>
+              <button data-m="net"${H.metric === 'net' ? ' class="on"' : ''}>${tr('dash.net')}</button>
+            </div>
+            <span class="chip warn" id="dashStale" style="display:none">${tr('dash.unreachable')}</span>
+            <div class="subtabs hist-range" id="histRange">
+              ${['15m', '1h', '6h', '1d', '7d'].map((r) => `<button data-r="${r}"${H.range === r ? ' class="on"' : ''}>${r}</button>`).join('')}
+            </div>
           </div>
-          <div class="subtabs hist-range" id="histRange">
-            <button data-r="15m" class="on">15m</button>
-            <button data-r="1h">1h</button>
-            <button data-r="6h">6h</button>
-            <button data-r="1d">1d</button>
-            <button data-r="7d">7d</button>
+          <div class="hist-body" id="histBody">
+            <canvas id="histCanvas"></canvas>
+            <div class="hist-empty mut" id="histEmpty" style="display:none"></div>
+            <div class="hist-tip" id="histTip" style="display:none"></div>
           </div>
         </div>
-        <div class="hist-body">
-          <canvas id="histCanvas"></canvas>
-          <div class="hist-empty mut" id="histEmpty" style="display:none"></div>
-          <div class="hist-tip" id="histTip" style="display:none"></div>
-        </div>
+        <div class="card tile-side" id="dSys">${skel}</div>
       </div>
     </div>`;
-  const hist = { rx: [], tx: [] };
-  const H = { metric: 'cpu', range: '15m', data: null, hover: null };
 
+  // ---- tile bodies (built ONCE on the first successful poll; later ticks
+  // only patch text/width/svg nodes so the .bar width transition can run and
+  // text selection survives the 2s refresh) ----
+  const statBody = (title) => `<h3>${title}</h3><div class="big">—</div><div class="sub"></div><div class="bar"><i></i></div><div class="cardspark"></div>`;
+  const netBody = () => {
+    const upIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V7"/><path d="M6 11l6-6 6 6"/><path d="M5 21h14"/></svg>';
+    const dnIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v12"/><path d="M6 13l6 6 6-6"/><path d="M5 3h14"/></svg>';
+    return `<h3>${tr('dash.net')}</h3>
+      <div class="netsplit">
+        <div class="netcell up">
+          <div class="nethdr"><span class="netic">${upIcon}</span><span>${tr('dash.up')}</span></div>
+          <div class="netval"><span id="dNetTx">0 B</span><s>/s</s></div>
+          <div class="netchart" id="dNetTxS"></div>
+        </div>
+        <div class="netcell dn">
+          <div class="nethdr"><span class="netic">${dnIcon}</span><span>${tr('dash.dn')}</span></div>
+          <div class="netval"><span id="dNetRx">0 B</span><s>/s</s></div>
+          <div class="netchart" id="dNetRxS"></div>
+        </div>
+      </div>`;
+  };
+  const sysRow = (k, id) => `<div class="sysrow" id="${id}Row" style="display:none"><span class="k">${k}</span><span class="v" id="${id}"></span></div>`;
+  const sysBody = () => `<h3>${tr('dash.sys')}</h3>
+    <div class="sysrows">
+      ${sysRow(tr('dash.host'), 'dSysHost')}
+      ${sysRow(tr('dash.os'), 'dSysOs')}
+      ${sysRow(tr('dash.uptime'), 'dSysUp')}
+      ${sysRow(tr('dash.ip'), 'dSysIp')}
+      ${sysRow(tr('dash.cpu_model'), 'dSysCpu')}
+    </div>
+    <div class="sysmounts" id="dSysMounts"></div>`;
+
+  let N = null; // node refs for incremental updates
+  const buildCards = () => {
+    $('dCpu').innerHTML = statBody('CPU');
+    $('dMem').innerHTML = statBody(tr('dash.mem'));
+    $('dDisk').innerHTML = statBody(tr('dash.disk'));
+    $('dNet').innerHTML = netBody();
+    $('dSys').innerHTML = sysBody();
+    const pick3 = (id) => { const c = $(id); return { big: c.querySelector('.big'), sub: c.querySelector('.sub'), bar: c.querySelector('.bar>i'), spark: c.querySelector('.cardspark') }; };
+    N = { cpu: pick3('dCpu'), mem: pick3('dMem'), disk: pick3('dDisk'), mountSig: '' };
+  };
+  const setStat = (n, pct, big, sub, data, kind) => {
+    const sev = dashSev(pct || 0);
+    n.big.textContent = big;
+    n.big.className = 'big' + (sev ? ' ' + sev : '');
+    n.sub.textContent = sub;
+    n.bar.style.width = Math.min(100, Math.max(0, pct || 0)).toFixed(0) + '%';
+    n.bar.className = sev;
+    n.spark.innerHTML = areaChart(data, kind);
+  };
+  // System tile rows hide when the backend omits the field.
+  const sysSet = (id, val, wantTitle) => {
+    const n = $(id); if (!n) return;
+    const row = $(id + 'Row');
+    if (row) row.style.display = val ? '' : 'none';
+    n.textContent = val || '';
+    if (wantTitle) n.title = val || '';
+  };
+  // Per-mount disk bars: rebuild rows only when the mount set changes shape;
+  // otherwise just patch used/width per tick.
+  const updMounts = (mounts) => {
+    const box = $('dSysMounts'); if (!box) return;
+    mounts = Array.isArray(mounts) ? mounts : [];
+    const sig = mounts.map((mt) => mt.mount + ':' + mt.total).join('|');
+    if (sig !== N.mountSig) {
+      N.mountSig = sig;
+      box.innerHTML = !mounts.length ? '' : `<div class="mhead">${tr('dash.mounts')}</div>` + mounts.map((mt, i) => `
+        <div class="sysmount" id="dMnt${i}">
+          <div class="mrow"><b title="${esc(mt.mount + (mt.device ? ' · ' + mt.device : ''))}">${esc(mt.mount)}</b><span class="mv"></span></div>
+          <div class="bar"><i></i></div>
+        </div>`).join('');
+    }
+    mounts.forEach((mt, i) => {
+      const row = $('dMnt' + i); if (!row) return;
+      const pct = mt.total ? ((mt.used || 0) / mt.total) * 100 : 0;
+      row.querySelector('.mv').textContent = fmtBytes(mt.used) + ' / ' + fmtBytes(mt.total);
+      const bar = row.querySelector('.bar>i');
+      bar.style.width = Math.min(100, Math.max(0, pct)).toFixed(0) + '%';
+      bar.className = dashSev(pct);
+    });
+  };
+  const update = (m) => {
+    if (!N) buildCards();
+    const sp = DASH.spark;
+    sp.rx.push(m.net_rx || 0); sp.tx.push(m.net_tx || 0);
+    sp.cpu.push(m.cpu_usage || 0); sp.mem.push(m.memory_usage || 0); sp.disk.push(m.disk_usage || 0);
+    for (const k in sp) if (sp[k].length > DASH_SPARK_MAX) sp[k].splice(0, sp[k].length - DASH_SPARK_MAX);
+    const coreLabel = m.cpu_virtual ? tr('dash.vcpu') : tr('dash.cores');
+    setStat(N.cpu, m.cpu_usage, (m.cpu_usage || 0).toFixed(1) + '%', (m.cpu_cores || 0) + coreLabel, sp.cpu, 'cpu');
+    setStat(N.mem, m.memory_usage, (m.memory_usage || 0).toFixed(1) + '%', fmtBytes(m.mem_used) + ' / ' + fmtBytes(m.mem_total), sp.mem, 'mem');
+    setStat(N.disk, m.disk_usage, (m.disk_usage || 0).toFixed(1) + '%', fmtBytes(m.disk_used) + ' / ' + fmtBytes(m.disk_total), sp.disk, 'disk');
+    $('dNetTx').textContent = fmtBytes(m.net_tx || 0);
+    $('dNetRx').textContent = fmtBytes(m.net_rx || 0);
+    $('dNetTxS').innerHTML = areaChart(sp.tx, 'up');
+    $('dNetRxS').innerHTML = areaChart(sp.rx, 'dn');
+    sysSet('dSysHost', m.hostname);
+    sysSet('dSysOs', m.os_version);
+    sysSet('dSysUp', m.uptime ? fmtUptime(m.uptime) : '');
+    sysSet('dSysIp', m.ip);
+    sysSet('dSysCpu', m.cpu_model, true);
+    updMounts(m.disk_mounts);
+  };
+
+  // ---- polls (apiInflight coalesces overlapping requests on slow links).
+  // Failures are NOT silent: after 2 consecutive misses the grid desaturates
+  // (.stale) and a warn chip appears until the next success.
+  let fails = 0, lastOk = 0;
+  const setStale = (on) => {
+    const root = $('dashRoot'); if (!root) return;
+    root.classList.toggle('stale', on);
+    const chip = $('dashStale');
+    if (chip) {
+      chip.style.display = on ? '' : 'none';
+      if (on && lastOk) chip.title = tr('dash.asof', { time: fmtTsFull(lastOk) });
+    }
+  };
   const doMetrics = () => {
-    api('/api/metrics').then((b) => {
-      const m = b.data;
-      hist.rx.push(m.net_rx || 0); hist.tx.push(m.net_tx || 0);
-      if (hist.rx.length > 40) { hist.rx.shift(); hist.tx.shift(); }
-      const coreLabel = m.cpu_virtual ? tr('dash.vcpu') : tr('dash.cores');
-      $('cards').innerHTML = [
-        card('CPU', (m.cpu_usage || 0).toFixed(1) + '%', (m.cpu_cores || 0) + coreLabel, m.cpu_usage),
-        card(tr('dash.mem'), (m.memory_usage || 0).toFixed(1) + '%', fmtBytes(m.mem_used) + ' / ' + fmtBytes(m.mem_total), m.memory_usage),
-        card(tr('dash.disk'), (m.disk_usage || 0).toFixed(1) + '%', fmtBytes(m.disk_used) + ' / ' + fmtBytes(m.disk_total), m.disk_usage),
-        netCard(m.net_rx || 0, m.net_tx || 0, hist),
-      ].join('');
-    }).catch(() => {});
+    apiInflight('dash:metrics', () => api('/api/metrics')).then((b) => {
+      fails = 0; lastOk = Math.floor(Date.now() / 1000);
+      setStale(false);
+      update(b.data || {});
+    }).catch(() => {
+      fails++;
+      if (fails >= 2) setStale(true);
+    });
   };
   const doHistory = () => {
-    api('/api/metrics/history?metric=' + H.metric + '&range=' + H.range)
-      .then((b) => { H.data = b.data; drawHistory(H); })
+    const metric = H.metric, range = H.range;
+    apiInflight('dash:hist:' + metric + ':' + range,
+      () => api('/api/metrics/history?metric=' + metric + '&range=' + range))
+      .then((b) => {
+        if (metric !== H.metric || range !== H.range) return; // selection changed mid-flight
+        H.data = b.data;
+        drawHistory(H);
+      })
       .catch(() => {});
   };
 
@@ -63,11 +210,21 @@ function renderDash(v) {
   $('histRange').addEventListener('click', pick('histRange', 'r', 'range'));
   const onResize = () => drawHistory(H);
   window.addEventListener('resize', onResize);
-  $('histCanvas').addEventListener('mousemove', (e) => moveHistoryHover(H, e));
-  $('histCanvas').addEventListener('mouseleave', () => { H.hover = null; drawHistory(H); });
-  window._dashCleanup = () => window.removeEventListener('resize', onResize);
+  let ro = null;
+  if (window.ResizeObserver) { ro = new ResizeObserver(onResize); ro.observe($('histBody')); }
+  const cv = $('histCanvas');
+  cv.addEventListener('mousemove', (e) => moveHistoryHover(H, e));
+  cv.addEventListener('mouseleave', () => { H.hover = null; drawHistory(H); });
+  // Touch scrubbing (CSS touch-action:pan-y keeps vertical page scroll alive).
+  const scrub = (e) => { if (e.touches && e.touches[0]) moveHistoryHover(H, e.touches[0]); };
+  const scrubEnd = () => { H.hover = null; drawHistory(H); };
+  cv.addEventListener('touchstart', scrub, { passive: true });
+  cv.addEventListener('touchmove', scrub, { passive: true });
+  cv.addEventListener('touchend', scrubEnd);
+  cv.addEventListener('touchcancel', scrubEnd);
+  window._dashCleanup = () => { window.removeEventListener('resize', onResize); if (ro) ro.disconnect(); };
 
-  // Poll loop: skip while the tab is hidden. Stat cards refresh every 2s; the
+  // Poll loop: skip while the tab is hidden. Stat tiles refresh every 2s; the
   // history chart is cheap but slower-moving, so refresh it ~every 10s.
   let beat = 0;
   const tick = () => {
@@ -76,37 +233,43 @@ function renderDash(v) {
     if (beat % 5 === 0) doHistory();
     beat++;
   };
+  if (H.data) drawHistory(H); // instant paint from the persisted payload on revisit
   doMetrics(); doHistory();
   beat = 1;
   S.timer = setInterval(tick, 2000);
 }
 
-function card(title, big, sub, pct) {
-  const bar = pct == null ? '' : `<div class="bar"><i style="width:${Math.min(100, Math.max(0, pct)).toFixed(0)}%"></i></div>`;
-  return `<div class="card"><h3>${title}</h3><div class="big">${big}</div><div class="sub">${sub}</div>${bar}</div>`;
-}
-
 // ---- History chart (canvas) ----------------------------------------------
 
 // Size the canvas to its container at device-pixel resolution (crisp lines).
-// Height tracks the (flex-grown) container so the chart fills the card instead
-// of a fixed slice; the canvas is absolutely positioned (see app.css) so its
-// own size never feeds back into the container's measured height.
+// The fitted size is cached on the element: hover/tick redraws skip the
+// width/height reassignment (which would reallocate the backing store) and
+// only an actual container/dpr change re-fits.
 function fitCanvas(cv) {
   const dpr = window.devicePixelRatio || 1;
   const parent = cv.parentElement;
   const w = Math.max(160, parent.clientWidth);
   const hpx = Math.max(180, parent.clientHeight);
-  cv.style.width = w + 'px'; cv.style.height = hpx + 'px';
-  cv.width = Math.round(w * dpr); cv.height = Math.round(hpx * dpr);
   const ctx = cv.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (cv._fw !== w || cv._fh !== hpx || cv._fd !== dpr) {
+    cv._fw = w; cv._fh = hpx; cv._fd = dpr;
+    cv.style.width = w + 'px'; cv.style.height = hpx + 'px';
+    cv.width = Math.round(w * dpr); cv.height = Math.round(hpx * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
   return { ctx, w, h: hpx };
 }
 
 function cssVar(name, fallback) {
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   return v || fallback;
+}
+
+// css color + alpha → a canvas-parsable color: hex fast-path, color-mix for
+// token values (oklch()/color-mix strings can't take a hex alpha suffix).
+function fadeColor(c, alpha) {
+  if (c[0] === '#' && c.length === 7) return c + Math.round(alpha * 255).toString(16).padStart(2, '0');
+  return `color-mix(in srgb, ${c} ${Math.round(alpha * 100)}%, transparent)`;
 }
 
 // HH:MM (and MM-DD for multi-day ranges) tick label for a unix-second ts, in the
@@ -120,6 +283,8 @@ function histClock(ts, range) {
 function histFullTime(ts) { return fmtTsFull(ts); }
 
 const HIST_RANGE_SECS = { '15m': 900, '1h': 3600, '6h': 21600, '1d': 86400, '7d': 604800 };
+// Intermediate x-tick step per range (3-5 ticks across the window incl. edges).
+const HIST_TICK_SECS = { '15m': 300, '1h': 900, '6h': 7200, '1d': 21600, '7d': 172800 };
 const HIST_PAD = { l: 52, r: 14, t: 14, b: 24 };
 
 function fmtBytesInt(n) {
@@ -168,7 +333,17 @@ function drawHistory(H) {
   const empty = $('histEmpty');
   const tip = $('histTip');
   cv.style.display = 'block';
-  if (empty) { empty.style.display = pts.length ? 'none' : 'flex'; empty.textContent = tr('dash.no_history'); }
+  // Empty overlay: shimmer skeleton before the FIRST payload, "no history"
+  // only once the backend actually answered with zero points.
+  if (empty) {
+    if (!H.data) {
+      if (empty.dataset.mode !== 'skel') { empty.dataset.mode = 'skel'; empty.innerHTML = `<div style="width:min(420px,80%)">${loading()}</div>`; }
+      empty.style.display = 'flex';
+    } else if (!pts.length) {
+      if (empty.dataset.mode !== 'txt') { empty.dataset.mode = 'txt'; empty.textContent = tr('dash.no_history'); }
+      empty.style.display = 'flex';
+    } else { empty.style.display = 'none'; }
+  }
   if (tip && !H.hover) tip.style.display = 'none';
   const net = H.metric === 'net';
   const { ctx, w, h } = fitCanvas(cv);
@@ -200,6 +375,17 @@ function drawHistory(H) {
     ctx.globalAlpha = 0.5; ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(w - padR, yy); ctx.stroke();
     ctx.globalAlpha = 1; ctx.textAlign = 'right'; ctx.fillText(fmtY(val), padL - 8, yy);
   }
+  // Intermediate x ticks: faint vertical gridlines at round wall-clock steps,
+  // skipping ticks that would collide with the edge labels.
+  const step = HIST_TICK_SECS[H.range] || Math.max(60, Math.round(bounds.windowSecs / 4));
+  const edgeGap = (H.range === '1d' || H.range === '7d') ? 78 : 42;
+  ctx.textAlign = 'center';
+  for (let ts = Math.ceil(bounds.start / step) * step; ts < bounds.end; ts += step) {
+    const x = xTime(ts);
+    if (x < padL + edgeGap || x > w - padR - edgeGap) continue;
+    ctx.globalAlpha = 0.3; ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+    ctx.globalAlpha = 1; ctx.fillText(histClock(ts, H.range), x, h - padB / 2);
+  }
   // X end labels (start + now).
   ctx.textAlign = 'left'; ctx.fillText(histClock(bounds.start, H.range), padL, h - padB / 2);
   ctx.textAlign = 'right'; ctx.fillText(histClock(bounds.end, H.range), w - padR, h - padB / 2);
@@ -207,7 +393,7 @@ function drawHistory(H) {
   // Draw one series as an area + line; `key` reads the value off each point.
   const series = (key, color) => {
     const g = ctx.createLinearGradient(0, padT, 0, padT + plotH);
-    g.addColorStop(0, color + '44'); g.addColorStop(1, color + '08');
+    g.addColorStop(0, fadeColor(color, 0.27)); g.addColorStop(1, fadeColor(color, 0.03));
     histSegments(pts, bounds.slotSecs).forEach((seg) => {
       if (seg.length === 1) {
         ctx.beginPath(); ctx.arc(xTime(seg[0].t), y(seg[0][key] || 0), 2.6, 0, Math.PI * 2);
@@ -225,12 +411,12 @@ function drawHistory(H) {
   };
 
   if (net) {
-    series('rx', '#38bdf8'); // download (blue)
-    series('tx', '#f59e0b'); // upload (amber)
+    series('rx', HIST_RX); // download (blue)
+    series('tx', HIST_TX); // upload (amber)
     // Legend.
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#38bdf8'; ctx.fillRect(padL, padT + 2, 10, 3); ctx.fillStyle = ink; ctx.fillText(tr('dash.dn'), padL + 14, padT + 4);
-    ctx.fillStyle = '#f59e0b'; ctx.fillRect(padL + 60, padT + 2, 10, 3); ctx.fillStyle = ink; ctx.fillText(tr('dash.up'), padL + 74, padT + 4);
+    ctx.fillStyle = HIST_RX; ctx.fillRect(padL, padT + 2, 10, 3); ctx.fillStyle = ink; ctx.fillText(tr('dash.dn'), padL + 14, padT + 4);
+    ctx.fillStyle = HIST_TX; ctx.fillRect(padL + 60, padT + 2, 10, 3); ctx.fillStyle = ink; ctx.fillText(tr('dash.up'), padL + 74, padT + 4);
   } else {
     series('v', cssVar('--accent', '#3b82f6'));
   }
@@ -238,20 +424,21 @@ function drawHistory(H) {
   const hover = H.hover == null ? null : pts.find((p) => Number(p.t) === H.hover);
   if (hover) {
     const hx = xTime(hover.t);
+    const ring = cssVar('--panel-solid', '#fff');
     ctx.save();
     ctx.strokeStyle = ink; ctx.globalAlpha = 0.75; ctx.setLineDash([4, 4]);
     ctx.beginPath(); ctx.moveTo(hx, padT); ctx.lineTo(hx, padT + plotH); ctx.stroke();
     ctx.setLineDash([]); ctx.globalAlpha = 1;
     if (net) {
-      [['rx', '#38bdf8'], ['tx', '#f59e0b']].forEach(([key, color]) => {
+      [['rx', HIST_RX], ['tx', HIST_TX]].forEach(([key, color]) => {
         ctx.beginPath(); ctx.arc(hx, y(hover[key] || 0), 3.2, 0, Math.PI * 2);
-        ctx.fillStyle = color; ctx.fill(); ctx.strokeStyle = cssVar('--panel', '#fff'); ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = color; ctx.fill(); ctx.strokeStyle = ring; ctx.lineWidth = 2; ctx.stroke();
       });
       showHistoryTip(H, hover, hx, y(Math.max(hover.rx || 0, hover.tx || 0)), w, h);
     } else {
       const color = cssVar('--accent', '#3b82f6');
       ctx.beginPath(); ctx.arc(hx, y(hover.v || 0), 3.4, 0, Math.PI * 2);
-      ctx.fillStyle = color; ctx.fill(); ctx.strokeStyle = cssVar('--panel', '#fff'); ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = color; ctx.fill(); ctx.strokeStyle = ring; ctx.lineWidth = 2; ctx.stroke();
       showHistoryTip(H, hover, hx, y(hover.v || 0), w, h);
     }
     ctx.restore();
@@ -261,6 +448,7 @@ function drawHistory(H) {
   ctx.globalAlpha = 1;
 }
 
+// Works for both mouse events and Touch points (both expose clientX).
 function moveHistoryHover(H, ev) {
   const cv = $('histCanvas'); if (!cv) return;
   const pts = histPoints(H);
@@ -287,7 +475,7 @@ function moveHistoryHover(H, ev) {
 function showHistoryTip(H, p, x, y, w, h) {
   const tip = $('histTip'); if (!tip) return;
   if (H.metric === 'net') {
-    tip.innerHTML = `<b>${histFullTime(p.t)}</b><span><i style="background:#38bdf8"></i>${tr('dash.dn')} ${fmtBytes(p.rx || 0)}/s</span><span><i style="background:#f59e0b"></i>${tr('dash.up')} ${fmtBytes(p.tx || 0)}/s</span>`;
+    tip.innerHTML = `<b>${histFullTime(p.t)}</b><span><i style="background:${HIST_RX}"></i>${tr('dash.dn')} ${fmtBytes(p.rx || 0)}/s</span><span><i style="background:${HIST_TX}"></i>${tr('dash.up')} ${fmtBytes(p.tx || 0)}/s</span>`;
   } else {
     const label = H.metric === 'mem' ? tr('dash.mem') : 'CPU';
     tip.innerHTML = `<b>${histFullTime(p.t)}</b><span><i style="background:${cssVar('--accent', '#3b82f6')}"></i>${label} ${(Number(p.v) || 0).toFixed(1)}%</span>`;
@@ -302,27 +490,9 @@ function showHistoryTip(H, p, x, y, w, h) {
   tip.style.top = Math.round(Math.max(6, top)) + 'px';
 }
 
-// ---- Network throughput stat card (unchanged) ----------------------------
-function netCard(rx, tx, hist) {
-  const upIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V7"/><path d="M6 11l6-6 6 6"/><path d="M5 21h14"/></svg>';
-  const dnIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v12"/><path d="M6 13l6 6 6-6"/><path d="M5 3h14"/></svg>';
-  return `<div class="card netcard"><h3>${tr('dash.net')}</h3>
-    <div class="netsplit">
-      <div class="netcell up">
-        <div class="nethdr"><span class="netic">${upIcon}</span><span>${tr('dash.up')}</span></div>
-        <div class="netval">${fmtBytes(tx)}<s>/s</s></div>
-        <div class="netchart">${areaChart(hist.tx, 'up')}</div>
-      </div>
-      <div class="netcell dn">
-        <div class="nethdr"><span class="netic">${dnIcon}</span><span>${tr('dash.dn')}</span></div>
-        <div class="netval">${fmtBytes(rx)}<s>/s</s></div>
-        <div class="netchart">${areaChart(hist.rx, 'dn')}</div>
-      </div>
-    </div>
-  </div>`;
-}
-// Single-series smooth area chart for the net stat card, normalized to its own
-// recent peak. `kind` (up|dn) selects the gradient/stroke colour.
+// Single-series smooth area chart for a stat tile, normalized to its own
+// recent peak. `kind` (up|dn|cpu|mem|disk) selects the stroke/gradient colour;
+// each kind renders in exactly one tile, so gradient ids stay unique.
 function areaChart(data, kind) {
   const W = 130, H = 34, pad = 3;
   const m = data.length;
@@ -338,7 +508,10 @@ function areaChart(data, kind) {
     const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
     d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
   }
-  const stroke = kind === 'up' ? '#f59e0b' : '#38bdf8';
+  const stroke = kind === 'up' ? HIST_TX : kind === 'dn' ? HIST_RX
+    : kind === 'mem' ? cssVar('--accent-2', '#8b5cf6')
+      : kind === 'disk' ? cssVar('--muted', '#94a3b8')
+        : cssVar('--accent', '#3b82f6');
   const gid = 'ng_' + kind;
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="34" preserveAspectRatio="none">
     <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${stroke}" stop-opacity="0.38"/><stop offset="1" stop-color="${stroke}" stop-opacity="0.02"/></linearGradient></defs>
