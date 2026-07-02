@@ -261,6 +261,22 @@ mod summary_tests {
     }
 
     #[test]
+    fn blob_cap_shrinks_to_the_remaining_total_budget() {
+        // Fresh pull: the per-blob ceiling applies (nothing spent yet).
+        assert_eq!(blob_cap(0), store::MAX_BLOB_BYTES);
+        // Mid-pull, plenty of budget left → still bounded by the per-blob ceiling.
+        let spent = store::MAX_TOTAL_BYTES - store::MAX_BLOB_BYTES - 1;
+        assert_eq!(blob_cap(spent), store::MAX_BLOB_BYTES);
+        // Almost exhausted: the remaining budget (< per-blob ceiling) is the cap.
+        let near = store::MAX_TOTAL_BYTES - 10;
+        assert_eq!(blob_cap(near), 10);
+        // Budget fully spent (or overshot via saturating math) → 0, so the next
+        // blob's CapReader rejects the very first byte.
+        assert_eq!(blob_cap(store::MAX_TOTAL_BYTES), 0);
+        assert_eq!(blob_cap(u64::MAX), 0);
+    }
+
+    #[test]
     fn gc_candidates_selects_only_unreferenced_digests() {
         let removed = ImageRecord {
             reference: "x".into(),
@@ -357,10 +373,16 @@ pub fn pull(reference: &str, store: &Store) -> Result<ImageRecord> {
 
     let manifest: Manifest = serde_json::from_slice(&manifest_bytes)?;
 
+    // Blobs stream through the store's size-capped reader path so a hostile or
+    // compromised registry can't fill the data volume with an unbounded layer:
+    // each blob is capped at MAX_BLOB_BYTES, and a running total caps the whole
+    // pull at MAX_TOTAL_BYTES. A cap breach (or digest mismatch) aborts the pull.
+    let mut total: u64 = 0;
+
     // Config blob.
     let config_digest = manifest.config.digest.clone();
     log(&format!("config {}", short(&config_digest)));
-    store.save_blob(&config_digest, |w| reg.blob_to(&config_digest, w))?;
+    pull_blob(store, &mut reg, &config_digest, &mut total)?;
 
     // Layer blobs (ordered).
     let mut layers = Vec::with_capacity(manifest.layers.len());
@@ -381,7 +403,7 @@ pub fn pull(reference: &str, store: &Store) -> Result<ImageRecord> {
                 short(&d),
                 layer.size
             ));
-            store.save_blob(&d, |w| reg.blob_to(&d, w))?;
+            pull_blob(store, &mut reg, &d, &mut total)?;
         }
         layers.push(d);
     }
@@ -394,6 +416,32 @@ pub fn pull(reference: &str, store: &Store) -> Result<ImageRecord> {
     store.write_image_json(&r.store_key(), &serde_json::to_vec_pretty(&record)?)?;
     log("pull complete");
     Ok(record)
+}
+
+/// Stream one blob from the registry into the store, size-capped. `total` is the
+/// running sum of bytes already pulled for this image; the per-blob cap is the
+/// smaller of [`store::MAX_BLOB_BYTES`] and the remaining total budget, so a
+/// single huge blob and a swarm of medium blobs are both bounded. The stored
+/// size is charged against `total` afterwards (the CapReader guarantees it's
+/// within the passed cap, so the total can't run away). A cap breach or digest
+/// mismatch surfaces as an error and aborts the pull.
+fn pull_blob(store: &Store, reg: &mut Registry, digest: &str, total: &mut u64) -> Result<()> {
+    let mut rdr = reg.blob_reader(digest)?;
+    store.save_blob_from_reader(digest, &mut rdr, blob_cap(*total))?;
+    // A blob already present short-circuits the write, so re-derive its on-disk
+    // size rather than assuming we streamed it.
+    *total = total.saturating_add(blob_size(store, digest));
+    if *total > store::MAX_TOTAL_BYTES {
+        return Err(Error::Other("image exceeds total size cap".into()));
+    }
+    Ok(())
+}
+
+/// The per-blob byte cap given `total` bytes already pulled for this image: the
+/// smaller of the per-blob ceiling and the remaining whole-image budget, so once
+/// the budget is spent the next blob's cap is 0 and any further byte is rejected.
+fn blob_cap(total: u64) -> u64 {
+    store::MAX_BLOB_BYTES.min(store::MAX_TOTAL_BYTES.saturating_sub(total))
 }
 
 /// Ensure the image's merged rootfs is extracted into the shared store cache

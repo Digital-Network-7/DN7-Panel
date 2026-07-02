@@ -4,7 +4,7 @@
 //! blob downloads. Private-registry basic auth comes with the auth matrix in P4.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -57,13 +57,14 @@ impl Registry {
         Ok((buf, ct))
     }
 
-    /// Stream a blob (config or layer) by digest into `w`.
-    pub fn blob_to(&mut self, digest: &str, w: &mut dyn Write) -> Result<()> {
+    /// Open a blob (config or layer) by digest as a streaming reader. The caller
+    /// caps + hashes the copy (see `Store::save_blob_from_reader`), so a hostile
+    /// registry streaming an unbounded layer can't fill the disk — the cap trips
+    /// mid-copy and the partial temp file is discarded.
+    pub fn blob_reader(&mut self, digest: &str) -> Result<impl Read> {
         let url = format!("https://{}/v2/{}/blobs/{}", self.host, self.repo, digest);
         let resp = self.authed_get(&url, "*/*")?;
-        let mut rdr = resp.into_reader();
-        std::io::copy(&mut rdr, w).map_err(|e| Error::Other(format!("download {digest}: {e}")))?;
-        Ok(())
+        Ok(resp.into_reader())
     }
 
     /// GET `url`, transparently acquiring a bearer token on a 401 and retrying.

@@ -19,6 +19,16 @@ use crate::error::{Error, Result};
 
 pub const DEFAULT_ROOT: &str = "/var/lib/dn7-container";
 
+/// Hard caps for pulling/loading blobs into the store. A single blob (config or
+/// layer) may not exceed [`MAX_BLOB_BYTES`], and the sum of all blobs pulled for
+/// one image may not exceed [`MAX_TOTAL_BYTES`] — so a hostile/compromised
+/// registry can't stream an unbounded layer (or a swarm of layers) to fill the
+/// data volume. Enforced by [`Store::save_blob_from_reader`]'s `CapReader`
+/// (per-blob) plus a running total the caller charges each stored blob against.
+/// Mirrors the OCI-tar load path's caps in `archive.rs`.
+pub const MAX_BLOB_BYTES: u64 = 32 * 1024 * 1024 * 1024; // ≤ 32 GiB per blob (layer)
+pub const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024 * 1024; // ≤ 64 GiB across all blobs
+
 pub struct Store {
     root: PathBuf,
 }
