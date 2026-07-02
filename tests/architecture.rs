@@ -1,5 +1,5 @@
 //! Architecture test — enforces the layer dependency rules from
-//! `.kiro/steering/architecture.md` (§4 禁止项 / §8 测试策略).
+//! `ARCHITECTURE.md` (§4 禁止项 / §8 测试策略).
 //!
 //! Tier 1 (directory-level deny) governs `domain`/`infra`/`app`/`web`. Tier 2
 //! (module allowlist) is in place via `capability_tokens_stay_in_their_layer`
@@ -12,7 +12,7 @@
 //! Robustness: we scan `use`/code lines, skip comment lines (incl. `///`/`//!`
 //! doc comments, which legitimately mention forbidden names), and honour a
 //! `// arch-allow(<phase/ticket>): <reason>` escape hatch on the offending line
-//! for the migration window (see steering §8 — exceptions must be temporary).
+//! for the migration window (see ARCHITECTURE.md §8 — exceptions must be temporary).
 //! The marker is format-checked (`arch_allow_marker_ok`): a bare/malformed
 //! `arch-allow` no longer exempts the line.
 
@@ -20,7 +20,7 @@ use std::fs;
 use std::path::Path;
 
 /// Validate an `arch-allow` escape marker. Only a *well-formed* marker exempts a
-/// line; a bare or malformed `arch-allow` (steering §8 requires ticket+reason)
+/// line; a bare or malformed `arch-allow` (ARCHITECTURE.md §8 requires ticket+reason)
 /// no longer opens the loophole and still counts as a violation.
 ///
 /// Accepted shape (must appear inside a `//` comment on the line):
@@ -155,12 +155,12 @@ fn layers_respect_dependency_rules() {
     }
     assert!(
         violations.is_empty(),
-        "architecture violations (see .kiro/steering/architecture.md):\n{}",
+        "architecture violations (see ARCHITECTURE.md):\n{}",
         violations.join("\n")
     );
 }
 
-/// Tier-3 semantic guard (steering §2/§4): `domain` default-forbids `serde`.
+/// Tier-3 semantic guard (ARCHITECTURE.md §2/§4): `domain` default-forbids `serde`.
 /// Only the reviewed persisted-entity files may derive it — everything else in
 /// `domain` must stay pure rules/values with no transport/serialization shape.
 /// New serde in a non-whitelisted domain file is a deliberate review decision:
@@ -205,7 +205,7 @@ fn scan_core_serde(dir: &Path, violations: &mut Vec<String>) {
             if line.contains("serde") || line.contains("Serialize") || line.contains("Deserialize")
             {
                 violations.push(format!(
-                    "{}:{}: domain serde outside whitelist (steering §2/§4)",
+                    "{}:{}: domain serde outside whitelist (ARCHITECTURE.md §2/§4)",
                     p.display(),
                     i + 1
                 ));
@@ -221,12 +221,12 @@ fn core_serde_is_whitelisted() {
     scan_core_serde(&Path::new(root).join("src/core"), &mut violations);
     assert!(
         violations.is_empty(),
-        "domain serde must be a reviewed exception (see .kiro/steering/architecture.md §2/§4):\n{}",
+        "domain serde must be a reviewed exception (see ARCHITECTURE.md §2/§4):\n{}",
         violations.join("\n")
     );
 }
 
-/// Tier-2 module allowlist (steering §8): a capability/transport token may
+/// Tier-2 module allowlist (ARCHITECTURE.md §8): a capability/transport token may
 /// appear ONLY under its owning subtree. This makes the "who may touch what"
 /// boundary explicit and stops, e.g., a bollard call or an axum import drifting
 /// out of `infra`/`web`. `arch-allow` (with reason+ticket) is the temporary
@@ -281,7 +281,7 @@ fn capability_tokens_stay_in_their_layer() {
     scan_allowlist(&Path::new(root).join("src"), &mut violations);
     assert!(
         violations.is_empty(),
-        "tier-2 module-allowlist violations (see .kiro/steering/architecture.md §8):\n{}",
+        "tier-2 module-allowlist violations (see ARCHITECTURE.md §8):\n{}",
         violations.join("\n")
     );
 }

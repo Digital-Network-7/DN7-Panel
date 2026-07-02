@@ -18,7 +18,7 @@ function api(path, opts = {}) {
   });
 }
 
-// Capability op (docker/website/mysql): POST {op,...} → data.
+// Capability op (docker/website): POST {op,...} → data.
 function op(kind, obj) { return api('/api/' + kind, { method: 'POST', body: JSON.stringify(obj) }).then((b) => b.data); }
 
 // Mint a one-time, short-lived ticket SCOPED to a purpose ('terminal' or

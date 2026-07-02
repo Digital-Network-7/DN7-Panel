@@ -197,9 +197,7 @@ const I18N = {
     'msg.ng.enable_https': 'Enabling HTTPS configuration…', 'msg.ng.cert_done': 'Certificate issued', 'msg.ng.le_account': 'Connecting to Let\'s Encrypt and creating an account…',
     'msg.ng.request_cert': 'Requesting a certificate for {0}…', 'msg.ng.wait_verify': 'Waiting for domain validation…', 'msg.ng.verify_ok': 'Validated; issuing certificate…',
     'msg.my.pulling': 'Pulling image {0}…', 'msg.my.creating_volume': 'Creating data volume…', 'msg.my.creating_container': 'Creating container…',
-    'msg.my.starting': 'Starting…', 'msg.my.waiting_ready': 'Waiting for the database to be ready…', 'msg.my.install_done': 'Setup complete; database is ready',
-    'msg.my.init_timeout': 'Database init timed out; check the instance status later (it may still be initializing or restarting)', 'msg.my.exporting': 'Exporting database (mysqldump)…', 'msg.my.backup_done': 'Backup complete: {0} ({1} bytes)',
-    'msg.my.initializing': 'Database is initializing, please wait…', 'msg.dk.pulling': 'Pulling {0}…', 'msg.dk.renaming': 'Renaming to {0}',
+    'msg.my.starting': 'Starting…', 'msg.my.waiting_ready': 'Waiting for the database to be ready…', 'msg.my.install_done': 'Setup complete; database is ready',    'msg.my.initializing': 'Database is initializing, please wait…', 'msg.dk.pulling': 'Pulling {0}…', 'msg.dk.renaming': 'Renaming to {0}',
     'msg.dk.done': 'Done', 'msg.dk.error': 'Error: {0}', 'msg.dk.creating_container': 'Creating container…',
     'msg.dk.container_created': 'Container {0}: {1}',
     'dklbl.cn': 'China (mirror)', 'dklbl.global': 'Global (official)', 'dklbl.created': 'created',
@@ -410,9 +408,7 @@ const I18N = {
     'msg.ng.enable_https': '启用 HTTPS 配置 …', 'msg.ng.cert_done': '证书签发完成', 'msg.ng.le_account': '连接 Let\'s Encrypt 并创建账户 …',
     'msg.ng.request_cert': '为 {0} 申请证书 …', 'msg.ng.wait_verify': '等待域名验证 …', 'msg.ng.verify_ok': '验证通过，正在签发证书 …',
     'msg.my.pulling': '正在拉取镜像 {0} …', 'msg.my.creating_volume': '正在创建数据卷 …', 'msg.my.creating_container': '正在创建容器 …',
-    'msg.my.starting': '正在启动 …', 'msg.my.waiting_ready': '等待数据库就绪 …', 'msg.my.install_done': '安装完成，数据库已就绪',
-    'msg.my.init_timeout': '数据库初始化超时，请稍后在实例详情中查看状态（容器可能仍在初始化或反复重启）', 'msg.my.exporting': '正在导出数据库（mysqldump）…', 'msg.my.backup_done': '备份完成：{0}（{1} 字节）',
-    'msg.my.initializing': '数据库正在初始化，请稍候 …', 'msg.dk.pulling': '正在拉取 {0} …', 'msg.dk.renaming': '重命名为 {0}',
+    'msg.my.starting': '正在启动 …', 'msg.my.waiting_ready': '等待数据库就绪 …', 'msg.my.install_done': '安装完成，数据库已就绪',    'msg.my.initializing': '数据库正在初始化，请稍候 …', 'msg.dk.pulling': '正在拉取 {0} …', 'msg.dk.renaming': '重命名为 {0}',
     'msg.dk.done': '完成', 'msg.dk.error': '错误：{0}', 'msg.dk.creating_container': '正在创建容器 …',
     'msg.dk.container_created': '容器{0}：{1}',
     'dklbl.cn': '中国大陆区域（镜像加速）', 'dklbl.global': '海外（官方源）', 'dklbl.created': '已创建',
@@ -623,9 +619,7 @@ const I18N = {
     'msg.ng.enable_https': '啟用 HTTPS 設定 …', 'msg.ng.cert_done': '憑證簽發完成', 'msg.ng.le_account': '連線 Let\'s Encrypt 並建立帳戶 …',
     'msg.ng.request_cert': '為 {0} 申請憑證 …', 'msg.ng.wait_verify': '等待網域驗證 …', 'msg.ng.verify_ok': '驗證通過，正在簽發憑證 …',
     'msg.my.pulling': '正在拉取映像 {0} …', 'msg.my.creating_volume': '正在建立資料卷 …', 'msg.my.creating_container': '正在建立容器 …',
-    'msg.my.starting': '正在啟動 …', 'msg.my.waiting_ready': '等待資料庫就緒 …', 'msg.my.install_done': '安裝完成，資料庫已就緒',
-    'msg.my.init_timeout': '資料庫初始化逾時，請稍後在實例詳情中查看狀態（容器可能仍在初始化或反覆重啟）', 'msg.my.exporting': '正在匯出資料庫（mysqldump）…', 'msg.my.backup_done': '備份完成：{0}（{1} 位元組）',
-    'msg.my.initializing': '資料庫正在初始化，請稍候 …', 'msg.dk.pulling': '正在拉取 {0} …', 'msg.dk.renaming': '重新命名為 {0}',
+    'msg.my.starting': '正在啟動 …', 'msg.my.waiting_ready': '等待資料庫就緒 …', 'msg.my.install_done': '安裝完成，資料庫已就緒',    'msg.my.initializing': '資料庫正在初始化，請稍候 …', 'msg.dk.pulling': '正在拉取 {0} …', 'msg.dk.renaming': '重新命名為 {0}',
     'msg.dk.done': '完成', 'msg.dk.error': '錯誤：{0}', 'msg.dk.creating_container': '正在建立容器 …',
     'msg.dk.container_created': '容器{0}：{1}',
     'dklbl.cn': '中國大陸（鏡像加速）', 'dklbl.global': '海外（官方源）', 'dklbl.created': '已建立',
@@ -836,9 +830,7 @@ const I18N = {
     'msg.ng.enable_https': 'HTTPS 設定を有効化中…', 'msg.ng.cert_done': '証明書を発行しました', 'msg.ng.le_account': 'Let\'s Encrypt に接続してアカウントを作成中…',
     'msg.ng.request_cert': '{0} の証明書を申請中…', 'msg.ng.wait_verify': 'ドメイン検証を待機中…', 'msg.ng.verify_ok': '検証に成功、証明書を発行中…',
     'msg.my.pulling': 'イメージ {0} を取得中…', 'msg.my.creating_volume': 'データボリュームを作成中…', 'msg.my.creating_container': 'コンテナを作成中…',
-    'msg.my.starting': '起動中…', 'msg.my.waiting_ready': 'データベースの準備を待機中…', 'msg.my.install_done': 'セットアップ完了。データベースは準備できました',
-    'msg.my.init_timeout': 'データベースの初期化がタイムアウトしました。後でインスタンスの状態を確認してください（初期化中か再起動中の可能性があります）', 'msg.my.exporting': 'データベースをエクスポート中（mysqldump）…', 'msg.my.backup_done': 'バックアップ完了：{0}（{1} バイト）',
-    'msg.my.initializing': 'データベースを初期化中です。お待ちください…', 'msg.dk.pulling': '{0} を取得中…', 'msg.dk.renaming': '{0} に名前変更',
+    'msg.my.starting': '起動中…', 'msg.my.waiting_ready': 'データベースの準備を待機中…', 'msg.my.install_done': 'セットアップ完了。データベースは準備できました',    'msg.my.initializing': 'データベースを初期化中です。お待ちください…', 'msg.dk.pulling': '{0} を取得中…', 'msg.dk.renaming': '{0} に名前変更',
     'msg.dk.done': '完了', 'msg.dk.error': 'エラー：{0}', 'msg.dk.creating_container': 'コンテナを作成中…',
     'msg.dk.container_created': 'コンテナ{0}：{1}',
     'dklbl.cn': '中国（ミラー高速化）', 'dklbl.global': '海外（公式ソース）', 'dklbl.created': '作成',
@@ -892,7 +884,7 @@ function tr(key, vars) {
 
 // Map a raw error string to a localized message when it carries a stable code
 // marker (`ERR_CODE:<code>` → `err.<code>`); otherwise return it unchanged.
-// Capability ops (docker/website/mysql) emit fixed validation errors this way.
+// Capability ops (docker/website) emit fixed validation errors this way.
 function codeMsg(s) {
   if (typeof s === 'string') {
     const m = s.match(/^ERR_CODE:(.+)$/);

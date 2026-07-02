@@ -74,10 +74,15 @@ src/
 
 ```
 web ─→ app ─→ core
-infra ─→ app(实现 ports)─→ core
+app ─→ infra(适配器)─→ core   (app 默认直调 infra 适配器,见 §5;infra 不依赖 app)
+infra ←─ app::ports          (仅少数需 mock/swap 的能力经 port 反转,如 AccountEnv/UsersEnv;
+                              这些 port 由 app/web 侧的 env 结构实现,不由 infra 实现)
 contracts ←─ web, app        (contracts 不依赖 app/infra/web)
 platform 独立;跨层装配仅限"受控组合根集合"
 ```
+
+> 注:§4 表与架构测试禁止 `infra` 依赖 `app`(与上面一致);默认边是 `app → infra`。
+> 早期文档里 `infra 实现 ports` 的六边形画法是 aspirational,与代码/测试不符,已更正。
 
 反向依赖一律禁止。**受控组合根集合**:`main.rs` 为默认组合根,可跨层 import 装配;其他需跨层装配的入口(集成测试 bootstrap、平台启动封装)**必须显式列入架构测试 allowlist**,不得隐式绕过。
 
@@ -143,7 +148,7 @@ platform 独立;跨层装配仅限"受控组合根集合"
 
 ## 9. Hard limits
 
-- **文件 ≤ 500 行。** 接近上限的文件拆成模块目录(`foo.rs` → `foo/` 内聚子模块)。生成/数据表(i18n 串表、整套 CSS 主题)是唯一例外。
+- **文件 ≤ 500 行。** 接近上限的文件拆成模块目录(`foo.rs` → `foo/` 内聚子模块)。例外有两类:生成/数据表(i18n 串表、整套 CSS 主题);以及 `tests/architecture.rs` 的 `FILE_SIZE_WHITELIST` 里少数已登记的历史大文件(如 `runtime_dn7.rs`、`net/nft.rs`、`net/nl.rs` 等协议/系统密集模块)——该清单是"应逐步收缩"的迁移账本,新增大文件仍会被门禁拦下。该门禁覆盖 `src/` 与 `crates/*/src`。
 - **函数体 ≤ 40 行**(不含签名与收尾大括号)。超了就抽 helper。
 - **参数 ≤ 4。** 更多参数改用单个 `struct`(`XxxParams`/`XxxReq`),字段带文档。
 
@@ -243,4 +248,4 @@ pub(crate) async fn run_op(...) -> Result<...> { ... }
 
 # Part III — Current state
 
-分层迁移已完成:`src/` 顶层只有 `main.rs` + 六个分层目录(`core`/`contracts`/`app`/`infra`/`web`/`platform`),每个能力都是目录,所有 `mod.rs` 纯装配,无超 500 行文件。`tests/architecture.rs` 落地三层检查(目录级 deny + 模块 allowlist + core serde 白名单)。能力用例统一经 `app::<cap>` 入口(web→app→infra),`contracts` 为 website 等能力提供 typed 命令,错误经 `core::Error` 在 web 边界单点映射。维护时按本文档继续守规则即可。
+分层迁移已完成:`src/` 顶层只有 `main.rs` + 六个分层目录(`core`/`contracts`/`app`/`infra`/`web`/`platform`),每个能力都是目录,所有 `mod.rs` 纯装配。文件大小受 `tests/architecture.rs` 的 `files_stay_within_size_limit` 门禁约束(覆盖 `src/` 与 `crates/*/src`),≤500 行;`FILE_SIZE_WHITELIST` 登记了少数历史大文件作为待收缩的迁移账本(见 §9)。`tests/architecture.rs` 落地目录级 deny + 模块 allowlist + core serde 白名单 + 文件大小 + init-manager shell-out 白名单等检查。能力用例统一经 `app::<cap>` 入口(web→app→infra),`contracts` 为 website 等能力提供 typed 命令,错误经 `core::Error` 在 web 边界单点映射。维护时按本文档继续守规则即可。

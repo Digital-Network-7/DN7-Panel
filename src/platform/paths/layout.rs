@@ -22,14 +22,14 @@ pub const INSTALL_DIR: &str = "/var/dn7/panel";
 pub const INSTALL_BIN: &str = "/var/dn7/panel/dn7-panel";
 
 /// Subdirectory names under the base dir:
-///   - `data/` : values that must persist (settings, encryption key, version)
+///   - `data/` : values that must persist (settings, version, sessions)
 ///   - `run/`  : transient process state (pid, heartbeat, lock)
 ///   - `log/`  : the daemon log
 pub const DATA_SUBDIR: &str = "data";
 pub const RUN_SUBDIR: &str = "run";
 pub const LOG_SUBDIR: &str = "log";
 
-/// Persisted-data directory (`<base>/data`): settings, `.panel_key`, version.
+/// Persisted-data directory (`<base>/data`): settings (web.json), version, sessions.
 pub fn data_dir() -> PathBuf {
     default_base_dir().join(DATA_SUBDIR)
 }
@@ -202,7 +202,7 @@ fn clean_deleted(p: &std::path::Path) -> PathBuf {
 /// the canonical install dir (`/var/dn7/panel`) when it exists. When it isn't
 /// available (e.g. an unprivileged run that couldn't create `/var/dn7`), it
 /// falls back to a *stable per-user* state dir rather than the current working
-/// directory — sensitive files (`.panel_key`, `web.json`, `sessions.json`, …)
+/// directory — sensitive files (`web.json`, `sessions.json`, private keys, …)
 /// must never drift with the launch directory or land in a shared/downloads
 /// folder.
 pub fn default_base_dir() -> PathBuf {

@@ -9,7 +9,7 @@
 // their existing `.then(b => ...)` handling.
 //
 // First domains migrated: account (self-service + user management) and
-// settings/branding. Docker/Website/MySQL can follow the same shape.
+// settings/branding. Docker/Website can follow the same shape.
 
 const AccountApi = {
   // Self-service.

@@ -26,7 +26,7 @@ runtime dependencies.
 - **Self-managing.** Installs itself to a stable path, sets up redundant boot
   autostart, daemonizes, and self-heals via a two-half supervisor.
 - **On-box, no backend.** The console authenticates locally and acts on the
-  host directly; secrets are encrypted with a machine-bound key.
+  host directly; at-rest secrets are 0600-only and the password is a one-way Argon2id verifier.
 
 ## Fit and trade-offs
 
@@ -198,10 +198,12 @@ read directly from the environment (no `.env` loader):
 ## Security model
 
 Standalone, on-box, no backend. The console authenticates locally and operates
-on the host directly. At-rest secrets (e.g. the web password once changed from
-the auto-generated default) are encrypted with a machine-bound AES-256-GCM key
-(`<data>/.panel_key`), so a copied file can't be decrypted on another host.
-Security-sensitive settings (proxy trust, bind exposure, container privileges,
+on the host directly. At-rest secrets are protected by owner-only (`0600`) file
+permissions, and the web password is never stored recoverably — it is kept as a
+one-way **Argon2id** verifier (the browser sends a hash, never the plaintext),
+so the stored credential can't be reversed even with the file. Private keys,
+session, and settings files are likewise written `0600`. Security-sensitive
+settings (proxy trust, bind exposure, container privileges,
 …) are wrapped in validators with closed-by-default fallbacks — see
 [`ARCHITECTURE.md`](ARCHITECTURE.md) §13.
 

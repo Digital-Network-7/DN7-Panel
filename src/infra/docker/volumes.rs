@@ -9,9 +9,7 @@ pub(crate) async fn list_volumes() -> Result<Value> {
         .map_err(|e| anyhow!(friendly_docker_err(&e)))?;
     let mut out = Vec::new();
     for v in resp.volumes.unwrap_or_default() {
-        let managed = v.name.starts_with("dn7-")
-            || v.labels.contains_key("dn7.mysql")
-            || v.labels.contains_key("dn7.managed");
+        let managed = v.name.starts_with("dn7-") || v.labels.contains_key("dn7.managed");
         let (size, refs) = match &v.usage_data {
             Some(u) => (
                 if u.size >= 0 {

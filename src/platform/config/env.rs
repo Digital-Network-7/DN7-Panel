@@ -10,7 +10,7 @@ use std::path::PathBuf;
 pub struct PanelConfig {
     /// Transient process-state directory (`<base>/run`): pid/heartbeat/lock.
     pub runtime_dir: PathBuf,
-    /// Persisted-data directory (`<base>/data`): version, `.panel_key`, web.json.
+    /// Persisted-data directory (`<base>/data`): version, web.json, sessions.
     pub data_dir: PathBuf,
     /// Log directory (`<base>/log`): the daemon log.
     pub log_dir: PathBuf,
