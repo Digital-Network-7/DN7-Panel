@@ -51,13 +51,32 @@ pub(crate) async fn terminal_ws(
     };
     // Run the shell as the account's system user (non-super), else as root.
     let login_user = resolve_account(&state, &user).and_then(|a| a.system_user);
-    ws.on_upgrade(move |socket| handle_terminal(socket, login_user))
+    // Audit the highest-privilege action in the panel: a root/tenant PTY. Record
+    // at session OPEN (ticket + origin already passed) with the effective shell
+    // identity as the target, and a paired close record with the duration.
+    let shell_id = login_user.clone().unwrap_or_else(|| "root".to_string());
+    audit::record(&user, "terminal.open", &shell_id, true, "");
+    ws.on_upgrade(move |socket| handle_terminal(socket, login_user, user, shell_id))
 }
 
-pub(crate) async fn handle_terminal(socket: WebSocket, login_user: Option<String>) {
+pub(crate) async fn handle_terminal(
+    socket: WebSocket,
+    login_user: Option<String>,
+    actor: String,
+    shell_id: String,
+) {
+    let started = std::time::Instant::now();
     if let Err(e) = crate::web::terminal::run_web_pty(socket, login_user).await {
         tracing::debug!("web terminal ended: {e}");
     }
+    let secs = started.elapsed().as_secs();
+    audit::record(
+        &actor,
+        "terminal.close",
+        &shell_id,
+        true,
+        &format!("{secs}s"),
+    );
 }
 
 /// WS query for a container terminal: one-time ticket + container ref, plus an
@@ -111,10 +130,24 @@ pub(crate) async fn container_terminal_ws(
             return api_err(StatusCode::FORBIDDEN, "auth.stepup_required");
         }
     }
+    // Audit every container-exec shell at session OPEN, once all authz — admin,
+    // plus super+step-up for a privileged (effective-host-root) target — has
+    // passed. Paired close record carries the session duration.
+    let actor = acct.username.clone();
+    audit::record(&actor, "container.exec", &container, true, "");
     ws.on_upgrade(move |socket| async move {
+        let started = std::time::Instant::now();
         if let Err(e) = crate::web::terminal::run_web_container_exec(socket, &container).await {
             tracing::debug!("web container terminal ended: {e}");
         }
+        let secs = started.elapsed().as_secs();
+        audit::record(
+            &actor,
+            "container.exec.close",
+            &container,
+            true,
+            &format!("{secs}s"),
+        );
     })
 }
 
