@@ -8,6 +8,7 @@
 // =========================================================================
 const SELX = { sel: null, pop: null };
 function selxClose() {
+  if (SELX.sel) { SELX.sel.setAttribute('aria-expanded', 'false'); SELX.sel.removeAttribute('aria-activedescendant'); }
   // Remove the tracked popup AND any stray ones (defensive against desync).
   document.querySelectorAll('.selx-pop').forEach((p) => p.remove());
   SELX.pop = null;
@@ -17,7 +18,9 @@ function selxOpen(sel) {
   selxClose();
   if (sel.disabled || !sel.options.length) return;
   SELX.sel = sel;
-  const pop = el('div', { class: 'selx-pop' });
+  sel.setAttribute('aria-haspopup', 'listbox');
+  sel.setAttribute('aria-expanded', 'true');
+  const pop = el('div', { class: 'selx-pop', role: 'listbox' });
   Array.from(sel.options).forEach((o, i) => {
     // Rich two-line option: main title + optional subtitle (line 2 left) and a
     // right-aligned hint (line 2 right), driven by data-sub / data-right.
@@ -28,7 +31,7 @@ function selxOpen(sel) {
     const html = rich
       ? `<div class="selx-main"><span class="selx-t">${esc(o.textContent)}</span>${right ? `<span class="selx-r">${esc(right)}</span>` : ''}</div>${sub ? `<span class="selx-sub">${esc(sub)}</span>` : ''}`
       : esc(o.textContent);
-    const opt = el('div', { class: cls }, html);
+    const opt = el('div', { class: cls, role: 'option', id: 'selxOpt' + i, 'aria-selected': i === sel.selectedIndex ? 'true' : 'false' }, html);
     if (!o.disabled) {
       opt.addEventListener('mousedown', (e) => {
         e.preventDefault();
@@ -80,7 +83,8 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault(); selxOpen(a); return;
   }
   if (!SELX.pop) return;
-  if (e.key === 'Escape') { e.preventDefault(); selxClose(); return; }
+  if (e.key === 'Escape') { e.preventDefault(); const s = SELX.sel; selxClose(); if (s) s.focus(); return; }
+  if (e.key === 'Tab') { selxClose(); return; } // let focus move on, but don't strand the popup
   const opts = Array.from(SELX.pop.querySelectorAll('.selx-opt:not(.dis):not(.selx-hide)'));
   if (!opts.length) return;
   let cur = opts.findIndex((o) => o.classList.contains('active'));
@@ -90,10 +94,16 @@ document.addEventListener('keydown', (e) => {
     cur = e.key === 'ArrowDown' ? Math.min(opts.length - 1, cur + 1) : Math.max(0, cur - 1);
     opts.forEach((o) => o.classList.remove('active'));
     opts[cur].classList.add('active'); opts[cur].scrollIntoView({ block: 'nearest' });
+    if (SELX.sel) SELX.sel.setAttribute('aria-activedescendant', opts[cur].id);
   } else if (e.key === 'Enter' && cur >= 0) {
     e.preventDefault(); opts[cur].dispatchEvent(new MouseEvent('mousedown'));
   }
 }, true);
+// Close when focus lands outside the select + popup (Tab-away, programmatic
+// focus moves) — otherwise the popup is stranded on screen without its anchor.
+document.addEventListener('focusin', (e) => {
+  if (SELX.pop && e.target !== SELX.sel && !SELX.pop.contains(e.target)) selxClose();
+});
 // Reposition/close on scroll or resize (popup is fixed-position). Ignore scroll
 // events originating inside the popup itself (long option lists scroll).
 window.addEventListener('scroll', (e) => { if (SELX.pop && e.target && e.target.closest && e.target.closest('.selx-pop')) return; selxClose(); }, true);

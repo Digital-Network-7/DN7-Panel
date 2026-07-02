@@ -11,11 +11,25 @@ function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({
 function $(id) { return document.getElementById(id); }
 function el(tag, attrs, html) { const e = document.createElement(tag); if (attrs) for (const k in attrs) e.setAttribute(k, attrs[k]); if (html != null) e.innerHTML = html; return e; }
 
+// Global unsaved-work guards. `Dirty` counts roots bindDirty currently flags
+// as changed (recounted from the live DOM, so a removed modal drops out);
+// `Busy` counts in-flight transfers (upload/import code calls inc()/dec()).
+// One beforeunload handler warns while either is non-zero.
+window.Dirty = 0;
+function syncDirtyCount() { window.Dirty = document.querySelectorAll('[data-dirty="1"]').length; }
+window.Busy = { n: 0, inc() { this.n++; }, dec() { if (this.n > 0) this.n--; } };
+window.addEventListener('beforeunload', (e) => {
+  syncDirtyCount();
+  if (window.Dirty > 0 || window.Busy.n > 0) { e.preventDefault(); e.returnValue = ''; }
+});
+
 // Gate a save/apply/confirm button on "the form actually changed". The button
 // starts disabled; it enables only when a control inside `root` differs from
 // its initial value (so create forms enable once something is entered, and edit
 // forms enable only after a real change). Returns a `reset()` that re-baselines
 // (call it after a successful in-place save so the button disables again).
+// Also flags `root` with data-dirty="1"/"0" live — modal() consults it before
+// dismissing, and the beforeunload guard counts flagged roots.
 function bindDirty(btn, root) {
   btn = typeof btn === 'string' ? $(btn) : btn;
   root = typeof root === 'string' ? $(root) : root;
@@ -26,7 +40,12 @@ function bindDirty(btn, root) {
     .map((c) => (c.type === 'checkbox' || c.type === 'radio') ? (c.checked ? '1' : '0') : (c.value == null ? '' : c.value))
     .join('\u0001');
   let base = snap();
-  const sync = () => { btn.disabled = (snap() === base); };
+  const sync = () => {
+    const dirty = snap() !== base;
+    btn.disabled = !dirty;
+    root.dataset.dirty = dirty ? '1' : '0';
+    syncDirtyCount();
+  };
   const reset = () => { base = snap(); sync(); };
   root.addEventListener('input', sync);
   root.addEventListener('change', sync);
@@ -106,20 +125,28 @@ function sha256Hex(ascii) {
 // makes a leaked verifier N times costlier to brute-force offline. Pure-JS (so
 // it works on insecure origins, where crypto.subtle is unavailable) and
 // deterministic, so the value set at password-change time and the value
-// recomputed at login time always agree.
-function deriveVerifier(salt, password, kdf) {
+// recomputed at login time always agree. The s256:N loop is chunked (~2000
+// rounds per setTimeout(0) slice) so a just-set pending state (disabled button
+// / spinner) can paint instead of freezing the tab.
+// NOTE: the former synchronous deriveVerifier() was removed after the async
+// migration (all call sites use this). login.js:46's comment still names it.
+function deriveVerifierAsync(salt, password, kdf) {
   const s = String(salt || '');
   const pw = String(password);
   const k = String(kdf || '');
-  if (k.slice(0, 5) === 's256:') {
-    let n = parseInt(k.slice(5), 10);
-    if (!(n > 0)) n = 1;
-    if (n > 5000000) n = 5000000; // sanity clamp against a hostile/garbled value
-    let h = pw;
-    for (let i = 0; i < n; i++) h = sha256Hex(s + ':' + h);
-    return h;
-  }
-  return sha256Hex(s + ':' + pw);
+  if (k.slice(0, 5) !== 's256:') return Promise.resolve(sha256Hex(s + ':' + pw));
+  let n = parseInt(k.slice(5), 10);
+  if (!(n > 0)) n = 1;
+  if (n > 5000000) n = 5000000; // sanity clamp against a hostile/garbled value
+  return new Promise((resolve) => {
+    let h = pw, i = 0;
+    const step = () => {
+      const end = Math.min(n, i + 2000);
+      for (; i < end; i++) h = sha256Hex(s + ':' + h);
+      if (i < n) setTimeout(step, 0); else resolve(h);
+    };
+    setTimeout(step, 0); // defer even the first slice so pending UI paints
+  });
 }
 
 // KDF scheme stamped on every newly-set / changed password. Existing accounts
@@ -176,17 +203,35 @@ const TOAST_ICONS = {
   warn: '<path d="M10.3 3.6 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
 };
-function toast(msg, kind) {
+// `opts`: { duration, action: { label, onClick } }. Errors/warnings linger 6s
+// (ok/info 2.6s); hovering pauses the timer, leaving resumes what's left
+// (1.5s minimum). The .timed class + --tms var drive the CSS countdown bar
+// (paused on :hover in CSS).
+function toast(msg, kind, opts) {
   const k = (kind === 'ok' || kind === 'err' || kind === 'warn') ? kind : 'info';
+  const o = opts || {};
   let wrap = $('toastWrap');
-  if (!wrap) { wrap = el('div', { id: 'toastWrap', class: 'toast-wrap' }); document.body.appendChild(wrap); }
-  const t = el('div', { class: 'toast ' + k });
+  if (!wrap) { wrap = el('div', { id: 'toastWrap', class: 'toast-wrap', 'aria-live': 'polite' }); document.body.appendChild(wrap); }
+  const t = el('div', { class: 'toast ' + k + ' timed' });
   t.innerHTML = `<svg class="ti" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${TOAST_ICONS[k]}</svg><span class="tx"></span>`;
   t.querySelector('.tx').textContent = msg;
+  const ms = o.duration || ((k === 'err' || k === 'warn') ? 6000 : 2600);
+  t.style.setProperty('--tms', ms + 'ms');
+  let timer = null, deadline = 0, remain = ms, gone = false;
+  const dispose = () => { if (gone) return; gone = true; clearTimeout(timer); t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300); };
+  const arm = (d) => { deadline = Date.now() + d; timer = setTimeout(dispose, d); };
+  if (o.action && o.action.label) {
+    const b = el('button', { class: 'btn sm sec toast-act' });
+    b.textContent = o.action.label;
+    b.onclick = () => { dispose(); if (o.action.onClick) o.action.onClick(); };
+    t.appendChild(b);
+  }
+  t.addEventListener('mouseenter', () => { if (timer) { clearTimeout(timer); timer = null; remain = Math.max(0, deadline - Date.now()); } });
+  t.addEventListener('mouseleave', () => { if (!gone && !timer) arm(Math.max(1500, remain)); });
   wrap.appendChild(t);
-  setTimeout(() => { t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2600);
+  arm(ms);
 }
-function confirmDanger(msg) { return new Promise((res) => { modal(tr('common.confirm'), `<p style="margin:0 0 18px">${esc(msg)}</p><div class="row" style="justify-content:flex-end"><button class="btn sec" id="cdNo">${tr('common.cancel')}</button><button class="btn danger" id="cdYes">${tr('common.ok')}</button></div>`, (close) => { $('cdNo').onclick = () => { close(); res(false); }; $('cdYes').onclick = () => { close(); res(true); }; }); }); }
+function confirmDanger(msg) { return new Promise((res) => { modal(tr('common.confirm'), `<p style="margin:0 0 18px">${esc(msg)}</p><div class="row" style="justify-content:flex-end"><button class="btn sec" id="cdNo">${tr('common.cancel')}</button><button class="btn danger" id="cdYes">${tr('common.ok')}</button></div>`, (close) => { $('cdNo').onclick = () => { close(); res(false); }; $('cdYes').onclick = () => { close(); res(true); }; }, { onDismiss: () => res(false) }); }); }
 
 // Step-up re-authentication for the highest-risk actions (self-update, panel
 // access/settings changes, exec into a privileged container). Prompts for the
@@ -228,9 +273,11 @@ function stepUp(message) {
           .then((r) => (r.ok ? r.json() : Promise.reject(new Error(tr('login.err_conn')))))
           .then((c) => {
             if (!c || !c.nonce) throw new Error(tr('login.err_conn'));
-            const verifier = deriveVerifier(c.salt, pw, c.kdf);
-            const payload = { nonce: c.nonce, verifier, code };
-            return fetch('/api/stepup', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify(payload) });
+            // Chunked KDF so the disabled confirm button paints during derivation.
+            return deriveVerifierAsync(c.salt, pw, c.kdf).then((verifier) => {
+              const payload = { nonce: c.nonce, verifier, code };
+              return fetch('/api/stepup', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify(payload) });
+            });
           })
           .then(async (r) => {
             const txt = await r.text(); let b; try { b = JSON.parse(txt); } catch (_) { b = txt; }
@@ -244,20 +291,86 @@ function stepUp(message) {
       $('suPw').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') submit(); });
       const cc = $('suCode'); if (cc) cc.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') submit(); });
       setTimeout(() => $('suPw').focus(), 30);
-    });
+    }, { onDismiss: () => { if (!settled) { settled = true; resolve(null); } } });
   });
 }
 
 
 // ---- Modal ----
-function modal(title, bodyHtml, onMount, big) {
+// Registry of every open mask, in stacking order. modal() pushes on open and
+// close() splices on teardown, so a forced teardown (stopTab leaving a tab)
+// can route through closeAllModals() instead of wiping #modalRoot — which would
+// bypass close() and leak the per-modal keydown listener + strand onDismiss
+// promises (confirmDanger/stepUp/sessionExpired).
+const OPEN_MODALS = [];
+// Force-close every open modal (topmost first). Used by stopTab(): this is a
+// non-guarded teardown — it still runs each modal's cleanup + fires onDismiss so
+// promise-based dialogs settle, but skips the dirty-discard confirm because the
+// tab has already switched. Iterates a snapshot since close() mutates the list.
+function closeAllModals() {
+  OPEN_MODALS.slice().forEach((m) => { try { m._close(true); } catch (e) {} });
+}
+
+// 4th arg: boolean `big` (legacy) or { big, onDismiss }. A dismiss (X /
+// backdrop / Escape — not the programmatic close()) first consults the dirty
+// guard: forms flagged [data-dirty="1"] by bindDirty require a discard
+// confirmation, then `onDismiss` fires so promise-based dialogs can settle.
+// Escape and the Tab focus-trap address only the topmost mask in #modalRoot,
+// so stacked dialogs (stepUp over the update modal) behave.
+function modal(title, bodyHtml, onMount, opts) {
+  const o = (opts && typeof opts === 'object') ? opts : { big: !!opts };
   const root = $('modalRoot');
+  const prev = document.activeElement;
   const mask = el('div', { class: 'mask' });
-  mask.innerHTML = `<div class="modal ${big ? 'big' : ''}"><div class="modal-h"><h3>${esc(title)}</h3><button class="x">&times;</button></div><div class="modal-b">${bodyHtml}</div></div>`;
+  mask.innerHTML = `<div class="modal ${o.big ? 'big' : ''}" role="dialog" aria-modal="true"><div class="modal-h"><h3>${esc(title)}</h3><button class="x" aria-label="${esc(tr('common.close'))}">&times;</button></div><div class="modal-b">${bodyHtml}</div></div>`;
   root.appendChild(mask);
-  const close = () => { mask.remove(); };
-  mask.querySelector('.x').onclick = close;
-  mask.addEventListener('mousedown', (e) => { if (e.target === mask) close(); });
+  OPEN_MODALS.push(mask);
+  const focusables = () => Array.from(mask.querySelectorAll('button,input,select,textarea,a[href],[tabindex]'))
+    .filter((n) => !n.disabled && n.tabIndex !== -1 && n.offsetParent !== null);
+  let closed = false;
+  // Teardown. `silent` (used by closeAllModals on a forced tab switch) fires
+  // onDismiss so promise-based dialogs settle, but callers that dismiss the
+  // modal normally already ran onDismiss via dismiss(), so it isn't double-fired.
+  const close = (silent) => {
+    if (closed) return;
+    closed = true;
+    const i = OPEN_MODALS.indexOf(mask);
+    if (i !== -1) OPEN_MODALS.splice(i, 1);
+    document.removeEventListener('keydown', onKey, true);
+    mask.remove();
+    if (prev && prev.focus && document.contains(prev)) prev.focus();
+    if (silent === true && o.onDismiss) o.onDismiss();
+  };
+  // closeAllModals() reaches every open mask through this stored handle.
+  mask._close = close;
+  const dismiss = () => {
+    if (closed) return;
+    const go = () => { close(); if (o.onDismiss) o.onDismiss(); };
+    if (mask.querySelector('[data-dirty="1"]')) confirmDanger(tr('common.discard_confirm')).then((yes) => { if (yes) go(); });
+    else go();
+  };
+  const onKey = (e) => {
+    const all = root.querySelectorAll('.mask');
+    if (closed || all[all.length - 1] !== mask) return; // only the topmost mask reacts
+    if (e.key === 'Escape') {
+      if (e.defaultPrevented) return; // an inner widget (selx popup) consumed it
+      e.preventDefault(); dismiss();
+    } else if (e.key === 'Tab') {
+      const f = focusables();
+      if (!f.length) { e.preventDefault(); return; }
+      const cur = document.activeElement;
+      if (e.shiftKey && (cur === f[0] || !mask.contains(cur))) { e.preventDefault(); f[f.length - 1].focus(); }
+      else if (!e.shiftKey && (cur === f[f.length - 1] || !mask.contains(cur))) { e.preventDefault(); f[0].focus(); }
+    }
+  };
+  document.addEventListener('keydown', onKey, true);
+  mask.querySelector('.x').onclick = dismiss;
+  mask.addEventListener('mousedown', (e) => { if (e.target === mask) dismiss(); });
   if (onMount) onMount(close, mask);
+  if (!mask.contains(document.activeElement)) {
+    const f = focusables();
+    const first = f.find((n) => !n.classList.contains('x')) || f[0];
+    if (first) first.focus();
+  }
   return close;
 }
