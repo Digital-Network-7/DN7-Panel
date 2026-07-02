@@ -61,7 +61,9 @@ pub(crate) async fn save_access_op(cmd: &SaveAccess) -> Result<Value> {
     // Validate clients.
     let clients = build_access_clients(cmd)?;
 
-    let mut lists = load_access();
+    // Strict load: a corrupt access.json is quarantined + refused, never RMW'd
+    // away (which would silently drop every other access list on one save).
+    let mut lists = load_access_strict()?;
     let existing_id = cmd
         .access_id
         .as_deref()
@@ -165,7 +167,9 @@ pub(crate) async fn delete_access_op(cmd: &DeleteAccess) -> Result<Value> {
             return Err(anyhow!("访问列表仍被站点使用：{}", sites.join("、")));
         }
     }
-    let mut lists = load_access();
+    // Strict load: a corrupt access.json is quarantined + refused, never RMW'd
+    // away (which would silently drop every other access list on one delete).
+    let mut lists = load_access_strict()?;
     let before = lists.len();
     lists.retain(|a| a.id != id);
     if lists.len() == before {

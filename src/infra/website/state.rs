@@ -56,6 +56,14 @@ pub(crate) fn load_sites() -> Vec<Site> {
     crate::infra::support::json_store::load_or_default_cached(&sites_file())
 }
 
+/// Strict load for the read-modify-write path: `Err` (and the bad file is
+/// quarantined) when sites.json is present but unparseable, so an add/remove/
+/// update REFUSES to save rather than clobbering the whole manifest with an
+/// empty default. `Ok(Vec::new())` only when the file is genuinely absent.
+pub(crate) fn load_sites_strict() -> Result<Vec<Site>> {
+    Ok(crate::infra::support::json_store::load_strict(&sites_file())?.unwrap_or_default())
+}
+
 pub(crate) fn save_sites(sites: &[Site]) -> Result<()> {
     crate::infra::support::json_store::save_pretty(&sites_file(), sites)
 }

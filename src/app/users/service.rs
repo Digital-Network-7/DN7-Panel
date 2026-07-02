@@ -25,7 +25,7 @@ type Result<T> = std::result::Result<T, Error>;
 /// (`crate::app::users::PanelUser`) stay stable while this module keeps the
 /// system-account orchestration. Persistence is delegated to infra/store.
 pub(crate) use crate::core::identity::PanelUser;
-pub(crate) use crate::infra::store::users::{load, save};
+pub(crate) use crate::infra::store::users::{load, load_strict, save};
 
 /// Serializes read-modify-write access to users.json so concurrent admin
 /// requests can't lose updates: each `load -> modify -> save` runs under this
@@ -47,9 +47,14 @@ static CREATE_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 /// Run an atomic read-modify-write against users.json under `USERS_LOCK`.
+///
+/// The base read is the STRICT loader: if users.json is present but corrupt,
+/// this returns `Persist(..)` (and the bad file is quarantined) rather than
+/// loading an empty default and then saving it back — which would erase every
+/// real account. `Ok(default)` still holds for a genuinely absent file.
 fn mutate<T>(f: impl FnOnce(&mut Vec<PanelUser>) -> Result<T>) -> Result<T> {
     let _guard = USERS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let mut users = load();
+    let mut users = load_strict().map_err(|e| Error::Persist(e.to_string()))?;
     let out = f(&mut users)?;
     save(&users).map_err(|e| Error::Persist(e.to_string()))?;
     Ok(out)

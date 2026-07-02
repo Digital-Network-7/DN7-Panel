@@ -28,6 +28,60 @@ pub(crate) fn load_opt<T: DeserializeOwned>(path: &Path) -> Option<T> {
     serde_json::from_str(&s).ok()
 }
 
+/// Strict loader for read-modify-write paths. Distinguishes the three outcomes
+/// [`load_or_default`] silently collapses into a default:
+///
+/// - **absent file** → `Ok(None)` (a fresh install has no manifest yet).
+/// - **present + parseable** → `Ok(Some(value))`.
+/// - **present + UNPARSEABLE** → `Err` — and the bad file is *quarantined* by a
+///   best-effort rename to `<name>.corrupt-<unix_ts>` so the real records are
+///   preserved for inspection instead of being clobbered by the next save.
+///
+/// RMW mutators must call this (not [`load_or_default`]) as their base read: a
+/// parse error here means "refuse to save" rather than persisting an empty
+/// default over live data. Quarantining also lets the *next* save start from a
+/// clean path (the corrupt bytes are moved aside, not overwritten in place).
+pub(crate) fn load_strict<T: DeserializeOwned>(path: &Path) -> anyhow::Result<Option<T>> {
+    let s = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        // Genuinely absent → not an error (fresh install); any other I/O error
+        // (permissions, etc.) IS surfaced so we don't RMW-default over it.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(anyhow::anyhow!("读取 {} 失败：{e}", path.display())),
+    };
+    match serde_json::from_str::<T>(&s) {
+        Ok(v) => Ok(Some(v)),
+        Err(e) => match quarantine_corrupt(path) {
+            Some(dest) => Err(anyhow::anyhow!(
+                "{} 解析失败，已隔离到 {}：{e}",
+                path.display(),
+                dest.display()
+            )),
+            None => Err(anyhow::anyhow!(
+                "{} 解析失败（隔离未成功）：{e}",
+                path.display()
+            )),
+        },
+    }
+}
+
+/// Best-effort: move a corrupt manifest aside to `<name>.corrupt-<unix_ts>` so
+/// it's preserved for inspection and the next save writes a fresh file instead
+/// of clobbering the bad bytes in place. Returns the destination on success.
+/// Also drops any cached entry so a later valid write is observed immediately.
+fn quarantine_corrupt(path: &Path) -> Option<PathBuf> {
+    let ts = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut name = path.file_name()?.to_os_string();
+    name.push(format!(".corrupt-{ts}"));
+    let dest = path.with_file_name(name);
+    std::fs::rename(path, &dest).ok()?;
+    invalidate_cache(path);
+    Some(dest)
+}
+
 // ---------------------------------------------------------------------------
 // (mtime, len)-validated parse cache
 //
@@ -200,6 +254,91 @@ mod tests {
         assert_eq!(load_opt_cached::<Vec<i64>>(&p), None);
         std::fs::write(&p, "[3]").unwrap();
         assert_eq!(load_opt_cached::<Vec<i64>>(&p), Some(vec![3]));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn load_strict_absent_present_and_corrupt_quarantine() {
+        let p = std::env::temp_dir().join(format!("dn7-strict-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        // Absent → Ok(None) (a fresh install has no manifest; not an error).
+        assert!(matches!(load_strict::<Vec<i64>>(&p), Ok(None)));
+        // Present + parseable → Ok(Some(value)).
+        std::fs::write(&p, "[1,2,3]").unwrap();
+        assert_eq!(load_strict::<Vec<i64>>(&p).unwrap(), Some(vec![1, 2, 3]));
+        // Present + UNPARSEABLE → Err, and the bad file is quarantined (moved
+        // aside), NOT left in place to be clobbered by the next save.
+        std::fs::write(&p, "{ not json").unwrap();
+        assert!(load_strict::<Vec<i64>>(&p).is_err());
+        assert!(
+            !p.exists(),
+            "corrupt file must be moved aside on quarantine"
+        );
+        // Exactly one quarantine copy exists, preserving the original bytes.
+        let dir = p.parent().unwrap();
+        let stem = p.file_name().unwrap().to_string_lossy().to_string();
+        let quarantined: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n.starts_with(&stem) && n.contains(".corrupt-")
+            })
+            .collect();
+        assert_eq!(
+            quarantined.len(),
+            1,
+            "corrupt bytes preserved for inspection"
+        );
+        assert_eq!(
+            std::fs::read_to_string(quarantined[0].path()).unwrap(),
+            "{ not json"
+        );
+        for q in &quarantined {
+            let _ = std::fs::remove_file(q.path());
+        }
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn strict_rmw_refuses_to_clobber_corrupt_file() {
+        // Simulates the RMW mutators (users/sites/access): base-load STRICT, and
+        // only save when it parsed. A corrupt file must make the whole op error
+        // BEFORE any save, so real records are never overwritten by a default.
+        let p = std::env::temp_dir().join(format!("dn7-strictrmw-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        std::fs::write(&p, "{ half-restored garbage").unwrap();
+
+        // The mutate shape used by the real stores: strict-load, mutate, save.
+        let rmw = |path: &Path| -> anyhow::Result<()> {
+            let mut v: Vec<i64> = load_strict(path)?.unwrap_or_default();
+            v.push(7); // the "modify"
+            save_pretty(path, &v)?; // must NOT be reached on a corrupt base
+            Ok(())
+        };
+        assert!(rmw(&p).is_err(), "RMW must refuse a corrupt base load");
+
+        // The empty default was never written back: the only file the RMW leaves
+        // is the quarantine copy holding the original (corrupt) bytes.
+        assert!(!p.exists(), "must not resurrect the manifest as a default");
+        let dir = p.parent().unwrap();
+        let stem = p.file_name().unwrap().to_string_lossy().to_string();
+        let quarantined: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n.starts_with(&stem) && n.contains(".corrupt-")
+            })
+            .collect();
+        assert_eq!(quarantined.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(quarantined[0].path()).unwrap(),
+            "{ half-restored garbage"
+        );
+        for q in &quarantined {
+            let _ = std::fs::remove_file(q.path());
+        }
         let _ = std::fs::remove_file(&p);
     }
 

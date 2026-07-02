@@ -8,7 +8,10 @@ use super::*;
 /// entity is owned by `core::website::build_default_site`.
 pub(crate) async fn apply_default_site(g: &WebGlobal) -> Result<Value> {
     let lo = layout()?;
-    let prev = load_webglobal();
+    // Strict load: if websettings.json is present but corrupt, refuse (and
+    // quarantine it) instead of clobbering it with `g` and then rolling back to
+    // a fabricated default. `None` (genuinely absent) rolls back to defaults.
+    let prev = load_webglobal_strict()?.unwrap_or_default();
     save_webglobal(g)?;
     if let Err(e) = validate_and_reload(&lo).await {
         // Roll back to the previous default-site settings.

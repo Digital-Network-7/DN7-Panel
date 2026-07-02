@@ -42,8 +42,10 @@ pub(crate) async fn add_site(form: &SiteForm) -> Result<Value> {
     }
 
     // Persist the manifest, then rebuild the edge route table from it — rolling
-    // back the manifest if the new model is rejected.
-    let mut sites = load_sites();
+    // back the manifest if the new model is rejected. Strict load: refuse to add
+    // (quarantining the bad file) if sites.json is corrupt, rather than dropping
+    // every existing site by RMW-ing an empty default over it.
+    let mut sites = load_sites_strict()?;
     sites.push(site.clone());
     save_sites(&sites)?;
     if let Err(e) = validate_and_reload(&lo).await {
@@ -64,7 +66,9 @@ pub(crate) async fn remove_site(cmd: &RemoveSite) -> Result<Value> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| website_err(WebsiteError::MissingSiteId))?;
-    let mut sites = load_sites();
+    // Strict load: a corrupt sites.json is quarantined + refused, never RMW'd
+    // away (which would silently drop every other site on a single removal).
+    let mut sites = load_sites_strict()?;
     let before = sites.len();
     let removed: Vec<Site> = sites.iter().filter(|s| s.id == site_id).cloned().collect();
     sites.retain(|s| s.id != site_id);
@@ -96,7 +100,9 @@ pub(crate) async fn update_site(form: &SiteForm) -> Result<Value> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| website_err(WebsiteError::MissingSiteId))?;
-    let mut sites = load_sites();
+    // Strict load: a corrupt sites.json is quarantined + refused, never RMW'd
+    // away (which would silently drop every other site on a single edit).
+    let mut sites = load_sites_strict()?;
     let old = sites
         .iter()
         .find(|s| s.id == site_id)
