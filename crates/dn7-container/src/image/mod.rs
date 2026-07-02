@@ -1,0 +1,305 @@
+//! Image subsystem: resolve a reference, pull its manifest/config/layers from a
+//! registry into the content store, and (P2b) assemble a runnable rootfs.
+
+pub mod archive;
+pub mod commit;
+pub mod layer;
+pub mod manifest;
+pub mod reference;
+pub mod registry;
+pub mod spec_gen;
+pub mod store;
+pub mod volume;
+
+pub use reference::Reference;
+pub use store::Store;
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::{Error, Result};
+use crate::image::manifest::{ImageConfig, Index, Manifest};
+use crate::image::registry::Registry;
+
+/// What a successful pull leaves behind: the resolved reference, the config blob
+/// digest, and the ordered layer digests — enough to assemble + run the image
+/// without touching the network again.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageRecord {
+    pub reference: String,
+    pub config_digest: String,
+    pub layers: Vec<String>,
+}
+
+impl ImageRecord {
+    /// Load a previously-pulled image's record from the store.
+    pub fn load(store: &Store, key: &str) -> Result<ImageRecord> {
+        let bytes = store.read_image_json(key)?;
+        serde_json::from_slice(&bytes).map_err(Error::Json)
+    }
+
+    /// The image's config blob, parsed (container defaults + rootfs diff_ids).
+    pub fn config(&self, store: &Store) -> Result<ImageConfig> {
+        let bytes = store.read_blob(&self.config_digest)?;
+        serde_json::from_slice(&bytes).map_err(Error::Json)
+    }
+}
+
+/// A summary of a stored image, for listing.
+#[derive(Debug, Clone)]
+pub struct ImageSummary {
+    pub reference: String,
+    pub config_digest: String,
+    /// Total on-disk size (config + all layer blobs), bytes.
+    pub size: u64,
+    /// When the image was stored locally (image.json mtime), Unix seconds.
+    pub created_ts: i64,
+}
+
+/// List every image in the store (scans `images/*/image.json`).
+pub fn list_summaries(store: &Store) -> Result<Vec<ImageSummary>> {
+    let dir = store.root().join("images");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(Error::Io {
+                path: dir,
+                source: e,
+            })
+        }
+    };
+    let mut out = Vec::new();
+    for ent in entries.flatten() {
+        let key = ent.file_name().to_string_lossy().into_owned();
+        let Ok(rec) = ImageRecord::load(store, &key) else {
+            continue;
+        };
+        let size = blob_size(store, &rec.config_digest)
+            + rec.layers.iter().map(|d| blob_size(store, d)).sum::<u64>();
+        let created_ts = std::fs::metadata(store.image_dir(&key).join("image.json"))
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        out.push(ImageSummary {
+            reference: rec.reference,
+            config_digest: rec.config_digest,
+            size,
+            created_ts,
+        });
+    }
+    out.sort_by(|a, b| a.reference.cmp(&b.reference));
+    Ok(out)
+}
+
+fn blob_size(store: &Store, digest: &str) -> u64 {
+    store
+        .blob_path(digest)
+        .ok()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len())
+        .unwrap_or(0)
+}
+
+/// Remove an image record (by reference). Blobs are intentionally left in place —
+/// a GC pass that ref-counts blobs across all images is a follow-up, and an
+/// orphan blob is simply reused by the next pull that shares it.
+pub fn remove_image(store: &Store, reference: &str) -> Result<()> {
+    let r = Reference::parse(reference)?;
+    let dir = store.image_dir(&r.store_key());
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(Error::Other(format!("no such image: {reference}")))
+        }
+        Err(e) => Err(Error::io(&dir)(e)),
+    }
+}
+
+/// Tag an image: write a new reference pointing at the same content (config +
+/// layers) as `src`. Overwrites any record already at the new reference.
+pub fn tag_image(store: &Store, src: &str, new_ref: &str) -> Result<()> {
+    let sr = Reference::parse(src)?;
+    let nr = Reference::parse(new_ref)?;
+    let mut rec = ImageRecord::load(store, &sr.store_key())?;
+    rec.reference = nr.canonical();
+    store.write_image_json(&nr.store_key(), &serde_json::to_vec_pretty(&rec)?)
+}
+
+// Lives here (next to `list_summaries`) rather than at file end; `pull` etc.
+// follow it, so silence the items-after-test-module style lint.
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod summary_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    fn write_blob(store: &Store, data: &[u8]) -> String {
+        let digest = format!("sha256:{}", {
+            let mut s = String::new();
+            for b in Sha256::digest(data) {
+                s.push_str(&format!("{b:02x}"));
+            }
+            s
+        });
+        store
+            .save_blob(&digest, |w| {
+                w.write_all(data).map_err(|e| Error::Other(e.to_string()))
+            })
+            .unwrap();
+        digest
+    }
+
+    #[test]
+    fn list_summaries_scans_the_store() {
+        static N: AtomicU32 = AtomicU32::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "dn7img-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let store = Store::with_root(&root).unwrap();
+        let cfg = br#"{"rootfs":{"diff_ids":[]}}"#;
+        let layer = b"layer-bytes";
+        let rec = ImageRecord {
+            reference: "registry-1.docker.io/library/alpine:latest".into(),
+            config_digest: write_blob(&store, cfg),
+            layers: vec![write_blob(&store, layer)],
+        };
+        store
+            .write_image_json("alpine_key", &serde_json::to_vec(&rec).unwrap())
+            .unwrap();
+
+        let sums = list_summaries(&store).unwrap();
+        assert_eq!(sums.len(), 1);
+        assert_eq!(sums[0].reference, rec.reference);
+        assert_eq!(sums[0].size, (cfg.len() + layer.len()) as u64);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// Pull `reference` into `store`: resolve a multi-arch index to this host's
+/// platform, fetch + verify the config and every layer, and persist a record.
+/// Re-pulling is cheap — blobs already present are skipped.
+pub fn pull(reference: &str, store: &Store) -> Result<ImageRecord> {
+    let r = Reference::parse(reference)?;
+    let mut reg = Registry::new(&r.registry, &r.repository);
+    let (arch, os) = host_platform();
+    log(&format!("resolving {} ({os}/{arch})", r.canonical()));
+
+    // Top-level manifest: may be a single-platform manifest or a multi-arch index.
+    let (top_bytes, top_ct) = reg.get_manifest(&r.reference)?;
+    let manifest_bytes = if manifest::media::is_index(&top_ct) || is_index_json(&top_bytes) {
+        let index: Index = serde_json::from_slice(&top_bytes)?;
+        let desc = index.select(arch, os).ok_or_else(|| {
+            Error::Other(format!("image has no {os}/{arch} variant in its index"))
+        })?;
+        log(&format!(
+            "index → {os}/{arch} manifest {}",
+            short(&desc.digest)
+        ));
+        reg.get_manifest(&desc.digest)?.0
+    } else {
+        top_bytes
+    };
+
+    let manifest: Manifest = serde_json::from_slice(&manifest_bytes)?;
+
+    // Config blob.
+    let config_digest = manifest.config.digest.clone();
+    log(&format!("config {}", short(&config_digest)));
+    store.save_blob(&config_digest, |w| reg.blob_to(&config_digest, w))?;
+
+    // Layer blobs (ordered).
+    let mut layers = Vec::with_capacity(manifest.layers.len());
+    for (i, layer) in manifest.layers.iter().enumerate() {
+        let d = layer.digest.clone();
+        if store.has_blob(&d) {
+            log(&format!(
+                "layer {}/{} {} (cached)",
+                i + 1,
+                manifest.layers.len(),
+                short(&d)
+            ));
+        } else {
+            log(&format!(
+                "layer {}/{} {} ({} bytes)",
+                i + 1,
+                manifest.layers.len(),
+                short(&d),
+                layer.size
+            ));
+            store.save_blob(&d, |w| reg.blob_to(&d, w))?;
+        }
+        layers.push(d);
+    }
+
+    let record = ImageRecord {
+        reference: r.canonical(),
+        config_digest,
+        layers,
+    };
+    store.write_image_json(&r.store_key(), &serde_json::to_vec_pretty(&record)?)?;
+    log("pull complete");
+    Ok(record)
+}
+
+/// Ensure the image's merged rootfs is extracted into the shared store cache
+/// (the read-only overlay lower), returning its path. Idempotent: extracted once
+/// per image config digest, then reused by every container of that image.
+pub fn ensure_image_rootfs(store: &Store, record: &ImageRecord) -> Result<std::path::PathBuf> {
+    let base = store.image_rootfs_base(&record.config_digest)?;
+    let rootfs = base.join("rootfs");
+    let ready = base.join(".ready");
+    if ready.is_file() {
+        return Ok(rootfs);
+    }
+    // Partial/aborted prior extraction — start clean.
+    if base.exists() {
+        std::fs::remove_dir_all(&base).map_err(Error::io(&base))?;
+    }
+    std::fs::create_dir_all(&rootfs).map_err(Error::io(&rootfs))?;
+    log(&format!(
+        "extracting {} layer(s) → shared cache {}",
+        record.layers.len(),
+        rootfs.display()
+    ));
+    layer::apply_layers(store, &record.layers, &rootfs)?;
+    std::fs::write(&ready, b"").map_err(Error::io(&ready))?;
+    Ok(rootfs)
+}
+
+/// OCI platform for this host. The container target is always Linux; map the Rust
+/// arch name to the OCI/Docker spelling.
+pub fn host_platform() -> (&'static str, &'static str) {
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        "arm" => "arm",
+        other => other,
+    };
+    (arch, "linux")
+}
+
+/// Best-effort "is this JSON an index?" fallback when the Content-Type is absent
+/// or generic (some registries serve `application/json`).
+fn is_index_json(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|v| v.get("manifests").map(|m| m.is_array()))
+        .unwrap_or(false)
+}
+
+fn short(digest: &str) -> String {
+    digest
+        .strip_prefix("sha256:")
+        .map(|h| h[..h.len().min(12)].to_string())
+        .unwrap_or_else(|| digest.to_string())
+}
+
+/// Progress line (stderr, so stdout stays machine-readable).
+fn log(msg: &str) {
+    eprintln!("pull: {msg}");
+}

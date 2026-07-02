@@ -1,0 +1,50 @@
+[package]
+name = "dn7-container"
+version = "0.1.0"
+edition = "2021"
+description = "DN7 self-contained container runtime (no Docker) — P1: OCI runtime core."
+publish = false
+
+[dependencies]
+# Syscall bindings only — the runtime logic (namespaces/cgroups/rootfs) is ours.
+# This is "from scratch" in the sense that matters: no youki/runc, no high-level
+# container crate. `nix`/`libc` are just typed wrappers over the kernel ABI.
+nix = { version = "0.29", features = [
+    "sched",    # unshare/clone/setns (namespaces)
+    "mount",    # mount/umount2
+    "process",  # fork/waitpid/execv
+    "signal",   # kill, signal handling
+    "fs",       # pivot_root, mkdir, open flags
+    "user",     # uid/gid, setresuid
+    "hostname", # sethostname
+    "term",     # openpty (web-terminal PTY exec)
+] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# P2 — image pull + layer assembly.
+# Lean blocking HTTP (rustls) for the OCI distribution (registry v2) client.
+ureq = { version = "2", features = ["json"] }
+# Decompress gzip'd layer blobs (pure-Rust backend, musl-static safe).
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Untar layer blobs.
+tar = "0.4"
+# Verify content-addressable blob digests (sha256).
+sha2 = "0.10"
+
+# P3 — Linux capability sets (bounding/effective/permitted/inheritable/ambient).
+caps = "0.5"
+# P3 — seccomp-BPF syscall filtering, pure Rust (no libseccomp C dependency).
+seccompiler = "0.5"
+# Resolve syscall names → numbers for the build arch (for OCI seccomp profiles).
+syscalls = { version = "0.6", default-features = false }
+
+# P5 — IPv4 subnet math for IPAM (hosts iterator, contains, network/broadcast).
+ipnet = { version = "2", features = ["serde"] }
+
+[[bin]]
+# A runc-like CLI used to drive + test the runtime directly (create/start/...).
+name = "dn7crun"
+path = "src/bin/dn7crun.rs"
