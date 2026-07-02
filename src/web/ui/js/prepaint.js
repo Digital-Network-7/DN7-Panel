@@ -18,6 +18,9 @@
     if (m === 'auto') eff = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', eff);
     document.documentElement.setAttribute('data-mode', m);
+    // Density preference (see theme.js setDensity) — applied here so compact
+    // tables don't flash comfortable on refresh.
+    if (localStorage.getItem('dn7_dens') === 'compact') document.documentElement.setAttribute('data-density', 'compact');
     // Decide auth view before first paint so a logged-in refresh never flashes
     // the login page (CSS hides the opposite view based on this attr).
     document.documentElement.setAttribute('data-auth', localStorage.getItem('dn7_web_token') ? 'in' : 'out');

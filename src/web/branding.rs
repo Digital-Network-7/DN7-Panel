@@ -159,9 +159,13 @@ pub fn render_index(tmpl: &str, b: &Branding, default_lang: &str, timezone: &str
     );
     let mut accent_style = String::new();
     if !b.accent.is_empty() {
-        // `!important` so it wins over the later light/dark theme blocks.
+        // Override the *semantic* accent tokens (app.css aliases the legacy
+        // --br/--vio names to them) and recompute the derived soft tint. The
+        // doubled `:root:root` selector out-specifies both app.css token
+        // blocks (`:root` and `html[data-theme="light"]`) without `!important`,
+        // so the alias/derivation layer keeps working.
         accent_style = format!(
-            "<style>:root{{--br:{c} !important;--cy:{c} !important;--vio:{c} !important;}}</style>",
+            "<style>:root:root{{--accent:{c};--accent-2:{c};--cy:{c};--acc-soft:color-mix(in srgb, {c} 14%, transparent);}}</style>",
             c = b.accent
         );
     }
@@ -254,7 +258,7 @@ mod tests {
         let out = render_index(tmpl, &b, "", "");
         assert!(out.contains("&lt;Acme&gt;")); // escaped name in markup
         assert!(out.contains("<img src=")); // custom logo mark
-        assert!(out.contains("--br:#ff0000")); // accent override
+        assert!(out.contains("--accent:#ff0000")); // accent override
         assert!(out.contains("background:transparent")); // logo chip bg reset
         assert!(out.contains("data:image/png;base64,ZZ")); // favicon = logo
     }
