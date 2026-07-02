@@ -2,15 +2,21 @@
 //! runtime root so `start`/`kill`/`state`/`delete` (separate processes) can find
 //! a container the `create` process left behind.
 
+use std::fs::{File, OpenOptions};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
-/// Where the runtime keeps live container state. `/run` is tmpfs on a modern
-/// distro, so this is cleared on reboot — matching a fresh container world.
-const RUNTIME_ROOT: &str = "/run/dn7-container";
+/// Where the runtime keeps container state. This lives on the *persistent* var
+/// root (the same base the image store + volumes use), NOT on tmpfs `/run`, so
+/// container records survive a reboot; [`State::refresh_status`] then downgrades
+/// any record whose recorded pid is no longer alive to `stopped`. We do NOT
+/// auto-restart on boot — this just stops losing the records (and orphaning the
+/// container's `/var/lib` data).
+const RUNTIME_ROOT: &str = "/var/lib/dn7-container/state";
 
 /// The container lifecycle states (the OCI status values).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +134,10 @@ impl State {
         Self::dir(id).join("state.json")
     }
 
+    fn lock_file(id: &str) -> PathBuf {
+        Self::dir(id).join(".lock")
+    }
+
     /// The exec FIFO path the init parks on between `create` and `start`.
     pub fn fifo_path(id: &str) -> PathBuf {
         Self::dir(id).join("exec.fifo")
@@ -151,10 +161,34 @@ impl State {
         }
     }
 
+    /// Persist the record atomically: write `state.json.tmp` then `rename` it into
+    /// place (atomic on the same directory), so a crash mid-write can never leave a
+    /// truncated `state.json` for another reader (the panel and the `dn7 container`
+    /// CLI are two independent writers). Serialise concurrent writers with
+    /// [`State::lock`] around the load→mutate→save critical section.
     pub fn save(&self) -> Result<()> {
-        let file = Self::file(&self.id);
-        let json = serde_json::to_vec_pretty(self)?;
-        std::fs::write(&file, json).map_err(Error::io(&file))
+        atomic_write_json(&Self::dir(&self.id), "state.json", self)
+    }
+
+    /// Take a per-container exclusive advisory lock (a `.lock` file in the state
+    /// dir), held until the returned guard drops. Callers wrap the whole
+    /// load→mutate→save sequence in it so two writers (panel + CLI) can't race on
+    /// the same container — mirrors `net::ipam`'s flock discipline.
+    pub fn lock(id: &str) -> Result<FlockGuard> {
+        let dir = Self::dir(id);
+        std::fs::create_dir_all(&dir).map_err(Error::io(&dir))?;
+        let lp = Self::lock_file(id);
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lp)
+            .map_err(Error::io(&lp))?;
+        // SAFETY: flock on a valid, owned fd; blocks until the lock is acquired.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(Error::io(&lp)(std::io::Error::last_os_error()));
+        }
+        Ok(FlockGuard { _file: file })
     }
 
     pub fn load(id: &str) -> Result<State> {
@@ -223,6 +257,26 @@ impl State {
     }
 }
 
+/// Releases the per-container flock by closing the lock file on drop.
+pub struct FlockGuard {
+    _file: File,
+}
+
+/// Serialize `value` (pretty JSON) to `<dir>/<name>` atomically: write a sibling
+/// `<name>.tmp` then `rename` it into place (atomic on the same filesystem), so a
+/// crash mid-write can never leave a truncated file for a concurrent reader.
+fn atomic_write_json<T: Serialize>(dir: &Path, name: &str, value: &T) -> Result<()> {
+    let file = dir.join(name);
+    let tmp = dir.join(format!("{name}.tmp"));
+    let json = serde_json::to_vec_pretty(value)?;
+    std::fs::write(&tmp, &json).map_err(Error::io(&tmp))?;
+    if let Err(e) = std::fs::rename(&tmp, &file) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Error::io(&file)(e));
+    }
+    Ok(())
+}
+
 /// Is `pid` still a live process? `kill(pid, 0)` probes without signalling.
 pub fn pid_alive(pid: i32) -> bool {
     use nix::sys::signal::kill;
@@ -262,6 +316,38 @@ mod tests {
         assert_eq!(epoch_to_iso(1_609_459_200), "2021-01-01T00:00:00Z");
         // 2009-02-13T23:31:30Z (1234567890)
         assert_eq!(epoch_to_iso(1_234_567_890), "2009-02-13T23:31:30Z");
+    }
+
+    #[test]
+    fn atomic_write_json_round_trips_and_leaves_no_tmp() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "dn7state-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let s = State::new("c1", 7, Path::new("/b"), "dn7/c1", 1_609_459_200);
+        atomic_write_json(&dir, "state.json", &s).unwrap();
+
+        // The final file exists and round-trips; no .tmp is left behind.
+        let bytes = std::fs::read(dir.join("state.json")).unwrap();
+        let back: State = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back.id, "c1");
+        assert_eq!(back.pid, 7);
+        assert!(!dir.join("state.json.tmp").exists());
+
+        // A second write overwrites in place (rename replaces the target).
+        let mut s2 = s.clone();
+        s2.pid = 99;
+        atomic_write_json(&dir, "state.json", &s2).unwrap();
+        let back2: State =
+            serde_json::from_slice(&std::fs::read(dir.join("state.json")).unwrap()).unwrap();
+        assert_eq!(back2.pid, 99);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

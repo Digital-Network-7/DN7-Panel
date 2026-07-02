@@ -102,19 +102,100 @@ fn blob_size(store: &Store, digest: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// Remove an image record (by reference). Blobs are intentionally left in place —
-/// a GC pass that ref-counts blobs across all images is a follow-up, and an
-/// orphan blob is simply reused by the next pull that shares it.
+/// Remove an image record (by reference), then ref-count-sweep the blobs it
+/// pulled in: any config/layer digest of the removed image that no *remaining*
+/// image (or live container's `parent.json`) still references is deleted from
+/// `blobs/`, and — when no remaining image shares the removed image's config
+/// digest — its extracted `rootfs-cache/<hex>` entry is reclaimed too. A blob a
+/// surviving image still uses is never touched (a shared base layer stays).
 pub fn remove_image(store: &Store, reference: &str) -> Result<()> {
     let r = Reference::parse(reference)?;
-    let dir = store.image_dir(&r.store_key());
+    let key = r.store_key();
+    // Read the record first so we know which blobs it introduced. If it's absent,
+    // fall through to the remove_dir_all's NotFound → "no such image".
+    let removed = ImageRecord::load(store, &key).ok();
+
+    let dir = store.image_dir(&key);
     match std::fs::remove_dir_all(&dir) {
-        Ok(()) => Ok(()),
+        Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Err(Error::Other(format!("no such image: {reference}")))
+            return Err(Error::Other(format!("no such image: {reference}")));
         }
-        Err(e) => Err(Error::io(&dir)(e)),
+        Err(e) => return Err(Error::io(&dir)(e)),
     }
+
+    // Best-effort GC (never fail the delete over a stray blob we couldn't reap).
+    if let Some(removed) = removed {
+        let still = referenced_digests(store);
+        for d in gc_candidates(&removed, &still) {
+            let _ = store.remove_blob(&d);
+        }
+        // The rootfs cache is keyed by config digest; reclaim it only if no
+        // surviving image shares that config (else another image still needs it).
+        if !still.contains(&removed.config_digest) {
+            let _ = store.remove_rootfs_cache(&removed.config_digest);
+        }
+    }
+    Ok(())
+}
+
+/// Every blob digest (config + layers) still referenced after a delete: by any
+/// remaining stored image, plus any live container's committed base image
+/// (`parent.json` under its bundle). Cheap enough to run inline on each delete.
+fn referenced_digests(store: &Store) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    // Remaining stored images (scan images/*/image.json directly for their records).
+    let images = store.root().join("images");
+    if let Ok(entries) = std::fs::read_dir(&images) {
+        for ent in entries.flatten() {
+            let key = ent.file_name().to_string_lossy().into_owned();
+            if let Ok(rec) = ImageRecord::load(store, &key) {
+                set.insert(rec.config_digest);
+                set.extend(rec.layers);
+            }
+        }
+    }
+    // Live containers pin their source image's blobs via the bundle's parent.json.
+    for pj in bundle_parent_records() {
+        set.insert(pj.config_digest);
+        set.extend(pj.layers);
+    }
+    set
+}
+
+/// The `parent.json` (source [`ImageRecord`]) of every assembled container bundle,
+/// so a container built from an image keeps that image's blobs alive even if the
+/// image record itself is deleted. Best-effort: a missing/unreadable bundles dir
+/// yields nothing.
+fn bundle_parent_records() -> Vec<ImageRecord> {
+    let dir = std::path::Path::new(crate::container::BUNDLES_DIR);
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for ent in entries.flatten() {
+            let pj = ent.path().join("parent.json");
+            if let Ok(bytes) = std::fs::read(&pj) {
+                if let Ok(rec) = serde_json::from_slice::<ImageRecord>(&bytes) {
+                    out.push(rec);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The blobs of `removed` that are now unreferenced (safe to delete): its config
+/// digest + every layer digest NOT present in `still` (the surviving reference
+/// set). Pure + order-stable for testing. A digest a surviving image still uses is
+/// filtered out, so a shared base layer is never deleted.
+fn gc_candidates(removed: &ImageRecord, still: &std::collections::HashSet<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for d in std::iter::once(&removed.config_digest).chain(removed.layers.iter()) {
+        if !still.contains(d) && seen.insert(d.clone()) {
+            out.push(d.clone());
+        }
+    }
+    out
 }
 
 /// Tag an image: write a new reference pointing at the same content (config +
@@ -176,6 +257,75 @@ mod summary_tests {
         assert_eq!(sums.len(), 1);
         assert_eq!(sums[0].reference, rec.reference);
         assert_eq!(sums[0].size, (cfg.len() + layer.len()) as u64);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gc_candidates_selects_only_unreferenced_digests() {
+        let removed = ImageRecord {
+            reference: "x".into(),
+            config_digest: "sha256:cfg-a".into(),
+            layers: vec![
+                "sha256:shared".into(),
+                "sha256:only-a".into(),
+                "sha256:shared".into(), // duplicate within the same image
+            ],
+        };
+        // A surviving image still references the shared layer (and some other cfg).
+        let still: std::collections::HashSet<String> =
+            ["sha256:shared".to_string(), "sha256:cfg-b".to_string()]
+                .into_iter()
+                .collect();
+        let cands = gc_candidates(&removed, &still);
+        // config + only-a are reaped; the shared layer is kept; no duplicates.
+        assert_eq!(cands, vec!["sha256:cfg-a", "sha256:only-a"]);
+    }
+
+    #[test]
+    fn remove_image_sweeps_orphans_but_keeps_shared_layers() {
+        static N: AtomicU32 = AtomicU32::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "dn7gc-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let store = Store::with_root(&root).unwrap();
+
+        // A shared base layer used by BOTH images, plus per-image config + top layer.
+        let shared = write_blob(&store, b"shared-base-layer");
+        let cfg_a = write_blob(&store, br#"{"a":1}"#);
+        let top_a = write_blob(&store, b"top-of-a");
+        let cfg_b = write_blob(&store, br#"{"b":2}"#);
+        let top_b = write_blob(&store, b"top-of-b");
+
+        let write_rec = |reference: &str, cfg: &str, layers: Vec<String>| {
+            let key = Reference::parse(reference).unwrap().store_key();
+            let rec = ImageRecord {
+                reference: Reference::parse(reference).unwrap().canonical(),
+                config_digest: cfg.to_string(),
+                layers,
+            };
+            store
+                .write_image_json(&key, &serde_json::to_vec(&rec).unwrap())
+                .unwrap();
+        };
+        write_rec("alpine:a", &cfg_a, vec![shared.clone(), top_a.clone()]);
+        write_rec("alpine:b", &cfg_b, vec![shared.clone(), top_b.clone()]);
+
+        // Seed a rootfs-cache entry for image A's config; it must be reclaimed.
+        let cache_a = store.image_rootfs_base(&cfg_a).unwrap();
+        std::fs::create_dir_all(&cache_a).unwrap();
+
+        remove_image(&store, "alpine:a").unwrap();
+
+        // A's private blobs + rootfs cache are gone; the shared layer + B's blobs stay.
+        assert!(!store.has_blob(&cfg_a), "A's config should be swept");
+        assert!(!store.has_blob(&top_a), "A's top layer should be swept");
+        assert!(!cache_a.exists(), "A's rootfs cache should be reclaimed");
+        assert!(store.has_blob(&shared), "shared base layer must be kept");
+        assert!(store.has_blob(&cfg_b), "B's config must be kept");
+        assert!(store.has_blob(&top_b), "B's top layer must be kept");
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }

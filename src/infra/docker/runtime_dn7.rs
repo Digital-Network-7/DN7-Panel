@@ -532,6 +532,86 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
     })
 }
 
+/// dn7-native port-conflict check (the bollard `check_port_conflicts` we bypass
+/// queries the absent daemon). Rejects a create/edit when a published host port
+/// clashes with: (a) another port in the same form, (b) a port already published
+/// by a different *running* dn7 container, or (c) a port held by some other host
+/// process. The container being replaced (edit/upgrade) is excluded so it can
+/// reuse its own ports. dn7 publishes via nft DNAT (no host-side bind), so a peer
+/// container's port won't show up to `port_busy` — hence the container-list scan.
+#[cfg(target_os = "linux")]
+fn check_dn7_port_conflicts(req: &Req) -> Result<()> {
+    let ports = match &req.ports {
+        Some(p) if !p.is_empty() => p,
+        _ => return Ok(()),
+    };
+    // (a) Duplicate host port (same protocol) within the form itself.
+    reject_duplicate_ports(ports)?;
+
+    // The container being edited/upgraded may reuse its own ports.
+    let mut excluded: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(r) = trimmed(&req.replace) {
+        excluded.insert(r);
+    }
+    if let Some(n) = trimmed(&req.name) {
+        excluded.insert(n);
+    }
+
+    // Map every host port published by a *running* dn7 container -> owner id/name.
+    let mut held: std::collections::HashMap<(i64, String), String> =
+        std::collections::HashMap::new();
+    for s in dn7_container::container::list().map_err(|e| anyhow!("dn7 list: {e}"))? {
+        if !matches!(s.status, DnStatus::Running) {
+            continue;
+        }
+        let owner = s.meta.name.clone().unwrap_or_else(|| s.id.clone());
+        for (hp, proto) in parse_ports_spec(&s.meta.ports_spec) {
+            held.entry((hp, proto)).or_insert_with(|| owner.clone());
+        }
+    }
+
+    // (b) running-container conflict, then (c) host-process conflict.
+    for p in ports {
+        let proto = p.proto.as_deref().unwrap_or("tcp").to_string();
+        match held.get(&(p.host, proto.clone())) {
+            Some(owner) if !excluded.contains(owner) => {
+                return Err(anyhow!(
+                    "宿主机端口 {}/{} 已被容器「{}」占用，无法映射。",
+                    p.host,
+                    proto.to_uppercase(),
+                    owner
+                ));
+            }
+            Some(_) => {} // held by the container we're replacing — reuse is fine.
+            None => {
+                if port_busy(p.host, &proto) {
+                    return Err(anyhow!(
+                        "宿主机端口 {}/{} 已被其他进程占用，无法映射。",
+                        p.host,
+                        proto.to_uppercase()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parse a dn7 `ports_spec` (`hp:cp[/proto],...`) into `(host_port, proto)` pairs.
+#[cfg(target_os = "linux")]
+fn parse_ports_spec(spec: &str) -> Vec<(i64, String)> {
+    let mut out = Vec::new();
+    for p in spec.split(',').filter(|s| !s.is_empty()) {
+        let (hostpart, proto) = p.rsplit_once('/').unwrap_or((p, "tcp"));
+        if let Some((hp, _cp)) = hostpart.split_once(':') {
+            if let Ok(host) = hp.parse::<i64>() {
+                out.push((host, proto.to_string()));
+            }
+        }
+    }
+    out
+}
+
 /// `create_container` (detached): validate + translate, then create (and start)
 /// on the blocking pool, reporting to the op-registry. Mirrors bollard's
 /// `start_create` and returns `{op_id, target}` immediately.
@@ -540,6 +620,9 @@ async fn op_create_container(req: &Req, is_super: bool) -> Result<Value> {
     // The super-admin gate for privileged / host-network lives in the bollard
     // arm we bypass — run it here too.
     enforce_create_policy(req, is_super)?;
+    // Reject a host-port clash up front (the bollard check_port_conflicts is
+    // daemon-backed; this is the dn7-native equivalent).
+    check_dn7_port_conflicts(req)?;
     let plan = build_dn7_create(req)?;
 
     let op_id = new_op_id();
@@ -1468,6 +1551,32 @@ mod tests {
         assert_eq!(row["managed"], false);
         assert!(row["status"].as_str().unwrap().starts_with("Up"));
         assert!(row["ips"].is_array());
+    }
+
+    #[test]
+    fn parse_ports_spec_extracts_host_port_and_proto() {
+        assert_eq!(
+            parse_ports_spec("8080:80/tcp,53:53/udp"),
+            vec![(8080, "tcp".to_string()), (53, "udp".to_string())]
+        );
+        // Missing proto defaults to tcp; empty spec yields nothing.
+        assert_eq!(parse_ports_spec("9000:90"), vec![(9000, "tcp".to_string())]);
+        assert_eq!(parse_ports_spec(""), Vec::<(i64, String)>::new());
+    }
+
+    #[test]
+    fn check_dn7_port_conflicts_rejects_duplicate_form_ports() {
+        // Two mappings of the same host port + proto in one request is a conflict,
+        // caught before any container-list scan (pure, hermetic).
+        let req = req_from(json!({
+            "op": "create_container", "image": "alpine",
+            "ports": [{"host": 8080, "container": 80}, {"host": 8080, "container": 81}]
+        }));
+        assert!(check_dn7_port_conflicts(&req).is_err());
+
+        // No ports → always OK.
+        let req0 = req_from(json!({"op": "create_container", "image": "alpine"}));
+        assert!(check_dn7_port_conflicts(&req0).is_ok());
     }
 
     #[test]

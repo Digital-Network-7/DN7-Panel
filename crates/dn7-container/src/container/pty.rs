@@ -69,10 +69,13 @@ pub fn exec_pty(id: &str, argv: &[String]) -> Result<ExecPty> {
         .stdin(Stdio::from(s_in))
         .stdout(Stdio::from(s_out))
         .stderr(Stdio::from(s_err));
-    super::enter_namespaces(&mut cmd, ns); // setns pre_exec (runs first)
-                                           // SAFETY: runs in the forked child before exec, AFTER the setns pre_exec; only
-                                           // async-signal-safe libc calls. fd 0 is the pty slave, so it becomes the
-                                           // controlling terminal.
+    // setns + cgroup-join pre_exec (runs first, before the setsid/TIOCSCTTY one),
+    // so the shell is accounted against the container's cgroup and can't escape
+    // the memory limit.
+    super::enter_namespaces(&mut cmd, ns, super::open_cgroup_procs(&s.cgroup));
+    // SAFETY: runs in the forked child before exec, AFTER the setns pre_exec; only
+    // async-signal-safe libc calls. fd 0 is the pty slave, so it becomes the
+    // controlling terminal.
     unsafe {
         cmd.pre_exec(|| {
             if libc::setsid() < 0 {

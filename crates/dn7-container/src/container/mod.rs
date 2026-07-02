@@ -283,6 +283,7 @@ fn create_inner(id: &str, bundle_dir: &Path, bundle: &Bundle, meta: StateMeta) -
 /// `start`: open the exec FIFO's read end, which unblocks the parked init and
 /// lets it `execve` the user process.
 pub fn start(id: &str) -> Result<()> {
+    let _guard = State::lock(id)?;
     let mut state = State::load(id)?;
     if state.status != Status::Created {
         return Err(Error::BadState {
@@ -306,6 +307,7 @@ pub fn start(id: &str) -> Result<()> {
 /// after `timeout`. The bundle/overlay are kept, so a stopped container can be
 /// `rerun`. A non-running container is a no-op.
 pub fn stop(id: &str, timeout: std::time::Duration) -> Result<()> {
+    let _guard = State::lock(id)?;
     let mut s = State::load(id)?;
     if s.refresh_status() != Status::Running {
         return Ok(());
@@ -328,6 +330,7 @@ pub fn stop(id: &str, timeout: std::time::Duration) -> Result<()> {
 /// `kill`: SIGKILL the whole cgroup at once and mark the container stopped
 /// (Docker's `kill` semantics — the container stays, ready to be `rerun`).
 pub fn kill_now(id: &str) -> Result<()> {
+    let _guard = State::lock(id)?;
     let mut s = State::load(id)?;
     if s.refresh_status() == Status::Running {
         let cg = Cgroup::at(&s.cgroup);
@@ -341,6 +344,7 @@ pub fn kill_now(id: &str) -> Result<()> {
 
 /// `pause`: freeze the container's cgroup (the process is suspended but alive).
 pub fn pause(id: &str) -> Result<()> {
+    let _guard = State::lock(id)?;
     let mut s = State::load(id)?;
     if s.refresh_status() != Status::Running {
         return Err(Error::BadState {
@@ -356,6 +360,7 @@ pub fn pause(id: &str) -> Result<()> {
 
 /// `unpause`: thaw a frozen container.
 pub fn unpause(id: &str) -> Result<()> {
+    let _guard = State::lock(id)?;
     let mut s = State::load(id)?;
     s.refresh_status();
     Cgroup::at(&s.cgroup).freeze(false)?;
@@ -476,7 +481,7 @@ pub fn exec(id: &str, args: &[String]) -> Result<i32> {
     let ns = open_ns_fds(s.pid)?;
     let mut cmd = std::process::Command::new(&args[0]);
     cmd.args(&args[1..]);
-    enter_namespaces(&mut cmd, ns);
+    enter_namespaces(&mut cmd, ns, open_cgroup_procs(&s.cgroup));
     let status = cmd
         .status()
         .map_err(|e| Error::Other(format!("exec: {e}")))?;
@@ -496,22 +501,81 @@ pub(crate) fn open_ns_fds(pid: i32) -> Result<Vec<std::os::fd::OwnedFd>> {
     Ok(fds)
 }
 
+/// Format a (non-negative) pid as decimal ASCII + trailing `\n` into `buf`,
+/// returning the number of bytes written. Allocation-free, so it is safe to call
+/// in a post-fork / pre-exec closure. `buf` must hold ≥ 12 bytes (i32 max is 10
+/// digits + newline); the exec pids we pass always fit.
+fn fmt_pid(pid: libc::pid_t, buf: &mut [u8; 24]) -> usize {
+    let mut digits = [0u8; 20];
+    let mut n = if pid <= 0 { 0i64 } else { pid as i64 };
+    let mut i = digits.len();
+    if n == 0 {
+        i -= 1;
+        digits[i] = b'0';
+    }
+    while n > 0 {
+        i -= 1;
+        digits[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    let len = digits.len() - i;
+    buf[..len].copy_from_slice(&digits[i..]);
+    buf[len] = b'\n';
+    len + 1
+}
+
+/// Open the container cgroup's `cgroup.procs` (write-only) in the *host* mount
+/// namespace, BEFORE the exec child joins the container's namespaces. Writing the
+/// child pid to this already-open fd inside `pre_exec` works even after the child
+/// `setns`'d into the container's mount namespace (where `/sys/fs/cgroup` may be
+/// absent or a different view). Best-effort: `None` if the cgroup is gone.
+pub(crate) fn open_cgroup_procs(cgroup_rel: &str) -> Option<std::os::fd::OwnedFd> {
+    let p = std::path::Path::new("/sys/fs/cgroup")
+        .join(cgroup_rel.trim_matches('/'))
+        .join("cgroup.procs");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&p)
+        .ok()
+        .map(std::os::fd::OwnedFd::from)
+}
+
 /// Make `cmd` `setns(2)` into the container's namespaces right before `execve`
 /// (no `nsenter` binary). The exec'd program is resolved + run inside the
 /// container's mount namespace. NOTE: `setns` of a PID namespace places the
 /// process's *children* in it (the exec'd process itself stays), which is the
 /// nsenter `-p` behavior the use cases need (e.g. `ps` run from a shell).
-pub(crate) fn enter_namespaces(cmd: &mut std::process::Command, ns_fds: Vec<std::os::fd::OwnedFd>) {
+///
+/// `cgroup_procs` (when present) is a write-only fd on the container cgroup's
+/// `cgroup.procs`, opened pre-fork in the host mount namespace. After joining the
+/// namespaces, the child writes its own pid there so the exec'd process is
+/// accounted + limited by the container's cgroup (a tenant shell must not escape
+/// the memory limit). Best-effort: a write failure leaves the exec unaccounted but
+/// still running.
+pub(crate) fn enter_namespaces(
+    cmd: &mut std::process::Command,
+    ns_fds: Vec<std::os::fd::OwnedFd>,
+    cgroup_procs: Option<std::os::fd::OwnedFd>,
+) {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
-    // SAFETY: runs in the forked child before exec; `setns`/`as_raw_fd` are
-    // async-signal-safe and allocate nothing (the fd vec is built pre-fork).
+    // SAFETY: runs in the forked child before exec; `setns`/`as_raw_fd`/`write`/
+    // `getpid` are async-signal-safe and allocate nothing (the fd vec is built
+    // pre-fork; the pid is formatted into a stack buffer).
     unsafe {
         cmd.pre_exec(move || {
             for fd in &ns_fds {
                 if libc::setns(fd.as_raw_fd(), 0) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
+            }
+            // Join the container cgroup: write our own pid to the pre-opened
+            // cgroup.procs fd (valid regardless of the container's mount ns). Done
+            // AFTER setns so we're accounted against the right hierarchy.
+            if let Some(procs) = &cgroup_procs {
+                let mut buf = [0u8; 24];
+                let n = fmt_pid(libc::getpid(), &mut buf);
+                let _ = libc::write(procs.as_raw_fd(), buf.as_ptr() as *const libc::c_void, n);
             }
             Ok(())
         });
@@ -539,7 +603,7 @@ pub fn exec_capture(id: &str, argv: &[String], env: &[(String, String)]) -> Resu
     for (k, v) in env {
         cmd.env(k, v);
     }
-    enter_namespaces(&mut cmd, ns);
+    enter_namespaces(&mut cmd, ns, open_cgroup_procs(&s.cgroup));
     let out = cmd
         .output()
         .map_err(|e| Error::Other(format!("exec: {e}")))?;

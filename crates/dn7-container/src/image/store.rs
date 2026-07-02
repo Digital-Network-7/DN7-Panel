@@ -113,6 +113,28 @@ impl Store {
         fs::read(&p).map_err(Error::io(&p))
     }
 
+    /// Delete a blob by digest. Absent is OK (idempotent GC). Only call once the
+    /// caller has confirmed no remaining image/container references the digest.
+    pub fn remove_blob(&self, digest: &str) -> Result<()> {
+        let p = self.blob_path(digest)?;
+        match fs::remove_file(&p) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Error::io(&p)(e)),
+        }
+    }
+
+    /// Delete the extracted rootfs cache for a config digest (the overlay lower),
+    /// reclaimed when the last image with that config digest is removed. Absent is OK.
+    pub fn remove_rootfs_cache(&self, config_digest: &str) -> Result<()> {
+        let base = self.image_rootfs_base(config_digest)?;
+        match fs::remove_dir_all(&base) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Error::io(&base)(e)),
+        }
+    }
+
     /// Open a blob for streaming (e.g. piping a layer through gunzip+tar).
     pub fn open_blob(&self, digest: &str) -> Result<File> {
         let p = self.blob_path(digest)?;
