@@ -103,6 +103,21 @@ async fn supervise_loop(
     // unrepeatable across re-execs; this flag additionally stops a second
     // rollback within a single supervisor process (belt and braces).
     let mut rolled_back = false;
+    // Probation deadline for a post-update panel child that hasn't yet confirmed
+    // boot. The boot-health rollback only fires when the child *dies*, but a bad
+    // build can hang alive-but-unhealthy (a serve-task failure only warns) and
+    // never write its boot-ok marker, so `.prev` would stay pending forever. When
+    // we (re)spawn a child while an update is pending verification we arm this;
+    // if it elapses with the marker still absent we SIGTERM the child so its exit
+    // flows into the normal `c.wait()` rollback path. One-shot per pending update
+    // (cleared once the marker appears), consistent with the rollback cap.
+    let mut probation_deadline: Option<tokio::time::Instant> = None;
+    // Escalation deadline armed only after a probation SIGTERM: a wedged bad build
+    // that IGNORES SIGTERM would otherwise never die, so `c.wait()` never fires and
+    // the rollback never runs — the very loop the probation exists to break. When
+    // this elapses we SIGKILL the child (without reaping), so its exit still flows
+    // into the `c.wait()` rollback path. Reset on every fresh spawn.
+    let mut probation_kill_deadline: Option<tokio::time::Instant> = None;
 
     // Periodically check whether a self-update replaced the on-disk binary with
     // a newer version than this (long-lived) supervisor is running. If so,
@@ -116,9 +131,14 @@ async fn supervise_loop(
     loop {
         // Once a (post-update) build has confirmed it booted, drop the saved
         // previous binary so a *later*, unrelated crash can never be mistaken for
-        // a failed update and roll us back onto stale code.
+        // a failed update and roll us back onto stale code. Also clear the pending
+        // attempted-version marker and the probation deadline: a healthy build
+        // must never later be moved onto the failed-version skiplist or SIGTERM'd
+        // for a stale probation timeout.
         if boot_marker_present() {
             clear_prev_backup();
+            crate::platform::update::clear_attempted_version();
+            probation_deadline = None;
         }
 
         if child.is_none() {
@@ -126,6 +146,23 @@ async fn supervise_loop(
                 Ok(c) => {
                     tracing::info!(pid = c.id(), "spawned panel role");
                     child = Some(c);
+                    // A fresh child has not been SIGTERM'd, so it carries no
+                    // pending kill escalation (it is only armed after a probation
+                    // SIGTERM on a prior child).
+                    probation_kill_deadline = None;
+                    // If this child is a post-update build still pending boot
+                    // verification, put it on probation: it must write its boot-ok
+                    // marker before the deadline or we SIGTERM it (whose exit then
+                    // drives the existing failed-update rollback). Only arm it once
+                    // per pending update, and only when we haven't already spent
+                    // our rollback — a genuinely broken previous build shouldn't be
+                    // re-probated in a loop.
+                    probation_deadline =
+                        if should_arm_probation(rolled_back, update_pending_verify()) {
+                            Some(tokio::time::Instant::now() + Duration::from_secs(PROBATION_SECS))
+                        } else {
+                            None
+                        };
                 }
                 Err(e) => {
                     tracing::error!("failed to spawn panel: {e}");
@@ -158,6 +195,22 @@ async fn supervise_loop(
                         "post-update panel died before confirming boot; rolling back to previous binary"
                     );
                     rolled_back = true;
+                    probation_deadline = None;
+                    // Skiplist the failed version BEFORE restoring the old binary,
+                    // so the (now old) build the auto-checker runs after re-exec
+                    // refuses to re-download the same broken version — breaking the
+                    // download→swap→fail→rollback loop until upstream ships a
+                    // different build. The pending `attempted_version` marker is
+                    // still set (boot never confirmed) so this moves it across.
+                    match crate::platform::update::skiplist_failed_update() {
+                        Some(v) => tracing::error!(
+                            failed = %v,
+                            "self-update rollback: skiplisted failed version so it won't be re-offered"
+                        ),
+                        None => tracing::warn!(
+                            "self-update rollback: no attempted-version marker to skiplist"
+                        ),
+                    }
                     if rollback_to_prev() {
                         lock.release();
                         reexec_supervisor();
@@ -199,6 +252,43 @@ async fn supervise_loop(
                 }
                 tokio::time::sleep(Duration::from_secs(cfg.restart_backoff_secs)).await;
             }
+            _ = wait_for_probation(probation_deadline), if probation_deadline.is_some() => {
+                // The post-update child hasn't confirmed boot within the probation
+                // window. If the marker just appeared we're fine — the top-of-loop
+                // check will clear the deadline next iteration. Otherwise it's a
+                // hung/alive-but-unhealthy bad build: signal it to stop but DON'T
+                // reap it here — leaving `child` set lets the next loop's
+                // `c.wait()` branch observe the exit and run the failed-update
+                // rollback (pending_verify is still true because the marker never
+                // appeared). Clear the deadline so we don't re-fire this probation.
+                probation_deadline = None;
+                if boot_marker_present() {
+                    tracing::info!("boot-ok marker appeared as probation elapsed; keeping build");
+                } else {
+                    tracing::error!(
+                        "post-update panel did not confirm boot within {PROBATION_SECS}s; \
+                         stopping it to trigger rollback"
+                    );
+                    signal_child_term(c);
+                    // If it ignores SIGTERM, escalate to SIGKILL after the grace
+                    // window so a wedged build can't dodge the rollback by never
+                    // dying.
+                    probation_kill_deadline =
+                        Some(tokio::time::Instant::now() + Duration::from_secs(STOP_GRACE_SECS));
+                }
+            }
+            _ = wait_for_probation(probation_kill_deadline), if probation_kill_deadline.is_some() => {
+                // A probated build ignored SIGTERM past the grace window. SIGKILL
+                // it WITHOUT reaping (SIGKILL can't be caught, so it will die), so
+                // the `c.wait()` branch above still observes the exit and runs the
+                // failed-update rollback. One-shot: cleared here and re-armed only
+                // by the next probation SIGTERM.
+                probation_kill_deadline = None;
+                tracing::error!(
+                    "probated panel ignored SIGTERM within {STOP_GRACE_SECS}s; sending SIGKILL"
+                );
+                let _ = c.start_kill();
+            }
             _ = version_check.tick() => {
                 if on_disk_is_newer(cfg) {
                     tracing::info!("on-disk binary is newer than this supervisor; re-exec'ing");
@@ -233,6 +323,32 @@ async fn supervise_loop(
 /// Grace period the supervisor gives a panel child to exit on SIGTERM before
 /// escalating to SIGKILL.
 const STOP_GRACE_SECS: u64 = 5;
+
+/// How long a post-update panel child gets to confirm boot (write its boot-ok
+/// marker) before the supervisor stops it on suspicion of a hung/unhealthy build.
+/// Comfortably longer than the panel's own ~15s boot-marker probe window so a
+/// merely-slow-to-bind console isn't cut off, but short enough that a bad build
+/// rolls back promptly instead of leaving `.prev` pending indefinitely.
+const PROBATION_SECS: u64 = 30;
+
+/// Sleep until `deadline`. Only awaited when the caller's `select!` guard has
+/// already confirmed the deadline is `Some`; the `unwrap_or_else` fallback (an
+/// effectively-never far-future instant) is unreachable in that path but keeps
+/// the helper total. Extracted so the `select!` branch can await a bare future.
+async fn wait_for_probation(deadline: Option<tokio::time::Instant>) {
+    let at = deadline.unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(86_400));
+    tokio::time::sleep_until(at).await;
+}
+
+/// Send SIGTERM to a still-running child WITHOUT reaping it, so a later
+/// `child.wait()` still observes the exit (and can run the failed-update rollback
+/// off that exit). A `None` pid means it already exited — nothing to signal.
+fn signal_child_term(c: &mut Child) {
+    if let Some(pid) = c.id() {
+        const SIGTERM: i32 = 15;
+        crate::platform::procfile::signal_pid(pid, SIGTERM);
+    }
+}
 
 /// Stop the panel child gracefully: send SIGTERM (the panel installs a handler
 /// that exits 0 cleanly), wait up to [`STOP_GRACE_SECS`], and escalate to
@@ -287,6 +403,17 @@ fn update_pending_verify() -> bool {
 /// We roll back only when a genuinely-unverified update child died on its own.
 fn should_rollback(exited_updated: bool, already_rolled_back: bool, pending_verify: bool) -> bool {
     !exited_updated && !already_rolled_back && pending_verify
+}
+
+/// Pure decision for arming the post-update probation timeout when a child is
+/// (re)spawned (extracted for unit-testing without the tokio clock). We arm it
+/// only for a genuinely-unverified update — a `.prev` exists and the new build
+/// hasn't written its boot-ok marker (`pending_verify`) — and never once we've
+/// already spent our single rollback this lifetime (`already_rolled_back`), so a
+/// broken *previous* build we rolled back onto isn't itself put on probation and
+/// looped. Mirrors the guards on [`should_rollback`].
+fn should_arm_probation(already_rolled_back: bool, pending_verify: bool) -> bool {
+    !already_rolled_back && pending_verify
 }
 
 /// Restore the saved previous binary over the canonical target (one-shot
@@ -407,6 +534,21 @@ async fn wait_until_panel_dead(panel: &RolePaths, cfg: &PanelConfig) {
     }
 }
 
+/// Whether `pid` is (still) one of our own processes, by matching
+/// `/proc/<pid>/comm` against the binary name. Both roles are the same binary,
+/// so the panel and supervisor both report `dn7-panel`. Returns false when the
+/// entry is missing (the process already exited) or names a different program
+/// (the pid was recycled) — the caller uses this to avoid SIGKILLing a bystander
+/// that inherited a recycled pid from a stale pidfile. The kernel caps `comm` at
+/// 15 chars, but `dn7-panel` (9) is well under that, so no truncation to worry
+/// about. Always false off Linux (no `/proc`); the resident runtime is Linux-only.
+fn pid_is_panel(pid: u32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+        Ok(comm) => comm.trim() == "dn7-panel",
+        Err(_) => false,
+    }
+}
+
 /// Forcefully stop a running panel+supervisor pair so a newer binary can take
 /// over. Called synchronously from the foreground pre-flight (before any tokio
 /// runtime) when a launch detects an already-running instance of an *older*
@@ -429,16 +571,22 @@ pub fn stop_running_instance(cfg: &PanelConfig) {
     let panel = RolePaths::new(&cfg.runtime_dir, "panel");
     let supervisor = RolePaths::new(&cfg.runtime_dir, "supervisor");
 
-    if let Some(pid) = read_pid(&panel.pid) {
+    // PID-reuse guard: only SIGKILL a pid that is still one of *our* processes.
+    // A pidfile can outlive its process; if the kernel later recycled that pid
+    // onto an unrelated program, an unconditional kill would take out a
+    // bystander. Confirm `/proc/<pid>/comm == "dn7-panel"` first (the panel and
+    // supervisor are the same binary, so both report that comm) and skip on
+    // mismatch — a stale file then simply gets cleaned up below.
+    if let Some(pid) = read_pid(&panel.pid).filter(|p| pid_is_panel(*p)) {
         signal_pid(pid, SIGKILL);
     }
-    if let Some(pid) = read_pid(&supervisor.pid) {
+    if let Some(pid) = read_pid(&supervisor.pid).filter(|p| pid_is_panel(*p)) {
         signal_pid(pid, SIGKILL);
     }
     // Also kill the daemonized parent recorded by the daemonizer, in case it
     // differs from the supervisor role pid.
     let daemon_pid = cfg.runtime_dir.join(crate::platform::daemon::PID_FILE);
-    if let Some(pid) = read_pid(&daemon_pid) {
+    if let Some(pid) = read_pid(&daemon_pid).filter(|p| pid_is_panel(*p)) {
         signal_pid(pid, SIGKILL);
     }
 
@@ -478,7 +626,36 @@ fn signal_stream() -> Result<tokio::sync::mpsc::Receiver<()>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_rollback, version_gt};
+    use super::{pid_is_panel, should_arm_probation, should_rollback, version_gt};
+
+    // The post-update probation timeout must arm on exactly the same condition
+    // the rollback fires on — an unverified update (`pending_verify`) — and never
+    // after we've already spent our one rollback, so a broken previous build we
+    // rolled onto isn't itself re-probated into a loop. A non-update respawn
+    // (no `.prev`, marker present ⇒ `pending_verify` false) is never probated.
+    #[test]
+    fn probation_arms_only_for_an_unverified_update() {
+        // Fresh post-update child, boot not yet confirmed: arm it.
+        assert!(should_arm_probation(false, true));
+        // Already rolled back this lifetime: don't re-probate the fallback build.
+        assert!(!should_arm_probation(true, true));
+        // Nothing pending verification (ordinary respawn): never probate.
+        assert!(!should_arm_probation(false, false));
+        assert!(!should_arm_probation(true, false));
+    }
+
+    // The PID-reuse guard must refuse a pid that isn't one of our processes so a
+    // recycled pid from a stale pidfile is never SIGKILLed. Pid 1 (init/systemd)
+    // is guaranteed present and is definitively NOT `dn7-panel`; an absurdly high
+    // pid is guaranteed absent. Both must read as "not ours".
+    #[test]
+    fn pid_is_panel_rejects_foreign_and_missing_pids() {
+        // Off Linux there's no /proc, so this is trivially false (the resident
+        // runtime is Linux-only); on Linux pid 1 exists but isn't our binary.
+        assert!(!pid_is_panel(1));
+        // A pid that cannot exist (past the kernel max) → no /proc entry.
+        assert!(!pid_is_panel(u32::MAX));
+    }
 
     // The one-shot post-update rollback must fire exactly once, and only for an
     // unverified update child that died on its own — never for a `EXIT_UPDATED`

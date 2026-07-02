@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::infra::support::fetch::{self, Release, SourceKind};
 use crate::platform::config::PanelConfig;
 
+use super::skiplist::{is_version_skipped, record_attempted_version};
+
 // ---------------------------------------------------------------------------
 // Global self-update progress state (read by the UI via /api/update/status).
 // ---------------------------------------------------------------------------
@@ -106,6 +108,16 @@ pub struct UpdateState {
     /// (the "preview experience" channel). No auto speed-probe.
     #[serde(default = "default_pref")]
     pub source_pref: String,
+    /// Version last swapped in but whose boot the supervisor hasn't confirmed —
+    /// persisted before the swap so a rollback can learn which version failed even
+    /// across the re-exec. See the [`skiplist`](super::skiplist) module.
+    #[serde(default)]
+    pub attempted_version: Option<String>,
+    /// Versions that were installed, failed to boot, and were rolled back. The
+    /// auto-checker + install path refuse these (breaks the re-download loop). See
+    /// the [`skiplist`](super::skiplist) module.
+    #[serde(default)]
+    pub failed_versions: Vec<String>,
     /// Legacy fields kept for backward compatibility with older state files.
     #[serde(default)]
     pub chosen: Option<String>,
@@ -122,6 +134,8 @@ impl Default for UpdateState {
         UpdateState {
             auto: false,
             source_pref: default_pref(),
+            attempted_version: None,
+            failed_versions: Vec::new(),
             chosen: None,
             probed_at: 0,
         }
@@ -202,9 +216,11 @@ pub async fn check(cfg: &PanelConfig) -> CheckResult {
     let k = SourceKind::from_str(&st.source_pref).unwrap_or(SourceKind::Dn7);
     let current = env!("CARGO_PKG_VERSION").to_string();
     let latest = fetch::release_from(cfg, k).await.ok().map(|r| r.version);
+    // A version we already rolled back isn't offered (don't nag to re-install a
+    // build known to fail to boot).
     let has_update = latest
         .as_deref()
-        .map(|l| is_newer(&current, l))
+        .map(|l| is_newer(&current, l) && !is_version_skipped(&st.failed_versions, l))
         .unwrap_or(false);
     if phase() == PHASE_CHECKING {
         set_phase(PHASE_IDLE);
@@ -257,12 +273,12 @@ pub async fn install_verified(bytes: &[u8], target: &Path) -> Result<()> {
         f.write_all(bytes).context("write temp binary")?;
         f.flush().context("flush temp binary")?;
     }
-    // Anti-rollback: refuse anything that isn't strictly newer than us.
+    // Anti-rollback: refuse anything not strictly newer than us, and refuse a
+    // version we already tried and rolled back (the `skiplist`) — without it the
+    // same bad build passes `is_newer` against the old running version forever.
     let current = env!("CARGO_PKG_VERSION");
-    match read_binary_version(&tmp).await {
-        Ok(v) if is_newer(current, &v) => {
-            tracing::info!(from = current, to = %v, "self-update: version gate passed");
-        }
+    let new_version = match read_binary_version(&tmp).await {
+        Ok(v) if is_newer(current, &v) => v,
         Ok(v) => {
             let _ = tokio::fs::remove_file(&tmp).await;
             return Err(anyhow!(
@@ -273,7 +289,18 @@ pub async fn install_verified(bytes: &[u8], target: &Path) -> Result<()> {
             let _ = tokio::fs::remove_file(&tmp).await;
             return Err(anyhow!("could not read downloaded binary version: {e}"));
         }
+    };
+    if is_version_skipped(&UpdateState::load().failed_versions, &new_version) {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(anyhow!(
+            "downloaded version {new_version} previously failed to boot and was rolled back — refusing"
+        ));
     }
+    tracing::info!(from = current, to = %new_version, "self-update: version gate passed");
+    // Persist the attempted version *before* the swap so a rollback (which
+    // re-execs the supervisor) can still move it onto the failed-boot skiplist
+    // even though nothing in memory survives the re-exec.
+    record_attempted_version(&new_version);
     // Preserve the outgoing binary as a `.prev` sibling of the target (0755) so
     // the supervisor can restore it (one-shot) if the new build fails to come up.
     // Best-effort: a copy failure must never block a legitimate update — the
@@ -421,7 +448,10 @@ pub fn spawn_periodic(cfg: PanelConfig) {
                 // read its latest version.
                 if let Ok(rel) = resolve_release(&cfg).await {
                     let current = env!("CARGO_PKG_VERSION");
-                    if is_newer(current, &rel.version) {
+                    // Skip a version we already tried and rolled back: re-offering
+                    // it would just loop the same failed boot (see `skiplist`).
+                    let skipped = is_version_skipped(&st.failed_versions, &rel.version);
+                    if is_newer(current, &rel.version) && !skipped {
                         tracing::info!(
                             latest = %rel.version,
                             source = rel.source.as_str(),

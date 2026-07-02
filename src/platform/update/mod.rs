@@ -16,6 +16,8 @@ use serde::Serialize;
 
 mod changelog;
 mod engine;
+mod skiplist;
 
 pub(crate) use changelog::*;
 pub(crate) use engine::*;
+pub(crate) use skiplist::*;

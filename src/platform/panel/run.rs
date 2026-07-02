@@ -64,6 +64,14 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     // out-of-band fails closed (503) instead of proxying a recycled IP.
     crate::infra::website::spawn_upstream_resync();
 
+    // Reclaim leaked container network state at boot. A container whose panel
+    // was OOM-killed (or whose runtime crashed) can leave a dangling IPAM lease
+    // + veth + DNAT rule behind; the in-house runtime's idempotent net gc() frees
+    // every lease whose owning pid is dead. Only for the in-house runtime
+    // (DN7_RUNTIME=dn7) — the default docker path manages its own teardown — and
+    // best-effort so a gc hiccup never blocks the console coming up.
+    reclaim_container_net_at_boot();
+
     // Background self-update checker (GitHub + dn7.cn). Applies automatically
     // only when auto-update is enabled in settings; otherwise just keeps the
     // "update available" hint warm.
@@ -102,6 +110,38 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
         }
     }
 }
+
+/// Best-effort one-shot reclaim of leaked container network state (dead-pid IPAM
+/// leases + their veth/DNAT rules) at panel boot, guarded to the in-house runtime.
+///
+/// A container killed out-of-band (OOM, host crash, `SIGKILL`) never runs its
+/// own teardown, so its lease/veth/DNAT can outlive it; the runtime already has
+/// an idempotent `NetworkManager::gc()` that frees every lease whose pid is dead.
+/// Running it once at startup reclaims what the last boot leaked. It is guarded
+/// on `DN7_RUNTIME=dn7` so a plain docker install (whose daemon owns its own
+/// networking) is untouched, and Linux-gated because the runtime's networking is
+/// Linux-only (it doesn't compile off Linux). Failures are logged, never fatal.
+#[cfg(target_os = "linux")]
+fn reclaim_container_net_at_boot() {
+    if !dn7_container::selected() {
+        return;
+    }
+    // `gc()` is synchronous (netlink + on-disk IPAM state), so run it on the
+    // blocking pool and don't await it — it must never delay the console coming
+    // up, and its result is purely informational.
+    tokio::task::spawn_blocking(|| match dn7_container::net::NetworkManager::new().gc() {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(
+            reclaimed = n,
+            "boot net gc: reclaimed leaked container leases"
+        ),
+        Err(e) => tracing::warn!("boot net gc failed: {e}"),
+    });
+}
+
+/// Off-Linux the in-house runtime doesn't exist, so there's nothing to reclaim.
+#[cfg(not(target_os = "linux"))]
+fn reclaim_container_net_at_boot() {}
 
 /// Poll the loopback console port until it accepts a connection (the listener is
 /// up), then write the boot-ok marker exactly once. Bounded to a short window so
