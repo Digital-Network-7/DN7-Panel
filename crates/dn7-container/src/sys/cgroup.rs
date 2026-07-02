@@ -74,17 +74,31 @@ impl Cgroup {
         self.write("cgroup.procs", &pid.to_string())
     }
 
-    /// Remove the cgroup directory. Fails until every member process has exited
-    /// (the kernel refuses `rmdir` on a non-empty cgroup).
+    /// Remove the cgroup directory. `rmdir` on a cgroup fails with `EBUSY` while
+    /// it still holds a member — including a just-killed process that hasn't been
+    /// reaped yet: under the panel the container init is the panel's own child,
+    /// and the dedicated reaper thread reaps it ASYNCHRONOUSLY, so a
+    /// `stop`→`delete` (e.g. an edit/recreate) can reach here a beat before the
+    /// zombie is reaped and the kernel lets the cgroup go. `wait_drained` can't
+    /// see this — a zombie is absent from `cgroup.procs`. So retry the `rmdir`
+    /// briefly (≈2s) to let the reaper catch up, instead of failing the delete.
     pub fn delete(&self) -> Result<()> {
-        match std::fs::remove_dir(&self.path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(Error::Io {
-                path: self.path.clone(),
-                source: e,
-            }),
+        for attempt in 0..100u32 {
+            match std::fs::remove_dir(&self.path) {
+                Ok(()) => return Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) if e.raw_os_error() == Some(libc::EBUSY) && attempt < 99 => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(e) => {
+                    return Err(Error::Io {
+                        path: self.path.clone(),
+                        source: e,
+                    })
+                }
+            }
         }
+        unreachable!("loop returns on the final attempt")
     }
 
     /// Kill every process in the cgroup at once by writing `cgroup.kill` (cgroup

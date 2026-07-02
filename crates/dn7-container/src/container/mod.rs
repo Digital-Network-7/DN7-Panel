@@ -904,17 +904,28 @@ pub fn delete(id: &str, force: bool) -> Result<()> {
     s.refresh_status();
     let cg = Cgroup::at(&s.cgroup);
 
-    if state::pid_alive(s.pid) {
-        if !force {
-            return Err(Error::BadState {
-                id: id.into(),
-                state: s.status.as_str(),
-                action: "delete (still alive; use --force)",
-            });
-        }
-        cg.kill_all()?;
-        wait_drained(&cg);
+    // A running container needs `--force` to delete. Once past that check, ALWAYS
+    // clear the cgroup (best-effort `cgroup.kill`), not just when the recorded
+    // init is alive: a force-delete must also reap any ORPHANED straggler still in
+    // the cgroup — e.g. a process left behind by a crashed/restarted panel, or by
+    // an earlier `delete` that raced — whose pid isn't the recorded init and which
+    // would otherwise keep the cgroup non-removable (EBUSY) forever.
+    if state::pid_alive(s.pid) && !force {
+        return Err(Error::BadState {
+            id: id.into(),
+            state: s.status.as_str(),
+            action: "delete (still alive; use --force)",
+        });
     }
+    let _ = cg.kill_all();
+    // Wait for the cgroup to drain before the rmdir — even a container that was
+    // `stop`ped first can reach here with its init still lingering as an unreaped
+    // zombie (the panel reaps container inits ASYNCHRONOUSLY on a dedicated
+    // thread), which keeps the cgroup non-removable for a beat and made an
+    // edit/recreate (`stop`→`delete`→re-create) intermittently fail with EBUSY,
+    // leaving the new resource limits unapplied. `Cgroup::delete` also retries the
+    // rmdir as a final backstop.
+    wait_drained(&cg);
     if let Some(net) = &s.net {
         NetworkManager::new().teardown(id, net);
     }
