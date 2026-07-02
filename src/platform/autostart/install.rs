@@ -1,19 +1,22 @@
-//! Boot-time auto-start, installed via several mechanisms at once.
+//! Boot-time auto-start, via the one mechanism the host init system honors.
 //!
 //! A single panel install should survive a reboot. Rather than rely on one
 //! init system (which might be absent, disabled, or misconfigured), we install
-//! *several redundant* mechanisms and let whichever the host honors win:
+//! a boot mechanism the host actually honors:
 //!
 //!   1. **systemd unit** (`/etc/systemd/system/dn7-panel.service`) — the
 //!      primary path on modern Linux. `enable` wires it to boot.
 //!   2. **cron `@reboot`** (a `/etc/cron.d/dn7-panel` drop-in, falling back
-//!      to the root user crontab) — covers hosts without systemd or where the
-//!      unit didn't take.
+//!      to the root user crontab) — the fallback for hosts *without* systemd.
 //!   3. **`/etc/rc.local`** — last-resort for older SysV-style systems.
 //!
-//! These don't conflict: the panel is single-instance (the supervisor holds a
-//! lock; a second launch just re-pairs instead of starting a duplicate), so if
-//! two mechanisms both fire at boot, only one supervisor actually runs.
+//! On a systemd host we install ONLY the systemd unit. The cron/rc.local
+//! mechanisms launch a *background* process outside any service cgroup — if
+//! they also ran on a systemd host, whichever fired first would grab the
+//! single-instance lock, then the systemd unit's `ExecStart` would hit that
+//! lock and exit, and `Restart=always` would flap it forever while the real
+//! panel ran outside systemd's view (so `systemctl stop`/`logs` would act on an
+//! empty service). Cron + rc.local are therefore gated on systemd being absent.
 //!
 //! All steps are best-effort and idempotent. They run only when we can write
 //! the relevant system paths (i.e. effectively root); an unprivileged run skips
@@ -40,22 +43,36 @@ extern "C" {
     fn libc_geteuid() -> u32;
 }
 
-/// Install every available autostart mechanism (best-effort, idempotent).
+/// Is systemd the host init system? (Then it owns autostart exclusively.)
+fn systemd_present() -> bool {
+    Path::new("/run/systemd/system").is_dir()
+}
+
+/// Install the autostart mechanism the host honors (best-effort, idempotent).
 /// Returns immediately for non-root runs.
+///
+/// On a systemd host we install ONLY the systemd unit; the cron @reboot and
+/// rc.local mechanisms are the *fallback* for non-systemd hosts and would
+/// otherwise fight the unit for the single-instance lock (see module docs).
 pub fn install_all() {
     if !is_root() {
         tracing::debug!("not root; skipping autostart installation");
         return;
     }
     let mut installed: Vec<&str> = Vec::new();
-    if install_systemd() {
-        installed.push("systemd");
-    }
-    if install_cron() {
-        installed.push("cron@reboot");
-    }
-    if install_rc_local() {
-        installed.push("rc.local");
+    if systemd_present() {
+        // systemd host: it owns autostart. Install ONLY the unit.
+        if install_systemd() {
+            installed.push("systemd");
+        }
+    } else {
+        // No systemd: fall back to cron @reboot and/or rc.local.
+        if install_cron() {
+            installed.push("cron@reboot");
+        }
+        if install_rc_local() {
+            installed.push("rc.local");
+        }
     }
     if installed.is_empty() {
         tracing::warn!("could not install any autostart mechanism");
@@ -74,7 +91,7 @@ fn boot_launch_cmd(background: bool) -> String {
 /// Mechanism 1: systemd unit + enable.
 fn install_systemd() -> bool {
     // Only meaningful if systemd is actually the init system.
-    if !Path::new("/run/systemd/system").is_dir() {
+    if !systemd_present() {
         return false;
     }
     let unit = format!(

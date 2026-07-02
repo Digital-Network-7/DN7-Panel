@@ -15,6 +15,9 @@ pub const WANTS_LINK: &str = "/etc/systemd/system/multi-user.target.wants/dn7-pa
 pub const CRON_D: &str = "/etc/cron.d/dn7-panel";
 pub const INITD: &str = "/etc/init.d/dn7-panel";
 pub const GLOBAL_DN7: &str = "/usr/local/bin/dn7";
+/// Fallback location for the global `dn7` symlink when `/usr/local/bin` is
+/// absent (mirrors `layout::install_global_cli`'s dir list).
+pub const GLOBAL_DN7_FALLBACK: &str = "/usr/bin/dn7";
 pub const GLOBAL_DN7CRUN: &str = "/usr/local/bin/dn7crun";
 
 pub fn is_root() -> bool {

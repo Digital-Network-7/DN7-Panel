@@ -32,8 +32,8 @@ pub fn run(args: &[String]) -> i32 {
         "Delete all containers, images and container networking",
     );
     let c3 = confirm(
-        "3. 删除面板数据:配置、TLS 证书、登录凭据",
-        "Delete panel data: config, TLS certs, login credentials",
+        "3. 删除面板数据:配置、TLS 证书、面板登录凭据(不含系统登录账户)",
+        "Delete panel data: config, TLS certs, panel login credentials (not OS login accounts)",
     );
     let c4 = confirm(
         "4. 删除程序文件与安装目录 /var/dn7",
@@ -56,6 +56,7 @@ pub fn run(args: &[String]) -> i32 {
     rm(WANTS_LINK);
     rm(CRON_D);
     rm(INITD);
+    strip_cron_spool();
     strip_rc_local();
     let _ = run_quiet("systemctl", &["daemon-reload"]);
     kill_remaining_panels();
@@ -82,8 +83,10 @@ pub fn run(args: &[String]) -> i32 {
     );
 
     // Remove the `dn7` launcher LAST. On Linux unlinking a running binary is safe
-    // — the inode lives until this process exits.
+    // — the inode lives until this process exits. Drop both the primary symlink
+    // and the /usr/bin fallback (install picks whichever dir exists).
     rm(GLOBAL_DN7);
+    rm(GLOBAL_DN7_FALLBACK);
 
     println!("\n卸载完成。 / Uninstall complete.");
     0
@@ -130,6 +133,25 @@ fn strip_rc_local() {
                 .filter(|l| !l.contains("dn7-panel"))
                 .collect();
             let _ = std::fs::write("/etc/rc.local", kept.join("\n") + "\n");
+        }
+    }
+}
+
+/// Drop our `@reboot` entry from root's crontab spool. When `/etc/cron.d` was
+/// absent, install wrote the `@reboot …/dn7-panel &` line straight into the
+/// spool file (Debian: /var/spool/cron/crontabs/root, RHEL: /var/spool/cron/root)
+/// rather than the cron.d drop-in. Mirror install's `dn7-panel` line filter so
+/// any non-dn7 crontab entries are preserved.
+fn strip_cron_spool() {
+    for path in ["/var/spool/cron/crontabs/root", "/var/spool/cron/root"] {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if content.contains("dn7-panel") {
+                let kept: Vec<&str> = content
+                    .lines()
+                    .filter(|l| !l.contains("dn7-panel"))
+                    .collect();
+                let _ = std::fs::write(path, kept.join("\n") + "\n");
+            }
         }
     }
 }
