@@ -135,8 +135,24 @@ jobs:
         with:
           tool: cross
 
+      # One shipped binary: the panel. The unified `dn7` CLI is linked IN (crate
+      # dn7-cli is a library) and invoked via the `dn7` symlink (argv[0]).
       - name: Build static musl binary
         run: cross build --release --target ${{ matrix.target }}
+
+      # The flagship invariant: the released binary depends only on the Linux
+      # kernel — no dynamic libraries, no external loader. Fail the release if any
+      # DT_NEEDED appears (readelf reads cross-arch ELF fine on the x86_64 runner).
+      - name: Verify fully static (no DT_NEEDED)
+        run: |
+          BIN="target/${{ matrix.target }}/release/${BIN_NAME}"
+          echo "Dynamic section of ${BIN}:"
+          readelf -dW "${BIN}" || true
+          if readelf -dW "${BIN}" 2>/dev/null | grep -q 'NEEDED'; then
+            echo "::error::${BIN} has dynamic library dependencies (DT_NEEDED) — the release binary must be fully static"
+            exit 1
+          fi
+          echo "OK: ${BIN} has no DT_NEEDED (fully static)."
 
       - name: Package binary
         id: pkg
@@ -158,12 +174,8 @@ jobs:
           openssl pkeyutl -sign -inkey /tmp/dn7_sign.pem -rawin \
             -in "${{ steps.pkg.outputs.artifact }}" -out /tmp/dn7.sig
           rm -f /tmp/dn7_sign.pem
-          # An Ed25519 signature is exactly 64 bytes.
           sz=$(wc -c < /tmp/dn7.sig)
           test "$sz" = "64" || { echo "::error::unexpected signature size $sz" >&2; exit 1; }
-          # Append the signature to the END of the binary. The ELF loader
-          # ignores trailing bytes, so the file still runs as-is; the panel
-          # strips + verifies the trailer before self-updating.
           cat /tmp/dn7.sig >> "${{ steps.pkg.outputs.artifact }}"
           rm -f /tmp/dn7.sig
           echo "appended 64-byte signature to ${{ steps.pkg.outputs.artifact }}"

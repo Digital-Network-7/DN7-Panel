@@ -1,0 +1,10 @@
+# Pin the toolchain so local + CI builds are reproducible and clippy/codegen
+# don't drift with floating `stable`. Bump this deliberately.
+#
+# Note: the musl release targets are intentionally NOT listed here — the release
+# build cross-compiles them inside `cross`'s target-matched Docker image
+# (.github/workflows/release.yml), and listing them would force `rustup` to
+# download musl std on every local `cargo` invocation.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy", "rustfmt"]

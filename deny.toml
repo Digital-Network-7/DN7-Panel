@@ -12,8 +12,9 @@ ignore = [
     # supervisor's background daemonization. Revisit / replace upstream.
     # https://rustsec.org/advisories/RUSTSEC-2025-0069
     "RUSTSEC-2025-0069",
-    # rustls-pemfile: unmaintained (transitive via axum-server). Resolves when
-    # axum-server moves to rustls-pki-types PEM parsing; no action on our side.
+    # rustls-pemfile: unmaintained. Used directly by crates/dn7-edge (build.rs) to
+    # parse the panel-managed PEM cert/key files for the :443 listener. Revisit
+    # when the edge migrates to rustls-pki-types PEM parsing.
     # https://rustsec.org/advisories/RUSTSEC-2025-0134
     "RUSTSEC-2025-0134",
 ]
