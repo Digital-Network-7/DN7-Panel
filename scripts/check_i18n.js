@@ -34,8 +34,11 @@ for (const n of names) {
 const files = fs.readdirSync(dir).filter(f => f.endsWith('.js'));
 const used = new Set();
 for (const f of files) { const c = fs.readFileSync(dir + f, 'utf8'); const re = /\btr\(\s*['"]([\w.\-]+?)['"]/g; let m; while ((m = re.exec(c))) used.add(m[1]); }
-const missingKeys = [...used].filter(k => !en.has(k) && k !== 'theme.');
+// A captured key ending in '.' or '_' is a dynamic prefix (tr('theme.' + m),
+// tr('help.body_' + k)); accept it when the dictionary has keys under it.
+const dynPrefix = k => /[._]$/.test(k) && [...en].some(e => e.startsWith(k) && e !== k);
+const missingKeys = [...used].filter(k => !en.has(k) && !dynPrefix(k));
 console.log('Used tr() keys:', used.size);
 if (missingKeys.length) { ok = false; console.log('MISSING in dict:', missingKeys.sort()); }
-else console.log('All used tr() keys exist (ignoring dynamic theme.).');
+else console.log('All used tr() keys exist (ignoring dynamic prefixes).');
 console.log(ok ? 'CONSISTENCY_OK' : 'CONSISTENCY_FAIL');
