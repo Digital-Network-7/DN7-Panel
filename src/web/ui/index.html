@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="/ui/app.css" />
 </head>
 <body>
+<noscript><div class="noscript">This console requires JavaScript — please enable it. 本控制台需要启用 JavaScript，请开启后重试。</div></noscript>
 
 <!-- Login -->
 <div id="login">
@@ -16,31 +17,45 @@
   <div class="login-bg" aria-hidden="true"><span class="orb o1"></span><span class="orb o2"></span><span class="orb o3"></span></div>
   <!-- Brand pinned top-left. -->
   <div class="login-brand"><span class="cup"><!--__DN7_BRAND_MARK__--></span><h1 class="brand-name">__DN7_BRAND_NAME__</h1></div>
+  <!-- Pre-login language/theme switchers (wired in boot.js). -->
+  <div class="login-corner">
+    <button class="iconbtn" type="button" id="loginLangBtn" title="Language"></button>
+    <button class="iconbtn" type="button" id="loginThemeBtn"></button>
+  </div>
   <div class="login-card">
     <div class="login-title" data-i18n="login.title">SIGN IN</div>
     <div class="sub" data-i18n="login.sub">安全登录到本机控制台</div>
     <div class="login-panes">
       <div id="panewPw">
-        <label class="lbl" data-i18n="login.account">Account</label>
-        <input id="user" class="field" style="margin-bottom:12px" data-i18n-ph="login.ph_account" placeholder="Please enter your account" autocomplete="username" />
-        <label class="lbl" data-i18n="login.password">Password</label>
-        <input id="pw" class="field" type="password" data-i18n-ph="login.ph_password" placeholder="Please enter your password" autocomplete="current-password" style="margin-bottom:16px" />
-        <div id="loginTotpWrap" class="hidden" style="margin-bottom:16px">
-          <label class="lbl" data-i18n="tfa.code">2FA code</label>
-          <input id="loginCode" class="field" inputmode="numeric" autocomplete="one-time-code" placeholder="000000" />
-        </div>
-        <button class="btn" style="width:100%" id="loginBtn" data-i18n="login.submit">登 录</button>
-        <div class="err" id="loginErr" style="margin-top:10px"></div>
+        <form id="loginForm">
+          <label class="lbl" for="user" data-i18n="login.account">Account</label>
+          <input id="user" class="field" style="margin-bottom:12px" data-i18n-ph="login.ph_account" placeholder="Please enter your account" autocomplete="username" autocapitalize="none" spellcheck="false" />
+          <label class="lbl" for="pw" data-i18n="login.password">Password</label>
+          <div class="pwf" style="margin-bottom:16px">
+            <input id="pw" class="field" type="password" data-i18n-ph="login.ph_password" placeholder="Please enter your password" autocomplete="current-password" />
+            <button class="pwf-eye" type="button" id="pwEye" data-i18n-aria="login.show_pw" aria-label="Show password"></button>
+          </div>
+          <div id="loginTotpWrap" class="hidden" style="margin-bottom:16px">
+            <label class="lbl" for="loginCode" data-i18n="tfa.code">2FA code</label>
+            <input id="loginCode" class="field" inputmode="numeric" autocomplete="one-time-code" placeholder="000000" maxlength="6" />
+            <!-- Instructional hint — kept out of the red #loginErr slot. -->
+            <div class="login-hint" id="loginTotpHint" data-i18n="tfa.login_prompt">Enter the 6-digit code from your authenticator app</div>
+          </div>
+          <button class="btn" type="submit" style="width:100%" id="loginBtn" data-i18n="login.submit">登 录</button>
+          <div class="err" id="loginErr" role="alert" aria-live="assertive" style="margin-top:10px"></div>
+        </form>
       </div>
     </div>
+    <!-- Locked-out recovery: the panel account is reset from the host shell. -->
+    <div class="login-forgot"><span data-i18n="set.pw_forgot_a">Forgot it? Run</span> <code>dn7 user passwd &lt;name&gt;</code> <span data-i18n="set.pw_forgot_b">on the host to reset.</span></div>
   </div>
 </div>
 
 <!-- App -->
 <div id="app" class="hidden">
-  <aside>
+  <aside data-i18n-aria="a11y.sidebar">
     <div class="logo"><span class="cup"><!--__DN7_BRAND_MARK__--></span><h1 class="brand-name">__DN7_BRAND_NAME__</h1></div>
-    <nav id="nav"></nav>
+    <nav id="nav" data-i18n-aria="a11y.nav_main"></nav>
     <div class="foot">
       <div class="ver" id="verLine" data-i18n-title="shell.update_hint" title="点击查看更新" style="cursor:pointer">Panel <b id="panelVer">…</b><span id="verDot" class="updot hidden"></span></div>
     </div>
@@ -50,11 +65,11 @@
       <h2 id="title">监控</h2>
       <span class="sp"></span>
       <button class="iconbtn" id="langBtn" title="Language"></button>
-      <button class="iconbtn" id="themeBtn" title="主题：跟随系统">◑</button>
+      <button class="iconbtn" id="themeBtn" title="主题：跟随系统"></button>
       <div class="userbox" id="userBox">
         <span class="av" id="userAv">A</span>
         <b id="whoName">admin</b>
-        <span class="caret" aria-hidden="true">▾</span>
+        <span class="caret" aria-hidden="true"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
       </div>
     </div>
     <main id="view"></main>
@@ -89,6 +104,7 @@
 <script src="/ui/js/logs.js"></script>
 <script src="/ui/js/selx.js"></script>
 <script src="/ui/js/update.js"></script>
+<script src="/ui/js/palette.js"></script>
 <script src="/ui/js/boot.js"></script>
 </body>
 </html>
