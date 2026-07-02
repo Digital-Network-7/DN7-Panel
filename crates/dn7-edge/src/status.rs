@@ -31,7 +31,7 @@ pub(crate) fn get() -> RunState {
 }
 
 /// The ports currently in conflict, if the edge is stuck on a port conflict.
-pub(crate) fn port_conflict() -> Option<Vec<u16>> {
+pub fn port_conflict() -> Option<Vec<u16>> {
     match get() {
         RunState::PortConflict(ports) => Some(ports),
         _ => None,

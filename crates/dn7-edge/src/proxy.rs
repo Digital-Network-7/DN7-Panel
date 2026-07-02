@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 
 use http::header::{HeaderName, HeaderValue};
 use http::{HeaderMap, StatusCode};
+use http_body::Body as _;
 use hyper::body::Incoming;
 use hyper::Request;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -142,10 +143,13 @@ pub(crate) async fn handle(
     tuning: &Tuning,
 ) -> Resp {
     // Enforce `client_max_body_size` early via the declared Content-Length, so an
-    // oversized upload is rejected with 413 before we dial the upstream. (The
-    // body is streamed, never buffered, so this is parity with nginx's cap rather
-    // than a memory-safety guard; a chunked body without Content-Length is capped
-    // by the upstream, not here.)
+    // oversized upload is rejected with 413 before we dial the upstream. This is
+    // the fast path only: a chunked / HTTP-2 body carries no length up front, so
+    // it can't be caught here — that shape is bounded by the cumulative
+    // `limit_body` wrapper applied to the forwarded request body below (which
+    // fails the stream once it crosses the cap). The body is streamed, never
+    // buffered, so this is parity with nginx's cap rather than a memory-safety
+    // guard.
     if tuning.client_max_body_size > 0 {
         if let Some(len) = req
             .headers()
@@ -206,7 +210,7 @@ pub(crate) async fn handle(
         // reject it ("Connection is HTTP/1, but request requires HTTP/2" ->
         // 502). Terminate the client's protocol here and speak h1 to the backend.
         *req.version_mut() = http::Version::HTTP_11;
-        proxy_plain(req).await
+        proxy_plain(req, tuning.client_max_body_size).await
     };
     // Only cache a SUCCESSFUL asset response — never a transient upstream error
     // (502/503/504) or a 404, which would otherwise be pinned for a week.
@@ -302,7 +306,7 @@ async fn resolve_container_cached(name: &str, port: i64) -> Option<String> {
     // request tasks.
     let resolved = tokio::time::timeout(
         CONTAINER_RESOLVE_TIMEOUT,
-        crate::infra::website::resolve_container_upstream(name, port),
+        crate::resolve_container_upstream(name, port),
     )
     .await;
 
@@ -341,17 +345,43 @@ fn prune_stale(cache: &mut HashMap<String, (String, Instant)>) {
     cache.retain(|_, (_, at)| at.elapsed() < MAX_AGE);
 }
 
+/// Whether a forwarded request body needs the inactivity-timeout wrapper, given
+/// the body's `size_hint().exact()`. A genuinely bodyless request is the only
+/// one hyper reports as `Some(0)` (END_STREAM on the headers, or an explicit
+/// `Content-Length: 0`); a streaming body with no declared length — including
+/// the HTTP/2-with-no-Content-Length shape — reports `None`, so it is treated as
+/// body-bearing and gets the timeout. A header-only check would misclassify that
+/// shape and skip the timeout, which was the H2 slowloris hole.
+pub(crate) fn body_needs_timeout(exact: Option<u64>) -> bool {
+    exact != Some(0)
+}
+
 /// The pooled, non-upgrade path: send through the shared client and stream the
 /// upstream response body straight back. Hop-by-hop headers are stripped from
 /// the response so we don't leak the upstream's transport framing to the client.
-async fn proxy_plain(req: Request<Incoming>) -> Resp {
-    // Apply the body-inactivity timeout only to requests that actually carry a
-    // body (a declared Content-Length or chunked Transfer-Encoding) so a bodyless
-    // GET — the common case — doesn't allocate a timer.
-    let has_body = req.headers().contains_key(http::header::CONTENT_LENGTH)
-        || req.headers().contains_key(http::header::TRANSFER_ENCODING);
-    let req = req
-        .map(|incoming| super::timeout_body::prepare(incoming, BODY_INACTIVITY_TIMEOUT, has_body));
+///
+/// `max_body` is the route's `client_max_body_size` (0 = unlimited): the
+/// forwarded request body is wrapped so a chunked / HTTP-2 upload that carries
+/// no `Content-Length` (and so slips the early cap in `handle`) still fails once
+/// its cumulative size crosses the limit, aborting the upstream request instead
+/// of streaming an unbounded payload through.
+async fn proxy_plain(req: Request<Incoming>, max_body: u64) -> Resp {
+    // Decide whether the request carries a body from the body's own size hint,
+    // NOT from Content-Length / Transfer-Encoding headers: an HTTP/2 upload
+    // streams DATA frames with no Transfer-Encoding (H2 forbids it) and often no
+    // Content-Length, so a header check would miss it and let the body skip both
+    // the cap and the inactivity timeout.
+    let carries_body = body_needs_timeout(req.body().size_hint().exact());
+    let req = req.map(|incoming| {
+        // Inactivity timeout: armed only for a body-bearing request so a bodyless
+        // GET — the common case — doesn't allocate a timer.
+        let body = super::timeout_body::prepare(incoming, BODY_INACTIVITY_TIMEOUT, carries_body);
+        // Cumulative size cap: always applied. `limit` self-noops when
+        // `max_body == 0` (unlimited), so this is free for uncapped routes and,
+        // unlike the old header-gated path, still catches an H2 body that carries
+        // no Content-Length.
+        super::limit_body::limit(body, max_body)
+    });
     match client().request(req).await {
         Ok(upstream) => {
             let (mut parts, body) = upstream.into_parts();
@@ -615,6 +645,15 @@ fn rewrite_request_headers(
     headers.insert(
         HeaderName::from_static("x-forwarded-proto"),
         HeaderValue::from_static(proto),
+    );
+
+    // X-DN7-Forwarded = positive proof this request was proxied by the edge.
+    // The loopback console keys its root-only CLI-control-token gate off the
+    // ABSENCE of this marker (a direct `dn7` hit has none); `insert()` overwrites
+    // any client-supplied copy, so an external client can't forge a "direct" hit.
+    headers.insert(
+        HeaderName::from_static("x-dn7-forwarded"),
+        HeaderValue::from_static("1"),
     );
 
     // Optionally strip the client Authorization (access list, Pass-Auth off).

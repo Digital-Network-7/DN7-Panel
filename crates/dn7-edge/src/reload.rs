@@ -1,6 +1,6 @@
-//! The reload entry point the panel's nginx control plane calls after every
+//! The reload entry point the panel's website control plane calls after every
 //! site/cert/access change — the in-process equivalent of `nginx -t && nginx -s
-//! reload`. `infra::nginx` gathers the manifests into a [`ReloadInput`] and
+//! reload`. `infra::website` gathers the manifests into a [`ReloadInput`] and
 //! calls [`reload`]; we build, validate, and atomically publish the new table.
 
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use super::{store, validate};
 /// error (without touching the live config) when the new model is invalid, so a
 /// bad change can't take the edge server down — the previous config keeps
 /// serving.
-pub(crate) async fn reload(input: ReloadInput) -> Result<()> {
+pub async fn reload(input: ReloadInput) -> Result<()> {
     let cfg = build_runtime(&input).map_err(|e| anyhow!("配置无效：{e}"))?;
     validate::validate(&cfg).map_err(|e| anyhow!("配置无效：{e}"))?;
     store::publish(Arc::new(cfg));

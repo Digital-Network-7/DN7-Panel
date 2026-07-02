@@ -21,7 +21,7 @@ use ipnet::IpNet;
 /// route proxies to. A fixed constant (not operator-tunable) since the console
 /// is now an internal service fronted by the edge on :80/:443 — the two MUST
 /// agree, so they share this one source of truth.
-pub(crate) const CONSOLE_LOOPBACK_PORT: u16 = 1080;
+pub const CONSOLE_LOOPBACK_PORT: u16 = 1080;
 
 /// A fully-built, validated, immutable serving configuration. Published behind
 /// an `ArcSwap`; never mutated after construction.
@@ -113,6 +113,119 @@ pub(crate) struct ServerRoute {
     /// Per-IP request rate limit + auto-ban (the "高级功能" knobs). `None` when
     /// the site configured neither.
     pub(crate) rate_limit: Option<RateLimit>,
+    /// Max CONCURRENT in-flight requests per client IP (the "高级功能"
+    /// connection-limit knob), enforced by `edge::conn_limit`. `0` = unlimited.
+    pub(crate) conn_per_ip: u32,
+    /// Per-site inline IP allow/deny list (the "高级功能" IP-ACL knob), distinct
+    /// from the shared [`AccessControl`] access list. `None` = no filtering.
+    pub(crate) ip_acl: Option<IpAcl>,
+    /// Anti-hotlinking: the allowed `Referer` host patterns. `None` = disabled.
+    pub(crate) hotlink: Option<Hotlink>,
+}
+
+/// A per-site inline IP allow/deny filter (the "高级功能" IP-ACL knob). Simpler
+/// than a full [`AccessControl`]: one mode over one flat net list, no auth.
+pub(crate) struct IpAcl {
+    /// `true` = allow-list (only listed nets pass, others 403); `false` =
+    /// deny-list (listed nets are blocked, others pass).
+    pub(crate) allow: bool,
+    /// The parsed IP/CIDR matchers this filter applies to.
+    pub(crate) nets: Vec<AclNet>,
+}
+
+impl IpAcl {
+    /// Whether `ip` is permitted under this filter. Allow-mode: the IP must match
+    /// a listed net; deny-mode: the IP must NOT match any listed net.
+    pub(crate) fn permits(&self, ip: IpAddr) -> bool {
+        let listed = self.nets.iter().any(|n| n.matches(ip));
+        if self.allow {
+            listed
+        } else {
+            !listed
+        }
+    }
+}
+
+/// Anti-hotlinking policy (the "高级功能" hotlink-protection knob). The allowed
+/// external `Referer` host patterns; the request's own `Host` (same-origin) and
+/// an absent `Referer` (direct navigation) are always permitted (see
+/// [`Hotlink::permits`]).
+pub(crate) struct Hotlink {
+    /// Lowercased allowed referer host patterns. A leading-dot suffix
+    /// (`.example.com`) matches the host and any subdomain; a bare host
+    /// (`example.com`) is an exact match.
+    pub(crate) allowed: Vec<String>,
+}
+
+impl Hotlink {
+    /// Whether a request bearing `referer` (the raw `Referer` header value, or
+    /// `None`/empty when absent) is allowed against this policy on a page served
+    /// for `host` (the request's own `Host`, already lowercased, port stripped).
+    ///
+    /// POLICY (documented, deliberate):
+    ///   1. No `Referer` (or an unparseable/host-less one) → ALLOW. Direct
+    ///      navigation, bookmarks, and privacy-stripped referrers must not be
+    ///      blocked; anti-hotlinking targets *cross-site embedding*, which always
+    ///      carries a foreign referer. (Mirrors nginx `valid_referers none ...`.)
+    ///   2. Same-origin (`Referer` host == the page's `Host`) → ALLOW.
+    ///   3. `Referer` host matches an allowed pattern → ALLOW (exact, or a
+    ///      `.suffix` covering the host and its subdomains).
+    ///   4. Otherwise → DENY (403).
+    pub(crate) fn permits(&self, referer: Option<&str>, host: &str) -> bool {
+        let Some(ref_host) = referer.and_then(referer_host) else {
+            return true; // (1) absent / host-less referer
+        };
+        if ref_host == host {
+            return true; // (2) same-origin
+        }
+        // (3) an allowed pattern: exact host, or a `.suffix` covering subdomains.
+        self.allowed.iter().any(|pat| {
+            if let Some(suffix) = pat.strip_prefix('.') {
+                ref_host == suffix || ref_host.ends_with(pat)
+            } else {
+                ref_host == *pat
+            }
+        })
+    }
+}
+
+/// Extract the lowercased host from a `Referer` header value, tolerating a bare
+/// authority (`example.com/x`) as well as a full `scheme://host/...` URL. Returns
+/// `None` when no host can be recovered (which the hotlink policy treats as an
+/// absent referer → allow). Kept dependency-free (no `url` crate).
+pub(crate) fn referer_host(referer: &str) -> Option<String> {
+    let s = referer.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // Drop a `scheme://` prefix if present.
+    let after_scheme = s.split_once("://").map(|(_, rest)| rest).unwrap_or(s);
+    // The authority ends at the first `/`, `?`, or `#`.
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    // Strip any userinfo (`user:pass@host`) then the port.
+    let host_port = authority
+        .rsplit_once('@')
+        .map(|(_, h)| h)
+        .unwrap_or(authority);
+    // A bracketed IPv6 literal keeps its brackets/colons; otherwise strip a
+    // single `:port` (mirrors `router::host_key`'s port handling).
+    let host = if let Some(rest) = host_port.strip_prefix('[') {
+        match rest.find(']') {
+            Some(end) => &host_port[..end + 2],
+            None => host_port,
+        }
+    } else if host_port.matches(':').count() == 1 {
+        host_port.split(':').next().unwrap_or("")
+    } else {
+        host_port
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some(host.to_ascii_lowercase())
 }
 
 /// Per-IP request-rate limit + auto-ban for a route, enforced by `edge::limit`.

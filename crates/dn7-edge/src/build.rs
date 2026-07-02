@@ -10,42 +10,42 @@
 //! heals without a rebuild.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use ipnet::IpNet;
 
-use crate::core::website::{AccessList, DefaultSite, HttpTuning, Site};
+use crate::model::{AccessList, DefaultSite, HttpTuning, Site};
 
 use super::config::*;
 
 /// Everything `build_runtime` needs, gathered by the reload seam inside
-/// `infra::nginx` (which owns the manifest loaders and the state-dir paths).
-pub(crate) struct ReloadInput {
-    pub(crate) sites: Vec<Site>,
-    pub(crate) access: Vec<AccessList>,
-    pub(crate) default_site: DefaultSite,
-    pub(crate) tuning: HttpTuning,
+/// `infra::website` (which owns the manifest loaders and the state-dir paths).
+pub struct ReloadInput {
+    pub sites: Vec<Site>,
+    pub access: Vec<AccessList>,
+    pub default_site: DefaultSite,
+    pub tuning: HttpTuning,
     /// Directory the per-site/named/default cert PEM files live in.
-    pub(crate) cert_dir: PathBuf,
+    pub cert_dir: PathBuf,
     /// Directory upload-mode static roots live under (`<www>/<root>`).
-    pub(crate) www_dir: PathBuf,
+    pub www_dir: PathBuf,
     /// The managed console route the edge fronts (the panel itself).
-    pub(crate) console: ConsoleParams,
+    pub console: ConsoleParams,
 }
 
 /// Inputs for the synthesized console route (the panel, reverse-proxied by the
 /// edge). The upstream is always the fixed loopback console
 /// (`127.0.0.1:CONSOLE_LOOPBACK_PORT`).
-pub(crate) struct ConsoleParams {
+pub struct ConsoleParams {
     /// Operator-chosen external address (IP or domain). Empty before the wizard.
-    pub(crate) external_address: String,
+    pub external_address: String,
     /// `"none"` | `"selfsigned"` | `"le"` — drives the console route's TLS.
-    pub(crate) https_mode: String,
+    pub https_mode: String,
     /// When false (uninitialized), the console is ALSO the catch-all so the
     /// wizard answers any host on a fresh box.
-    pub(crate) initialized: bool,
+    pub initialized: bool,
 }
 
 /// Build (and structurally de-duplicate) the route table. Returns an
@@ -114,6 +114,9 @@ pub(crate) fn build_runtime(input: &ReloadInput) -> Result<RuntimeConfig, String
             locations: build_locations(site, strip_auth),
             extra_headers: extra_headers(&site.extra_conf),
             rate_limit: build_rate_limit(site),
+            conn_per_ip: site.conn_per_ip,
+            ip_acl: build_ip_acl(site),
+            hotlink: build_hotlink(site),
         });
 
         // Index the cert (if any) under each of the site's hostnames.
@@ -180,6 +183,9 @@ fn inject_console_route(cfg: &mut RuntimeConfig, input: &ReloadInput) {
             locations: Vec::new(),
             extra_headers: Vec::new(),
             rate_limit: None,
+            conn_per_ip: 0,
+            ip_acl: None,
+            hotlink: None,
         })
     };
 
@@ -203,7 +209,11 @@ fn inject_console_route(cfg: &mut RuntimeConfig, input: &ReloadInput) {
     // http (the banner's init URLs); if step 1 enables a self-signed cert, an
     // http->https redirect would break step 2's fetch (the browser rejects the
     // untrusted cert on an XHR). So redirect + HSTS wait for `initialized`.
-    let ext = input.console.external_address.trim().to_ascii_lowercase();
+    // A bare IPv6 literal (`2001:db8::1`) is accepted at init time, but a browser
+    // can only open it bracketed (`http://[2001:db8::1]/`) and the router derives
+    // the route key from that bracketed Host. Canonicalize to the bracketed form
+    // here so the stored host key matches what the router will produce.
+    let ext = bracket_if_ipv6(&input.console.external_address.trim().to_ascii_lowercase());
     if !ext.is_empty() && ext != "localhost" && ext != "127.0.0.1" {
         let cert = (input.console.https_mode != "none")
             .then(|| {
@@ -319,18 +329,41 @@ fn site_upstream(site: &Site) -> Upstream {
 }
 
 /// Translate an [`AccessList`] into the runtime [`AccessControl`].
+///
+/// An `allow`/`deny` entry that fails to parse is NOT silently dropped: dropping
+/// (say) a terminating `deny all` would collapse the list back to nginx's
+/// default-allow and quietly open the site — a fail-OPEN. Instead we fail CLOSED
+/// — replace the whole rule set with a single `deny all` and log it — so a
+/// corrupt ACL denies rather than admits. (The panel now rejects invalid rules
+/// at save time; this is the defense-in-depth backstop for anything that still
+/// reaches the builder.)
 fn build_access(a: &AccessList) -> AccessControl {
-    let rules = a
-        .clients
-        .iter()
-        .filter_map(|c| {
-            let net = parse_acl_net(&c.address)?;
-            Some(AclRule {
+    let mut rules = Vec::with_capacity(a.clients.len());
+    let mut fail_closed = false;
+    for c in &a.clients {
+        match parse_acl_net(&c.address) {
+            Some(net) => rules.push(AclRule {
                 allow: c.directive != "deny",
                 net,
-            })
-        })
-        .collect();
+            }),
+            None => {
+                tracing::warn!(
+                    access = %a.id,
+                    address = %c.address,
+                    "edge build: unparseable ACL address; failing the access list closed (deny all)"
+                );
+                fail_closed = true;
+            }
+        }
+    }
+    // Any unparseable entry → deny everything (never weaken a broken rule into an
+    // allow). The single `deny all` short-circuits `ip_allowed` for every client.
+    if fail_closed {
+        rules = vec![AclRule {
+            allow: false,
+            net: AclNet::All,
+        }];
+    }
     AccessControl {
         satisfy_all: a.satisfy == "all",
         users: a
@@ -358,6 +391,62 @@ fn build_rate_limit(site: &Site) -> Option<RateLimit> {
         autoban_window: site.autoban_window,
         autoban_minutes: site.autoban_minutes,
     })
+}
+
+/// Project the site's inline IP allow/deny knob (the "高级功能" IP-ACL) into a
+/// parsed [`IpAcl`], so the hot path never re-parses. `None` when there's no
+/// usable filter: an empty mode, an unrecognised mode, or a list that parses to
+/// no nets. Addresses are comma/space/newline-separated IPs or CIDRs.
+///
+/// An UNPARSEABLE entry is dropped (not fail-closed) — unlike the shared access
+/// list, this inline filter is the simpler "block these / allow only these" knob,
+/// and a lone bad token shouldn't silently 403 an allow-list operator out of
+/// their own site or (in deny mode) is simply one net that won't be blocked. The
+/// panel validates entries at save time; this is best-effort at the edge.
+fn build_ip_acl(site: &Site) -> Option<IpAcl> {
+    let allow = match site.ip_acl_mode.trim() {
+        "allow" => true,
+        "deny" => false,
+        _ => return None, // empty / unknown mode → no filtering
+    };
+    let nets: Vec<AclNet> = site
+        .ip_acl_list
+        .split([',', ' ', '\t', '\n', '\r'])
+        .filter(|t| !t.trim().is_empty())
+        .filter_map(parse_acl_net)
+        .collect();
+    if nets.is_empty() {
+        return None;
+    }
+    Some(IpAcl { allow, nets })
+}
+
+/// Project the site's anti-hotlinking knob into a parsed [`Hotlink`] of allowed
+/// referer host patterns. `None` when the list is empty (protection disabled).
+/// Patterns are comma/space/newline-separated; each is lowercased and stripped of
+/// any `scheme://` and path so an operator can paste either `example.com` or
+/// `https://example.com/` (both mean the same allowed host).
+fn build_hotlink(site: &Site) -> Option<Hotlink> {
+    let allowed: Vec<String> = site
+        .hotlink_referers
+        .split([',', ' ', '\t', '\n', '\r'])
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        // Reuse `referer_host` so `https://a.com/x`, `a.com:443`, and `a.com` all
+        // normalise to the bare host we compare a request's Referer against. A
+        // leading-dot wildcard (`.a.com`) is preserved (it has no host to parse).
+        .filter_map(|t| {
+            if let Some(suffix) = t.strip_prefix('.') {
+                Some(format!(".{}", suffix.to_ascii_lowercase()))
+            } else {
+                referer_host(t)
+            }
+        })
+        .collect();
+    if allowed.is_empty() {
+        return None;
+    }
+    Some(Hotlink { allowed })
 }
 
 /// Build the trusted-proxy real-IP config: the operator's CIDR list, or the
@@ -485,15 +574,49 @@ fn norm_scheme(s: &str) -> String {
     }
 }
 
+/// Canonicalize a bare IPv6 literal to its bracketed form (`2001:db8::1` →
+/// `[2001:db8::1]`) so it matches the Host a browser sends and the key the router
+/// derives. A hostname, an IPv4 literal, or an already-bracketed literal is
+/// returned unchanged.
+pub(crate) fn bracket_if_ipv6(host: &str) -> String {
+    if !host.starts_with('[') && host.parse::<Ipv6Addr>().is_ok() {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
 /// Build `host:port`, defaulting the port to 80 (http) or 443 (https). Mirrors
 /// `confgen::with_scheme_port`.
+///
+/// A bare IPv6 literal is full of colons, so `contains(':')` can't tell "already
+/// has a port" from "is an IPv6 address" — it would wrongly leave `::1`
+/// portless (and unbracketed, so unusable as an authority). We detect a real
+/// port instead: a bracketed literal has one only after the `]`
+/// (`[::1]:443`), and any other host has one only when there's exactly one
+/// colon (`example.com:8080` / `10.0.0.1:80`). Anything unbracketed with more
+/// than one colon is a bare IPv6 literal (with or without a would-be port we
+/// can't safely split off), so we bracket the WHOLE thing and append the
+/// default — `2001:db8::1` → `[2001:db8::1]:80`.
 fn with_scheme_port(host: &str, scheme: &str) -> String {
-    if host.contains(':') {
-        host.to_string()
-    } else if scheme == "https" {
-        format!("{host}:443")
+    let default_port = if scheme == "https" { 443 } else { 80 };
+    let has_port = if let Some(after) = host.rsplit_once(']') {
+        // Bracketed literal: a port exists only as a `:NNNN` suffix after `]`.
+        after.1.starts_with(':')
     } else {
-        format!("{host}:80")
+        // Unbracketed: a single colon is a `host:port`; several colons is a bare
+        // IPv6 literal with no separable port.
+        host.matches(':').count() == 1
+    };
+    if has_port {
+        host.to_string()
+    } else if host.matches(':').count() > 1 && !host.starts_with('[') {
+        // Unbracketed with multiple colons — a bare IPv6 literal with no port we
+        // can tell apart. Bracket the whole thing so the authority is valid
+        // rather than splitting on the last colon and swallowing the address.
+        format!("[{host}]:{default_port}")
+    } else {
+        format!("{host}:{default_port}")
     }
 }
 

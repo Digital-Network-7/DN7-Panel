@@ -23,7 +23,7 @@ mod edge_tests {
     use super::super::store;
     use super::super::validate;
 
-    use crate::core::website::{
+    use crate::model::{
         AccessClient, AccessList, AccessUser, DefaultSite, HttpTuning, Location, Site,
     };
 
@@ -179,6 +179,111 @@ mod edge_tests {
     }
 
     #[test]
+    fn build_brackets_bare_ipv6_upstream_and_defaults_port() {
+        use super::super::config::{RouteKind, Upstream};
+
+        // A proxy_host whose target is a BARE IPv6 literal (no brackets, no port):
+        // the builder must bracket it and append the scheme default port, not
+        // leave it as an unusable `::1` authority (the old `contains(':')` bug).
+        let mut v6 = base_site("v6", "v6.example.com", "proxy_host");
+        v6.target_url = "2001:db8::1".to_string();
+
+        // A bracketed IPv6 literal that already carries a port is left verbatim.
+        let mut v6p = base_site("v6p", "v6p.example.com", "proxy_host");
+        v6p.target_url = "[2001:db8::2]:8443".to_string();
+
+        let input = reload_input(vec![v6, v6p]);
+        let cfg = build::build_runtime(&input).expect("ipv6 upstream sites build");
+
+        let up = |host: &str| -> String {
+            match &cfg.route_for(host).expect("indexed").kind {
+                RouteKind::Proxy(t) => match &t.upstream {
+                    Upstream::Fixed(hp) => hp.clone(),
+                    Upstream::Container { .. } => panic!("expected a fixed upstream"),
+                },
+                _ => panic!("expected a proxy route"),
+            }
+        };
+
+        assert_eq!(
+            up("v6.example.com"),
+            "[2001:db8::1]:80",
+            "a bare v6 literal is bracketed and gets the http default port"
+        );
+        assert_eq!(
+            up("v6p.example.com"),
+            "[2001:db8::2]:8443",
+            "a bracketed v6 literal with a port is preserved verbatim"
+        );
+    }
+
+    #[test]
+    fn ipv6_console_key_and_upstream_are_bracketed_end_to_end() {
+        use super::super::config::{RouteKind, Upstream};
+
+        // (a) The bracketing helper: a bare IPv6 literal gains brackets; a
+        // hostname, an IPv4 literal, and an already-bracketed literal are left
+        // as-is. This is what makes the stored console key match the bracketed
+        // Host a browser sends (`http://[2001:db8::1]/`).
+        assert_eq!(build::bracket_if_ipv6("2001:db8::1"), "[2001:db8::1]");
+        assert_eq!(build::bracket_if_ipv6("[2001:db8::1]"), "[2001:db8::1]");
+        assert_eq!(build::bracket_if_ipv6("example.com"), "example.com");
+        assert_eq!(build::bracket_if_ipv6("10.0.0.1"), "10.0.0.1");
+
+        // (b) A console configured at a BARE IPv6 external address is indexed
+        // under the BRACKETED key, so `route_for("[2001:db8::1]")` (the key the
+        // router derives from the browser's Host) hits the console route.
+        let mut input = reload_input(Vec::new());
+        input.console = ConsoleParams {
+            external_address: "2001:DB8::1".to_string(),
+            https_mode: "none".to_string(),
+            initialized: true,
+        };
+        let cfg = build::build_runtime(&input).expect("console-only build succeeds");
+        let console = cfg
+            .route_for("[2001:db8::1]")
+            .expect("console indexed under the bracketed IPv6 key");
+        assert_eq!(
+            console.id, "__console__",
+            "the bracketed IPv6 host resolves to the managed console route"
+        );
+        // The bare form must NOT be a key (that mismatch was the route miss).
+        assert!(
+            !cfg.hosts.contains_key("2001:db8::1"),
+            "the bare (unbracketed) IPv6 form is not stored as a host key"
+        );
+
+        // (c) A canonical `[v6]:port` upstream survives the whole save→build
+        // path verbatim, and a portless bare v6 gets bracketed + defaulted — the
+        // two forms `with_scheme_port` is written to accept.
+        let mut v6p = base_site("v6p", "v6p.example.com", "proxy_host");
+        v6p.target_url = "[2001:db8::2]:8443".to_string();
+        let mut v6 = base_site("v6", "v6.example.com", "proxy_host");
+        v6.target_url = "2001:db8::1".to_string();
+        let cfg =
+            build::build_runtime(&reload_input(vec![v6p, v6])).expect("ipv6 upstream sites build");
+        let up = |host: &str| -> String {
+            match &cfg.route_for(host).expect("indexed").kind {
+                RouteKind::Proxy(t) => match &t.upstream {
+                    Upstream::Fixed(hp) => hp.clone(),
+                    Upstream::Container { .. } => panic!("expected a fixed upstream"),
+                },
+                _ => panic!("expected a proxy route"),
+            }
+        };
+        assert_eq!(
+            up("v6p.example.com"),
+            "[2001:db8::2]:8443",
+            "a bracketed v6 literal with a port is preserved verbatim"
+        );
+        assert_eq!(
+            up("v6.example.com"),
+            "[2001:db8::1]:80",
+            "a bare v6 literal is bracketed and gets the http default port"
+        );
+    }
+
+    #[test]
     fn location_matching_merges_slashes_like_nginx() {
         use super::super::router::{collapse_slashes, location_matches};
 
@@ -193,6 +298,35 @@ mod edge_tests {
         assert!(!location_matches("/api", &collapse_slashes("/apixyz")));
         // Exact prefix still matches.
         assert!(location_matches("/api", &collapse_slashes("/api")));
+    }
+
+    #[test]
+    fn host_key_strips_port_and_preserves_ipv6_literals() {
+        use super::super::router::host_key;
+
+        // A bare host and a host:port both reduce to the lowercased hostname.
+        assert_eq!(host_key(Some("Example.COM")), "example.com");
+        assert_eq!(host_key(Some("example.com:8080")), "example.com");
+        // IPv4 with a port strips the port.
+        assert_eq!(host_key(Some("10.0.0.1:443")), "10.0.0.1");
+
+        // A bracketed IPv6 literal keeps its brackets and inner colons — the old
+        // `split(':').next()` corrupted this to `[`. With or without a port.
+        assert_eq!(host_key(Some("[::1]")), "[::1]");
+        assert_eq!(host_key(Some("[::1]:443")), "[::1]");
+        assert_eq!(
+            host_key(Some("[2001:DB8::1]:8443")),
+            "[2001:db8::1]",
+            "a bracketed v6 literal keeps its inner colons, drops the port"
+        );
+
+        // A bare (unbracketed) IPv6 literal has no strippable port; leave it
+        // intact rather than truncating at the first colon.
+        assert_eq!(host_key(Some("2001:db8::1")), "2001:db8::1");
+
+        // Empty / missing inputs are the empty host.
+        assert_eq!(host_key(None), "");
+        assert_eq!(host_key(Some("")), "");
     }
 
     #[test]
@@ -257,6 +391,9 @@ mod edge_tests {
             locations: Vec::new(),
             extra_headers: Vec::new(),
             rate_limit: None,
+            conn_per_ip: 0,
+            ip_acl: None,
+            hotlink: None,
         });
         let mut hosts = HashMap::new();
         hosts.insert(host.to_string(), route);
@@ -461,6 +598,101 @@ mod edge_tests {
         );
     }
 
+    // ---- client_max_body_size on a streaming (chunked) body ---------------
+
+    #[tokio::test]
+    async fn limit_body_aborts_a_chunked_over_limit_stream() {
+        use super::super::limit_body::limit;
+        use super::super::timeout_body::{BoxError, ProxyReqBody};
+        use bytes::Bytes;
+        use http_body::Frame;
+        use http_body_util::{BodyExt, StreamBody};
+
+        // A body that streams four 1 KiB data frames and carries NO length hint —
+        // the shape of a chunked / HTTP-2 upload that slips the Content-Length
+        // early-413 in `proxy::handle`. StreamBody has an unbounded size_hint, so
+        // the cap can only come from the cumulative `limit_body` wrapper.
+        let mk_stream = || {
+            let frames: Vec<Result<Frame<Bytes>, BoxError>> = (0..4)
+                .map(|_| Ok(Frame::data(Bytes::from(vec![b'x'; 1024]))))
+                .collect();
+            StreamBody::new(futures::stream::iter(frames)).boxed_unsync()
+        };
+
+        // Limit of 3 KiB: the 4 KiB stream must be FAILED (aborted), never
+        // collected in full — proving a no-Content-Length body is still bounded.
+        let capped: ProxyReqBody = limit(mk_stream(), 3 * 1024);
+        let err = capped
+            .collect()
+            .await
+            .expect_err("a 4 KiB chunked body must fail against a 3 KiB cap");
+        assert!(
+            err.to_string().contains("client_max_body_size"),
+            "the abort names the body-size cap, got: {err}"
+        );
+
+        // A body at or under the cap passes untouched (all bytes survive).
+        let ok: ProxyReqBody = limit(mk_stream(), 8 * 1024);
+        let bytes = ok
+            .collect()
+            .await
+            .expect("a 4 KiB body under an 8 KiB cap must pass")
+            .to_bytes();
+        assert_eq!(
+            bytes.len(),
+            4 * 1024,
+            "every byte of an in-limit body survives"
+        );
+
+        // A limit of 0 means unlimited — the wrapper is a no-op.
+        let unlimited: ProxyReqBody = limit(mk_stream(), 0);
+        let bytes = unlimited
+            .collect()
+            .await
+            .expect("a 0 limit is unlimited")
+            .to_bytes();
+        assert_eq!(bytes.len(), 4 * 1024);
+    }
+
+    // The inactivity-timeout gate must key on the body's size hint, not on
+    // Content-Length / Transfer-Encoding headers: an HTTP/2 upload streams DATA
+    // frames with no TE and often no Content-Length, so a header check would
+    // skip its timeout (the slowloris hole). Proves the streaming shape reports
+    // an unknown exact size and is classified as body-bearing, while a genuinely
+    // empty body is not.
+    #[test]
+    fn body_timeout_gate_keys_on_size_hint_not_headers() {
+        use super::super::proxy::body_needs_timeout;
+        use bytes::Bytes;
+        use http_body::Body;
+        use http_body::Frame;
+        use http_body_util::{BodyExt, Empty, Full, StreamBody};
+
+        use super::super::timeout_body::BoxError;
+
+        // An empty body → exact(0) → NO timer (the common bodyless GET).
+        let empty = Empty::<Bytes>::new();
+        assert_eq!(empty.size_hint().exact(), Some(0));
+        assert!(!body_needs_timeout(empty.size_hint().exact()));
+
+        // A known, non-empty body → exact(n) → timer armed.
+        let full = Full::new(Bytes::from_static(b"hello"));
+        assert_eq!(full.size_hint().exact(), Some(5));
+        assert!(body_needs_timeout(full.size_hint().exact()));
+
+        // A no-length streaming body — the HTTP/2-without-Content-Length shape —
+        // reports an UNKNOWN exact size, so it must be treated as body-bearing.
+        let frames: Vec<Result<Frame<Bytes>, BoxError>> =
+            vec![Ok(Frame::data(Bytes::from_static(b"x")))];
+        let stream = StreamBody::new(futures::stream::iter(frames)).boxed_unsync();
+        assert_eq!(
+            stream.size_hint().exact(),
+            None,
+            "a streaming body must not report an exact size, else the gate would skip its timeout"
+        );
+        assert!(body_needs_timeout(stream.size_hint().exact()));
+    }
+
     // ---- apr1 htpasswd verification --------------------------------------
 
     #[test]
@@ -470,11 +702,11 @@ mod edge_tests {
         // `openssl passwd -apr1 -salt abcd1234 secret-pw`.
         let hash = "$apr1$abcd1234$oftWSoe5k1oxqcJ5vs93v/";
         assert!(
-            crate::infra::website::verify_htpasswd_hash(hash, "secret-pw"),
+            crate::htpasswd::verify_htpasswd_hash(hash, "secret-pw"),
             "the right password must verify against its apr1 hash"
         );
         assert!(
-            !crate::infra::website::verify_htpasswd_hash(hash, "wrong-pw"),
+            !crate::htpasswd::verify_htpasswd_hash(hash, "wrong-pw"),
             "a wrong password must fail apr1 verification"
         );
     }
@@ -527,6 +759,243 @@ mod edge_tests {
         assert_eq!(ac.realm, "Guarded Realm", "realm comes from the list name");
     }
 
+    #[test]
+    fn build_fails_acl_closed_on_unparseable_address() {
+        use super::super::security;
+        use http::HeaderMap;
+
+        // An access list whose FIRST rule is a legitimate `allow 10.0.0.0/8` but
+        // whose intended terminating `deny all` is corrupt (unparseable). Silently
+        // dropping the bad rule would collapse the list to `allow 10.0.0.0/8` +
+        // nginx default-allow — i.e. open the site to every other IP (fail-OPEN).
+        // The builder must instead fail the whole ACL CLOSED (a single deny all).
+        let mut site = base_site("guarded", "guarded.example.com", "static");
+        site.root = "files".to_string();
+        site.access_id = "acl-bad".to_string();
+
+        let access = AccessList {
+            id: "acl-bad".to_string(),
+            name: "Broken ACL".to_string(),
+            satisfy: "any".to_string(),
+            pass_auth: false,
+            users: Vec::new(),
+            clients: vec![
+                AccessClient {
+                    directive: "allow".to_string(),
+                    address: "10.0.0.0/8".to_string(),
+                },
+                AccessClient {
+                    directive: "deny".to_string(),
+                    address: "not-an-ip-or-cidr".to_string(),
+                },
+            ],
+        };
+
+        let input = ReloadInput {
+            sites: vec![site],
+            access: vec![access],
+            default_site: DefaultSite::default(),
+            tuning: HttpTuning::default(),
+            cert_dir: unique_tmp("certs"),
+            www_dir: unique_tmp("www"),
+            console: test_console(),
+        };
+        let cfg = build::build_runtime(&input).expect("site with a broken ACL still builds");
+        let route = cfg
+            .route_for("guarded.example.com")
+            .expect("guarded indexed");
+        let ac = route.access.as_ref().expect("access list attached");
+
+        // Fail-closed = a single `deny all`, not the salvaged `allow 10.0.0.0/8`.
+        assert_eq!(
+            ac.rules.len(),
+            1,
+            "a broken ACL collapses to one fail-closed rule, got {}",
+            ac.rules.len()
+        );
+        assert!(!ac.rules[0].allow, "the fail-closed rule must be a deny");
+        assert!(
+            matches!(ac.rules[0].net, AclNet::All),
+            "the fail-closed rule must be `deny all`"
+        );
+
+        // End-to-end: an IP that the *intended* allow rule would have admitted is
+        // now denied, and so is everything else — the ACL is closed, not open.
+        let headers = HeaderMap::new();
+        let inside: IpAddr = "10.1.2.3".parse().unwrap();
+        let outside: IpAddr = "203.0.113.7".parse().unwrap();
+        assert!(
+            security::check_access(Some(ac), &headers, inside).is_some(),
+            "a broken ACL must deny even an address the allow rule named"
+        );
+        assert!(
+            security::check_access(Some(ac), &headers, outside).is_some(),
+            "a broken ACL must deny every other address too"
+        );
+    }
+
+    // ---- 高级功能: per-site inline IP ACL (build + policy) -----------------
+
+    /// Build a single site with the given inline-ACL mode+list and run `check`
+    /// against its projected [`IpAcl`] (panics if the site produced no filter), so
+    /// an ACL test reads the real runtime form built by `build_runtime`.
+    fn with_ip_acl(mode: &str, list: &str, check: impl FnOnce(&super::super::config::IpAcl)) {
+        let mut site = base_site("acl-site", "acl.example.com", "static");
+        site.root = "files".to_string();
+        site.ip_acl_mode = mode.to_string();
+        site.ip_acl_list = list.to_string();
+        let input = reload_input(vec![site]);
+        let cfg = build::build_runtime(&input).expect("ip-acl site builds");
+        let route = cfg.route_for("acl.example.com").expect("acl site indexed");
+        let acl = route
+            .ip_acl
+            .as_ref()
+            .expect("an ip_acl mode+list must project a filter");
+        check(acl);
+    }
+
+    #[test]
+    fn ip_acl_allow_mode_admits_only_listed() {
+        // allow-mode: only the listed net passes; every other IP is rejected.
+        with_ip_acl("allow", "203.0.113.0/24, 10.0.0.5", |acl| {
+            assert!(
+                acl.permits("203.0.113.9".parse().unwrap()),
+                "an IP in the allowed CIDR passes"
+            );
+            assert!(
+                acl.permits("10.0.0.5".parse().unwrap()),
+                "the allowed single host passes"
+            );
+            assert!(
+                !acl.permits("198.51.100.1".parse().unwrap()),
+                "an unlisted IP is rejected under allow-mode"
+            );
+        });
+    }
+
+    #[test]
+    fn ip_acl_deny_mode_blocks_only_listed() {
+        // deny-mode is the inverse: listed nets are blocked, others pass.
+        with_ip_acl("deny", "203.0.113.0/24", |acl| {
+            assert!(
+                !acl.permits("203.0.113.9".parse().unwrap()),
+                "a listed IP is blocked under deny-mode"
+            );
+            assert!(
+                acl.permits("198.51.100.1".parse().unwrap()),
+                "an unlisted IP passes under deny-mode"
+            );
+        });
+    }
+
+    #[test]
+    fn ip_acl_disabled_when_mode_or_list_empty() {
+        // No mode → no filter, even with a list; a mode with no parseable nets → no
+        // filter (nothing to enforce), so the route stays fully open.
+        let mut none_mode = base_site("n1", "n1.example.com", "static");
+        none_mode.ip_acl_list = "10.0.0.0/8".to_string();
+        let mut empty_list = base_site("n2", "n2.example.com", "static");
+        empty_list.ip_acl_mode = "allow".to_string();
+
+        let input = reload_input(vec![none_mode, empty_list]);
+        let cfg = build::build_runtime(&input).expect("builds");
+        assert!(
+            cfg.route_for("n1.example.com").unwrap().ip_acl.is_none(),
+            "an empty mode disables the inline ACL regardless of the list"
+        );
+        assert!(
+            cfg.route_for("n2.example.com").unwrap().ip_acl.is_none(),
+            "a mode with no parseable nets disables the inline ACL"
+        );
+    }
+
+    // ---- 高级功能: anti-hotlinking (build + policy) -----------------------
+
+    /// Build a single site with the given referer list and run `check` against its
+    /// projected [`Hotlink`] policy (panics if the list produced no policy).
+    fn with_hotlink(referers: &str, check: impl FnOnce(&super::super::config::Hotlink)) {
+        let mut site = base_site("hl-site", "hl.example.com", "static");
+        site.root = "files".to_string();
+        site.hotlink_referers = referers.to_string();
+        let input = reload_input(vec![site]);
+        let cfg = build::build_runtime(&input).expect("hotlink site builds");
+        let route = cfg.route_for("hl.example.com").expect("hl site indexed");
+        let hl = route
+            .hotlink
+            .as_ref()
+            .expect("a non-empty referer list must project a hotlink policy");
+        check(hl);
+    }
+
+    #[test]
+    fn hotlink_blocks_foreign_referer_allows_same_origin_and_absent() {
+        // The operator pastes a mix of bare host, full URL, and a `.suffix`
+        // wildcard; all normalise to the compared host set.
+        with_hotlink(
+            "cdn.example.com, https://partner.test/, .images.net",
+            |hl| {
+                let host = "hl.example.com";
+
+                // Absent referer (direct navigation) → allowed.
+                assert!(hl.permits(None, host), "no Referer must be allowed");
+                assert!(
+                    hl.permits(Some(""), host),
+                    "an empty Referer is treated as absent → allowed"
+                );
+                // Same-origin (Referer host == the page's Host) → allowed.
+                assert!(
+                    hl.permits(Some("https://hl.example.com/page"), host),
+                    "a same-origin Referer must be allowed"
+                );
+                // Allowed patterns.
+                assert!(
+                    hl.permits(Some("https://cdn.example.com/a.png"), host),
+                    "an explicitly allowed host passes"
+                );
+                assert!(
+                    hl.permits(Some("http://partner.test:8080/x"), host),
+                    "the URL-form allow entry normalised to its host"
+                );
+                assert!(
+                    hl.permits(Some("https://sub.images.net/x"), host),
+                    "a `.suffix` wildcard covers subdomains"
+                );
+                // A foreign referer → blocked.
+                assert!(
+                    !hl.permits(Some("https://evil.example.org/steal"), host),
+                    "a foreign referer must be blocked"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn hotlink_disabled_when_list_empty() {
+        let site = base_site("hl0", "hl0.example.com", "static");
+        let input = reload_input(vec![site]);
+        let cfg = build::build_runtime(&input).expect("builds");
+        assert!(
+            cfg.route_for("hl0.example.com").unwrap().hotlink.is_none(),
+            "an empty referer list disables anti-hotlinking"
+        );
+    }
+
+    // ---- 高级功能: per-IP concurrency limit (build projection) -------------
+
+    #[test]
+    fn build_projects_conn_per_ip() {
+        let mut site = base_site("c1", "conn.example.com", "static");
+        site.root = "files".to_string();
+        site.conn_per_ip = 5;
+        let input = reload_input(vec![site]);
+        let cfg = build::build_runtime(&input).expect("conn-limit site builds");
+        assert_eq!(
+            cfg.route_for("conn.example.com").unwrap().conn_per_ip,
+            5,
+            "conn_per_ip is carried onto the runtime route"
+        );
+    }
+
     // ---- live end-to-end (real sockets, real HTTP) -----------------------
 
     /// Spin up a throwaway upstream HTTP server on `127.0.0.1:0` that echoes back
@@ -557,10 +1026,11 @@ mod edge_tests {
                                 .to_string()
                         };
                         let body = format!(
-                            "UPSTREAM host={} xff={} xfp={} path={}",
+                            "UPSTREAM host={} xff={} xfp={} xdn7={} path={}",
                             h("host"),
                             h("x-forwarded-for"),
                             h("x-forwarded-proto"),
+                            h("x-dn7-forwarded"),
                             req.uri().path(),
                         );
                         Ok::<_, std::convert::Infallible>(Response::new(Full::new(
@@ -674,6 +1144,10 @@ mod edge_tests {
             "X-Forwarded-For carries the client IP: {body}"
         );
         assert!(body.contains("xfp=http"), "X-Forwarded-Proto set: {body}");
+        assert!(
+            body.contains("xdn7=1"),
+            "X-DN7-Forwarded marker stamped by the edge: {body}"
+        );
         assert!(body.contains("path=/hello"), "path forwarded: {body}");
 
         // (2) Static serving from the document root.

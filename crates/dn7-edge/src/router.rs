@@ -9,9 +9,14 @@
 //!      validating CA speaks plain HTTP and follows no redirects.
 //!   3. Pick the route: `cfg.route_for(host)`; a miss serves `cfg.default_site`.
 //!   4. Real client IP: `security::real_ip` (honours a trusted front proxy's XFF).
+//!      Then the per-IP "高级功能" gates on that IP: inline IP-ACL (allow/deny →
+//!      403), rate limit + auto-ban (429/403).
 //!   5. Force-SSL: a plain request to an `force_ssl` route → 301 to its https URL.
 //!   6. Attack block: a tripped `block_attacks` query → 403.
 //!   7. Access control: `security::check_access` may short-circuit (401/403).
+//!      Then anti-hotlinking (foreign `Referer` → 403) and the per-IP concurrency
+//!      admission (over `conn_per_ip` in-flight → 503), whose RAII slot is held
+//!      until the response body drains.
 //!   8. Dispatch: the longest matching custom-location prefix wins, else the
 //!      route's main handler (Proxy / Static / Maintenance(503)).
 //!   9. Decorate: `security::decorate` attaches HSTS (TLS) + allowlisted headers.
@@ -21,7 +26,7 @@ use hyper::body::Incoming;
 use super::config::{DefaultRoute, RouteKind, ServerRoute};
 use super::listener::ConnCtx;
 use super::response::{self, Resp};
-use super::{acme, limit, proxy, security, static_files, throttle_body};
+use super::{acme, conn_limit, limit, proxy, security, static_files, throttle_body};
 
 /// The `/.well-known/acme-challenge/` path prefix HTTP-01 validation hits.
 const ACME_PREFIX: &str = "/.well-known/acme-challenge/";
@@ -84,6 +89,21 @@ pub(crate) async fn handle(
     // 4. The real client IP, recovered through any trusted front proxy.
     let client_ip = security::real_ip(ctx, req.headers(), route.trust_proxy.as_ref());
 
+    // 4.3 Per-site inline IP ACL (the "高级功能" IP-ACL knob). A pure IP gate
+    //     distinct from the shared access list (checked at step 7): allow-mode
+    //     admits only listed nets, deny-mode blocks listed nets. A disallowed IP
+    //     is 403'd before any other work. Loopback (the console / same-host) is
+    //     exempt so the box stays manageable regardless of the operator's list.
+    if let Some(acl) = route.ip_acl.as_ref() {
+        if !client_ip.is_loopback() && !acl.permits(client_ip) {
+            return finish(
+                response::status(http::StatusCode::FORBIDDEN),
+                &route,
+                ctx.tls,
+            );
+        }
+    }
+
     // 4.5 Per-IP rate limit + auto-ban (the "高级功能" knobs). Loopback (the
     //     console / same-host) is exempt; a banned IP is dropped before any
     //     other work (even the force-SSL redirect).
@@ -135,6 +155,47 @@ pub(crate) async fn handle(
         return resp;
     }
 
+    // 7.5 Anti-hotlinking (the "高级功能" hotlink knob): an absent/same-origin/
+    //     allowlisted Referer passes; a foreign referer is 403'd. See
+    //     `config::Hotlink::permits` for the exact policy.
+    if let Some(hotlink) = route.hotlink.as_ref() {
+        let referer = req
+            .headers()
+            .get(http::header::REFERER)
+            .and_then(|v| v.to_str().ok());
+        if !hotlink.permits(referer, &host) {
+            return finish(
+                response::status(http::StatusCode::FORBIDDEN),
+                &route,
+                ctx.tls,
+            );
+        }
+    }
+
+    // 7.7 Per-IP concurrency limit (the "高级功能" connection-limit knob): admit
+    //     at most `conn_per_ip` in-flight requests per client IP. The RAII guard
+    //     is threaded into the response body below, so the slot stays held until
+    //     the body drains (a slow reader keeps occupying its slot). Loopback is
+    //     exempt; 0 = unlimited.
+    let conn_guard = if route.conn_per_ip > 0 && !client_ip.is_loopback() {
+        match conn_limit::acquire(&route.id, client_ip, route.conn_per_ip) {
+            Some(guard) => Some(guard),
+            None => {
+                let mut resp = response::text(
+                    http::StatusCode::SERVICE_UNAVAILABLE,
+                    "503 Service Unavailable",
+                );
+                resp.headers_mut().insert(
+                    http::header::RETRY_AFTER,
+                    http::HeaderValue::from_static("1"),
+                );
+                return finish(resp, &route, ctx.tls);
+            }
+        }
+    } else {
+        None
+    };
+
     // 8. Dispatch. A custom location whose prefix matches the request path takes
     //    precedence over the site's main handler; locations are pre-sorted
     //    longest-prefix-first by the builder, so the first match is the most
@@ -168,6 +229,17 @@ pub(crate) async fn handle(
             http::Response::from_parts(parts, throttle_body::throttle(body, rate))
         }
         _ => resp,
+    };
+
+    // 8.7 Hold the per-IP concurrency slot until the response body drains: wrap
+    //     the body so `conn_guard`'s `Drop` (which releases the slot) fires at
+    //     request completion, not merely when this handler returns.
+    let resp = match conn_guard {
+        Some(guard) => {
+            let (parts, body) = resp.into_parts();
+            http::Response::from_parts(parts, conn_limit::guard_body(body, guard))
+        }
+        None => resp,
     };
 
     // 9. Attach HSTS (TLS only) + the route's allowlisted extra headers.
@@ -261,12 +333,28 @@ fn default_response(default: &DefaultRoute, host: &str, path: &str, query: &str)
 
 /// Normalise a `Host` header value to a bare lowercased hostname (strip any
 /// `:port`). Provided here because both routing and cert lookup need it.
+///
+/// A bracketed IPv6 literal (`[::1]` / `[::1]:443`) keeps its brackets — that is
+/// how the address is spelled in a `Host` header and how the route/cert tables
+/// index it — so we strip only a trailing `:port` after the `]`, never the
+/// colons *inside* the literal. A bare hostname or IPv4 splits on its single
+/// `:port` as before; an unbracketed multi-colon value is left intact (it can
+/// only be a malformed host, and there is no safe port to strip).
 pub(crate) fn host_key(host_header: Option<&str>) -> String {
-    host_header
-        .unwrap_or("")
-        .split(':')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase()
+    let h = host_header.unwrap_or("").trim();
+    let host = if let Some(rest) = h.strip_prefix('[') {
+        // `[v6]` or `[v6]:port` — keep everything up to and including the `]`.
+        match rest.find(']') {
+            Some(end) => &h[..end + 2], // `[` + `rest[..end]` + `]`
+            None => h,                  // malformed (no closing bracket): leave as-is
+        }
+    } else if h.matches(':').count() == 1 {
+        // A single colon: a `host:port` (or `v4:port`) — strip the port.
+        h.split(':').next().unwrap_or("")
+    } else {
+        // No colon (bare host), or many colons (an unbracketed v6 literal):
+        // nothing safe to strip.
+        h
+    };
+    host.to_ascii_lowercase()
 }
