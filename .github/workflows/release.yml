@@ -69,10 +69,10 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (deny warnings)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Tests
-        run: cargo test
+        run: cargo test --workspace
 
       # Dependency vulnerability scan. Advisory-only (continue-on-error) so a new
       # advisory in a transitive dep with no available fix surfaces in the run

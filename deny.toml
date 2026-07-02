@@ -25,6 +25,25 @@ ignore = [
 multiple-versions = "warn"
 wildcards = "warn"
 allow-wildcard-paths = true
+# Guard the "fully static musl / no C-linked crate" hard invariant AT THE SOURCE,
+# not only via the post-hoc DT_NEEDED=none check in release.yml: a statically
+# linked C `-sys` crate (e.g. a future crypto backend swap to aws-lc-sys) has no
+# DT_NEEDED yet still drags a C toolchain into the build and breaks the pure-Rust
+# story. Ban the usual C-wrapper `-sys` crates so such a regression fails the
+# supply-chain gate. (Add here as new ones appear; `ring` links its own C/asm and
+# is unavoidable via rustls, so it is intentionally NOT listed.)
+deny = [
+    { name = "openssl-sys" },
+    { name = "aws-lc-sys" },
+    { name = "aws-lc-fips-sys" },
+    { name = "libz-sys" },
+    { name = "libz-ng-sys" },
+    { name = "bzip2-sys" },
+    { name = "zstd-sys" },
+    { name = "lzma-sys" },
+    { name = "libsqlite3-sys" },
+    { name = "libgit2-sys" },
+]
 
 [licenses]
 version = 2

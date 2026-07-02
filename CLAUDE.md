@@ -42,8 +42,10 @@ helper crates under `crates/`. No backend, no panel token, no runtime deps.
 - The Linux build/test runs in a **Lima VM named `dn7`** (`/work/panel` mount) —
   not on the macOS host. Another process may own the build; don't kick off
   `cargo build`/`test` blindly.
-- Gate every change on: `cargo fmt && cargo clippy --all-targets -- -D warnings
-  && cargo test` (CI runs clippy with `-D warnings`; keep it clean).
+- Gate every change on: `cargo fmt && cargo clippy --workspace --all-targets --
+  -D warnings && cargo test --workspace` (CI runs clippy with `-D warnings`; keep
+  it clean). The `--workspace` is REQUIRED — without it `cargo test`/`clippy` from
+  the root package skip the helper crates (dn7-edge/dn7-container/dn7-cli/dn7-cred).
 - Touched the UI? Run `node scripts/check_i18n.js` (4 languages) from the repo
   root.
 - For local foreground runs use `DN7_NO_GUARDIAN=1 dn7-panel panel`; never
