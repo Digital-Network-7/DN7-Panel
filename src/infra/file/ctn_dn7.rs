@@ -1,4 +1,5 @@
-//! In-container file operations for the dn7 backend (`DN7_RUNTIME=dn7`).
+//! In-container file operations for the dn7 backend (the default on Linux;
+//! `DN7_RUNTIME=docker` opts back into Docker).
 //!
 //! dn7 knows each container's overlay rootfs path on the host, so list / mkdir /
 //! delete / download / upload are direct filesystem operations on that merged
@@ -7,10 +8,12 @@
 //! is rejected so an operation can't escape the container's rootfs.
 use super::*;
 
-/// Whether the dn7 backend is active (Linux-only; the runtime is Linux-only).
+/// Whether the dn7 backend is active (Linux-only). Delegates to the single
+/// source of truth ([`dn7_container::selected`]): in-house is the default,
+/// `DN7_RUNTIME=docker` opts back into Docker.
 #[cfg(target_os = "linux")]
 pub(crate) fn active() -> bool {
-    matches!(std::env::var("DN7_RUNTIME").as_deref(), Ok("dn7"))
+    dn7_container::selected()
 }
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn active() -> bool {
@@ -111,25 +114,48 @@ pub(crate) async fn list(container: &str, path: &str) -> Result<serde_json::Valu
     let mut entries = Vec::new();
     for ent in rd.flatten() {
         let name = ent.file_name().to_string_lossy().to_string();
-        let Ok(md) = ent.metadata() else { continue };
-        let is_dir = md.is_dir();
-        entries.push(serde_json::json!({
-            "name": name,
-            "is_dir": is_dir,
-            "size": if is_dir { 0 } else { md.len() },
-        }));
+        // No-follow metadata (DirEntry::metadata is lstat-like). Symlinks are
+        // followed ONLY through the jail-checked resolver so an escaping link
+        // can't leak host metadata; unresolvable → listed as a plain file.
+        let Ok(lmd) = ent.metadata() else { continue };
+        let fmd = if lmd.file_type().is_symlink() {
+            let sub = format!("{}/{}", dir.trim_end_matches('/'), name);
+            host_path(&root, &sub)
+                .ok()
+                .and_then(|p| std::fs::metadata(p).ok())
+        } else {
+            None
+        };
+        entries.push(fs_entry_json(&name, Some(&lmd), fmd.as_ref()));
     }
-    entries.sort_by(|a, b| {
-        let ad = a["is_dir"].as_bool().unwrap_or(false);
-        let bd = b["is_dir"].as_bool().unwrap_or(false);
-        bd.cmp(&ad).then_with(|| {
-            a["name"]
-                .as_str()
-                .unwrap_or("")
-                .cmp(b["name"].as_str().unwrap_or(""))
-        })
-    });
+    sort_entries(&mut entries);
     Ok(serde_json::json!({ "path": dir, "entries": entries }))
+}
+
+/// Whether a path exists in the container's rootfs (no-follow lstat).
+#[cfg(target_os = "linux")]
+pub(crate) async fn exists(container: &str, path: &str) -> Result<bool> {
+    let root = rootfs(container)?;
+    let host = host_path(&root, path)?;
+    Ok(std::fs::symlink_metadata(&host).is_ok())
+}
+
+/// Rename/move inside the container's rootfs (`to` is the full new path).
+/// Refuses protected dirs, symlinked destination components, and an existing
+/// destination (no silent clobber). Both ends stay inside the rootfs jail.
+#[cfg(target_os = "linux")]
+pub(crate) async fn rename(container: &str, from: &str, to: &str) -> Result<()> {
+    if is_protected_path(from) || is_protected_path(to) {
+        return Err(anyhow!("该系统目录受保护，禁止移动"));
+    }
+    let root = rootfs(container)?;
+    let hfrom = host_path(&root, from)?;
+    let hto = host_path(&root, to)?;
+    reject_symlink_components(&root, to)?;
+    if std::fs::symlink_metadata(&hto).is_ok() {
+        return Err(anyhow!("目标已存在"));
+    }
+    std::fs::rename(&hfrom, &hto).map_err(|e| anyhow!("重命名失败：{e}"))
 }
 
 #[cfg(target_os = "linux")]

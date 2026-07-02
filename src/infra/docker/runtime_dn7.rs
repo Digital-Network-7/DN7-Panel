@@ -1,4 +1,5 @@
-//! In-house container-runtime backend for the docker API (`DN7_RUNTIME=dn7`).
+//! In-house container-runtime backend for the docker API — the DEFAULT backend
+//! on Linux (`DN7_RUNTIME=docker` opts back into the external Docker daemon).
 //!
 //! Maps the panel's docker ops to the `dn7-container` crate, returning the SAME
 //! JSON shapes the UI consumes. It is **Linux-only** (the crate drives
@@ -12,10 +13,12 @@ use super::*;
 #[cfg(target_os = "linux")]
 use dn7_container::container::state::{State as DnState, Status as DnStatus};
 
-/// Whether the in-house runtime backend is selected (`DN7_RUNTIME=dn7`).
+/// Whether the in-house runtime backend is selected. Delegates to the single
+/// source of truth ([`dn7_container::selected`]) — the in-house runtime is the
+/// DEFAULT on Linux; `DN7_RUNTIME=docker` opts back into the external daemon.
 #[cfg(target_os = "linux")]
 fn active() -> bool {
-    matches!(std::env::var("DN7_RUNTIME").as_deref(), Ok("dn7"))
+    dn7_container::selected()
 }
 
 /// Try to handle `req` with the dn7 backend. `None` means "not active, or this op
@@ -377,19 +380,13 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
     // option (a falsely-unprivileged container or a dropped static IP is worse
     // than a clear failure).
     if req.privileged.unwrap_or(false) {
-        return Err(anyhow!(
-            "dn7 运行时暂不支持特权容器（privileged），请改用非特权配置。"
-        ));
+        return Err(anyhow!("ERR_CODE:dn7.create_privileged_unsupported"));
     }
     if cspec.config.networking_config.is_some() {
-        return Err(anyhow!(
-            "dn7 运行时暂不支持为容器指定静态 IPv4 / MAC（由 IPAM 自动分配）。"
-        ));
+        return Err(anyhow!("ERR_CODE:dn7.create_netcfg_unsupported"));
     }
     if !cspec.extra_networks.is_empty() {
-        return Err(anyhow!(
-            "dn7 运行时暂只支持单一网络，无法同时接入多个网络。"
-        ));
+        return Err(anyhow!("ERR_CODE:dn7.create_multinet_unsupported"));
     }
 
     // Map the (single) requested network to dn7's bridge|host|none. A custom
@@ -412,11 +409,7 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
     let name = cspec.name.clone();
     let id = match &name {
         Some(n) if is_valid_dn7_id(n) => n.clone(),
-        Some(n) => {
-            return Err(anyhow!(
-                "dn7 运行时要求容器名为小写（a-z 0-9 _ . -，≤64 字符）：{n:?}"
-            ))
-        }
+        Some(_) => return Err(anyhow!("ERR_CODE:dn7.create_name_invalid")),
         None => gen_container_id(),
     };
 
@@ -1051,36 +1044,31 @@ async fn op_inspect_container_networks(req: &Req) -> Result<Value> {
 
 // dn7 has exactly one built-in bridge network; the create/remove/rename and
 // runtime attach/detach/static-IP operations have no equivalent and are rejected
-// with a clear message rather than silently no-oping.
+// with a stable `ERR_CODE:` code (localized by the UI via `err.dn7.*` keys)
+// rather than silently no-oping.
 #[cfg(target_os = "linux")]
 async fn op_create_network(_req: &Req) -> Result<Value> {
-    Err(anyhow!(
-        "dn7 运行时仅有内置网络「dn7」,暂不支持创建自定义网络。"
-    ))
+    Err(anyhow!("ERR_CODE:dn7.network_create_unsupported"))
 }
 #[cfg(target_os = "linux")]
 async fn op_remove_network(_req: &Req) -> Result<Value> {
-    Err(anyhow!("dn7 内置网络不可删除。"))
+    Err(anyhow!("ERR_CODE:dn7.network_builtin_protected"))
 }
 #[cfg(target_os = "linux")]
 async fn op_rename_network(_req: &Req) -> Result<Value> {
-    Err(anyhow!("dn7 内置网络不可重命名。"))
+    Err(anyhow!("ERR_CODE:dn7.network_rename_unsupported"))
 }
 #[cfg(target_os = "linux")]
 async fn op_set_network_ip(_req: &Req) -> Result<Value> {
-    Err(anyhow!(
-        "dn7 运行时由 IPAM 自动分配地址,暂不支持设置静态 IP。"
-    ))
+    Err(anyhow!("ERR_CODE:dn7.network_static_ip_unsupported"))
 }
 #[cfg(target_os = "linux")]
 async fn op_connect_network(_req: &Req) -> Result<Value> {
-    Err(anyhow!(
-        "dn7 运行时暂不支持运行时动态接入网络(容器创建时即在内置网络)。"
-    ))
+    Err(anyhow!("ERR_CODE:dn7.network_hotplug_unsupported"))
 }
 #[cfg(target_os = "linux")]
 async fn op_disconnect_network(_req: &Req) -> Result<Value> {
-    Err(anyhow!("dn7 运行时暂不支持从网络断开容器。"))
+    Err(anyhow!("ERR_CODE:dn7.network_disconnect_unsupported"))
 }
 
 /// `retag_image`: reconcile an image's tags. Current tags = every stored

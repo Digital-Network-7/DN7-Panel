@@ -196,9 +196,11 @@ pub async fn run_web_container_exec(
     }
 
     // In-house runtime: bridge the WS to a dn7 PTY exec (Linux-only) instead of a
-    // Docker exec; everything else falls through to the bollard path below.
+    // Docker exec; everything else falls through to the bollard path below. The
+    // backend selection is the single source of truth ([`dn7_container::selected`]):
+    // in-house is the default, `DN7_RUNTIME=docker` opts back into Docker.
     #[cfg(target_os = "linux")]
-    if matches!(std::env::var("DN7_RUNTIME").as_deref(), Ok("dn7")) {
+    if dn7_container::selected() {
         return run_dn7_container_exec(socket, container).await;
     }
 

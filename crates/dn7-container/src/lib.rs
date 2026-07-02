@@ -30,12 +30,16 @@ pub mod cli;
 
 pub use error::{Error, Result};
 
-/// Whether the in-house runtime is the selected container backend (the panel sets
-/// `DN7_RUNTIME=dn7`). Always false off Linux — the runtime is Linux-only, so the
-/// panel must use Docker there.
+/// Whether the in-house runtime is the selected container backend. It is the
+/// DEFAULT on Linux — the panel's hard invariant is zero external runtime
+/// dependencies, so a plain install needs no Docker daemon. `DN7_RUNTIME=docker`
+/// opts back into the external Docker daemon (bollard) for operators who want it.
+/// Always false off Linux — the runtime is Linux-only, so the panel uses Docker
+/// there. This is the single source of truth for backend selection; every other
+/// `active()` gate delegates here.
 #[cfg(target_os = "linux")]
 pub fn selected() -> bool {
-    matches!(std::env::var("DN7_RUNTIME").as_deref(), Ok("dn7"))
+    !matches!(std::env::var("DN7_RUNTIME").as_deref(), Ok("docker"))
 }
 #[cfg(not(target_os = "linux"))]
 pub fn selected() -> bool {

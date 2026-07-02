@@ -19,8 +19,10 @@ pub(crate) fn docker_err(e: DockerError) -> anyhow::Error {
 /// `install`) start a detached task and return an `op_id` immediately.
 pub(crate) async fn run_op(req: &Req, is_super: bool) -> Result<Value> {
     guard_managed_ops(req).await?;
-    // In-house runtime backend (DN7_RUNTIME=dn7, Linux-only). Handles the ops it
-    // supports; everything else falls through to the bollard match below.
+    // In-house runtime backend — the DEFAULT on Linux (`DN7_RUNTIME=docker` opts
+    // back into the external daemon). Handles the ops it supports; the only ops
+    // that fall through to the bollard match below are the pure-filesystem ones
+    // (list_dirs/list_backups/delete_backup), which never touch a daemon.
     if let Some(result) = super::runtime_dn7::try_run_op(req, is_super).await {
         return result;
     }
