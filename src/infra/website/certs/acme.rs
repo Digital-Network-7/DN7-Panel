@@ -17,21 +17,15 @@ where
     F: FnOnce(Vec<(String, String)>) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
-    use instant_acme::{Account, Identifier, NewAccount, NewOrder, OrderStatus};
+    use instant_acme::{Identifier, NewOrder, OrderStatus};
 
-    // Create (or implicitly register) an ACME account with Let's Encrypt.
+    // Load the persisted ACME account (or register one on first use). Reusing a
+    // single account across issuances is essential: `Account::create` mints a
+    // fresh account key every call, and Let's Encrypt caps new-account
+    // registrations per IP (~10 / 3h), so a batch of renewals that each
+    // registered anew would hit the limit and start failing.
     op_push(op_id, &pmsg("ng.le_account", &[]));
-    let (account, _creds) = Account::create(
-        &NewAccount {
-            contact: &[],
-            terms_of_service_agreed: true,
-            only_return_existing: false,
-        },
-        instant_acme::LetsEncrypt::Production.url(),
-        None,
-    )
-    .await
-    .map_err(|e| anyhow!("创建 ACME 账户失败：{e}"))?;
+    let account = load_or_create_account(instant_acme::LetsEncrypt::Production.url()).await?;
 
     // Place an order for the domain.
     op_push(op_id, &pmsg("ng.request_cert", &[host]));
@@ -101,6 +95,71 @@ where
     };
 
     Ok((cert_chain_pem, key_pem))
+}
+
+/// The on-disk path of the persisted ACME account for CA `directory_url`. The
+/// credentials are keyed per directory URL (a filename-safe slug of it) so a
+/// staging account can never be reused against production and vice-versa.
+pub(crate) fn acme_account_file(directory_url: &str) -> std::path::PathBuf {
+    let slug: String = directory_url
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    // Collapse the leading/trailing run of separators for a tidier filename.
+    let slug = slug.trim_matches('-');
+    certs_dir().join(format!("acme-account-{slug}.json"))
+}
+
+/// Load the ACME account for `directory_url`, registering (and persisting) a new
+/// one on first use. On subsequent issue/renew we restore the stored account
+/// instead of creating a fresh one — see the note in `acme_http01`. A missing or
+/// unreadable account file falls back to create-and-persist.
+pub(crate) async fn load_or_create_account(directory_url: &str) -> Result<instant_acme::Account> {
+    use instant_acme::{Account, AccountCredentials, NewAccount};
+
+    let path = acme_account_file(directory_url);
+    // Try the stored credentials first.
+    if let Ok(bytes) = std::fs::read(&path) {
+        match serde_json::from_slice::<AccountCredentials>(&bytes) {
+            Ok(creds) => match Account::from_credentials(creds).await {
+                Ok(account) => return Ok(account),
+                Err(e) => {
+                    tracing::warn!("stored ACME account unusable ({e}); registering a new one")
+                }
+            },
+            Err(e) => {
+                tracing::warn!("stored ACME account unreadable ({e}); registering a new one")
+            }
+        }
+    }
+
+    // First use (or the stored account was unusable): register and persist.
+    let (account, creds) = Account::create(
+        &NewAccount {
+            contact: &[],
+            terms_of_service_agreed: true,
+            only_return_existing: false,
+        },
+        directory_url,
+        None,
+    )
+    .await
+    .map_err(|e| anyhow!("创建 ACME 账户失败：{e}"))?;
+    // Persist 0600 (contains the account private key) via the atomic helper so
+    // the next issuance reuses this account. Best-effort: a persist failure must
+    // not fail the in-hand issuance, but we log it since it means we'd register
+    // again next time.
+    match serde_json::to_vec(&creds) {
+        Ok(json) => {
+            if let Err(e) = crate::platform::paths::write_private(&path, &json) {
+                tracing::warn!("persisting ACME account failed ({e}); will re-register next time");
+            }
+        }
+        Err(e) => {
+            tracing::warn!("serializing ACME account failed ({e}); will re-register next time")
+        }
+    }
+    Ok(account)
 }
 
 /// Collect the HTTP-01 challenge `(token, key_authorization)` pairs to serve and
@@ -231,4 +290,42 @@ pub(crate) async fn wait_for_cert(order: &mut instant_acme::Order) -> Result<Str
         }
     }
     Err(website_err(WebsiteError::LeIssueTimeout))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The full create/persist/reload round-trip needs a live ACME directory (a
+    // real CA to mint the account), so it isn't hermetic and isn't unit-tested
+    // here. We do assert the account-file keying is per-directory-URL: staging
+    // and production must land in distinct files, so a staging account can never
+    // be reused against production. (0600 is guaranteed by the `write_private`
+    // atomic helper the persist path uses, which is covered by its own test.)
+    #[test]
+    fn account_file_is_keyed_per_directory_url() {
+        let prod = acme_account_file(instant_acme::LetsEncrypt::Production.url());
+        let staging = acme_account_file(instant_acme::LetsEncrypt::Staging.url());
+        assert_ne!(prod, staging, "staging and production must not collide");
+
+        // Both live in the cert dir with the expected shape/extension.
+        for p in [&prod, &staging] {
+            assert_eq!(p.parent(), Some(certs_dir().as_path()));
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap();
+            assert!(name.starts_with("acme-account-"), "unexpected name: {name}");
+            assert!(name.ends_with(".json"), "unexpected name: {name}");
+            // Slug is filename-safe: only alphanumerics, '-', and the '.json' dot.
+            assert!(
+                name.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.'),
+                "slug not filename-safe: {name}"
+            );
+        }
+
+        // Deterministic: same URL → same path.
+        assert_eq!(
+            prod,
+            acme_account_file(instant_acme::LetsEncrypt::Production.url())
+        );
+    }
 }
