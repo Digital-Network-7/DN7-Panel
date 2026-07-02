@@ -109,21 +109,21 @@ pub(crate) async fn edge_reload() -> Result<()> {
     };
     let input = dn7_edge::ReloadInput {
         sites: if setup {
-            to_edge(load_sites())
+            to_edge(load_sites())?
         } else {
             Vec::new()
         },
         access: if setup {
-            to_edge(load_access())
+            to_edge(load_access())?
         } else {
             Vec::new()
         },
         default_site: if setup {
-            to_edge(load_webglobal().default_site)
+            to_edge(load_webglobal().default_site)?
         } else {
             dn7_edge::model::DefaultSite::default()
         },
-        tuning: to_edge(current_tuning()),
+        tuning: to_edge(current_tuning())?,
         cert_dir: certs_dir(),
         www_dir: www_dir(),
         console,
@@ -135,15 +135,21 @@ pub(crate) async fn edge_reload() -> Result<()> {
 /// type via a serde round-trip (the field names line up; the edge model defaults
 /// any field the panel doesn't carry). The reload path runs rarely, so the
 /// serialize/deserialize cost is irrelevant.
-fn to_edge<T, U>(v: T) -> U
+///
+/// FAIL-CLOSED: a serialize/deserialize failure (e.g. a field-name drift between
+/// the panel and edge models) returns an error so [`edge_reload`] aborts and the
+/// edge keeps serving its last-good config (an `nginx -t`-style rejection),
+/// rather than silently swapping in a `Default`. A silent `Default` for the
+/// access list would be an EMPTY `Vec<AccessList>` — dropping every site's
+/// HTTP-Basic / IP protection while reload reported success — which directly
+/// contradicts the edge's own fail-closed ACL policy (unparseable rule → deny).
+fn to_edge<T, U>(v: T) -> Result<U>
 where
     T: serde::Serialize,
-    U: serde::de::DeserializeOwned + Default,
+    U: serde::de::DeserializeOwned,
 {
-    serde_json::to_value(v)
-        .ok()
-        .and_then(|j| serde_json::from_value(j).ok())
-        .unwrap_or_default()
+    let json = serde_json::to_value(v).map_err(|e| anyhow!("edge model serialize failed: {e}"))?;
+    serde_json::from_value(json).map_err(|e| anyhow!("edge model deserialize failed: {e}"))
 }
 
 /// First-run console TLS: issue (or clear) the console cert for the chosen HTTPS
@@ -279,4 +285,59 @@ pub(crate) fn layout() -> Result<Layout> {
         cert_store: certs_dir(),
         www_store: www_dir(),
     })
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+
+    /// B1 guard: the panel→edge access-list serde round-trip (`to_edge`) MUST
+    /// preserve the auth users + IP rules. `to_edge` is now fail-closed for a
+    /// total (de)serialize failure; this catches the subtler PARTIAL drift — a
+    /// renamed/dropped field that would silently empty a site's Basic-Auth / IP
+    /// protection at the edge while reload reports success.
+    #[test]
+    fn access_list_round_trips_without_losing_auth_or_ip_rules() {
+        let panel = vec![AccessList {
+            id: "a1".into(),
+            name: "protected".into(),
+            satisfy: "all".into(),
+            pass_auth: true,
+            users: vec![AccessUser {
+                username: "admin".into(),
+                hash: "{SHA}deadbeef".into(),
+            }],
+            clients: vec![
+                AccessClient {
+                    directive: "allow".into(),
+                    address: "10.0.0.0/8".into(),
+                },
+                AccessClient {
+                    directive: "deny".into(),
+                    address: "all".into(),
+                },
+            ],
+        }];
+        let edge: Vec<dn7_edge::model::AccessList> =
+            to_edge(panel).expect("access list must round-trip, not fail-closed here");
+        assert_eq!(edge.len(), 1, "the access list must not be dropped");
+        let a = &edge[0];
+        assert_eq!(a.id, "a1");
+        assert_eq!(a.satisfy, "all");
+        assert!(a.pass_auth);
+        assert_eq!(
+            a.users.len(),
+            1,
+            "auth users must survive (else Basic-Auth silently off)"
+        );
+        assert_eq!(a.users[0].username, "admin");
+        assert_eq!(a.users[0].hash, "{SHA}deadbeef");
+        assert_eq!(
+            a.clients.len(),
+            2,
+            "IP rules must survive (else IP protection silently off)"
+        );
+        assert_eq!(a.clients[0].directive, "allow");
+        assert_eq!(a.clients[0].address, "10.0.0.0/8");
+    }
 }
