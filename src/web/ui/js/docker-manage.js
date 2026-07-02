@@ -38,7 +38,9 @@ function dkUpgradeForm(id, name) {
           if (!ok) return;
           const body = Object.assign({}, cfg, { op: 'create_container', image: target, name, replace: name, start: true });
           $('ugGo').disabled = true; $('ugJob').classList.remove('hidden');
-          op('docker', body).then((r) => renderJob($('ugJob'), 'docker', r.op_id, '', { onDone: () => { toast(tr('dk.upgraded'), 'ok'); close(); switchTab('docker'); }, onError: () => { $('ugGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ugGo').disabled = false; });
+          // Named slot: off-tab completion toasts a View action (no tab hijack)
+          // and the containers list re-attaches the job if the modal is closed.
+          op('docker', body).then((r) => renderJob($('ugJob'), 'docker', r.op_id, 'docker:upgrade', { onDone: () => { toast(tr('dk.upgraded'), 'ok'); close(); switchTab('docker'); }, onError: () => { $('ugGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ugGo').disabled = false; });
         });
       };
       bindDirty('ugGo');
@@ -133,9 +135,18 @@ function dkBackups(id, name) {
       $('bkList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
       document.querySelectorAll('#bkList [data-dl]').forEach((b) => b.onclick = () => dkBackupDownload(name, b.dataset.dl));
       document.querySelectorAll('#bkList [data-del]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('dk.bk_confirm_del', { file: b.dataset.del }))) op('docker', { op: 'delete_backup', name, backup: b.dataset.del }).then(() => { toast(tr('common.deleted'), 'ok'); load(); }).catch((e) => toast(e.message, 'err')); });
-      document.querySelectorAll('#bkList [data-rs]').forEach((b) => b.onclick = async () => { if (!await confirmDanger(tr('dk.bk_confirm_restore'))) return; $('bkJob').classList.remove('hidden'); op('docker', { op: 'restore_backup', name, backup: b.dataset.rs }).then((r) => renderJob($('bkJob'), 'docker', r.op_id, '', { onDone: () => { toast(tr('dk.bk_restored'), 'ok'); switchTab('docker'); } })).catch((e) => toast(e.message, 'err')); });
+      document.querySelectorAll('#bkList [data-rs]').forEach((b) => b.onclick = async () => { if (!await confirmDanger(tr('dk.bk_confirm_restore'))) return; $('bkJob').classList.remove('hidden'); op('docker', { op: 'restore_backup', name, backup: b.dataset.rs }).then((r) => renderJob($('bkJob'), 'docker', r.op_id, 'docker:restore', { onDone: () => { toast(tr('dk.bk_restored'), 'ok'); switchTab('docker'); } })).catch((e) => toast(e.message, 'err')); });
     }).catch((e) => { $('bkList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
-    $('bkNew').onclick = () => { $('bkJob').classList.remove('hidden'); op('docker', { op: 'backup_container', ref: id, name }).then((r) => renderJob($('bkJob'), 'docker', r.op_id, '', { onDone: () => { toast(tr('dk.bk_done'), 'ok'); load(); } })).catch((e) => toast(e.message, 'err')); };
+    $('bkNew').onclick = () => { $('bkJob').classList.remove('hidden'); op('docker', { op: 'backup_container', ref: id, name }).then((r) => renderJob($('bkJob'), 'docker', r.op_id, 'docker:backup', { onDone: () => { toast(tr('dk.bk_done'), 'ok'); load(); } })).catch((e) => toast(e.message, 'err')); };
+    // A backup/restore job started here earlier (modal since closed) is still
+    // persisted — re-attach it so reopening the dialog shows live progress.
+    // But if the containers-list card is already polling that same slot, a
+    // re-attach here would steal its poll loop (JOB_RUN is keyed per op) and
+    // freeze the list card. In that case leave the list card owning the job and
+    // don't reattach in the modal.
+    const slot = ['docker:backup', 'docker:restore'].find((s) => getJob(s));
+    const listCardOwns = slot && document.querySelector(`#dkCJobs [data-jobslot="${slot}"]`);
+    if (slot && !listCardOwns) { $('bkJob').classList.remove('hidden'); reattachJob($('bkJob'), slot, { onDone: () => { toast(tr('dk.op_ok'), 'ok'); load(); } }); }
     load();
   }, true);
 }
@@ -144,18 +155,6 @@ function dkBackupDownload(name, file) {
     const qs = `ticket=${encodeURIComponent(t)}&kind=backup&name=${encodeURIComponent(name)}&backup=${encodeURIComponent(file)}`;
     const a = el('a', { href: '/api/docker/download?' + qs }); document.body.appendChild(a); a.click(); a.remove();
   }).catch((e) => toast(e.message, 'err'));
-}
-
-// Populate the create-form image dropdown with all local images (built-in ones
-// included). Pre-selects `preselect` when given.
-function loadImageOptions(preselect) {
-  const sel = $('ccImg'); if (!sel) return;
-  op('docker', { op: 'list_images' }).then((d) => {
-    const names = (d.images || []).map((im) => im.name).filter((n) => n && n !== '<none>:<none>');
-    if (!names.length) { sel.innerHTML = `<option value="">${tr('dk.no_images_pull')}</option>`; return; }
-    sel.innerHTML = names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
-    if (preselect && names.includes(preselect)) sel.value = preselect;
-  }).catch(() => {});
 }
 
 // Append a dynamic key/value row to list `id`. `cells` is an array of either

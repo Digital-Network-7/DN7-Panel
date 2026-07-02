@@ -70,6 +70,9 @@ function ngActW(base) {
 function renderDocker(v) {
   v.innerHTML = `<div style="padding:8px">${loading()}</div>`;
   op('docker', { op: 'info' }).then((info) => {
+    // The active runtime ("dn7" in-house / "docker" bollard) rides the `info`
+    // arg into every sub-tab (dkImages/dkVolumes/dkNetworks/dkCreateModal),
+    // which consult it to hide dn7-unsupported controls.
     v.innerHTML = `
       <div class="subtabs" id="dkTabs">
         <button data-t="containers" class="on">${tr('dk.tab_containers')}</button>
@@ -79,7 +82,7 @@ function renderDocker(v) {
       </div>
       <div id="dkBody"></div>`;
     const tabs = $('dkTabs');
-    const sel = (t) => { tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === t)); if (t === 'containers') dkContainers(); else if (t === 'images') dkImages(info); else if (t === 'volumes') dkVolumes(); else dkNetworks(); };
+    const sel = (t) => { tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === t)); if (t === 'containers') dkContainers(); else if (t === 'images') dkImages(info); else if (t === 'volumes') dkVolumes(info); else dkNetworks(info); };
     tabs.querySelectorAll('button').forEach((b) => b.onclick = () => sel(b.dataset.t));
     sel('containers');
   }).catch((e) => { v.innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; });
@@ -88,43 +91,102 @@ function renderDocker(v) {
 function dkContainers() {
   document.querySelectorAll('.dk-pop').forEach((p) => p.remove());
   const body = $('dkBody');
-  body.innerHTML = `<div class="sechead"><span class="sp"></span><button class="btn sm" id="dkNew">${tr('dk.create_container')}</button><button class="btn sec sm" id="dkRefC">${tr('dk.refresh')}</button></div><div id="dkCList">` + loading() + '</div>';
-  $('dkRefC').onclick = dkContainers;
+  body.innerHTML = `<div class="sechead"><input id="dkFilter" class="field" placeholder="${esc(tr('dk.filter_ph'))}" value="${esc(dkContainers._q || '')}" style="max-width:240px" /><span class="sp"></span><button class="btn sm" id="dkNew">${tr('dk.create_container')}</button><button class="btn sec sm" id="dkRefC">${tr('dk.refresh')}</button></div><div id="dkCJobs"></div><div id="dkCList">` + loading() + '</div>';
+  $('dkRefC').onclick = () => dkLoadContainers(true);
   $('dkNew').onclick = () => dkCreateForm();
-  op('docker', { op: 'list_containers' }).then((d) => {
+  $('dkFilter').oninput = () => { dkContainers._q = $('dkFilter').value; dkApplyFilter(); };
+  dkReattachJobs();
+  dkLoadContainers(true);
+}
+
+// Re-attach persisted docker background jobs (create/upgrade/restore/backup
+// whose modal is gone) so returning to the tab re-shows their progress.
+function dkReattachJobs() {
+  const host = $('dkCJobs'); if (!host) return;
+  ['docker:create', 'docker:upgrade', 'docker:restore', 'docker:backup'].forEach((slot) => {
+    if (!getJob(slot)) return;
+    // Tag the card with its slot so a modal that shares the slot (backups) can
+    // tell the list card is already polling and skip a re-attach that would
+    // otherwise steal the poll loop and freeze this card.
+    const d = el('div', { class: 'card', 'data-jobslot': slot, style: 'margin:0 0 12px' });
+    host.appendChild(d);
+    reattachJob(d, slot, { onDone: () => { toast(tr('dk.op_ok'), 'ok'); d.remove(); if ($('dkCList')) dkLoadContainers(); } });
+  });
+}
+
+// Client-side substring filter over name / image / state (row dataset.f).
+function dkApplyFilter() {
+  const q = (dkContainers._q || '').trim().toLowerCase();
+  document.querySelectorAll('#dkCList tr[data-f]').forEach((r) => { r.style.display = (!q || r.dataset.f.indexOf(q) !== -1) ? '' : 'none'; });
+}
+
+// Lifecycle states that resolve on their own keep the list live-polling.
+const DK_TRANSIENT = /^(restarting|removing|starting|stopping)$/;
+
+// Fetch + render the container list into #dkCList (leaves the toolbar alone so
+// the filter input keeps focus/value). `first` shows the loading skeleton.
+function dkLoadContainers(first) {
+  const seq = (dkLoadContainers._seq = (dkLoadContainers._seq || 0) + 1);
+  clearTimeout(dkLoadContainers._t);
+  if (first && $('dkCList')) $('dkCList').innerHTML = loading();
+  apiInflight('docker:list', () => op('docker', { op: 'list_containers' })).then((d) => {
+    if (seq !== dkLoadContainers._seq || !$('dkCList')) return;
     const list = d.containers || [];
-    if (!list.length) { $('dkCList').innerHTML = `<div class="empty">${tr('dk.no_containers')}</div>`; return; }
-    let h = `<table class="optable frztbl ctntbl">`
-      + `<colgroup><col style="width:190px"><col style="width:210px"><col style="width:120px">`
-      + `<col style="width:200px"><col style="width:210px"><col style="width:230px"><col style="width:120px"><col style="width:${ngActW(200)}px"></colgroup>`
-      + `<tr>`
-      + `<th>${tr('dk.col_name')}</th><th>${tr('dk.col_image')}</th><th>${tr('dk.col_status')}</th>`
-      + `<th>${tr('dk.col_ip')}</th><th>${tr('dk.col_ports')}</th><th>${tr('dk.col_desc')}</th>`
-      + `<th>${tr('dk.col_uptime')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
-    list.forEach((c) => {
-      const running = c.state === 'running';
-      const ports = (c.ports || '').split(',').map((p) => p.trim()).filter(Boolean);
-      const portCell = ports.length ? ports.map((p) => `<span class="portlbl">${esc(p)}</span>`).join(' ') : '<span class="mut">-</span>';
-      const desc = c.description ? esc(c.description) : '<span class="mut">-</span>';
-      const uptime = running && c.uptime ? esc(c.uptime.replace(/^Up\s+/i, '')) : '<span class="mut">-</span>';
-      const builtin = c.managed ? ` <span class="chip">${tr('dk.builtin')}</span>` : '';
-      h += `<tr>
-        <td data-tip="${esc(c.name)}"><div class="clamp1"><b>${esc(c.name)}</b>${builtin}</div><div class="clamp1 mut mono" style="font-size:11px">${esc(c.id)}</div></td>
-        <td data-tip="${esc(c.image)}"><div class="clamp2 mono" style="font-size:12px">${esc(c.image)}</div></td>
-        <td><span class="statuswrap" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}">${ctnStateChip(c.state)}</span></td>
-        <td data-tip="${esc((c.ips || []).join('\n'))}"><div class="clamp2 mono" style="font-size:12px">${(c.ips && c.ips.length) ? c.ips.map((x) => esc(x)).join('<br>') : '<span class="mut">-</span>'}</div></td>
-        <td data-tip="${esc((c.ports || '').replace(/,\s*/g, '\n'))}"><div class="clamp2 portcell">${portCell}</div></td>
-        <td data-tip="${esc(c.description || '')}"><div class="clamp2 mut" style="font-size:12px">${desc}</div></td>
-        <td><div class="clamp2 mut" style="font-size:12px">${uptime}</div></td>
-        <td class="act"><div class="actions" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-shell="${c.has_shell ? 1 : 0}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}"></div></td>
-      </tr>`;
-    });
-    $('dkCList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
-    document.querySelectorAll('#dkCList .actions').forEach((a) => buildContainerActions(a, dkContainers));
-    document.querySelectorAll('#dkCList .statuswrap').forEach((s) => buildStatusControls(s, dkContainers));
-    wireStickyShadows($('dkCList').querySelector('.tablewrap'));
-    wireCellTips($('dkCList'));
-  }).catch((e) => { $('dkCList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+    dkRenderCtnList(list);
+    // Auto-refresh (2s) while any container is in a transitional state.
+    if (list.some((c) => DK_TRANSIENT.test(c.state))) dkLoadContainers._t = setTimeout(dkCtnTick, 2000);
+  }).catch((e) => { if (seq === dkLoadContainers._seq && $('dkCList')) $('dkCList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+}
+
+// One transitional-poll tick: wait (without fetching) while the browser tab is
+// hidden or a lifecycle menu is open; stop for good once the list unmounts.
+function dkCtnTick() {
+  if (UI.tab !== 'docker' || !$('dkCList')) return;
+  const menuOpen = Array.from(document.querySelectorAll('.dk-pop')).some((p) => p.style.display === 'flex');
+  if (document.hidden || menuOpen) { dkLoadContainers._t = setTimeout(dkCtnTick, 2000); return; }
+  dkLoadContainers();
+}
+
+function dkRenderCtnList(list) {
+  document.querySelectorAll('.dk-pop').forEach((p) => p.remove());
+  if (!list.length) { $('dkCList').innerHTML = `<div class="empty">${tr('dk.no_containers')}</div>`; return; }
+  let h = `<table class="optable frztbl ctntbl">`
+    + `<colgroup><col style="width:190px"><col style="width:210px"><col style="width:120px">`
+    + `<col style="width:200px"><col style="width:210px"><col style="width:230px"><col style="width:120px"><col style="width:${ngActW(200)}px"></colgroup>`
+    + `<tr>`
+    + `<th>${tr('dk.col_name')}</th><th>${tr('dk.col_image')}</th><th>${tr('dk.col_status')}</th>`
+    + `<th>${tr('dk.col_ip')}</th><th>${tr('dk.col_ports')}</th><th>${tr('dk.col_desc')}</th>`
+    + `<th>${tr('dk.col_uptime')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
+  list.forEach((c) => {
+    const running = c.state === 'running';
+    const ports = (c.ports || '').split(',').map((p) => p.trim()).filter(Boolean);
+    const portCell = ports.length ? ports.map((p) => `<span class="portlbl">${esc(p)}</span>`).join(' ') : '<span class="mut">-</span>';
+    const desc = c.description ? esc(c.description) : '<span class="mut">-</span>';
+    // Uptime column: localized "Up …" while running; exit context ("2 hours
+    // ago") for exited containers — the raw status rides the cell tooltip.
+    const exi = !running ? dkExitInfo(c.status) : null;
+    let uptime = '<span class="mut">-</span>';
+    if (running && c.uptime) uptime = esc(dkUptimeTr(c.uptime));
+    else if (exi && exi.ago) uptime = esc(tr('dk.ago', { t: dkDurTr(exi.ago) }));
+    const builtin = c.managed ? ` <span class="chip">${tr('dk.builtin')}</span>` : '';
+    const caret = c.managed ? '' : '<span class="c-caret" aria-hidden="true">▾</span>';
+    h += `<tr data-f="${esc((c.name + ' ' + c.image + ' ' + c.state).toLowerCase())}">
+      <td data-tip="${esc(c.name)}"><div class="clamp1"><b>${esc(c.name)}</b>${builtin}</div><div class="clamp1 mut mono" style="font-size:11px">${esc(c.id)}</div></td>
+      <td data-tip="${esc(c.image)}"><div class="clamp2 mono" style="font-size:12px">${esc(c.image)}</div></td>
+      <td><span class="statuswrap" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}">${ctnStateChip(c.state, c.status)}${caret}</span></td>
+      <td data-tip="${esc((c.ips || []).join('\n'))}"><div class="clamp2 mono" style="font-size:12px">${(c.ips && c.ips.length) ? c.ips.map((x) => esc(x)).join('<br>') : '<span class="mut">-</span>'}</div></td>
+      <td data-tip="${esc((c.ports || '').replace(/,\s*/g, '\n'))}"><div class="clamp2 portcell">${portCell}</div></td>
+      <td data-tip="${esc(c.description || '')}"><div class="clamp2 mut" style="font-size:12px">${desc}</div></td>
+      <td data-tip="${esc(c.status || '')}"><div class="clamp2 mut" style="font-size:12px">${uptime}</div></td>
+      <td class="act"><div class="actions" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-shell="${c.has_shell ? 1 : 0}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}"></div></td>
+    </tr>`;
+  });
+  $('dkCList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
+  document.querySelectorAll('#dkCList .actions').forEach((a) => buildContainerActions(a, dkContainers));
+  document.querySelectorAll('#dkCList .statuswrap').forEach((s) => buildStatusControls(s, dkContainers));
+  wireStickyShadows($('dkCList').querySelector('.tablewrap'));
+  wireCellTips($('dkCList'));
+  dkApplyFilter();
 }
 
 // Toggle scroll-aware frozen-column shadows on the container table wrapper.
@@ -198,21 +260,54 @@ function wireCellTips(scope) {
   });
 }
 
+// The server formats durations in English only ("2 hours", "About a minute");
+// re-render the known formats through i18n, falling back to the raw string.
+function dkDurTr(s) {
+  s = String(s || '').trim();
+  const m = s.match(/^(\d+)\s+(second|minute|hour|day|week|month|year)s?$/i);
+  // Key built outside the tr() call so check_i18n.js doesn't read a prefix
+  // literal; the dk.up_<unit> keys all exist in the dictionaries.
+  if (m) { const k = 'dk.up_' + m[2].toLowerCase(); return tr(k, { n: m[1] }); }
+  if (/^about a minute$/i.test(s)) return tr('dk.up_minute', { n: 1 });
+  if (/^about an hour$/i.test(s)) return tr('dk.up_hour', { n: 1 });
+  if (/^less than a second$/i.test(s)) return tr('dk.up_lt_sec');
+  return s;
+}
+// Uptime column text: strip the "Up " prefix, localize the duration, keep any
+// trailing health/paused annotation as-is.
+function dkUptimeTr(s) {
+  s = String(s || '').replace(/^Up\s+/i, '').trim();
+  const m = s.match(/^(.*?)(\s*\(.*\))?$/);
+  return m ? dkDurTr(m[1]) + (m[2] || '') : s;
+}
+// Exit context from a status line ("Exited (1) 3 hours ago" / dn7's
+// "Exited (1)"). Returns { code, ago } or null when it isn't an exit status.
+function dkExitInfo(status) {
+  const m = String(status || '').match(/^Exited\s*\((-?\d+)\)\s*(.*)$/i);
+  if (!m) return null;
+  return { code: parseInt(m[1], 10), ago: m[2].replace(/\s*ago\s*$/i, '').trim() };
+}
+
 // A clean state chip (decoupled from the long status text, which now feeds the
-// uptime column). Colour + label reflect the lifecycle state.
-function ctnStateChip(state) {
-  let cls = 'off', dot = '', key = 'dk.st_stopped';
-  if (state === 'running') { cls = 'on'; dot = ' on'; key = 'dk.st_running'; }
-  else if (state === 'paused') { cls = 'amber'; dot = ' amber'; key = 'dk.st_paused'; }
-  else if (state === 'restarting') { cls = 'amber'; dot = ' init'; key = 'dk.st_restarting'; }
-  else if (state === 'created') { cls = ''; key = 'dk.st_created'; }
-  return `<span class="chip ${cls}"><span class="dot-s${dot}"></span>${tr(key)}</span>`;
+// uptime column). Colour + label reflect the lifecycle state; an exited
+// container shows its exit code, err-tinted for a non-zero (crash) exit.
+function ctnStateChip(state, status) {
+  let cls = 'off', dot = '', label = tr('dk.st_stopped');
+  if (state === 'running') { cls = 'on'; dot = ' on'; label = tr('dk.st_running'); }
+  else if (state === 'paused') { cls = 'amber'; dot = ' amber'; label = tr('dk.st_paused'); }
+  else if (state === 'restarting') { cls = 'amber'; dot = ' init'; label = tr('dk.st_restarting'); }
+  else if (state === 'created') { cls = ''; label = tr('dk.st_created'); }
+  else {
+    const exi = dkExitInfo(status);
+    if (exi) { label = tr('dk.st_exited', { code: exi.code }); if (exi.code !== 0) { cls = 'err'; dot = ' err'; } }
+  }
+  return `<span class="chip ${cls}"><span class="dot-s${dot}"></span>${esc(label)}</span>`;
 }
 
 // Build the lifecycle controls (start/stop/restart/force/pause/resume) shown on
 // a hover panel under the status chip. Buttons depend on the container state.
 function buildStatusControls(holder, reload) {
-  if (holder.dataset.managed === '1') return;
+  if (holder.dataset.managed === '1') { holder.title = tr('dk.managed_lifecycle'); return; }
   const id = holder.dataset.id, state = holder.dataset.state;
   const items = [];
   if (state === 'running') {
@@ -385,7 +480,46 @@ function doStopAction(id, reload) {
 }
 
 function dkLogs(id, name) {
-  modal(tr('dk.logs_title') + name, '<div id="dkLogWrap">' + loading() + '</div>', () => {
-    op('docker', { op: 'logs', ref: id, tail: 400 }).then((d) => { $('dkLogWrap').innerHTML = '<pre class="out" id="dkLogOut" style="max-height:64vh"></pre>'; $('dkLogOut').textContent = d.logs || tr('dk.empty_log'); $('dkLogOut').scrollTop = $('dkLogOut').scrollHeight; }).catch((e) => { $('dkLogWrap').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+  // Tail sizes match the server clamp (max 2000 lines).
+  const tails = [400, 1000, 2000];
+  modal(tr('dk.logs_title') + name, `
+    <div class="row" style="margin-bottom:10px">
+      <label class="tgl"><input type="checkbox" id="dkLogFollow" /><span class="tglbox"></span><span class="tgltxt">${tr('dk.log_follow')}</span></label>
+      <span class="sp" style="flex:1"></span>
+      <select id="dkLogTail" class="field" style="width:auto">${tails.map((n) => `<option value="${n}">${esc(tr('dk.log_lines', { n }))}</option>`).join('')}</select>
+      <button class="btn sec sm" id="dkLogRef">${tr('dk.refresh')}</button>
+      <button class="btn sec sm" id="dkLogDl">${tr('dk.log_download')}</button>
+    </div>
+    <div id="dkLogWrap">${loading()}</div>`, (close, root) => {
+    let timer = null;
+    const load = () => op('docker', { op: 'logs', ref: id, tail: parseInt($('dkLogTail').value, 10) || 400 }).then((d) => {
+      if (!document.body.contains(root)) return;
+      // Autoscroll only when the user was already at (or near) the bottom.
+      const prev = $('dkLogOut');
+      const stick = !prev || (prev.scrollHeight - prev.scrollTop - prev.clientHeight < 30);
+      if (!prev) $('dkLogWrap').innerHTML = '<pre class="out" id="dkLogOut" style="max-height:64vh"></pre>';
+      const out = $('dkLogOut');
+      out.textContent = d.logs || tr('dk.empty_log');
+      if (stick) out.scrollTop = out.scrollHeight;
+    }).catch((e) => { if (document.body.contains(root) && $('dkLogWrap')) $('dkLogWrap').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+    // Follow: re-tail every 2s while the modal is open (paused while the
+    // browser tab is hidden so a background console doesn't keep polling).
+    const tick = () => {
+      if (!document.body.contains(root) || !$('dkLogFollow').checked) return;
+      (document.hidden ? Promise.resolve() : load()).finally(() => {
+        if (document.body.contains(root) && $('dkLogFollow').checked) timer = setTimeout(tick, 2000);
+      });
+    };
+    $('dkLogFollow').onchange = () => { clearTimeout(timer); if ($('dkLogFollow').checked) tick(); };
+    $('dkLogTail').onchange = load;
+    $('dkLogRef').onclick = load;
+    $('dkLogDl').onclick = () => {
+      const txt = ($('dkLogOut') && $('dkLogOut').textContent) || '';
+      const url = URL.createObjectURL(new Blob([txt], { type: 'text/plain' }));
+      const a = el('a', { href: url, download: name + '.log' });
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    };
+    load();
   });
 }

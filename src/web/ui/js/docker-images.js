@@ -1,6 +1,7 @@
 // Docker: images + volumes tabs (split from docker.js).
 function dkImages(info) {
   const body = $('dkBody');
+  if (!body) return; // tab left before an async refresh landed — nothing to render into
   body.innerHTML = `<div class="sechead"><span class="sp"></span><button class="btn sm" id="dkPull">${tr('dk.pull_image')}</button><button class="btn sec sm" id="dkRefI">${tr('dk.refresh')}</button><button class="btn sec sm" id="dkAdv">${tr('dk.advanced')} ▾</button></div><div id="dkIList">` + loading() + '</div>';
   $('dkRefI').onclick = () => dkImages(info);
   $('dkPull').onclick = dkPullForm;
@@ -53,8 +54,8 @@ function dkTagForm(name, existing, info) {
     <div class="taginput" id="tgBox"><input id="tgInput" placeholder="${tr('dk.tag_ph')}" /></div>
     <p class="formnote" style="margin-top:6px">${tr('dk.tag_hint')}</p>
     <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="tgGo" disabled>${tr('ng.save')}</button></div>
-  `, (close) => {
-    const box = $('tgBox'), input = $('tgInput'), go = $('tgGo');
+  `, (close, root) => {
+    const box = $('tgBox'), input = $('tgInput'), go = $('tgGo'), mb = root.querySelector('.modal-b');
     const changed = () => { const a = chips.slice().sort(), b = orig.slice().sort(); return a.length !== b.length || a.some((x, i) => x !== b[i]); };
     const render = () => {
       box.querySelectorAll('.tagchip').forEach((e) => e.remove());
@@ -65,6 +66,10 @@ function dkTagForm(name, existing, info) {
         box.insertBefore(c, input);
       });
       go.disabled = !changed();
+      // Chips aren't form controls, so flag dirtiness by hand — modal() then
+      // guards backdrop/X/Escape dismissal behind a discard confirm.
+      mb.dataset.dirty = changed() ? '1' : '0';
+      syncDirtyCount();
     };
     const add = () => { const v = input.value.trim(); if (v && !chips.includes(v)) { chips.push(v); input.value = ''; render(); } };
     input.onkeydown = (e) => {
@@ -93,6 +98,7 @@ function dkImageDownload(name) {
 // Import a local image archive (the output of `docker save`, optionally gzipped)
 // by uploading it straight into the daemon's load API.
 function dkImportForm(info) {
+  let xhr = null; // in-flight upload; aborted if the modal is dismissed
   modal(tr('dk.img_import'), `
     <label class="lbl">${tr('dk.img_import_label')}</label>
     <label class="filedrop" id="iiDrop">
@@ -102,25 +108,52 @@ function dkImportForm(info) {
     </label>
     <p class="formnote" style="margin-top:8px">${tr('dk.img_import_hint')}</p>
     <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="iiGo" disabled>${tr('dk.img_import_btn')}</button></div>
-    <div class="hidden" id="iiJob" style="margin-top:12px"></div>`, (close) => {
+    <div class="hidden" id="iiJob" style="margin-top:12px"></div>`, (close, root) => {
     $('iiFile').onchange = () => {
       const f = $('iiFile').files[0];
       $('iiName').textContent = f ? f.name : tr('dk.img_choose_file');
-      $('iiGo').disabled = !f;
       $('iiDrop').classList.toggle('has', !!f);
     };
-    $('iiGo').onclick = async () => {
+    $('iiGo').onclick = () => {
       const f = $('iiFile').files[0]; if (!f) return toast(tr('dk.img_need_file'), 'err');
-      $('iiGo').disabled = true; $('iiJob').classList.remove('hidden'); $('iiJob').innerHTML = `<div class="mut">${tr('dk.img_importing')}</div>`;
-      try {
-        const headers = authHeaders();
-        const r = await fetch('/api/docker/image-upload', { method: 'POST', headers, body: f });
-        const b = await r.json().catch(() => ({}));
-        if (!r.ok || (b && b.ok === false)) throw new Error(srvMsg(b) || ('HTTP ' + r.status));
-        toast(tr('dk.img_imported'), 'ok'); close(); dkImages(info);
-      } catch (e) { toast(e.message, 'err'); $('iiGo').disabled = false; $('iiJob').innerHTML = ''; }
+      $('iiGo').disabled = true; $('iiFile').disabled = true;
+      $('iiJob').classList.remove('hidden');
+      $('iiJob').innerHTML = `<div class="prog" id="iiBar"><i style="width:0%"></i></div><div class="job-line" id="iiLine">${tr('dk.img_uploading', { pct: 0 })}</div>`;
+      const bar = $('iiBar'), barI = bar.querySelector('i');
+      const fail = (msg) => {
+        toast(msg, 'err');
+        if (root.isConnected) { $('iiGo').disabled = false; $('iiFile').disabled = false; $('iiJob').classList.add('hidden'); $('iiJob').innerHTML = ''; }
+      };
+      xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/docker/image-upload');
+      const headers = authHeaders();
+      Object.keys(headers).forEach((k) => xhr.setRequestHeader(k, headers[k]));
+      // Big archive uploads can take minutes — count them busy so a tab close /
+      // reload mid-transfer gets the browser's are-you-sure prompt.
+      Busy.inc();
+      xhr.upload.onprogress = (e) => {
+        if (!e.lengthComputable || !root.isConnected) return;
+        const pct = Math.round((e.loaded / e.total) * 100);
+        if (pct >= 100) { barI.style.width = ''; bar.classList.add('indet'); $('iiLine').textContent = tr('dk.img_importing'); }
+        else { barI.style.width = pct + '%'; $('iiLine').textContent = tr('dk.img_uploading', { pct }); }
+      };
+      xhr.onerror = () => { Busy.dec(); xhr = null; fail(tr('dk.img_upload_failed')); };
+      xhr.onabort = () => { Busy.dec(); xhr = null; };
+      xhr.onload = () => {
+        Busy.dec();
+        const req = xhr; xhr = null;
+        let b = {}; try { b = JSON.parse(req.responseText || '{}'); } catch (e) { b = {}; }
+        if (req.status < 200 || req.status >= 300 || (b && b.ok === false)) return fail(srvMsg(b) || ('HTTP ' + req.status));
+        toast(tr('dk.img_imported'), 'ok'); close();
+        // The import can finish after the user has left the Docker tab — only
+        // refresh the list if it's still mounted (else dkImages throws on a null
+        // dkBody and trips the global crash banner despite a successful import).
+        if ($('dkBody') && UI.tab === 'docker') dkImages(info);
+      };
+      xhr.send(f);
     };
-  });
+    bindDirty('iiGo', root.querySelector('.modal-b'));
+  }, { onDismiss: () => { if (xhr) xhr.abort(); } });
 }
 
 function dkPullForm() {
@@ -164,7 +197,7 @@ function dkPullTasks() {
           st = `<span class="chip" style="color:var(--ok);border-color:var(--ok)">${tr('dk.pt_done')}</span>`;
         } else {
           st = `<span class="chip" style="color:var(--err);border-color:var(--err)">${tr('dk.pt_error')}</span>`;
-          if (o.error) body = `<div class="formnote pt-line" style="color:var(--err)">${esc(o.error)}</div>`;
+          if (o.error) body = `<div class="formnote pt-line" style="color:var(--err)">${esc(codeMsg(o.error))}</div>`;
         }
         const x = o.status === 'running' ? '' : `<button class="pt-x" data-x="${esc(o.op_id)}" title="${tr('dk.delete')}">×</button>`;
         return `<div class="pt-row"><div class="pt-top"><b class="mono">${name}</b>${st}<span class="sp" style="flex:1"></span>${x}</div>${body}</div>`;
@@ -187,6 +220,7 @@ function dkPullTasks() {
 // ---- Volumes tab ----
 function dkVolumes() {
   const body = $('dkBody');
+  if (!body) return; // tab left before an async refresh landed — nothing to render into
   body.innerHTML = `<div class="sechead"><span class="sp"></span><button class="btn sm" id="dkVolNew">${tr('dk.vol_new')}</button><button class="btn sec sm" id="dkRefV">${tr('dk.refresh')}</button></div><div id="dkVList">${loading()}</div>`;
   $('dkRefV').onclick = dkVolumes;
   $('dkVolNew').onclick = () => modal(tr('dk.vol_new'), `

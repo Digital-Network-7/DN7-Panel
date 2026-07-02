@@ -16,6 +16,10 @@ function dkCreateForm() {
 function dkCreateModal(info, networks, opts) {
   opts = opts || {};
   const prefill = opts.prefill || null;
+  // The in-house dn7 runtime has exactly one built-in network and rejects any
+  // networking_config (custom MAC / static IPv4) — so on dn7 we never prefill a
+  // random MAC and hide the per-row MAC / static-IP inputs entirely.
+  const isDn7 = !!(info && info.runtime === 'dn7');
   const hostCpus = Number(info.host_cpus) || 0;
   const hostMem = Number(info.host_mem_bytes) || 0;
   const cpuMax = hostCpus > 0 ? hostCpus : 2;
@@ -49,8 +53,6 @@ function dkCreateModal(info, networks, opts) {
         <label class="switch"><input type="checkbox" id="ccTty" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.alloc_tty')}</b><span>${tr('dk.alloc_tty_d')}</span></span></label>
         <label class="switch"><input type="checkbox" id="ccStart" checked /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.start_after')}</b><span>${tr('dk.start_after_d')}</span></span></label>
       </div>
-      <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" id="ccGo">${opts.submitLabel || tr('dk.create')}</button></div>
-      <div class="hidden" id="ccJob" style="margin-top:14px"></div>
     </div>
     <div id="ccNet" class="hidden">
       <label class="lbl">${tr('dk.net_join')}</label>
@@ -79,14 +81,34 @@ function dkCreateModal(info, networks, opts) {
     </div>
     <div id="ccEnvT" class="hidden">
       <label class="lbl">${tr('dk.env')}</label><div class="kvlist" id="ccEnv"></div><button type="button" class="kvadd" id="ccEnvAdd">${tr('dk.add_env')}</button>
+    </div>
+    <div class="modal-foot">
+      <div id="ccJob" class="mf-job hidden"></div>
+      <button class="btn" id="ccGo">${opts.submitLabel || tr('dk.create')}</button>
     </div>`, (close, root) => {
-    loadImageOptions(prefill ? prefill.image : undefined);    // Tab switching.
+    // Image options: fetch, then apply any prefill inside the same promise so a
+    // slow list_images can never wipe the injected current image and silently
+    // fall back to another one (edit-modal prefill race).
+    const loadImages = (preselect) => op('docker', { op: 'list_images' }).then((d) => {
+      const sel = root.querySelector('#ccImg'); if (!sel) return;
+      const names = (d.images || []).map((im) => im.name).filter((n) => n && n !== '<none>:<none>');
+      if (preselect && !names.includes(preselect)) names.unshift(preselect);
+      if (!names.length) { sel.innerHTML = `<option value="">${tr('dk.no_images_pull')}</option>`; return; }
+      sel.innerHTML = names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+      if (preselect) sel.value = preselect;
+      // Options arriving is not a user edit — re-baseline the dirty snapshot.
+      const mb = root.querySelector('.modal-b');
+      if (mb && mb.dataset.dirty !== '1' && $('ccGo') && $('ccGo')._dirtyReset) $('ccGo')._dirtyReset();
+    }).catch(() => {});
+    loadImages(prefill ? prefill.image : undefined);
+    // Tab switching.
     const panes = { basic: 'ccBasic', net: 'ccNet', ports: 'ccPortsT', vol: 'ccVolT', res: 'ccRes', env: 'ccEnvT' };
     const tabs = root.querySelector('#ccTabs');
-    tabs.querySelectorAll('button').forEach((btn) => btn.onclick = () => {
-      tabs.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === btn));
-      Object.keys(panes).forEach((s) => root.querySelector('#' + panes[s]).classList.toggle('hidden', btn.dataset.s !== s));
-    });
+    const selTab = (s) => {
+      tabs.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.s === s));
+      Object.keys(panes).forEach((k) => root.querySelector('#' + panes[k]).classList.toggle('hidden', k !== s));
+    };
+    tabs.querySelectorAll('button').forEach((btn) => btn.onclick = () => selTab(btn.dataset.s));
     // Dynamic row helpers.
     const portRow = (v) => kvRow('ccPorts', [
       { ph: tr('dk.host_port'), val: v && v.h }, { sep: '→' }, { ph: tr('dk.container_port'), val: v && v.c },
@@ -158,12 +180,22 @@ function dkCreateModal(info, networks, opts) {
         + `<button type="button" class="rm">×</button>`;
       const sel = row.querySelector('.nr-net'), mac = row.querySelector('.nr-mac'), ip = row.querySelector('.nr-ip');
       const ipgenBtn = row.querySelector('.nr-ipgen');
+      const macgenBtn = row.querySelector('.nr-macgen');
       if (def) sel.value = def;
-      mac.value = (v && v.mac) || randMac();
+      // dn7 attaches with no MAC/IP — never prefill a random MAC there (dn7
+      // rejects any networking_config), and hide the MAC field + dice button.
+      if (isDn7) {
+        const macField = mac.closest('.ifield') || mac;
+        macField.style.display = 'none';
+        mac.disabled = true;
+      } else {
+        mac.value = (v && v.mac) || randMac();
+      }
       const subnet = () => { const o = sel.options[sel.selectedIndex]; return o ? (o.dataset.subnet || '') : ''; };
       // The default `bridge` (and any subnet-less network) can't take a static
       // IPv4 — disable the field there so the form matches what Docker allows.
-      const supportsIp = () => sel.value !== 'bridge' && !!subnet();
+      // dn7's built-in network never takes a static IPv4 either.
+      const supportsIp = () => !isDn7 && sel.value !== 'bridge' && !!subnet();
       const syncIp = () => {
         const ok = supportsIp();
         ip.disabled = !ok;
@@ -175,7 +207,7 @@ function dkCreateModal(info, networks, opts) {
       else if (v && v.genip && supportsIp()) { const g = randIpFromSubnet(subnet()); if (g) ip.value = g; }
       syncIp();
       sel.onchange = () => { syncIp(); if (supportsIp() && !ip.value) { const g = randIpFromSubnet(subnet()); if (g) ip.value = g; } refreshNetUI(); };
-      row.querySelector('.nr-macgen').onclick = () => { mac.value = randMac(); mac.dispatchEvent(new Event('input', { bubbles: true })); };
+      macgenBtn.onclick = () => { mac.value = randMac(); mac.dispatchEvent(new Event('input', { bubbles: true })); };
       ipgenBtn.onclick = () => { if (!supportsIp()) return; const g = randIpFromSubnet(subnet()); if (g) { ip.value = g; ip.dispatchEvent(new Event('input', { bubbles: true })); } else toast(tr('dk.ipv4_need_subnet'), 'err'); };
       row.querySelector('.rm').onclick = () => { row.remove(); refreshNetUI(); };
       $('ccNets').appendChild(row);
@@ -205,7 +237,7 @@ function dkCreateModal(info, networks, opts) {
         }
         if (cfg.image) sel.value = cfg.image;
       };
-      applyImg(); setTimeout(applyImg, 80);
+      applyImg(); // immediate; loadImages re-asserts it once the list arrives
       // Editing can't change the image (recreating with a different image is
       // what "Upgrade" is for) — lock the select so it's clearly read-only.
       const img = $('ccImg');
@@ -231,21 +263,75 @@ function dkCreateModal(info, networks, opts) {
     } else {
       // New container: pre-add the default bridge network (random MAC). The
       // default bridge can't take a static IPv4, so none is generated for it.
-      netRow({ network: 'bridge' });
+      // (On the dn7 runtime there is no `bridge` — fall back to the built-in.)
+      netRow({ network: netList.some((n) => n.name === 'bridge') ? 'bridge' : (netList[0] || {}).name });
     }
+    // Row validation: truly empty rows are dropped silently at submit, but a
+    // half-filled or malformed row blocks submit — the row is highlighted and a
+    // toast names the offending tab (instead of silently discarding the data).
+    const rowSt = {
+      ports: (row) => {
+        const [h, c] = Array.from(row.querySelectorAll('input:not([type="checkbox"])')).map((i) => i.value.trim());
+        if (!h && !c) return 'empty';
+        return (isPortNum(h) && isPortNum(c)) ? 'ok' : 'bad';
+      },
+      env: (row) => {
+        const [k, vv] = Array.from(row.querySelectorAll('input')).map((i) => i.value.trim());
+        if (!k && !vv) return 'empty';
+        return /^[^=\s]+$/.test(k) ? 'ok' : 'bad';
+      },
+      vol: (row) => {
+        const isVol = row.querySelector('.vr-type').value === 'vol';
+        const src = isVol ? row.querySelector('.vr-vol').value : row.querySelector('.vr-host').value.trim();
+        const ctn = row.querySelector('.vr-ctn').value.trim();
+        if (!src && !ctn) return 'empty';
+        if (!src || !ctn.startsWith('/')) return 'bad';
+        return (isVol || src.startsWith('/')) ? 'ok' : 'bad';
+      },
+      net: (row) => {
+        const net = row.querySelector('.nr-net').value;
+        const mac = row.querySelector('.nr-mac').value.trim();
+        const ip = row.querySelector('.nr-ip').value.trim();
+        if (!net) return 'empty';
+        if (mac && !isMac(mac)) return 'bad';
+        if (ip) {
+          if (!isIPv4(ip)) return 'bad';
+          const sub = (netList.find((x) => x.name === net) || {}).subnet;
+          if (sub && !ipInSubnet(ip, sub)) { ccBadMsg = ccBadMsg || tr('dk.net_ip_outside', { ip, net, subnet: sub }); return 'bad'; }
+        }
+        return 'ok';
+      },
+    };
+    let ccBadMsg = null;
+    const ccValidate = () => {
+      ccBadMsg = null;
+      const groups = [
+        { tab: 'net', id: 'ccNets', row: '.netrow', st: rowSt.net, label: tr('dk.tab_networks') },
+        { tab: 'ports', id: 'ccPorts', row: '.kvrow', st: rowSt.ports, label: tr('dk.tab_ports') },
+        { tab: 'vol', id: 'ccVol', row: '.volrow', st: rowSt.vol, label: tr('dk.tab_volumes') },
+        { tab: 'env', id: 'ccEnv', row: '.kvrow', st: rowSt.env, label: tr('dk.tab_env') },
+      ];
+      let first = null;
+      groups.forEach((g) => Array.from($(g.id).querySelectorAll(g.row)).forEach((row) => {
+        const s = g.st(row);
+        row.classList.toggle('bad', s === 'bad');
+        if (s === 'bad' && !first) first = g;
+      }));
+      if (!first) return true;
+      selTab(first.tab);
+      toast((first.tab === 'net' && ccBadMsg) || tr('dk.rows_invalid', { tab: first.label }), 'err');
+      return false;
+    };
+    // Editing a highlighted row clears its error mark right away.
+    ['ccNets', 'ccPorts', 'ccVol', 'ccEnv'].forEach((id) => ['input', 'change'].forEach((evn) =>
+      $(id).addEventListener(evn, (e) => { const r = e.target.closest('.kvrow,.netrow'); if (r) r.classList.remove('bad'); })));
     const doSubmit = () => {
       const image = $('ccImg').value.trim(); if (!image) return toast(tr('dk.need_image'), 'err');
+      if (!ccValidate()) return;
       const ports = readKv('ccPorts').map((r) => ({ host: Number(r[0]), container: Number(r[1]), proto: r.proto || 'tcp', ipv6: r.ipv6 || undefined })).filter((p) => p.host && p.container);
       const env = readKv('ccEnv').map((r) => (r[0] ? r[0] + '=' + (r[1] || '') : '')).filter(Boolean);
       const volumes = readVolumes();
       const networks = readNetworks();
-      // Validate any static IPv4 against its network's declared subnet so a bad
-      // address fails here with a clear message instead of a cryptic docker error.
-      for (const n of networks) {
-        if (!n.ipv4) continue;
-        const sub = (netList.find((x) => x.name === n.network) || {}).subnet;
-        if (sub && !ipInSubnet(n.ipv4, sub)) return toast(tr('dk.net_ip_outside', { ip: n.ipv4, net: n.network, subnet: sub }), 'err');
-      }
       const dns = $('ccDns').value.trim().split(/[\s,]+/).filter(Boolean);
       const cpuShares = Number($('ccCpuShares').value) || 0;
       const cpusV = Number($('ccCpus').value) || 0;
@@ -261,12 +347,14 @@ function dkCreateModal(info, networks, opts) {
       };
       if (opts.replaceName) body.replace = opts.replaceName;
       $('ccGo').disabled = true; $('ccJob').classList.remove('hidden');
-      op('docker', body).then((r) => renderJob($('ccJob'), 'docker', r.op_id, '', { onDone: () => { toast(opts.doneMsg || tr('dk.ctn_created'), 'ok'); close(); switchTab('docker'); }, onError: () => { $('ccGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ccGo').disabled = false; });
+      op('docker', body).then((r) => renderJob($('ccJob'), 'docker', r.op_id, 'docker:create', { onDone: () => { toast(opts.doneMsg || tr('dk.ctn_created'), 'ok'); close(); switchTab('docker'); }, onError: () => { $('ccGo').disabled = false; } })).catch((e) => { toast(e.message, 'err'); $('ccGo').disabled = false; });
     };
     $('ccGo').onclick = () => {
       if (opts.confirmMsg) { confirmDanger(opts.confirmMsg).then((ok) => { if (ok) doSubmit(); }); } else doSubmit();
     };
-    bindDirty('ccGo', root);
+    // Bind on the modal body so the whole 6-tab form is dirty-tracked — modal()
+    // then guards backdrop/X/Escape dismissal behind a discard confirm.
+    bindDirty('ccGo', root.querySelector('.modal-b'));
   }, true);
 }
 
@@ -285,6 +373,12 @@ function randIpFromSubnet(subnet) {
   base[3] = String(2 + Math.floor(Math.random() * 250));
   return base.join('.');
 }
+
+// ---- Shared format validators (used here and by docker-net.js) ----
+function isPortNum(v) { const n = Number(v); return Number.isInteger(n) && n >= 1 && n <= 65535; }
+function isIPv4(s) { const p = String(s || '').split('.'); return p.length === 4 && p.every((o) => /^\d{1,3}$/.test(o) && Number(o) <= 255); }
+function isCidr(s) { const p = String(s || '').split('/'); return p.length === 2 && isIPv4(p[0]) && /^\d{1,2}$/.test(p[1]) && Number(p[1]) <= 32; }
+function isMac(s) { return /^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$/.test(String(s || '')); }
 
 // True if an IPv4 address falls within a CIDR subnet (e.g. 172.20.0.5 in
 // 172.20.0.0/16). Returns true when the subnet is unparseable (skip check).

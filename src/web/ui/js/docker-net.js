@@ -1,9 +1,72 @@
 // Docker: networks + daemon settings tabs (split from docker.js).
-function dkNetworks() {
+// The tab is runtime-aware: the native dn7 runtime has exactly one built-in
+// network and rejects create/rename/delete/static-IP, so instead of offering a
+// toolbox of always-failing actions it shows an explainer card and a read-only
+// list. The full toolbox only renders on the docker runtime.
+function dkNetworks(info) {
   const body = $('dkBody');
-  body.innerHTML = `<div class="sechead"><span class="sp"></span><button class="btn sm" id="dkNetNew">${tr('dk.create_network')}</button><button class="btn sec sm" id="dkRefN">${tr('dk.refresh')}</button></div><div id="dkNList">` + loading() + '</div>';
-  $('dkRefN').onclick = dkNetworks;
-  $('dkNetNew').onclick = () => modal(tr('dk.create_network'), `
+  if (!body) return; // tab left before an async refresh landed — nothing to render into
+  body.innerHTML = loading();
+  const have = info && typeof info === 'object' && ('runtime' in info || 'docker_present' in info);
+  (have ? Promise.resolve(info) : op('docker', { op: 'info' }).catch(() => ({}))).then((inf) => {
+    if (!$('dkBody')) return; // tab left while info was in flight
+    inf = inf || {};
+    const dn7 = inf.runtime === 'dn7';
+    // The docker daemon reporting itself down is NOT the dn7 runtime — don't
+    // mislabel it with the built-in-network explainer. Show a plain error state
+    // (and no create/rename/delete toolbox, all of which would just fail).
+    if (inf.docker_present === false && !dn7) {
+      body.innerHTML = `<div class="sechead"><span class="sp"></span><button class="btn sec sm" id="dkRefN">${tr('dk.refresh')}</button></div>`
+        + `<div class="empty">${tr('dk.daemon_down')}</div>`;
+      $('dkRefN').onclick = () => dkNetworks();
+      return;
+    }
+    const head = dn7
+      ? `<div class="card" style="margin-bottom:14px"><h3 style="margin:0 0 8px;font-size:14px">${tr('dk.dn7_net_title')}</h3>`
+        + `<p class="formnote" style="margin:0 0 6px">${tr('dk.dn7_net_body')}</p>`
+        + `<p class="formnote" style="margin:0">${tr('dk.dn7_net_custom')}</p></div>`
+        + `<div class="sechead"><span class="sp"></span><button class="btn sec sm" id="dkRefN">${tr('dk.refresh')}</button></div>`
+      : `<div class="sechead"><span class="sp"></span><button class="btn sm" id="dkNetNew">${tr('dk.create_network')}</button><button class="btn sec sm" id="dkRefN">${tr('dk.refresh')}</button></div>`;
+    body.innerHTML = head + `<div id="dkNList">${loading()}</div>`;
+    $('dkRefN').onclick = () => dkNetworks(inf);
+    if (!dn7) $('dkNetNew').onclick = () => dkNetCreate(inf);
+    op('docker', { op: 'list_networks' }).then((d) => {
+      let h = `<table class="optable nettbl"><tr><th>${tr('dk.col_name')}</th><th>${tr('dk.col_driver')}</th><th>${tr('dk.col_scope')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
+      (d.networks || []).forEach((n) => {
+        const predefined = dn7 || ['bridge', 'host', 'none'].includes(n.name);
+        const builtin = predefined ? ` <span class="chip">${tr('dk.builtin')}</span>` : '';
+        let acts;
+        if (dn7) {
+          // Actions have no dn7 equivalent — the explainer card above says why.
+          acts = '<span class="mut">-</span>';
+        } else {
+          const rnBtn = predefined
+            ? `<button class="btn sm sec" data-rnbuiltin="1">${tr('dk.rename')}</button>`
+            : `<button class="btn sm sec" data-rn="${esc(n.name)}">${tr('dk.rename')}</button>`;
+          const ipBtn = `<button class="btn sm sec" data-ip="${esc(n.name)}">${tr('dk.net_ippool')}</button>`;
+          const rmBtn = predefined
+            ? `<button class="btn sm danger" data-rmbuiltin="1">${tr('dk.delete')}</button>`
+            : `<button class="btn sm danger" data-rm="${esc(n.name)}">${tr('dk.delete')}</button>`;
+          acts = `<div class="actions">${rnBtn}${ipBtn}${rmBtn}</div>`;
+        }
+        h += `<tr><td data-tip="${esc(n.name)}"><div class="clamp1"><b>${esc(n.name)}</b>${builtin}</div></td><td class="mut">${esc(n.driver)}</td><td class="mut">${esc(n.scope)}</td><td class="act">${acts}</td></tr>`;
+      });
+      $('dkNList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
+      document.querySelectorAll('#dkNList [data-rnbuiltin]').forEach((b) => b.onclick = () => toast(tr('dk.net_builtin_block'), 'err'));
+      document.querySelectorAll('#dkNList [data-rmbuiltin]').forEach((b) => b.onclick = () => toast(tr('dk.net_builtin_block'), 'err'));
+      document.querySelectorAll('#dkNList [data-rn]').forEach((b) => b.onclick = () => dkNetRename(b.dataset.rn, inf));
+      document.querySelectorAll('#dkNList [data-ip]').forEach((b) => b.onclick = () => dkNetIpPool(b.dataset.ip));
+      document.querySelectorAll('#dkNList [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('dk.confirm_rm_net', { name: b.dataset.rm }))) op('docker', { op: 'remove_network', ref: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); dkNetworks(inf); }).catch((e) => toast(e.message, 'err')); });
+      wireCellTips($('dkNList'));
+    }).catch((e) => { $('dkNList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
+  });
+}
+
+// Create-network modal (docker runtime only). Subnet/gateway/range are checked
+// client-side (CIDR / IPv4 / gateway-in-subnet) so a typo fails right here with
+// a highlighted field instead of an opaque daemon error.
+function dkNetCreate(inf) {
+  modal(tr('dk.create_network'), `
     <div class="formgrid">
       <div><label class="lbl">${tr('dk.net_name')}</label><input id="nnName" class="field" placeholder="my-net" /></div>
       <div><label class="lbl">${tr('dk.net_mode')}</label><select id="nnDriver" class="field"><option value="bridge">bridge</option><option value="macvlan">macvlan</option><option value="ipvlan">ipvlan</option><option value="overlay">overlay</option></select></div>
@@ -12,38 +75,28 @@ function dkNetworks() {
       <div class="full"><label class="lbl">${tr('dk.net_iprange')}${tr('dk.optional')}</label><input id="nnRange" class="field mono" placeholder="172.20.5.0/24" /></div>
     </div>
     <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="nnGo">${tr('dk.create')}</button></div>`, (close) => {
-    $('nnGo').onclick = () => op('docker', {
-      op: 'create_network', name: $('nnName').value.trim(), driver: $('nnDriver').value,
-      subnet: $('nnSubnet').value.trim() || undefined, gateway: $('nnGateway').value.trim() || undefined, ip_range: $('nnRange').value.trim() || undefined,
-    }).then(() => { close(); toast(tr('common.created'), 'ok'); dkNetworks(); }).catch((e) => toast(e.message, 'err'));
+    ['nnName', 'nnSubnet', 'nnGateway', 'nnRange'].forEach((id) => $(id).addEventListener('input', () => $(id).classList.remove('bad')));
+    const bad = (id, msg) => { $(id).classList.add('bad'); toast(msg, 'err'); };
+    $('nnGo').onclick = () => {
+      const name = $('nnName').value.trim();
+      const sub = $('nnSubnet').value.trim(), gw = $('nnGateway').value.trim(), rng = $('nnRange').value.trim();
+      if (!name) return bad('nnName', tr('dk.net_need_name'));
+      if (sub && !isCidr(sub)) return bad('nnSubnet', tr('dk.bad_cidr', { v: sub }));
+      if (gw && !isIPv4(gw)) return bad('nnGateway', tr('dk.bad_ipv4', { v: gw }));
+      if (gw && sub && !ipInSubnet(gw, sub)) return bad('nnGateway', tr('dk.net_gw_outside', { ip: gw, subnet: sub }));
+      if (rng && !isCidr(rng)) return bad('nnRange', tr('dk.bad_cidr', { v: rng }));
+      if (rng && sub && !ipInSubnet(rng.split('/')[0], sub)) return bad('nnRange', tr('dk.net_range_outside', { range: rng, subnet: sub }));
+      op('docker', {
+        op: 'create_network', name, driver: $('nnDriver').value,
+        subnet: sub || undefined, gateway: gw || undefined, ip_range: rng || undefined,
+      }).then(() => { close(); toast(tr('common.created'), 'ok'); dkNetworks(inf); }).catch((e) => toast(e.message, 'err'));
+    };
     bindDirty('nnGo');
   });
-  op('docker', { op: 'list_networks' }).then((d) => {
-    let h = `<table class="optable nettbl"><tr><th>${tr('dk.col_name')}</th><th>${tr('dk.col_driver')}</th><th>${tr('dk.col_scope')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
-    (d.networks || []).forEach((n) => {
-      const predefined = ['bridge', 'host', 'none'].includes(n.name);
-      const builtin = predefined ? ` <span class="chip">${tr('dk.builtin')}</span>` : '';
-      const rnBtn = predefined
-        ? `<button class="btn sm sec" data-rnbuiltin="1">${tr('dk.rename')}</button>`
-        : `<button class="btn sm sec" data-rn="${esc(n.name)}">${tr('dk.rename')}</button>`;
-      const ipBtn = `<button class="btn sm sec" data-ip="${esc(n.name)}">${tr('dk.net_ippool')}</button>`;
-      const rmBtn = predefined
-        ? `<button class="btn sm danger" data-rmbuiltin="1">${tr('dk.delete')}</button>`
-        : `<button class="btn sm danger" data-rm="${esc(n.name)}">${tr('dk.delete')}</button>`;
-      h += `<tr><td data-tip="${esc(n.name)}"><div class="clamp1"><b>${esc(n.name)}</b>${builtin}</div></td><td class="mut">${esc(n.driver)}</td><td class="mut">${esc(n.scope)}</td><td class="act"><div class="actions">${rnBtn}${ipBtn}${rmBtn}</div></td></tr>`;
-    });
-    $('dkNList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
-    document.querySelectorAll('#dkNList [data-rnbuiltin]').forEach((b) => b.onclick = () => toast(tr('dk.net_builtin_block'), 'err'));
-    document.querySelectorAll('#dkNList [data-rmbuiltin]').forEach((b) => b.onclick = () => toast(tr('dk.net_builtin_block'), 'err'));
-    document.querySelectorAll('#dkNList [data-rn]').forEach((b) => b.onclick = () => dkNetRename(b.dataset.rn));
-    document.querySelectorAll('#dkNList [data-ip]').forEach((b) => b.onclick = () => dkNetIpPool(b.dataset.ip));
-    document.querySelectorAll('#dkNList [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('dk.confirm_rm_net', { name: b.dataset.rm }))) op('docker', { op: 'remove_network', ref: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); dkNetworks(); }).catch((e) => toast(e.message, 'err')); });
-    wireCellTips($('dkNList'));
-  }).catch((e) => { $('dkNList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
 
 // Rename a network (recreate under the new name; containers are reconnected).
-function dkNetRename(name) {
+function dkNetRename(name, inf) {
   modal(tr('dk.net_rename_title') + name, `
     <label class="lbl">${tr('dk.net_new_name')}</label>
     <input id="rnName" class="field" value="${esc(name)}" />
@@ -54,7 +107,7 @@ function dkNetRename(name) {
       const nn = $('rnName').value.trim();
       if (!nn || nn === name) return;
       if (!await confirmDanger(tr('dk.net_rename_confirm'))) return;
-      op('docker', { op: 'rename_network', ref: name, new_name: nn }).then(() => { toast(tr('dk.net_renamed'), 'ok'); close(); dkNetworks(); }).catch((e) => toast(e.message, 'err'));
+      op('docker', { op: 'rename_network', ref: name, new_name: nn }).then(() => { toast(tr('dk.net_renamed'), 'ok'); close(); dkNetworks(inf); }).catch((e) => toast(e.message, 'err'));
     };
   });
 }
@@ -81,9 +134,15 @@ function dkNetIpPool(name) {
           h += `<tr><td><b>${esc(c.name)}</b></td><td>${ipCell}</td><td class="act">${acts}</td></tr>`;
         });
         $('ipBody').innerHTML = h + '</table>';
+        document.querySelectorAll('#ipBody [data-ipin]').forEach((i) => i.addEventListener('input', () => i.classList.remove('bad')));
         document.querySelectorAll('#ipBody [data-save]').forEach((b) => b.onclick = () => {
-          const ip = (document.querySelector(`#ipBody [data-ipin="${b.dataset.save}"]`) || {}).value;
-          op('docker', { op: 'set_network_ip', ref: b.dataset.save, network: name, ipv4: (ip || '').trim() }).then(() => { toast(tr('common.saved'), 'ok'); load(); }).catch((e) => toast(e.message, 'err'));
+          const inp = document.querySelector(`#ipBody [data-ipin="${b.dataset.save}"]`);
+          const ip = ((inp && inp.value) || '').trim();
+          // Validate the address client-side (format + inside the subnet).
+          const mark = (msg) => { if (inp) inp.classList.add('bad'); toast(msg, 'err'); };
+          if (!isIPv4(ip)) return mark(tr('dk.bad_ipv4', { v: ip }));
+          if (d.subnet && !ipInSubnet(ip, d.subnet)) return mark(tr('dk.net_ip_outside', { ip, net: name, subnet: d.subnet }));
+          op('docker', { op: 'set_network_ip', ref: b.dataset.save, network: name, ipv4: ip }).then(() => { toast(tr('common.saved'), 'ok'); load(); }).catch((e) => toast(e.message, 'err'));
         });
         document.querySelectorAll('#ipBody [data-dc]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('dk.net_confirm_dc'))) op('docker', { op: 'disconnect_network', ref: b.dataset.dc, network: name }).then(() => { toast(tr('dk.op_ok'), 'ok'); load(); }).catch((e) => toast(e.message, 'err')); });
       }).catch((e) => { $('ipBody').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
