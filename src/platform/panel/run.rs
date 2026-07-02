@@ -35,6 +35,16 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     // into its route table and bind the listeners in its own tasks.
     tokio::spawn(async {
         crate::infra::website::edge_autostart().await;
+        // Finish a CLI first-run setup that DEFERRED Let's Encrypt: now that the
+        // edge is serving :80 (so the ACME HTTP-01 challenge can be answered),
+        // issue the console cert if it's still missing. Settings live in `web`,
+        // so read them here (platform) and pass them down to infra.
+        if let Some(s) = crate::web::settings::load() {
+            if s.initialized {
+                crate::infra::website::ensure_console_cert(&s.https_mode, &s.external_address)
+                    .await;
+            }
+        }
     });
 
     // Rebuild the edge route table from the persisted manifests once at startup

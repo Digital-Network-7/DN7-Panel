@@ -96,10 +96,16 @@ fn install_systemd() -> bool {
     if std::fs::write(SYSTEMD_UNIT_PATH, unit).is_err() {
         return false;
     }
-    // Reload + enable (start at boot). Don't `start` here — the foreground
-    // launcher that called us is already bringing the panel up.
-    let _ = run("systemctl", &["daemon-reload"]);
-    let _ = run("systemctl", &["enable", "dn7-panel"]);
+    // Enable at boot WITHOUT the `systemctl` binary: `systemctl enable` for a unit
+    // with `WantedBy=multi-user.target` is just a symlink into that target's
+    // `.wants/` dir. Create it ourselves (idempotent). No `daemon-reload` needed —
+    // systemd reads units fresh at boot, and we don't start it now (the foreground
+    // launcher already brought the panel up).
+    let wants_dir = "/etc/systemd/system/multi-user.target.wants";
+    let _ = std::fs::create_dir_all(wants_dir);
+    let link = format!("{wants_dir}/dn7-panel.service");
+    let _ = std::fs::remove_file(&link); // replace any stale link
+    let _ = std::os::unix::fs::symlink(SYSTEMD_UNIT_PATH, &link);
     true
 }
 
@@ -120,33 +126,29 @@ fn install_cron() -> bool {
             return true;
         }
     }
-    // Fallback: edit root's crontab via `crontab`.
-    if which("crontab") {
-        // Read existing crontab (may be empty), strip any prior dn7 line,
-        // append a fresh one, and load it back.
-        let existing = std::process::Command::new("crontab")
-            .arg("-l")
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default();
+    // Fallback (no /etc/cron.d): write root's crontab spool file DIRECTLY — no
+    // `crontab` binary. Debian/Ubuntu use /var/spool/cron/crontabs, RHEL uses
+    // /var/spool/cron. cron rescans the spool by mtime, so a fresh write is picked
+    // up. The spool format has no user field (unlike cron.d). Idempotent: strip
+    // any prior dn7 line first.
+    for dir in ["/var/spool/cron/crontabs", "/var/spool/cron"] {
+        if !Path::new(dir).is_dir() {
+            continue;
+        }
+        let path = format!("{dir}/root");
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
         let mut lines: Vec<String> = existing
             .lines()
             .filter(|l| !l.contains("dn7-panel"))
             .map(|l| l.to_string())
             .collect();
         lines.push(format!("@reboot {launch}"));
-        let new_tab = format!("{}\n", lines.join("\n"));
-        if let Ok(mut child) = std::process::Command::new("crontab")
-            .arg("-")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-        {
-            use std::io::Write;
-            if let Some(stdin) = child.stdin.as_mut() {
-                let _ = stdin.write_all(new_tab.as_bytes());
-            }
-            let _ = child.wait();
+        let body = format!("{}\n", lines.join("\n"));
+        if std::fs::write(&path, body).is_ok() {
+            let _ = std::fs::set_permissions(
+                &path,
+                std::os::unix::fs::PermissionsExt::from_mode(0o600),
+            );
             return true;
         }
     }
@@ -199,27 +201,6 @@ fn rewrite_rc_local(existing: &str, launch: &str) -> String {
         }
     }
     out
-}
-
-/// Run a command, ignoring output; returns true on a zero exit status.
-fn run(cmd: &str, args: &[&str]) -> bool {
-    std::process::Command::new(cmd)
-        .args(args)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-/// Whether a command exists on PATH.
-fn which(cmd: &str) -> bool {
-    std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("command -v {cmd} >/dev/null 2>&1"))
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
 }
 
 #[cfg(test)]

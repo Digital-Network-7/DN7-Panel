@@ -60,16 +60,37 @@ pub fn set_bytes(done: u64, total: u64) {
     DONE_BYTES.store(done, Ordering::Relaxed);
     TOTAL_BYTES.store(total, Ordering::Relaxed);
 }
-pub fn try_begin() -> bool {
-    IN_PROGRESS
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
-}
 fn end() {
     IN_PROGRESS.store(false, Ordering::SeqCst);
 }
 pub fn in_progress() -> bool {
     IN_PROGRESS.load(Ordering::SeqCst)
+}
+
+/// RAII guard proving this task holds the single in-progress slot. Obtained via
+/// [`try_begin_guard`]; its `Drop` releases the slot on **every** exit path
+/// (success, error, panic), so an owned runner can never leak the flag. The
+/// success path `std::process::exit`s before Drop runs, which is fine — the
+/// process is going away, so the slot doesn't need releasing.
+pub struct InProgressGuard {
+    _private: (),
+}
+
+impl Drop for InProgressGuard {
+    fn drop(&mut self) {
+        end();
+    }
+}
+
+/// Atomically claim the in-progress slot, returning an RAII guard on success or
+/// `None` if an update is already running. This is the single point of mutual
+/// exclusion: callers must hold the returned guard for the whole update and let
+/// it drop to release the slot.
+pub fn try_begin_guard() -> Option<InProgressGuard> {
+    IN_PROGRESS
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+        .then_some(InProgressGuard { _private: () })
 }
 
 // ---------------------------------------------------------------------------
@@ -319,10 +340,20 @@ pub async fn self_update(cfg: &PanelConfig) -> Result<PathBuf> {
 /// on the new version. Downloading BEFORE exiting means a slow network never
 /// leaves the host without a running panel.
 pub async fn run_self_update(cfg: &PanelConfig) {
-    if !try_begin() {
-        tracing::info!("self-update already in progress; ignoring duplicate trigger");
-        return;
+    match try_begin_guard() {
+        Some(guard) => run_self_update_owned(cfg, guard).await,
+        None => {
+            tracing::info!("self-update already in progress; ignoring duplicate trigger");
+        }
     }
+}
+
+/// Same as [`run_self_update`] but the caller has **already** claimed the
+/// in-progress slot and passes ownership of the [`InProgressGuard`]. Used by the
+/// apply handler, which must claim the slot before spawning so a concurrent
+/// request can be rejected synchronously instead of both reporting success. The
+/// guard releases the slot on every error/return path via its `Drop`.
+pub async fn run_self_update_owned(cfg: &PanelConfig, guard: InProgressGuard) {
     match self_update(cfg).await {
         Ok(_) => {
             tracing::info!("upgrade complete; exiting for restart");
@@ -336,7 +367,7 @@ pub async fn run_self_update(cfg: &PanelConfig) {
             set_phase(PHASE_IDLE);
             set_progress(0);
             set_bytes(0, 0);
-            end();
+            drop(guard);
         }
     }
 }
@@ -377,4 +408,33 @@ pub fn spawn_periodic(cfg: PanelConfig) {
             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The apply handler relies on `try_begin_guard` being the single point of
+    // mutual exclusion: exactly one caller may hold the slot, and dropping the
+    // guard must release it (RAII) so a later attempt can succeed. This is the
+    // invariant that stops two concurrent /api/update/apply requests from both
+    // reporting `started: true`.
+    #[test]
+    fn guard_is_exclusive_and_released_on_drop() {
+        // NOTE: touches the process-global IN_PROGRESS flag; keep this the only
+        // test that does so to avoid cross-test interference.
+        let g = try_begin_guard().expect("first claim succeeds");
+        assert!(in_progress(), "slot is held while the guard is alive");
+        assert!(
+            try_begin_guard().is_none(),
+            "a second claim is rejected while the guard is held"
+        );
+        drop(g);
+        assert!(!in_progress(), "dropping the guard releases the slot");
+
+        // A fresh claim works again now that the slot is free.
+        let g2 = try_begin_guard().expect("re-claim after release succeeds");
+        drop(g2);
+        assert!(!in_progress());
+    }
 }

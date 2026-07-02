@@ -149,33 +149,20 @@ pub fn write_public(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> 
     }))
 }
 
-/// Install a global `dn7` CLI dispatcher (best-effort; needs root). It routes
-/// `dn7 panel <args...>` to the canonical panel binary, so operators get
-/// `dn7 panel` (status banner), `dn7 panel reset`, `dn7 panel version`, etc.
-/// Rewritten on each supervisor launch so it always points at the install path;
-/// future DN7 products can add their own `dn7 <product>` subcommands.
+/// Install the global `dn7` CLI as a symlink to the panel binary (best-effort;
+/// needs root). There is ONE binary: launched as `dn7` (via this symlink) it
+/// dispatches to the unified CLI (crate `dn7-cli`, by argv[0]); as `dn7-panel`
+/// it runs the panel/supervisor. Rewritten on each supervisor launch so it
+/// always points at the canonical install path.
 pub fn install_global_cli() {
-    let script = format!(
-        "#!/bin/sh\n\
-# DN7 global CLI dispatcher (auto-generated; do not edit).\n\
-case \"$1\" in\n\
-  panel) shift; exec {INSTALL_BIN} \"$@\" ;;\n\
-  \"\"|-h|--help|help) echo \"usage: dn7 panel [reset|version]\"; exit 0 ;;\n\
-  *) echo \"dn7: unknown component '$1' (try: dn7 panel)\" >&2; exit 1 ;;\n\
-esac\n"
-    );
     for dir in ["/usr/local/bin", "/usr/bin"] {
         if !std::path::Path::new(dir).is_dir() {
             continue;
         }
-        let path = std::path::Path::new(dir).join("dn7");
-        if std::fs::write(&path, &script).is_ok() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
-            }
-            tracing::info!(path = %path.display(), "installed global `dn7` CLI");
+        let link = std::path::Path::new(dir).join("dn7");
+        let _ = std::fs::remove_file(&link); // replace any stale link/shim
+        if std::os::unix::fs::symlink(INSTALL_BIN, &link).is_ok() {
+            tracing::info!(path = %link.display(), "installed global `dn7` CLI (symlink → panel)");
             return;
         }
     }
@@ -219,8 +206,8 @@ fn clean_deleted(p: &std::path::Path) -> PathBuf {
 /// must never drift with the launch directory or land in a shared/downloads
 /// folder.
 pub fn default_base_dir() -> PathBuf {
-    // An explicit override wins so every path helper (data/run/log + the nginx /
-    // mysql / web stores that resolve through here) shares one base with
+    // An explicit override wins so every path helper (data/run/log + the website
+    // (`nginx/`) and web stores that resolve through here) shares one base with
     // `PanelConfig::from_env`. Without this the supervisor's pid/lock/version
     // would honor the override while persisted credentials/state stayed under
     // /var/dn7/panel — a split that breaks isolated/test deployments.

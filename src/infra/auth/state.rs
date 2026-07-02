@@ -75,7 +75,9 @@ impl AuthState {
         self.sessions.issue(user)
     }
 
-    /// Validate a bearer token (sliding expiry).
+    /// Validate a bearer token (sliding expiry). Test-only now that the web layer
+    /// authenticates via `kernel::authed_user` (which also accepts the CLI token).
+    #[cfg(test)]
     pub fn valid(&self, token: &str) -> bool {
         self.sessions.identity(token).is_some()
     }
@@ -133,9 +135,13 @@ impl AuthState {
         self.rate.clear(&format!("u:{user}"));
     }
 
-    /// Mint a one-time login challenge nonce (hex). The client proves knowledge
-    /// of the password by returning `sha256(nonce:password)` so the cleartext
-    /// password never crosses the (plaintext-HTTP) wire.
+    /// Mint a one-time login challenge nonce (hex). The client answers with a
+    /// static password verifier (`deriveVerifier(salt, password, kdf)`) — never
+    /// the cleartext password — alongside this nonce; the nonce is single-use so
+    /// the exact request can't be replayed. NOTE: the verifier is NOT bound to
+    /// the nonce, so a captured verifier can still be replayed with a fresh nonce
+    /// over a plaintext / untrusted-TLS channel; closing that residual needs a
+    /// PAKE — see `docs/design/pake-auth-proposal.md`.
     pub fn issue_challenge(&self) -> String {
         self.challenges.issue()
     }

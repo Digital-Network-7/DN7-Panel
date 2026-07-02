@@ -4,7 +4,7 @@
 //! revoke sessions → audit) lives here so no entry point can forget a step.
 
 use crate::app::ports::account::AccountEnv;
-use crate::core::identity::{valid_os_secret, valid_pw_format, Principal};
+use crate::core::identity::{valid_os_secret, valid_pw_format, valid_pw_kdf, Principal};
 use crate::core::Error;
 
 /// A self-service password change request: the client-computed new verifier
@@ -35,7 +35,7 @@ pub(crate) async fn change_password(
     who: &Principal,
     ch: PasswordChange<'_>,
 ) -> Result<(), Error> {
-    if !valid_pw_format(ch.salt, ch.hash) {
+    if !valid_pw_format(ch.salt, ch.hash) || !valid_pw_kdf(ch.kdf) {
         return Err(Error::PasswordMalformed);
     }
     // The plaintext (system users only) is fed to `chpasswd` over stdin; reject

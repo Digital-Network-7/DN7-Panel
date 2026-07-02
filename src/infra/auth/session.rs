@@ -17,6 +17,12 @@ pub(super) struct SessionStore {
     ttl_secs: AtomicU64,
     /// When true, the session map is persisted to disk.
     persist: bool,
+    /// Serializes persistence. Without it, `save` clones the map under the map
+    /// lock but writes OUTSIDE it, so a stale snapshot (cloned before a
+    /// concurrent `revoke`) could land on disk last and resurrect a revoked
+    /// session after a restart. Holding this across snapshot+write makes the
+    /// last writer always snapshot the freshest map.
+    write_lock: Mutex<()>,
 }
 
 impl SessionStore {
@@ -63,6 +69,11 @@ impl SessionStore {
         if !self.persist {
             return;
         }
+        // Serialize saves: take the snapshot AND write while holding write_lock,
+        // so two concurrent saves can't reorder (a stale snapshot can't be the
+        // last write). The snapshot is taken under this lock, so whichever save
+        // writes last also reflects the freshest map.
+        let _w = self.write_lock.lock().unwrap_or_else(|p| p.into_inner());
         let snapshot = self.map.lock().unwrap_or_else(|p| p.into_inner()).clone();
         let _ = super::write_sessions(&snapshot);
     }

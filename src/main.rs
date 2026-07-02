@@ -1,7 +1,6 @@
 mod app;
 mod contracts;
 mod core;
-mod edge;
 mod infra;
 mod platform;
 mod web;
@@ -22,6 +21,62 @@ use crate::platform::procfile::RolePaths;
 /// - `panel`  => panel role (runs the web console). Spawned by the supervisor
 ///   with inherited stdio; never daemonizes itself.
 fn main() -> Result<()> {
+    // If we were re-exec'd as a container init (`__dn7init ...` from the dn7
+    // runtime's spawn_init), run it and never return — this MUST happen before
+    // any thread / async runtime starts, so the init runs in a pristine
+    // single-threaded process image.
+    dn7_container::container::reexec::run_init_if_invoked();
+
+    // Privilege-dropping file helper (the pure-Rust replacement for `su`): the
+    // panel re-execs itself as `__fshelper <op> <user> <path>` to run a single
+    // file operation as a target user. Must short-circuit before ANY setup
+    // (no logging / install / async runtime) — it just drops privileges + acts.
+    if std::env::args().nth(1).as_deref() == Some("__fshelper") {
+        std::process::exit(crate::infra::file::run_fs_helper_main());
+    }
+    // Same re-exec pattern for the web terminal: `__webshell <user>` drops to the
+    // mapped system user in a fresh single-threaded process, then execs their
+    // login shell — the pure-Rust replacement for `su - <user>`.
+    if std::env::args().nth(1).as_deref() == Some("__webshell") {
+        std::process::exit(crate::infra::file::run_web_shell_main());
+    }
+
+    // Unified-CLI multiplexing by argv[0] basename: one binary serves the panel,
+    // the `dn7` CLI (via the `/usr/local/bin/dn7` symlink), and `dn7crun`. So the
+    // CLI links in (crate dn7-cli) rather than shipping a second binary.
+    let prog = std::env::args()
+        .next()
+        .and_then(|a0| {
+            std::path::Path::new(&a0)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
+    if prog == "dn7" {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        // `dn7 version` reports the PRODUCT version (this binary), not the CLI
+        // crate's, so it tracks the release-stamped version.
+        if matches!(
+            args.first().map(String::as_str),
+            Some("version") | Some("-V") | Some("--version")
+        ) {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        std::process::exit(dn7_cli::run(&args));
+    }
+    #[cfg(target_os = "linux")]
+    if prog == "dn7crun" {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        std::process::exit(match dn7_container::cli::run(&args) {
+            Ok(code) => code,
+            Err(msg) => {
+                eprintln!("dn7crun: {msg}");
+                1
+            }
+        });
+    }
+
     let role = std::env::args().nth(1);
 
     // CLI subcommands (version/reset/port/access/entry) short-circuit before any
@@ -53,9 +108,34 @@ fn main() -> Result<()> {
     paths::ensure_dirs();
     // Install the global `dn7` CLI dispatcher (best-effort; needs root).
     paths::install_global_cli();
-    // Install redundant boot autostart (systemd + cron@reboot + rc.local) so the
-    // panel comes back after a reboot. Best-effort + idempotent.
+
+    // First-run setup: while UNINITIALIZED, run the interactive CLI wizard here
+    // in the TTY-attached top-level process. It hard-exits (via `?`) if a
+    // prerequisite is missing, the operator declines the mandatory :80/:443
+    // takeover, or there's no TTY — so we never serve a half-configured panel,
+    // and (running before `install_all`) an aborted setup leaves no reboot loop.
+    // Runs BEFORE the single-instance guard: on a fresh init we hand off to the
+    // service manager and exit, so we must not be holding the instance lock.
+    // A dedicated one-off runtime (not `run_async`, which would double-init
+    // tracing). Returns `true` on a fresh init.
+    let did_init = {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        rt.block_on(crate::platform::init_cli::run_if_needed(&cfg))?
+    };
+
+    // Install redundant boot autostart (systemd unit + symlink / cron@reboot /
+    // rc.local) so the panel comes back after a reboot. Best-effort + idempotent.
     autostart::install_all();
+
+    // Fresh init: register + START the panel via the host service manager
+    // (systemd/service), print the management commands, then EXIT — the service
+    // now runs the panel (so `systemctl status` is truthful + no double instance).
+    if did_init {
+        crate::platform::init_cli::register_and_start_service();
+        return Ok(());
+    }
 
     // Single-instance guard (with newer-build takeover). Exit early if another
     // instance is already running and we're not replacing it.
@@ -204,14 +284,34 @@ fn init_tracing() {
 }
 
 async fn run_panel(cfg: PanelConfig) -> Result<()> {
+    // Never serve while UNINITIALIZED. First-run setup runs via the CLI wizard in
+    // the TTY-attached top-level process (platform::init_cli), never here — the
+    // panel role can only reach this point uninitialized after `dn7-panel reset`
+    // clears the account. If we served anyway the entry gate would 404 every
+    // request (gate.rs) — a silently-bricked console. Instead fail loudly and
+    // exit non-zero so the service shows failed and the journal tells the operator
+    // exactly how to re-initialize, rather than respawning a 404-serving role.
+    if !web::console_info(cfg.web_port).initialized {
+        tracing::error!(
+            "DN7 面板尚未初始化，拒绝以未初始化状态提供服务 — 请在终端中运行 `dn7-panel` 重新初始化。 \
+             DN7 Panel is UNINITIALIZED; refusing to serve. Run `dn7-panel` in a terminal to re-initialize."
+        );
+        return Err(anyhow::anyhow!(
+            "panel is uninitialized — run `dn7-panel` in a terminal to initialize"
+        ));
+    }
     tracing::info!(web_port = cfg.web_port, "panel role starting");
     panel::run(cfg).await
 }
 
 /// Reset to the uninitialized state (subcommand `reset`): clears the account +
-/// credentials and re-arms a fresh init token, so the next launch shows the
-/// init wizard again. Restricted to the OS user that first initialized the
-/// console, or root.
+/// credentials, so the next launch re-runs the first-run CLI wizard. Restricted
+/// to the OS user that first initialized the console, or root.
+///
+/// There is no web init token any more (first-run setup is CLI-only), so we must
+/// NOT leave a running panel behind: a serving-but-uninitialized panel 404s every
+/// request (the entry gate refuses to expose anything pre-init). Instead we STOP
+/// the running instance and tell the operator to re-run `dn7-panel` in a terminal.
 fn run_reset() -> Result<()> {
     let uid = current_uid();
     match web::console_owner_uid() {
@@ -225,15 +325,29 @@ fn run_reset() -> Result<()> {
         }
         _ => {}
     }
-    let token = web::reset_console()?;
+    // `reset()` returns an empty string now (the web init token is gone); ignore
+    // it and never print a bogus "new token".
+    let _ = web::reset_console()?;
+    // Bring the running panel down rather than leaving a role that would only serve
+    // 404s while uninitialized. When systemd-managed, STOP THE SERVICE (systemctl)
+    // so `Restart=always` doesn't immediately respawn an uninitialized role into a
+    // restart loop; otherwise signal the running process directly.
+    if std::path::Path::new("/etc/systemd/system/dn7-panel.service").exists() {
+        let _ = std::process::Command::new("systemctl")
+            .args(["stop", "dn7-panel"])
+            .status();
+    } else {
+        supervisor::stop_running_instance(&PanelConfig::from_env());
+    }
     println!();
-    println!("  DN7 Panel 已重置为未初始化状态。");
-    println!("    新的初始化令牌 → {token}");
-    println!("  面板重启后会在横幅打印初始化地址，正在重启……");
+    println!("  DN7 Panel 已重置为未初始化状态，正在运行的面板已停止。");
+    println!("  请在终端中前台运行 `dn7-panel` 以重新初始化（交互式向导）。");
     println!();
-    // Stop the panel-role child so the supervisor respawns it (it reloads
-    // web.json on start and prints the fresh init banner).
-    restart_panel_child();
+    println!(
+        "  DN7 Panel has been reset to the uninitialized state; the running panel was stopped."
+    );
+    println!("  Run `dn7-panel` in a foreground terminal to re-initialize (interactive wizard).");
+    println!();
     Ok(())
 }
 
@@ -241,18 +355,6 @@ fn run_reset() -> Result<()> {
 fn current_uid() -> u32 {
     // SAFETY: getuid() just reads the process's real uid; always safe.
     unsafe { libc::getuid() }
-}
-
-/// Signal the running panel-role child to exit so the supervisor relaunches it
-/// with the freshly-reset credentials. No-op when nothing is running.
-fn restart_panel_child() {
-    let cfg = PanelConfig::from_env();
-    let panel = RolePaths::new(&cfg.runtime_dir, "panel");
-    if let Some(pid) = procfile::read_pid(&panel.pid) {
-        const SIGTERM: i32 = 15;
-        procfile::signal_pid(pid, SIGTERM);
-        println!("  已通知运行中的面板重启以应用新密码。");
-    }
 }
 
 async fn run_supervisor(cfg: PanelConfig) -> Result<()> {

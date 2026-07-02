@@ -9,7 +9,7 @@
 //!
 //! Permissions are derived purely from the mapped system user: non-admin users
 //! get the terminal + file manager **executed as their own uid** (OS perms
-//! enforce access), and every admin-only capability (docker/nginx/mysql/update/
+//! enforce access), and every admin-only capability (docker/website/update/
 //! branding/user-management) is denied for them server-side.
 
 use crate::app::ports::users::UsersEnv;
@@ -34,6 +34,17 @@ pub(crate) use crate::infra::store::users::{load, save};
 /// a partial one. Poison is recovered (the data is reloaded from disk each
 /// time, so there's no in-memory invariant a panic could corrupt).
 static USERS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Serializes the ENTIRE `create_with` body so two concurrent same-name creates
+/// can't interleave their OS provisioning. The unlocked `exists()` fast-check
+/// alone is racy (both racers pass it, both provision, the loser adopts+clobbers
+/// the winner's fresh account); holding this async lock across the whole create
+/// forces the loser to run after the winner commits, so its fast-check sees the
+/// winner and bails before touching the OS. `tokio::Mutex` (not `std`) because
+/// the guard is held across `.await` points; `LazyLock` because `Mutex::new`
+/// isn't a const fn usable in a `static`.
+static CREATE_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 /// Run an atomic read-modify-write against users.json under `USERS_LOCK`.
 fn mutate<T>(f: impl FnOnce(&mut Vec<PanelUser>) -> Result<T>) -> Result<T> {
@@ -85,7 +96,9 @@ impl UsersEnv for LiveUsersEnv {
 /// Conservative (NAME_REGEX-style) so it can't smuggle shell/flag characters.
 /// Validators live in the domain layer; re-exported so existing call sites
 /// (`crate::app::users::valid_username` / `valid_pw_format`) stay stable.
-pub(crate) use crate::core::identity::{valid_os_secret, valid_pw_format, valid_username};
+pub(crate) use crate::core::identity::{
+    valid_os_secret, valid_pw_format, valid_pw_kdf, valid_username,
+};
 
 /// Create a panel user **and** the backing system account. `role` is "admin"
 /// (sudo) or "user". The OS password is left locked; the panel password is
@@ -112,7 +125,22 @@ pub async fn create(req: &NewUser<'_>) -> Result<PanelUser> {
 /// Create a panel user against `env` (the live infra, or a test fake). Order:
 /// validate → fast-fail existence → provision the OS account → persist, with a
 /// re-check under the store lock to close the create-vs-create race.
+///
+/// `provision` refuses to *adopt* a pre-existing **foreign** system account
+/// (one DN7 didn't create — e.g. `postgres`/`www-data`); that refusal surfaces
+/// here as a `Persist` error and stops the create before anything is stored, so
+/// the panel never resets a service account's password or hands it sudo.
 async fn create_with(env: &impl UsersEnv, req: &NewUser<'_>) -> Result<PanelUser> {
+    // Serialize the WHOLE create so two same-name racers can't interleave: without
+    // this, both pass the unlocked `exists()` fast-check, both provision, and the
+    // loser's provision ADOPTS the winner's just-created .dn7-owned account —
+    // overwriting its OS password and unioning sudo — before the under-lock
+    // re-check rejects it (and rollback is skipped on UserExists). Holding the
+    // lock across the body makes the loser run entirely after the winner commits,
+    // so its `exists()` fast-check sees the committed winner and returns
+    // UserExists BEFORE any provisioning touches the OS. (`save` invalidates the
+    // users.json read cache, so the post-commit `exists()` re-read is never stale.)
+    let _create_guard = CREATE_LOCK.lock().await;
     validate_new_user(req)?;
     // Fast-fail before any system-account side effects; re-checked under the
     // mutation lock below to close the create-vs-create race.
@@ -189,7 +217,7 @@ fn validate_new_user(req: &NewUser<'_>) -> Result<()> {
     if !matches!(req.role, "admin" | "user") {
         return Err(Error::RoleInvalid);
     }
-    if !valid_pw_format(req.pw_salt, req.pw_hash) {
+    if !valid_pw_format(req.pw_salt, req.pw_hash) || !valid_pw_kdf(req.pw_kdf) {
         return Err(Error::PasswordMalformed);
     }
     // The plaintext is used to set the backing OS password via `chpasswd`;
@@ -248,6 +276,9 @@ mod tests {
         removed: RefCell<Vec<String>>,
         /// When set, provision() fails (simulates a useradd error).
         fail_provision: bool,
+        /// When set, provision() refuses to adopt a pre-existing foreign system
+        /// account (simulates infra's `system_account_adoptable` gate).
+        provision_refuses_foreign: bool,
         /// Extra username to inject into the store right before the locked
         /// re-check, to simulate a concurrent create winning the race.
         race_inject: Option<String>,
@@ -255,6 +286,9 @@ mod tests {
 
     impl UsersEnv for FakeEnv {
         async fn provision(&self, u: &str, _f: &str, _a: bool, _p: &str) -> anyhow::Result<()> {
+            if self.provision_refuses_foreign {
+                anyhow::bail!(crate::core::identity::foreign_account_refused_msg(u));
+            }
             if self.fail_provision {
                 anyhow::bail!("useradd failed");
             }
@@ -309,7 +343,7 @@ mod tests {
             full_name: "Test User",
             pw_salt: salt,
             pw_hash: hash,
-            pw_kdf: "",
+            pw_kdf: "s256:30000",
             password: "s3cret-pw",
         }
     }
@@ -358,8 +392,11 @@ mod tests {
 
     #[tokio::test]
     async fn create_loses_race_rechecks_under_lock() {
-        // Passes the fast-fail check, provisions, then a concurrent create wins
-        // (injected into the store) → the locked re-check rejects with UserExists.
+        // Defense-in-depth: CREATE_LOCK now serializes creates so this race can't
+        // arise in production, but the under-lock re-check remains the last line of
+        // defense. `race_inject` injects the winner INSIDE `mutate` (past the
+        // fast-check + provision), so the locked re-check still rejects with
+        // UserExists, and the loser must NOT roll back the shared OS account.
         let env = FakeEnv {
             race_inject: Some("alice".into()),
             ..Default::default()
@@ -391,6 +428,34 @@ mod tests {
             .unwrap_err();
         assert!(matches!(e, Error::Persist(_)));
         assert!(env.users.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_refusing_foreign_account_persists_nothing() {
+        // A name that collides with a real service account (e.g. `postgres`):
+        // infra refuses to adopt it → create must surface the error, store no
+        // panel record, and NOT attempt a destructive rollback of that account.
+        let env = FakeEnv {
+            provision_refuses_foreign: true,
+            ..Default::default()
+        };
+        let (s, h) = fixtures();
+        let e = create_with(&env, &req("postgres", "admin", &s, &h))
+            .await
+            .unwrap_err();
+        // The bilingual refusal detail is carried through as a Persist error.
+        match e {
+            Error::Persist(detail) => {
+                assert!(detail.contains("拒绝接管"));
+                assert!(detail.contains("refusing to adopt"));
+            }
+            other => panic!("expected Persist refusal, got {other:?}"),
+        }
+        assert!(env.users.borrow().is_empty(), "no panel record stored");
+        assert!(
+            env.removed.borrow().is_empty(),
+            "must not delete the foreign account"
+        );
     }
 
     #[tokio::test]

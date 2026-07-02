@@ -6,7 +6,7 @@
 
 use crate::platform::config::PanelConfig;
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs, UdpSocket};
+use std::net::{Ipv6Addr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::time::Duration;
 
 /// Print the console banner. Reads (seeding on first run) the web settings, then
@@ -36,10 +36,25 @@ pub fn print(cfg: &PanelConfig) {
         } else {
             info.external_address.clone()
         };
+        // A bare IPv6 literal must be bracketed to be a valid, browser-openable
+        // URL authority (`http://[2001:db8::1]/`); this also matches the route
+        // key the edge stores for the console host.
+        let host = bracket_if_ipv6(&host);
         println!("  │  控制台 console  →  {scheme}://{host}/");
     }
     println!("  └──────────────────────────────────────────────");
     println!();
+}
+
+/// Bracket a bare IPv6 literal (`2001:db8::1` → `[2001:db8::1]`) so it forms a
+/// valid URL authority; a hostname, IPv4 literal, or already-bracketed value is
+/// returned unchanged.
+fn bracket_if_ipv6(host: &str) -> String {
+    if !host.starts_with('[') && host.parse::<Ipv6Addr>().is_ok() {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
 }
 
 /// The host's primary outbound (LAN) IP, via the standard UDP-connect trick:

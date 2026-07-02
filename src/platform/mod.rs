@@ -12,6 +12,7 @@ pub(crate) mod banner;
 pub(crate) mod config;
 pub(crate) mod daemon;
 pub(crate) mod guardian;
+pub(crate) mod init_cli;
 pub(crate) mod logrotate;
 pub(crate) mod panel;
 pub(crate) mod paths;
