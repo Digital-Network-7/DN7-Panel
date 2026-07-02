@@ -10,6 +10,7 @@ use super::*;
 pub(crate) async fn acme_http01<F, Fut>(
     op_id: &str,
     host: &str,
+    key_type: &str,
     serve: F,
 ) -> Result<(String, String)>
 where
@@ -49,8 +50,8 @@ where
     serve(to_serve.clone()).await?;
 
     // Pre-flight on THIS host before involving Let's Encrypt: fetch the challenge
-    // over localhost:80 with the right Host header. If our nginx block isn't the
-    // one answering (a foreign/own vhost is shadowing it, or conf.d isn't served),
+    // over localhost:80 with the right Host header. If the built-in edge isn't the
+    // one answering (a foreign vhost is shadowing it, or the route isn't served),
     // this reproduces LE's 404 locally and fails with an actionable message —
     // without consuming a real validation attempt / rate limit.
     if let Some((token, keyauth)) = to_serve.first() {
@@ -81,7 +82,7 @@ where
         match state.status {
             OrderStatus::Ready => {
                 op_push(op_id, &pmsg("ng.verify_ok", &[]));
-                break acme_issue_cert(&mut order, host).await?;
+                break acme_issue_cert(&mut order, host, key_type).await?;
             }
             OrderStatus::Invalid => {
                 let detail = acme_failure_detail(&mut order).await;
@@ -135,8 +136,10 @@ pub(crate) async fn acme_collect_http01(
 pub(crate) async fn acme_issue_cert(
     order: &mut instant_acme::Order,
     host: &str,
+    key_type: &str,
 ) -> Result<(String, String)> {
-    let key_pair = rcgen::KeyPair::generate().map_err(|e| anyhow!("生成私钥失败：{e}"))?;
+    let key_pair = rcgen::KeyPair::generate_for(super::issue::key_alg(key_type))
+        .map_err(|e| anyhow!("生成私钥失败：{e}"))?;
     let mut csr_params = rcgen::CertificateParams::new(vec![host.to_string()])
         .map_err(|e| anyhow!("生成 CSR 参数失败：{e}"))?;
     csr_params
@@ -155,17 +158,17 @@ pub(crate) async fn acme_issue_cert(
 
 /// Pre-flight the HTTP-01 challenge against THIS host (localhost:80, with the
 /// domain in the Host header) so we serve the same server block Let's Encrypt
-/// will hit. A 404/mismatch here means a non-panel nginx vhost is shadowing the
-/// domain (or `conf.d` isn't served) — fail with an actionable message rather
-/// than burning a real validation attempt.
+/// will hit. A 404/mismatch here means a foreign server (e.g. a non-panel nginx
+/// vhost) is shadowing the domain, or the route isn't served — fail with an
+/// actionable message rather than burning a real validation attempt.
 pub(crate) async fn self_check_challenge(host: &str, token: &str, expected: &str) -> Result<()> {
     let url = format!("http://127.0.0.1/.well-known/acme-challenge/{token}");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .build()
         .map_err(|e| anyhow!("自检客户端创建失败：{e}"))?;
-    // nginx reload is asynchronous; retry briefly so we don't false-negative on
-    // the worker-swap race right after the reload.
+    // The edge reload is asynchronous; retry briefly so we don't false-negative
+    // on the route-swap race right after the reload.
     let mut last = String::new();
     for attempt in 0..4 {
         if attempt > 0 {

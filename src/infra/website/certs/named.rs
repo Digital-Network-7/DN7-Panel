@@ -25,6 +25,7 @@ pub(crate) async fn list_named_certs() -> Result<Value> {
             "name": c.name,
             "domain": c.domain,
             "cert_mode": c.cert_mode,
+            "key_type": if c.key_type.is_empty() { "ecdsa-p256" } else { c.key_type.as_str() },
             "has_cert": has_cert,
             "not_after": not_after,
             "used_by": in_use.get(&c.name).cloned().unwrap_or_default(),
@@ -54,6 +55,7 @@ pub(crate) async fn create_cert(cmd: &CreateCert) -> Result<Value> {
     if !matches!(mode, "self" | "le" | "manual") {
         return Err(website_err(WebsiteError::UnknownCertMode));
     }
+    let key_type = norm_key_type(cmd.key_type.as_deref().unwrap_or(""));
     // Serialize the manifest read-modify-write against the background renewal
     // loop and other cert ops (lost-update guard on certs.json).
     let _state = state_lock().lock().await;
@@ -67,12 +69,13 @@ pub(crate) async fn create_cert(cmd: &CreateCert) -> Result<Value> {
                 &named_crt_file(&lo, &name),
                 &named_key_file(&lo, &name),
                 &host,
+                &key_type,
             )
             .await?;
         }
         "manual" => write_manual_cert(&lo, cmd, &name)?,
         // Let's Encrypt issuance runs detached and records the manifest itself.
-        "le" => return start_named_cert_issue(lo, name, domain),
+        "le" => return start_named_cert_issue(lo, name, domain, key_type),
         _ => {}
     }
 
@@ -80,6 +83,7 @@ pub(crate) async fn create_cert(cmd: &CreateCert) -> Result<Value> {
         name: name.clone(),
         domain,
         cert_mode: mode.to_string(),
+        key_type,
     });
     save_named_certs(&certs)?;
     Ok(json!({ "name": name }))
@@ -142,7 +146,12 @@ pub(crate) async fn renew_cert(cmd: &RenewCert) -> Result<Value> {
         .find(|c| c.name == name)
         .ok_or_else(|| website_err(WebsiteError::CertNotFound))?;
     match cert.cert_mode.as_str() {
-        "le" => start_named_cert_issue(lo, cert.name.clone(), cert.domain.clone()),
+        "le" => start_named_cert_issue(
+            lo,
+            cert.name.clone(),
+            cert.domain.clone(),
+            cert.key_type.clone(),
+        ),
         "self" => {
             if cert.domain.is_empty() {
                 return Err(website_err(WebsiteError::NeedCertDomain));
@@ -152,6 +161,7 @@ pub(crate) async fn renew_cert(cmd: &RenewCert) -> Result<Value> {
                 &named_crt_file(&lo, &cert.name),
                 &named_key_file(&lo, &cert.name),
                 &host,
+                &cert.key_type,
             )
             .await?;
             let _ = validate_and_reload(&lo).await;

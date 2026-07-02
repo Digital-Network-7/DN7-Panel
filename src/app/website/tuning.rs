@@ -1,7 +1,7 @@
-//! Nginx settings/tuning use-cases: project the persisted website settings, and
+//! Website settings/tuning use-cases: project the persisted website settings, and
 //! validate+apply http/server tuning and the default-site catch-all. Pure
-//! validation lives in `core::nginx`; persistence + conf rewrite + reload are
-//! delegated to the `infra::nginx` adapter.
+//! validation lives in `core::website`; persistence + edge route rebuild + reload
+//! are delegated to the `infra::website` adapter.
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 /// `get_settings` use-case: project the persisted website-settings state
 /// (default-site behaviour + http/server tuning + configured flags) into the
 /// console response. Orchestration lives here; the raw read is delegated to the
-/// `infra::nginx` adapter.
+/// `infra::website` adapter.
 pub(crate) fn get_settings() -> Result<Value> {
     let (g, t, configured, tuning_configured) = crate::infra::website::web_settings_state();
     Ok(json!({
@@ -83,7 +83,7 @@ pub(crate) async fn set_default_site(body: &Value) -> Result<Value> {
 
 /// Map a domain [`crate::core::website::TuningError`] to its stable frontend
 /// `err.*` code, surfaced through the transitional `ERR_CODE:` channel
-/// (architecture §6). This is the single place the nginx tuning/default-site
+/// (architecture §6). This is the single place the website tuning/default-site
 /// codes are spelled out; the domain stays free of protocol strings (§2).
 fn tuning_err_code(e: crate::core::website::TuningError) -> &'static str {
     use crate::core::website::TuningError::*;

@@ -107,14 +107,14 @@ fn zip_entry_copy_enforces_unpacked_limit() {
 #[test]
 fn htpasswd_is_apr1_and_matches_known_vector() {
     // Format + salt round-trip: re-hashing with the embedded salt is stable.
-    let h = htpasswd_hash("s3cret");
+    let h = dn7_edge::htpasswd_hash("s3cret");
     assert!(h.starts_with("$apr1$"), "expected an apr1 hash, got {h}");
     let salt = h.trim_start_matches("$apr1$").split('$').next().unwrap();
-    assert_eq!(apr1_with_salt("s3cret", salt), h);
-    assert_ne!(apr1_with_salt("wrong", salt), h);
+    assert_eq!(dn7_edge::apr1_with_salt("s3cret", salt), h);
+    assert_ne!(dn7_edge::apr1_with_salt("wrong", salt), h);
     // Known apr1 vector (matches Apache htpasswd / openssl passwd -apr1).
     assert_eq!(
-        apr1_with_salt("myPassword", "r31....."),
+        dn7_edge::apr1_with_salt("myPassword", "r31....."),
         "$apr1$r31.....$HqJZimcKQFAMYayBlzkrA/"
     );
 }
@@ -151,22 +151,5 @@ fn trusted_cidrs_sanitize() {
     assert!(sanitize_trusted_cidrs("1.2.3.4; rm -rf /").is_err());
 }
 
-#[test]
-fn ss_pids_parses_port_holders_and_anchors_port() {
-    // Realistic `ss -ltnp` output: nginx (2 workers) on :80 over v4 + v6, and an
-    // unrelated node on :8080. Parsing :80 must collect the nginx PIDs and must
-    // NOT be fooled by `:8080`.
-    let out = "\
-State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process
-LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:((\"nginx\",pid=1234,fd=6),(\"nginx\",pid=1235,fd=6))
-LISTEN 0      511          0.0.0.0:8080      0.0.0.0:*    users:((\"node\",pid=9999,fd=20))
-LISTEN 0      128             [::]:80           [::]:*    users:((\"nginx\",pid=1234,fd=7))
-";
-    assert_eq!(
-        ss_pids(out, 80),
-        vec![1234, 1235],
-        "deduped, sorted nginx PIDs on :80"
-    );
-    assert_eq!(ss_pids(out, 8080), vec![9999], ":8080 is a distinct port");
-    assert!(ss_pids(out, 443).is_empty(), "nothing on :443");
-}
+// (the `ss_pids` parser test was removed with the ss shell-out — PID-on-port
+// detection is now the pure-Rust /proc parser `proc_pids_on_port`.)

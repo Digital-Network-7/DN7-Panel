@@ -40,10 +40,10 @@ pub(crate) fn mark_setup() -> Result<()> {
     Ok(())
 }
 
-/// Serializes nginx state read-modify-write ops (the sites + access manifests)
+/// Serializes website state read-modify-write ops (the sites + access manifests)
 /// so two concurrent admin requests can't clobber each other's writes (lost
 /// update) or interleave a load/save around the await-heavy validate+reload.
-/// A tokio Mutex (it's held across `.await`); nginx ops are admin-only and
+/// A tokio Mutex (it's held across `.await`); website ops are admin-only and
 /// low-frequency, so the serialization cost is negligible. **Non-reentrant** —
 /// a locked op must not call another locked op while holding the guard.
 pub(crate) fn state_lock() -> &'static tokio::sync::Mutex<()> {
@@ -78,6 +78,10 @@ pub(crate) struct NamedCert {
     pub(crate) domain: String,
     #[serde(default)]
     pub(crate) cert_mode: String, // "self" | "le" | "manual"
+    /// Key algorithm for auto-generated certs, persisted for renewal:
+    /// "" (=ecdsa-p256) | "ecdsa-p256" | "ecdsa-p384".
+    #[serde(default)]
+    pub(crate) key_type: String,
 }
 
 pub(crate) fn certs_manifest_file() -> std::path::PathBuf {

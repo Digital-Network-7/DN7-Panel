@@ -3,7 +3,7 @@ use super::*;
 
 /// Validate + normalize a trusted front-proxy IP/CIDR list (comma / space /
 /// newline separated). Each token must be a bare IP or `IP/prefix` CIDR; this
-/// both prevents nginx-config injection and stops operators from accidentally
+/// both prevents config injection and stops operators from accidentally
 /// trusting an over-broad range. Returns the cleaned, space-separated list.
 pub(crate) fn sanitize_trusted_cidrs(input: &str) -> Result<String> {
     let mut out = Vec::new();
@@ -113,6 +113,7 @@ pub(crate) fn site_from_req(form: &SiteForm) -> Result<Site> {
         local_root: String::new(),
         ssl,
         cert_mode: cert_mode.clone(),
+        key_type: norm_key_type(form.key_type.as_deref().unwrap_or("")),
         cert_name,
         scheme: norm_scheme(form.scheme.as_deref()),
         cache: form.cache.unwrap_or(false),

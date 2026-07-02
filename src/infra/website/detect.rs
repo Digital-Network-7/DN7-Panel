@@ -4,19 +4,8 @@ use super::*;
 // Command helpers.
 // ---------------------------------------------------------------------------
 
-/// Run a command, returning (success, stdout, stderr).
-pub(crate) async fn run(cmd: &str, args: &[&str]) -> Result<(bool, String, String)> {
-    let out = Command::new(cmd)
-        .args(args)
-        .output()
-        .await
-        .map_err(|e| anyhow!("无法执行 {cmd}：{e}"))?;
-    Ok((
-        out.status.success(),
-        String::from_utf8_lossy(&out.stdout).to_string(),
-        String::from_utf8_lossy(&out.stderr).to_string(),
-    ))
-}
+// (the generic `run` shell-out helper was removed — detect.rs is now pure-Rust:
+// port/PID detection parses /proc directly, no `ss`/`lsof`.)
 
 pub(crate) fn trim_msg(s: &str) -> Option<String> {
     let s = s.trim();
@@ -28,6 +17,7 @@ pub(crate) fn trim_msg(s: &str) -> Option<String> {
 
 #[cfg(unix)]
 pub(crate) fn is_root() -> bool {
+    // SAFETY: getuid(2) takes no arguments and cannot fail.
     unsafe { libc_getuid() == 0 }
 }
 #[cfg(not(unix))]
@@ -53,11 +43,6 @@ extern "C" {
 /// working; only how they're computed changes: the engine is always present
 /// (it's compiled in) and its "version" is the panel build version.
 pub(crate) async fn website_info() -> Result<Value> {
-    // The web engine is built into the panel, so it's always present; its
-    // version is the panel build version.
-    let host_nginx_present = true;
-    let host_nginx_version = env!("CARGO_PKG_VERSION").to_string();
-
     // Who's listening on 80 / 443? (Surfaced so an operator can see a foreign
     // process holding a port that would prevent the edge from binding.)
     let p80 = port_listener(80).await;
@@ -66,7 +51,7 @@ pub(crate) async fn website_info() -> Result<Value> {
     // Did the edge fail to bind because a foreign process holds :80/:443? If so,
     // the UI offers a force-start (which kills the occupant). Describe who's on
     // each conflicting port so the operator knows what would be killed.
-    let conflict_ports = crate::edge::port_conflict().unwrap_or_default();
+    let conflict_ports = dn7_edge::port_conflict().unwrap_or_default();
     let mut conflict_procs = serde_json::Map::new();
     for &p in &conflict_ports {
         conflict_procs.insert(p.to_string(), json!(port_listener(p).await));
@@ -75,8 +60,6 @@ pub(crate) async fn website_info() -> Result<Value> {
     Ok(json!({
         "managed": is_setup(),                  // setup completed?
         "built_in": true,                       // the engine is the in-process edge
-        "host_nginx_present": host_nginx_present,
-        "host_nginx_version": host_nginx_version,
         "host_owns_ports": is_setup() && conflict_ports.is_empty(),
         "port80": p80,                          // listener description ("" if free)
         "port443": p443,
@@ -87,34 +70,10 @@ pub(crate) async fn website_info() -> Result<Value> {
     }))
 }
 
-/// Best-effort: a short description of what's listening on `port` (process name)
-/// or "" if it appears free. Tries `ss`, then `lsof`, then a pure-Rust
-/// `/proc/net` fallback so it still works when neither tool is installed.
+/// A short description of what's listening on `port` (process name) or "" if it
+/// appears free. Pure-Rust `/proc/net` parse — no external `ss`/`lsof`, so the
+/// binary needs no networking tools installed (zero-dependency goal).
 pub(crate) async fn port_listener(port: u16) -> String {
-    if let Ok((true, out, _)) = run("ss", &["-ltnp"]).await {
-        for line in out.lines() {
-            if line.contains(&format!(":{port}")) && line.to_lowercase().contains("listen") {
-                // Extract a process name from users:(("nginx",pid=..)).
-                if let Some(idx) = line.find("users:((\"") {
-                    let rest = &line[idx + 9..];
-                    if let Some(end) = rest.find('"') {
-                        return rest[..end].to_string();
-                    }
-                }
-                return "占用".to_string();
-            }
-        }
-        return String::new();
-    }
-    // Fallback: lsof.
-    if let Ok((true, out, _)) =
-        run("lsof", &["-i", &format!(":{port}"), "-sTCP:LISTEN", "-Pn"]).await
-    {
-        if let Some(line) = out.lines().nth(1) {
-            return line.split_whitespace().next().unwrap_or("占用").to_string();
-        }
-    }
-    // Last resort: parse /proc directly (no external tools needed).
     proc_port_listener(port)
 }
 
@@ -193,44 +152,13 @@ pub(crate) fn proc_name_for_inode(inode: u64) -> Option<String> {
 /// Find the PIDs holding a LISTEN socket on `port`. Tries `ss` (parsing
 /// `pid=`), then a pure-Rust `/proc` scan so it works without `ss` installed.
 pub(crate) async fn pids_on_port(port: u16) -> Vec<u32> {
-    if let Ok((true, out, _)) = run("ss", &["-ltnp"]).await {
-        let pids = ss_pids(&out, port);
-        if !pids.is_empty() {
-            return pids;
-        }
-    }
+    // Pure-Rust `/proc/net` + `/proc/<pid>/fd` parse — no external `ss`.
     proc_pids_on_port(port)
 }
 
-/// Parse `ss -ltnp` output for the PIDs listening on `port`. The local-address
-/// column ends with `:<port>` (`0.0.0.0:80`, `[::]:80`), which anchors the match
-/// so `:80` can't be confused with `:8080`.
-pub(crate) fn ss_pids(out: &str, port: u16) -> Vec<u32> {
-    let suffix = format!(":{port}");
-    let mut pids = Vec::new();
-    for line in out.lines() {
-        let on_port = line
-            .split_whitespace()
-            .any(|c| c.contains(':') && c.ends_with(&suffix));
-        if !on_port {
-            continue;
-        }
-        let mut rest = line;
-        while let Some(i) = rest.find("pid=") {
-            rest = &rest[i + 4..];
-            let n: String = rest.chars().take_while(char::is_ascii_digit).collect();
-            if let Ok(p) = n.parse::<u32>() {
-                pids.push(p);
-            }
-        }
-    }
-    pids.sort_unstable();
-    pids.dedup();
-    pids
-}
-
-/// Pure-Rust fallback: resolve the PIDs holding `port` via `/proc/net/tcp{,6}`
-/// (socket inode) → `/proc/<pid>/fd`.
+/// Resolve the PIDs holding `port` via `/proc/net/tcp{,6}` (socket inode) →
+/// `/proc/<pid>/fd`. The local-address column ends with `:<port>` so `:80` can't
+/// be confused with `:8080`.
 pub(crate) fn proc_pids_on_port(port: u16) -> Vec<u32> {
     let mut pids = Vec::new();
     for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
@@ -332,6 +260,9 @@ fn signal(_pid: u32, _sig: i32) {}
 /// offer "forward to container:port" targets. Uses the daemon API (no `docker`
 /// CLI); returns empty if Docker isn't present.
 pub(crate) async fn list_running_containers() -> Result<Value> {
+    if dn7_container::selected() {
+        return dn7_list_running();
+    }
     let dkr = crate::infra::docker::dkr()?;
     let opts = bollard::container::ListContainersOptions::<String> {
         all: false,
@@ -381,6 +312,47 @@ pub(crate) async fn list_running_containers() -> Result<Value> {
         }));
     }
     Ok(json!({ "containers": items }))
+}
+
+/// dn7: running containers (name + published-port hint) from container states.
+#[cfg(target_os = "linux")]
+fn dn7_list_running() -> Result<Value> {
+    use dn7_container::container::state::Status;
+    let mut items = Vec::new();
+    for s in dn7_container::container::list().map_err(|e| anyhow!("{e}"))? {
+        if !matches!(s.status, Status::Running) {
+            continue;
+        }
+        let name = s.meta.name.clone().unwrap_or_else(|| s.id.clone());
+        if name.is_empty() {
+            continue;
+        }
+        let mut ports: Vec<String> = s
+            .meta
+            .ports_spec
+            .split(',')
+            .filter(|x| !x.is_empty())
+            .map(|p| {
+                let (hostpart, proto) = p.rsplit_once('/').unwrap_or((p, "tcp"));
+                match hostpart.split_once(':') {
+                    Some((hp, cp)) => format!("{hp}->{cp}/{proto}"),
+                    None => format!("{hostpart}/{proto}"),
+                }
+            })
+            .collect();
+        ports.sort();
+        ports.dedup();
+        items.push(json!({
+            "name": name,
+            "ports": ports.join(", "),
+            "image": s.meta.image.clone().unwrap_or_default(),
+        }));
+    }
+    Ok(json!({ "containers": items }))
+}
+#[cfg(not(target_os = "linux"))]
+fn dn7_list_running() -> Result<Value> {
+    Ok(json!({ "containers": [] }))
 }
 
 /// List immediate subdirectories of an absolute host path (for the static-site

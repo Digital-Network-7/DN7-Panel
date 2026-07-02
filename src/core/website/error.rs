@@ -1,11 +1,11 @@
-//! Nginx capability error code — the typed, exhaustive replacement for the
-//! scattered `anyhow!("ERR_CODE:nginx.*")` string literals. Each variant owns
-//! its stable `nginx.*` semantic code (aligned with the frontend `err.<code>`
+//! Website capability error code — the typed, exhaustive replacement for the
+//! scattered `anyhow!("ERR_CODE:website.*")` string literals. Each variant owns
+//! its stable `website.*` semantic code (aligned with the frontend `err.<code>`
 //! map) in one place, so the code set can't drift or typo. Domain owns only the
 //! semantic code; the `ERR_CODE:` transport marker the `op_err_body` boundary
 //! parses is added in infra (per §2/§4).
 
-/// An nginx capability error.
+/// A website capability error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WebsiteError {
     AccessNotFound,
@@ -60,7 +60,7 @@ pub(crate) enum WebsiteError {
 }
 
 impl WebsiteError {
-    /// The stable, `nginx.`-namespaced semantic code (no transport prefix).
+    /// The stable, `website.`-namespaced semantic code (no transport prefix).
     pub(crate) fn code(self) -> &'static str {
         use WebsiteError::*;
         match self {

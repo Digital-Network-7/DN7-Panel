@@ -1,9 +1,9 @@
-//! Persisted nginx domain entities (Site/Location/AccessList/DefaultSite/
+//! Persisted website domain entities (Site/Location/AccessList/DefaultSite/
 //! HttpTuning …).
 //!
 //! NOTE: these are persisted **domain entities** — the `serde` derives are a
 //! reviewed exception (see steering §2/§4). Fields are `pub(crate)` so the
-//! nginx infra submodules (confgen/sites/access/…) can read/build them across
+//! website infra submodules (sites/certs/access/…) can read/build them across
 //! modules. Transport-only input shapes (`HttpTuningInput`) live here too but
 //! carry no serde.
 
@@ -31,6 +31,10 @@ pub(crate) struct Site {
     pub(crate) ssl: bool,
     #[serde(default)]
     pub(crate) cert_mode: String,
+    /// Key algorithm for auto-generated (self/le) certs, persisted so renewal
+    /// regenerates the same type: "" (=ecdsa-p256) | "ecdsa-p256" | "ecdsa-p384".
+    #[serde(default)]
+    pub(crate) key_type: String,
     /// When set, this site uses a standalone named cert from the cert manifest
     /// instead of a per-site `<id>.crt/.key`. Empty means per-site (legacy).
     #[serde(default)]
@@ -113,7 +117,7 @@ fn default_true() -> bool {
 }
 
 /// A custom path rule layered on a proxy site: forward a path prefix to a
-/// host[:port] over http/https. Form-driven (no raw nginx config).
+/// host[:port] over http/https. Form-driven (no raw config).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct Location {
     /// The location prefix, e.g. "/api". Must start with '/'.
@@ -200,11 +204,10 @@ pub(crate) struct WebGlobal {
     pub(crate) default_site: DefaultSite,
 }
 
-/// nginx http/server tuning knobs (persisted in `webtuning.json`). Values
-/// mirror nginx's own defaults. The server-context ones are injected into each
-/// managed site's server block (so they override per-site without clashing with
-/// the distro nginx.conf's http-level directives); `server_names_hash_bucket_size`
-/// is http-only and written to a guarded http include.
+/// HTTP/server tuning knobs (persisted in `webtuning.json`). Values mirror
+/// nginx's own defaults for familiarity. The server-context ones are applied
+/// per managed site in the edge's typed route table (so they override per-site);
+/// `server_names_hash_bucket_size` is http-only and ignored by the built-in edge.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct HttpTuning {
     #[serde(default = "d_snhbs")]

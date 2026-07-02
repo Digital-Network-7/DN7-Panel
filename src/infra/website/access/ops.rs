@@ -96,14 +96,17 @@ pub(crate) async fn save_access_op(cmd: &SaveAccess) -> Result<Value> {
     Ok(json!({ "id": id }))
 }
 
-/// Validate the access list's IP allow/deny client rules from the request.
+/// Validate the access list's IP allow/deny client rules from the request. The
+/// directive is a strict enum — only the exact `allow`/`deny` tokens are
+/// accepted; anything else is rejected rather than silently treated as `allow`
+/// (which would have quietly widened access on a typo'd directive).
 fn build_access_clients(cmd: &SaveAccess) -> Result<Vec<AccessClient>> {
     let mut clients = Vec::new();
     for c in cmd.clients.clone().unwrap_or_default() {
-        let dir = if c.directive == "deny" {
-            "deny"
-        } else {
-            "allow"
+        let dir = match c.directive.trim() {
+            "allow" => "allow",
+            "deny" => "deny",
+            _ => return Err(website_err(WebsiteError::BadClientAddr)),
         };
         if !valid_client_address(&c.address) {
             return Err(website_err(WebsiteError::BadClientAddr));
@@ -136,7 +139,7 @@ fn build_access_users(cmd: &SaveAccess, old: Option<&AccessList>) -> Result<Vec<
             if u.password.len() > 128 {
                 return Err(website_err(WebsiteError::BadAuthPw));
             }
-            htpasswd_hash(&u.password)
+            dn7_edge::htpasswd_hash(&u.password)
         } else {
             old.and_then(|o| o.users.iter().find(|x| x.username == username))
                 .map(|x| x.hash.clone())
@@ -177,7 +180,7 @@ pub(crate) async fn delete_access_op(cmd: &DeleteAccess) -> Result<Value> {
 }
 
 /// Current persisted http/server tuning (or defaults) — read accessor for the
-/// `app::nginx` `set_tuning` use-case.
+/// `app::website` `set_tuning` use-case.
 pub(crate) fn current_tuning() -> HttpTuning {
     load_tuning_opt().unwrap_or_default()
 }
@@ -191,4 +194,46 @@ pub(crate) async fn apply_tuning(t: &HttpTuning) -> Result<Value> {
     save_tuning(t)?;
     validate_and_reload(&lo).await?;
     Ok(json!({ "ok": true }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cmd_with(clients: Vec<AccessClient>) -> SaveAccess {
+        SaveAccess {
+            clients: Some(clients),
+            ..Default::default()
+        }
+    }
+
+    fn client(directive: &str, address: &str) -> AccessClient {
+        AccessClient {
+            directive: directive.to_string(),
+            address: address.to_string(),
+        }
+    }
+
+    #[test]
+    fn client_rules_accept_only_exact_allow_deny() {
+        // Valid directive + valid address round-trips (address is trimmed).
+        let out = build_access_clients(&cmd_with(vec![
+            client("allow", "10.0.0.0/8"),
+            client("deny", " 1.2.3.4 "),
+        ]))
+        .expect("valid allow/deny rules");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].directive, "allow");
+        assert_eq!(out[1].directive, "deny");
+        assert_eq!(out[1].address, "1.2.3.4"); // trimmed on save
+
+        // A non-allow/deny directive is rejected, not silently widened to allow.
+        assert!(build_access_clients(&cmd_with(vec![client("permit", "all")])).is_err());
+        assert!(build_access_clients(&cmd_with(vec![client("", "all")])).is_err());
+        assert!(build_access_clients(&cmd_with(vec![client("ALLOW", "all")])).is_err());
+
+        // A bad address is rejected even with a valid directive.
+        assert!(build_access_clients(&cmd_with(vec![client("allow", "999.999.999.999")])).is_err());
+        assert!(build_access_clients(&cmd_with(vec![client("deny", "10.0.0.0/33")])).is_err());
+    }
 }

@@ -21,10 +21,13 @@ pub(crate) async fn validate_and_reload(_lo: &Layout) -> Result<()> {
 }
 
 /// Resolve a container's first reachable IPv4 address from the Docker daemon
-/// (used in **host mode**, where the host's nginx can't resolve a container
+/// (used in **host mode**, where the built-in edge can't resolve a container
 /// *name* — only an IP works). Returns the IP from a user-defined network if
 /// present, else the default bridge IP, else None.
 pub(crate) async fn container_ip(target: &str) -> Option<String> {
+    if dn7_container::selected() {
+        return dn7_container_ip(target);
+    }
     let dkr = crate::infra::docker::dkr().ok()?;
     let inspect = dkr.inspect_container(target, None).await.ok()?;
     let networks = inspect.network_settings.and_then(|n| n.networks)?;
@@ -42,7 +45,7 @@ pub(crate) async fn container_ip(target: &str) -> Option<String> {
 }
 
 /// In **host mode**, find the host port that publishes the container's
-/// `container_port` on the **loopback interface** (so the host's nginx can proxy
+/// `container_port` on the **loopback interface** (so the built-in edge can proxy
 /// to `127.0.0.1:<host_port>`, stable across container restarts — unlike the
 /// container IP). Returns None when the port isn't published, or is published
 /// only on a specific *external* interface that loopback can't reach (the caller
@@ -54,6 +57,9 @@ pub(crate) async fn published_host_port(
     target: &str,
     container_port: i64,
 ) -> Option<(&'static str, u16)> {
+    if dn7_container::selected() {
+        return dn7_published_host_port(target, container_port);
+    }
     let dkr = crate::infra::docker::dkr().ok()?;
     let inspect = dkr.inspect_container(target, None).await.ok()?;
     let ports = inspect.network_settings.and_then(|n| n.ports)?;
@@ -81,6 +87,45 @@ pub(crate) async fn published_host_port(
             }
         }
     }
+    None
+}
+
+/// dn7: a container's IP from its persisted network receipt (`State.net`).
+#[cfg(target_os = "linux")]
+fn dn7_container_ip(target: &str) -> Option<String> {
+    let id = dn7_container::container::resolve(target).ok()?;
+    let s = dn7_container::container::state::State::load(&id).ok()?;
+    s.net.and_then(|n| n.ip).map(|ip| ip.to_string())
+}
+#[cfg(not(target_os = "linux"))]
+fn dn7_container_ip(_target: &str) -> Option<String> {
+    None
+}
+
+/// dn7: the loopback host port publishing `container_port`. dn7 publishes on
+/// `0.0.0.0` + `127.0.0.1` (route_localnet), so loopback is always reachable.
+#[cfg(target_os = "linux")]
+fn dn7_published_host_port(target: &str, container_port: i64) -> Option<(&'static str, u16)> {
+    let id = dn7_container::container::resolve(target).ok()?;
+    let s = dn7_container::container::state::State::load(&id).ok()?;
+    let want = container_port.to_string();
+    for p in s.meta.ports_spec.split(',').filter(|x| !x.is_empty()) {
+        let (hostpart, proto) = p.rsplit_once('/').unwrap_or((p, "tcp"));
+        if proto != "tcp" {
+            continue;
+        }
+        if let Some((hp, cp)) = hostpart.split_once(':') {
+            if cp == want {
+                if let Ok(hpn) = hp.parse::<u16>() {
+                    return Some(("127.0.0.1", hpn));
+                }
+            }
+        }
+    }
+    None
+}
+#[cfg(not(target_os = "linux"))]
+fn dn7_published_host_port(_target: &str, _container_port: i64) -> Option<(&'static str, u16)> {
     None
 }
 

@@ -1,9 +1,9 @@
-//! Pure nginx tuning / default-site rules: validate a request against fixed
+//! Pure website tuning / default-site rules: validate a request against fixed
 //! bounds and build the persisted entity. No I/O, unit-testable.
 
 use super::*;
 
-/// A nginx tuning / default-site validation failure. A **semantic** value (no
+/// A website tuning / default-site validation failure. A **semantic** value (no
 /// transport or frontend `err.*` string — per architecture §2 the domain must
 /// not carry protocol content). The app boundary maps each variant to the
 /// transitional `ERR_CODE:` channel (§6).

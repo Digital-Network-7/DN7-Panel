@@ -85,7 +85,7 @@ pub(crate) async fn renew_due_site_certs(lo: &Layout, within: i64) {
 }
 
 /// Auto-renew standalone named certs that expire within `within` days. Sites
-/// reference these cert files directly, so nginx is reloaded after each renewal.
+/// reference these cert files directly, so the edge is reloaded after each renewal.
 pub(crate) async fn renew_due_named_certs(lo: &Layout, within: i64) {
     for c in load_named_certs() {
         if c.domain.is_empty() {
@@ -99,7 +99,7 @@ pub(crate) async fn renew_due_named_certs(lo: &Layout, within: i64) {
             "le" => {
                 let op_id = new_op_id();
                 op_create(&op_id, "cert", &primary_host(&c.domain));
-                match issue_le_named(&op_id, lo, &c.name, &c.domain).await {
+                match issue_le_named(&op_id, lo, &c.name, &c.domain, &c.key_type).await {
                     Ok(()) => op_finish(&op_id, "done", ""),
                     Err(e) => op_finish(&op_id, "error", &e.to_string()),
                 }
@@ -110,6 +110,7 @@ pub(crate) async fn renew_due_named_certs(lo: &Layout, within: i64) {
                     &named_crt_file(lo, &c.name),
                     &named_key_file(lo, &c.name),
                     &host,
+                    &c.key_type,
                 )
                 .await;
             }

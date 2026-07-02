@@ -1,6 +1,6 @@
-//! Nginx capability — external protocol DTOs (the wire commands the console
-//! sends). Owned here (the contracts layer), built/parsed by `app::nginx`, and
-//! handed to the `infra::nginx` adapters as focused per-op commands (there is no
+//! Website capability — external protocol DTOs (the wire commands the console
+//! sends). Owned here (the contracts layer), built/parsed by `app::website`, and
+//! handed to the `infra::website` adapters as focused per-op commands (there is no
 //! longer one god-`Req`: each op receives only its own fields).
 //!
 //! `Location` / `AccessClient` are domain entities (contracts may reference
@@ -52,6 +52,9 @@ pub(crate) struct CreateCert {
     pub(crate) server_name: Option<String>,
     pub(crate) cert_pem: Option<String>,
     pub(crate) key_pem: Option<String>,
+    /// Key algorithm for auto-generated (self/le) certs: "" (=ecdsa-p256) |
+    /// "ecdsa-p256" | "ecdsa-p384". Ignored for manual certs.
+    pub(crate) key_type: Option<String>,
 }
 
 /// `add_site` / `update_site`: the full managed-site form. Carries `Vec` inputs,
@@ -85,6 +88,9 @@ pub(crate) struct SiteForm {
     pub(crate) cert_pem: Option<String>,
     #[serde(default)]
     pub(crate) key_pem: Option<String>,
+    /// Key algorithm for auto-generated (self/le) certs; see `CreateCert::key_type`.
+    #[serde(default)]
+    pub(crate) key_type: Option<String>,
     #[serde(default)]
     pub(crate) scheme: Option<String>,
     #[serde(default)]

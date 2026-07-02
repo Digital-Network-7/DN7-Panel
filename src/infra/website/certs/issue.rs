@@ -47,8 +47,8 @@ pub(crate) fn write_key_file(path: &std::path::Path, pem: &str) -> Result<()> {
 }
 
 /// Generate a self-signed cert/key pair for the site's primary host using
-/// pure-Rust `rcgen` (no `openssl` dependency). Writes into the host cert store
-/// that the host nginx reads from.
+/// pure-Rust `rcgen` (no `openssl` dependency). Writes into the cert store
+/// that the built-in edge reads from.
 pub(crate) async fn gen_self_signed(lo: &Layout, site: &Site) -> Result<()> {
     let host = primary_host(&site.server_name);
     let host = if host == "_" {
@@ -58,15 +58,26 @@ pub(crate) async fn gen_self_signed(lo: &Layout, site: &Site) -> Result<()> {
     };
     let crt_path = lo.cert_store.join(format!("{}.crt", site.id));
     let key_path = lo.cert_store.join(format!("{}.key", site.id));
-    gen_self_signed_to(&crt_path, &key_path, &host).await
+    gen_self_signed_to(&crt_path, &key_path, &host, &site.key_type).await
+}
+
+/// The rcgen signature algorithm for a persisted `key_type` string. Empty or
+/// unknown → the default (ECDSA P-256); the only other value is ECDSA P-384.
+pub(crate) fn key_alg(key_type: &str) -> &'static rcgen::SignatureAlgorithm {
+    match key_type {
+        "ecdsa-p384" => &rcgen::PKCS_ECDSA_P384_SHA384,
+        _ => &rcgen::PKCS_ECDSA_P256_SHA256,
+    }
 }
 
 /// Generate a self-signed cert/key pair for `host` and write them to the given
-/// paths. Shared by per-site and standalone-named cert generation.
+/// paths. Shared by per-site and standalone-named cert generation. `key_type`
+/// selects the ECDSA curve (empty = P-256 default).
 pub(crate) async fn gen_self_signed_to(
     crt_path: &std::path::Path,
     key_path: &std::path::Path,
     host: &str,
+    key_type: &str,
 ) -> Result<()> {
     if let Some(dir) = crt_path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -87,7 +98,8 @@ pub(crate) async fn gen_self_signed_to(
     params.not_before = now.into();
     params.not_after = (now + std::time::Duration::from_secs(3650 * 24 * 3600)).into();
 
-    let key_pair = rcgen::KeyPair::generate().map_err(|e| anyhow!("生成私钥失败：{e}"))?;
+    let key_pair = rcgen::KeyPair::generate_for(key_alg(key_type))
+        .map_err(|e| anyhow!("生成私钥失败：{e}"))?;
     let cert = params
         .self_signed(&key_pair)
         .map_err(|e| anyhow!("签发自签证书失败：{e}"))?;
@@ -125,7 +137,8 @@ pub(crate) fn console_key_path() -> std::path::PathBuf {
 pub(crate) async fn issue_console_self_signed(host: &str) -> Result<()> {
     let crt = console_crt_path();
     let key = console_key_path();
-    gen_self_signed_to(&crt, &key, host).await?;
+    // Console TLS uses the default key type (ECDSA P-256).
+    gen_self_signed_to(&crt, &key, host, "").await?;
     set_key_perms(&key);
     Ok(())
 }
@@ -144,10 +157,10 @@ pub(crate) async fn issue_console_le(domain: &str) -> Result<()> {
     let served_tokens = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let dance = {
         let served = served_tokens.clone();
-        acme_http01(&op_id, &host, move |chals| async move {
+        acme_http01(&op_id, &host, "", move |chals| async move {
             let mut toks = Vec::new();
             for (token, keyauth) in &chals {
-                crate::edge::acme_insert(token, keyauth);
+                dn7_edge::acme_insert(token, keyauth);
                 toks.push(token.clone());
             }
             *served.lock().unwrap_or_else(|p| p.into_inner()) = toks;
@@ -160,7 +173,7 @@ pub(crate) async fn issue_console_le(domain: &str) -> Result<()> {
         .unwrap_or_else(|p| p.into_inner())
         .iter()
     {
-        crate::edge::acme_remove(token);
+        dn7_edge::acme_remove(token);
     }
     let (cert_chain_pem, key_pem) = match dance {
         Ok(v) => {
@@ -221,10 +234,10 @@ pub(crate) async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()
     // cleanup below, or the in-memory challenge tokens leak on every failure.
     let dance = {
         let served = served_tokens.clone();
-        acme_http01(op_id, &host, move |chals| async move {
+        acme_http01(op_id, &host, &site.key_type, move |chals| async move {
             let mut toks = Vec::new();
             for (token, keyauth) in &chals {
-                crate::edge::acme_insert(token, keyauth);
+                dn7_edge::acme_insert(token, keyauth);
                 toks.push(token.clone());
             }
             *served.lock().unwrap_or_else(|p| p.into_inner()) = toks;
@@ -238,7 +251,7 @@ pub(crate) async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()
         .unwrap_or_else(|p| p.into_inner())
         .iter()
     {
-        crate::edge::acme_remove(token);
+        dn7_edge::acme_remove(token);
     }
     let (cert_chain_pem, key_pem) = dance?;
 
@@ -260,6 +273,7 @@ pub(crate) async fn issue_le(op_id: &str, lo: &Layout, site: &Site) -> Result<()
             name: cert_name.clone(),
             domain: host.clone(),
             cert_mode: "le".to_string(),
+            key_type: site.key_type.clone(),
         });
         save_named_certs(&certs)?;
         cert_name
@@ -308,13 +322,18 @@ async fn attach_named_cert_to_site(lo: &Layout, site: &Site, cert_name: String) 
 /// Issue a standalone Let's Encrypt cert (detached). Serves the HTTP-01
 /// challenge from the edge's in-memory token map (it serves :80), then writes
 /// the issued chain/key into the named cert store and records the manifest.
-pub(crate) fn start_named_cert_issue(lo: Layout, name: String, domain: String) -> Result<Value> {
+pub(crate) fn start_named_cert_issue(
+    lo: Layout,
+    name: String,
+    domain: String,
+    key_type: String,
+) -> Result<Value> {
     let op_id = new_op_id();
     let target = primary_host(&domain);
     op_create(&op_id, "cert", &target);
     let op_id_ret = op_id.clone();
     tokio::spawn(async move {
-        match issue_le_named(&op_id, &lo, &name, &domain).await {
+        match issue_le_named(&op_id, &lo, &name, &domain, &key_type).await {
             Ok(()) => {
                 op_push(&op_id, &pmsg("ng.cert_done", &[]));
                 op_finish(&op_id, "done", "");
@@ -330,6 +349,7 @@ pub(crate) async fn issue_le_named(
     lo: &Layout,
     name: &str,
     domain: &str,
+    key_type: &str,
 ) -> Result<()> {
     let host = primary_host(domain);
     if host.is_empty() || host == "_" || host.contains('*') {
@@ -343,10 +363,10 @@ pub(crate) async fn issue_le_named(
     let served_tokens = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let dance = {
         let served = served_tokens.clone();
-        acme_http01(op_id, &host, move |chals| async move {
+        acme_http01(op_id, &host, key_type, move |chals| async move {
             let mut toks = Vec::new();
             for (token, keyauth) in &chals {
-                crate::edge::acme_insert(token, keyauth);
+                dn7_edge::acme_insert(token, keyauth);
                 toks.push(token.clone());
             }
             *served.lock().unwrap_or_else(|p| p.into_inner()) = toks;
@@ -361,7 +381,7 @@ pub(crate) async fn issue_le_named(
         .unwrap_or_else(|p| p.into_inner())
         .iter()
     {
-        crate::edge::acme_remove(token);
+        dn7_edge::acme_remove(token);
     }
 
     let (cert_chain_pem, key_pem) = dance?;
@@ -380,6 +400,7 @@ pub(crate) async fn issue_le_named(
             name: name.to_string(),
             domain: domain.to_string(),
             cert_mode: "le".to_string(),
+            key_type: key_type.to_string(),
         });
         save_named_certs(&certs)?;
     }

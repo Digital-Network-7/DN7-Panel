@@ -10,7 +10,7 @@
 //!
 //! Pure assembly: the app-facing adapters + shared `Layout`/error helpers live
 //! in `api`; each capability area is a submodule (sites/certs/access/…). All
-//! shared entities are re-exported from `core::nginx` / `contracts::nginx` so
+//! shared entities are re-exported from `core::website` / `contracts::website` so
 //! the submodules reference `Site`/`Layout`/… via `use super::*` unchanged.
 
 use std::collections::HashMap;
@@ -19,18 +19,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::process::Command;
 
 // Per-op typed commands (from the contracts layer) + persisted domain entities
-// (from core::nginx), re-exported so the nginx submodules reference them via
+// (from core::website), re-exported so the website submodules reference them via
 // `use super::*` unchanged.
 pub(crate) use crate::contracts::website::{
     CreateCert, DeleteAccess, DeleteCert, RemoveSite, RenewCert, SaveAccess, SiteForm,
 };
 use crate::core::website::{
-    norm_scheme, primary_host, valid_access_name, valid_auth_username, valid_cert_name,
-    valid_client_address, valid_container_name, valid_host_token, valid_location_path, valid_port,
-    valid_root_segment, valid_server_name, WebsiteError,
+    norm_key_type, norm_scheme, primary_host, valid_access_name, valid_auth_username,
+    valid_cert_name, valid_client_address, valid_container_name, valid_host_token,
+    valid_location_path, valid_port, valid_root_segment, valid_server_name, WebsiteError,
 };
 pub(crate) use crate::core::website::{
     AccessClient, AccessList, AccessUser, HttpTuning, Location, Site, WebGlobal,
@@ -40,7 +39,6 @@ mod access;
 mod api;
 mod certs;
 mod detect;
-mod htpasswd;
 mod opreg;
 mod setup;
 mod sites;
@@ -51,13 +49,12 @@ mod upload;
 use access::*;
 use certs::*;
 use detect::*;
-use htpasswd::*;
 use opreg::{new_op_id, op_create, op_dismiss, op_finish, op_log, op_push, ops_snapshot, pmsg};
 use setup::*;
 use state::*;
 use store::*;
 
-// Public surface used by the application layer (`app::nginx`) + other infra
+// Public surface used by the application layer (`app::website`) + other infra
 // adapters.
 pub(crate) use access::list_access;
 pub(crate) use access::{apply_default_site, apply_tuning, current_tuning};
@@ -70,7 +67,6 @@ pub use upload::*;
 // Surface used by the in-process edge server (`crate::edge`): request-time
 // upstream resolution for `proxy_container` sites, and Basic-Auth verification.
 pub(crate) use access::resolve_container_upstream;
-pub(crate) use htpasswd::verify_htpasswd_hash;
 
 #[cfg(test)]
 mod tests;

@@ -1,10 +1,10 @@
-//! App-facing nginx adapters + shared layout/error helpers.
+//! App-facing website adapters + shared layout/error helpers.
 //!
-//! The application layer (`app::nginx`) owns op routing and parses the
+//! The application layer (`app::website`) owns op routing and parses the
 //! capability commands; this module exposes the infra use-case bodies it
 //! delegates to (read accessors + per-op write adapters), plus the on-disk
 //! `Layout`, the edge-reload chokepoint, and the typed-error → `ERR_CODE:`
-//! bridge shared across the nginx submodules.
+//! bridge shared across the website submodules.
 use super::*;
 
 /// Build the transitional `anyhow` error for a typed [`WebsiteError`]: prefixes
@@ -16,8 +16,8 @@ pub(crate) fn website_err(e: WebsiteError) -> anyhow::Error {
 }
 
 /// Read-only website-settings snapshot for the `get_settings` use-case (owned by
-/// `app::nginx`): persisted default-site + http tuning, plus whether each has
-/// been configured. Pure read — no nginx reload.
+/// `app::website`): persisted default-site + http tuning, plus whether each has
+/// been configured. Pure read — no edge reload.
 pub(crate) fn web_settings_state() -> (
     crate::core::website::WebGlobal,
     crate::core::website::HttpTuning,
@@ -33,12 +33,12 @@ pub(crate) fn web_settings_state() -> (
 }
 
 /// Read-only managed-site list for the `list_sites` use-case (owned by
-/// `app::nginx`). Pure read — manifests only, no nginx contact.
+/// `app::website`). Pure read — manifests only, no edge contact.
 pub(crate) fn sites_snapshot() -> Vec<crate::core::website::Site> {
     load_sites()
 }
 
-/// Detached-op-registry read projections for the `app::nginx` `list_ops` /
+/// Detached-op-registry read projections for the `app::website` `list_ops` /
 /// `op_log` use-cases (the registry's own fns are `pub(super)`).
 pub(crate) fn ops_snapshot_value() -> Value {
     ops_snapshot()
@@ -78,7 +78,7 @@ pub(crate) async fn op_reload() -> Result<()> {
     reload().await
 }
 
-/// Gather the persisted nginx model and push it into the in-process edge server
+/// Gather the persisted website model and push it into the in-process edge server
 /// (the pure-Rust reverse proxy). This is the bridge the reload chokepoint and
 /// the panel-role startup call use: it builds + validates + atomically swaps the
 /// route table, returning an `nginx -t`-style error (without disturbing the live
@@ -89,7 +89,14 @@ pub(crate) async fn edge_reload() -> Result<()> {
     // console / init wizard.
     let setup = is_setup();
     let ws = crate::infra::store::settings::load();
-    let console = crate::edge::ConsoleParams {
+    // Inject the container-upstream resolver once (idempotent): the edge crate
+    // resolves `proxy_container` upstreams through this instead of depending on
+    // the container backend (bollard/dn7) directly.
+    dn7_edge::set_upstream_resolver(|name, port| async move {
+        crate::infra::website::resolve_container_upstream(&name, port).await
+    });
+
+    let console = dn7_edge::ConsoleParams {
         external_address: ws
             .as_ref()
             .map(|w| w.external_address.clone())
@@ -100,20 +107,43 @@ pub(crate) async fn edge_reload() -> Result<()> {
             .unwrap_or_else(|| "none".to_string()),
         initialized: ws.as_ref().map(|w| w.initialized).unwrap_or(false),
     };
-    let input = crate::edge::ReloadInput {
-        sites: if setup { load_sites() } else { Vec::new() },
-        access: if setup { load_access() } else { Vec::new() },
-        default_site: if setup {
-            load_webglobal().default_site
+    let input = dn7_edge::ReloadInput {
+        sites: if setup {
+            to_edge(load_sites())
         } else {
-            crate::core::website::DefaultSite::default()
+            Vec::new()
         },
-        tuning: current_tuning(),
+        access: if setup {
+            to_edge(load_access())
+        } else {
+            Vec::new()
+        },
+        default_site: if setup {
+            to_edge(load_webglobal().default_site)
+        } else {
+            dn7_edge::model::DefaultSite::default()
+        },
+        tuning: to_edge(current_tuning()),
         cert_dir: certs_dir(),
         www_dir: www_dir(),
         console,
     };
-    crate::edge::reload(input).await
+    dn7_edge::reload(input).await
+}
+
+/// Convert a panel website-domain value into the edge crate's matching input
+/// type via a serde round-trip (the field names line up; the edge model defaults
+/// any field the panel doesn't carry). The reload path runs rarely, so the
+/// serialize/deserialize cost is irrelevant.
+fn to_edge<T, U>(v: T) -> U
+where
+    T: serde::Serialize,
+    U: serde::de::DeserializeOwned + Default,
+{
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|j| serde_json::from_value(j).ok())
+        .unwrap_or_default()
 }
 
 /// First-run console TLS: issue (or clear) the console cert for the chosen HTTPS
@@ -146,16 +176,16 @@ pub(crate) async fn force_start() -> Result<Value> {
         return Err(website_err(WebsiteError::NeedRoot));
     }
     // The ports currently in conflict (fall back to the well-known pair).
-    let ports = crate::edge::port_conflict().unwrap_or_else(|| vec![80, 443]);
+    let ports = dn7_edge::port_conflict().unwrap_or_else(|| vec![80, 443]);
     let killed = kill_port_holders(&ports).await;
 
     // Re-attempt the bind now the occupants are gone. `spawn()` re-attempts
     // because the previous conflicted run returned (clearing its guard).
-    crate::edge::spawn();
+    dn7_edge::spawn();
     // Give the listener a moment to bind and record its new state.
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
-    match crate::edge::port_conflict() {
+    match dn7_edge::port_conflict() {
         None => Ok(json!({ "started": true, "killed": killed })),
         Some(still) => Err(anyhow!(
             "强制启动后端口 {} 仍被占用，请手动停止占用进程后重试",
@@ -168,19 +198,66 @@ pub(crate) async fn force_start() -> Result<Value> {
     }
 }
 
+/// Which of `ports` currently have a listener — a pre-serve check used by the
+/// CLI first-run wizard before it offers to take :80/:443 over.
+pub(crate) async fn ports_with_listener(ports: &[u16]) -> Vec<u16> {
+    let mut out = Vec::new();
+    for &p in ports {
+        if !super::detect::pids_on_port(p).await.is_empty() {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// PIDs listening on `port` (for reporting which process/unit holds it).
+pub(crate) async fn listeners_on(port: u16) -> Vec<u32> {
+    super::detect::pids_on_port(port).await
+}
+
+/// Take `ports` over for the panel: SIGTERM→SIGKILL the holders (the same
+/// pure-Rust mechanism as `force_start` — no `systemctl`). Returns the ports
+/// STILL occupied afterwards (e.g. a systemd service that auto-restarted).
+pub(crate) async fn take_over_ports(ports: &[u16]) -> Vec<u16> {
+    let _ = super::detect::kill_port_holders(ports).await;
+    ports_with_listener(ports).await
+}
+
+/// Ensure the console TLS cert exists for the configured HTTPS mode, issuing it
+/// if missing. The CLI first-run wizard DEFERS Let's Encrypt (its ACME challenge
+/// needs the edge serving :80, which isn't up during pre-serve setup); the panel
+/// calls this at startup, once the edge is bound, to finish that issuance.
+/// Self-signed was already issued at setup time, so this is a no-op for it (and
+/// on reboots). The caller passes the mode/address (the settings live in the
+/// `web` layer; infra doesn't read up into it).
+pub(crate) async fn ensure_console_cert(https_mode: &str, external_address: &str) {
+    if https_mode != "le" && https_mode != "selfsigned" {
+        return;
+    }
+    if console_crt_path().exists() && console_key_path().exists() {
+        return; // already issued
+    }
+    if let Err(e) = console_apply_tls(https_mode, external_address).await {
+        tracing::warn!("deferred console cert issuance failed: {e:#}");
+    } else if let Err(e) = edge_reload().await {
+        tracing::warn!("edge reload after console cert issuance failed: {e:#}");
+    } else {
+        tracing::info!("console cert issued ({https_mode}) for {external_address}");
+    }
+}
+
 /// Start the in-process edge server at panel startup. The edge owns :80/:443 on
-/// EVERY boot — it fronts the console (and the pre-init wizard), not just user
-/// websites — so always bind the listener via the idempotent `spawn()`. Only
-/// load the persisted user-site manifests once the website capability is set up;
-/// before that the edge serves the empty-config default_site (and, once wired,
-/// the console route / init wizard).
+/// EVERY boot — it fronts the console — so always bind the listener via the
+/// idempotent `spawn()`. Only load the persisted user-site manifests once the
+/// website capability is set up; before that the edge serves the empty-config
+/// default_site (and, once wired, the console route).
 pub(crate) async fn edge_autostart() {
     // Always publish the route table (even on a fresh, un-set-up box) so the
     // edge serves the console / init wizard, then bind the listeners.
     if let Err(e) = edge_reload().await {
         tracing::error!("edge: initial config load failed: {e:#}");
     }
-    crate::edge::spawn();
+    dn7_edge::spawn();
 }
 
 /// The on-disk directories the edge server reads cert PEMs and static webroots

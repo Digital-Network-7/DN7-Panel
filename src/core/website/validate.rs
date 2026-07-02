@@ -2,6 +2,17 @@
 //! string/number checks that gate user input before it reaches a config file
 //! or a shell-free command. Kept together so the rules are easy to audit.
 
+/// Normalize a requested cert key type to a supported value. Empty / unknown →
+/// "" (the default, ECDSA P-256); the only non-default is "ecdsa-p384". Callers
+/// persist the result and map it to an rcgen algorithm at generation time.
+pub(crate) fn norm_key_type(s: &str) -> String {
+    match s.trim() {
+        "ecdsa-p384" => "ecdsa-p384".to_string(),
+        "ecdsa-p256" => "ecdsa-p256".to_string(),
+        _ => String::new(),
+    }
+}
+
 /// A cert name: a single filesystem-safe token (letters/digits/_-.), 1..=64.
 pub(crate) fn valid_cert_name(s: &str) -> bool {
     let s = s.trim();
@@ -29,16 +40,44 @@ pub(crate) fn valid_auth_username(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '@'))
 }
 
-/// Validate a client address for allow/deny: "all", or an IPv4/IPv6/CIDR token.
+/// Validate a client address for allow/deny. Accepts ONLY the exact token
+/// `all`, a bare IPv4/IPv6 literal, or an IPv4/IPv6 CIDR — mirroring the edge's
+/// runtime `parse_acl_net` (`build.rs`) so any value that passes here is one the
+/// edge can actually match, and everything else (`999.999.999.999`, a malformed
+/// prefix, `deny ` with a stray space, …) is rejected at SAVE time.
 pub(crate) fn valid_client_address(s: &str) -> bool {
+    use std::net::IpAddr;
     let s = s.trim();
-    if s.eq_ignore_ascii_case("all") {
+    if s == "all" {
         return true;
     }
-    !s.is_empty()
-        && s.len() <= 64
-        && s.chars()
-            .all(|c| c.is_ascii_hexdigit() || matches!(c, '.' | ':' | '/'))
+    if s.contains('/') {
+        return valid_cidr(s);
+    }
+    s.parse::<IpAddr>().is_ok()
+}
+
+/// Whether `s` is a valid `addr/prefix` CIDR, matching `ipnet`'s acceptance:
+/// the address parses as IPv4/IPv6 and the prefix length is in range for the
+/// family (0..=32 for v4, 0..=128 for v6). Host bits are not required to be zero
+/// (the edge stores the pair as-is), but exactly one `/` and a numeric prefix
+/// are required.
+fn valid_cidr(s: &str) -> bool {
+    use std::net::IpAddr;
+    let Some((addr, prefix)) = s.split_once('/') else {
+        return false;
+    };
+    if prefix.contains('/') {
+        return false; // more than one '/'
+    }
+    let Ok(len) = prefix.parse::<u8>() else {
+        return false;
+    };
+    match addr.parse::<IpAddr>() {
+        Ok(IpAddr::V4(_)) => len <= 32,
+        Ok(IpAddr::V6(_)) => len <= 128,
+        Err(_) => false,
+    }
 }
 
 /// A server_name: one or more space-free hostnames (letters/digits/.-/* and _).
@@ -66,13 +105,15 @@ pub(crate) fn primary_host(server_name: &str) -> String {
 }
 
 /// A proxy target host[:port] or container name — no scheme, no path, no shell
-/// metacharacters. We build the final `http://host:port` ourselves.
+/// metacharacters. We build the final `http://host:port` ourselves. Brackets are
+/// allowed so the canonical IPv6 authority form (`[2001:db8::2]:8443`) passes and
+/// reaches the edge builder, which is written to preserve it.
 pub(crate) fn valid_host_token(s: &str) -> bool {
     let s = s.trim();
     !s.is_empty()
         && s.len() <= 255
         && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':'))
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '[' | ']'))
 }
 
 /// A container name (docker's own charset).
@@ -143,7 +184,7 @@ pub(crate) fn valid_size_value(s: &str) -> bool {
 mod tests {
     use super::*;
 
-    // Most validators are also exercised from the infra nginx tests; these keep
+    // Most validators are also exercised from the infra website tests; these keep
     // domain-local coverage with the rule, and cover the two that had none
     // (`valid_size_value`, `norm_scheme`).
 
@@ -191,5 +232,33 @@ mod tests {
         assert!(!valid_redirect_url("ftp://x"));
         assert!(!valid_redirect_url("https://a b.com"));
         assert!(!valid_redirect_url("javascript:alert(1)"));
+    }
+
+    #[test]
+    fn client_address_accepts_all_ip_and_cidr_only() {
+        // The exact keyword, bare IPs, and well-formed CIDRs are accepted.
+        assert!(valid_client_address("all"));
+        assert!(valid_client_address(" all ")); // trimmed
+        assert!(valid_client_address("1.2.3.4"));
+        assert!(valid_client_address("10.0.0.0/8"));
+        assert!(valid_client_address("192.168.0.0/16"));
+        assert!(valid_client_address("::1"));
+        assert!(valid_client_address("2001:db8::/32"));
+        assert!(valid_client_address("0.0.0.0/0"));
+
+        // Rejected: not a real IP, malformed / out-of-range CIDR, wrong keyword,
+        // stray whitespace inside, or a smuggled directive.
+        assert!(!valid_client_address(""));
+        assert!(!valid_client_address("ALL")); // must be the exact lower-case token
+        assert!(!valid_client_address("999.999.999.999"));
+        assert!(!valid_client_address("1.2.3.4/33")); // v4 prefix > 32
+        assert!(!valid_client_address("2001:db8::/129")); // v6 prefix > 128
+        assert!(!valid_client_address("10.0.0.0/")); // empty prefix
+        assert!(!valid_client_address("10.0.0.0/x")); // non-numeric prefix
+        assert!(!valid_client_address("10.0.0.0/8/8")); // more than one '/'
+        assert!(valid_client_address("1.2.3.4 ")); // trailing space trims to a valid IP
+        assert!(!valid_client_address("1.2.3. 4")); // inner space breaks parse
+        assert!(!valid_client_address("deny 1.2.3.4")); // directive smuggled in
+        assert!(!valid_client_address("nope"));
     }
 }

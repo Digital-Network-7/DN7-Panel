@@ -1,4 +1,4 @@
-//! Parse/build the focused `contracts::nginx` command for each write op from
+//! Parse/build the focused `contracts::website` command for each write op from
 //! the raw capability JSON. Extracted so `dispatch` stays a flat one-line-arm
 //! routing table instead of inlining field-by-field struct construction.
 
@@ -38,6 +38,7 @@ pub(crate) fn create_cert(body: &Value) -> CreateCert {
         server_name: s(body, "server_name"),
         cert_pem: s(body, "cert_pem"),
         key_pem: s(body, "key_pem"),
+        key_type: s(body, "key_type"),
     }
 }
 

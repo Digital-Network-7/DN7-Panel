@@ -1,4 +1,4 @@
-//! Nginx capability dispatch: route an authenticated capability command to
+//! Website capability dispatch: route an authenticated capability command to
 //! the right read-only projection or write-op adapter.
 
 use anyhow::{anyhow, Result};
@@ -6,12 +6,12 @@ use serde_json::{json, Value};
 
 use super::{commands, tuning};
 
-/// Run one nginx capability request. `body` is the capability JSON command
+/// Run one website capability request. `body` is the capability JSON command
 /// already authenticated/authorized by the web boundary.
 pub(crate) async fn dispatch(body: &Value) -> Result<Value> {
     let op = body.get("op").and_then(|v| v.as_str()).unwrap_or("");
     match op {
-        // Read-only ops — owned by the application layer (no nginx reload).
+        // Read-only ops — owned by the application layer (no edge reload).
         "get_settings" => tuning::get_settings(),
         "info" => crate::infra::website::website_info().await,
         "list_sites" => Ok(json!({ "sites": crate::infra::website::sites_snapshot() })),

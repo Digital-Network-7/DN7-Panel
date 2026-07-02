@@ -47,7 +47,7 @@ pub(crate) async fn setup_host(op_id: &str) -> Result<()> {
     // Mark setup so `layout()` / `edge_reload()` are unblocked, then start the
     // built-in web server and bind :80/:443. `spawn()` is idempotent.
     mark_setup()?;
-    crate::edge::spawn();
+    dn7_edge::spawn();
     edge_reload().await?;
     Ok(())
 }
