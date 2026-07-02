@@ -1,0 +1,12 @@
+[package]
+name = "dn7-cred"
+version = "0.1.0"
+edition = "2021"
+description = "DN7 password credential KDF — the single byte-exact source of truth for the s256 verifier, shared by the panel init wizard and the dn7 CLI (matches the browser core.js deriveVerifier)."
+publish = false
+
+[dependencies]
+# Pure-Rust SHA-256 + RNG; no C, musl-static safe. The server-side Argon2id
+# at-rest wrap lives in the panel, NOT here (this crate only derives the verifier).
+sha2 = "0.10"
+rand = "0.8"

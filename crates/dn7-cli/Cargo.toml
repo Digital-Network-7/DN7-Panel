@@ -1,0 +1,26 @@
+[package]
+name = "dn7-cli"
+version = "0.1.0"
+edition = "2021"
+description = "DN7 unified on-box CLI logic (`dn7`) — linked INTO dn7-panel; invoked via the `dn7` symlink."
+publish = false
+
+# A LIBRARY (not a second binary): dn7-panel links this and dispatches to it when
+# launched as `dn7`, so there is a single shipped artifact.
+[lib]
+name = "dn7_cli"
+path = "src/lib.rs"
+
+[dependencies]
+# The container runtime: `dn7 container ...` reuses its CLI dispatch in-process.
+dn7-container = { path = "../dn7-container" }
+# The in-process edge: `dn7 status` reads its loopback console port constant.
+dn7-edge = { path = "../dn7-edge" }
+# Parse the panel's web.json (status fields) without depending on the panel bin.
+serde_json = "1"
+# getuid / isatty for the root check + tty detection + no-echo password input.
+libc = "0.2"
+# Client-side password verifier (s256 KDF) for `dn7 user add|passwd` — the single
+# byte-exact source of truth, shared with the panel's init wizard so the two can't
+# drift apart and break login.
+dn7-cred = { path = "../dn7-cred" }
