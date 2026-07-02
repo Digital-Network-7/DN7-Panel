@@ -1,10 +1,16 @@
 # DN7 Panel — Architecture & Code-Structure Guide
 
-Single binary, single crate. Team-scale boundaries come from **directory
-layers + a dependency rule + an architecture test** (`tests/architecture.rs`),
-not from Cargo workspaces. This document is enforceable at PR granularity: a
-change that violates the dependency direction, the "禁止项" lists, or the
-structure limits should fail review.
+Single shipped binary, but a Cargo **workspace**: the root crate `dn7-panel`
+(`src/`) plus helper crates under `crates/` (`dn7-container`, `dn7-edge`,
+`dn7-cli`, `dn7-cred`). Team-scale boundaries **inside the root crate** come
+from **directory layers + a dependency rule + an architecture test**
+(`tests/architecture.rs`). The helper crates are governed by their own module
+boundaries plus the workspace-wide gates the test applies to `crates/*/src/`
+(the file-size limit and the init-manager shell-out allowlist); the per-layer
+dependency-direction / serde / capability scans are still root-crate-only
+(extending them per-crate is tracked debt). This document is enforceable at PR
+granularity: a change that violates the dependency direction, the "禁止项"
+lists, or the structure limits should fail review.
 
 > This file was previously two Kiro steering files; it is now a normal repo
 > doc. It is **not** auto-loaded by any tool — read it as the project
@@ -29,7 +35,7 @@ src/
   core/          纯规则:error / identity / authz(最核心)+ 各能力模型与校验
   contracts/     对外协议唯一来源:req/resp DTO、命令枚举、错误码注册表
   app/           用例服务(一个用例一个入口)+ ports(仅重外部依赖的 trait)
-  infra/         adapters(docker/website/mysql/system/store)+ edge(内置 Rust 反代)+ support(json_store/crypto/…)
+  infra/         adapters(docker/website/system/store)+ edge(内置 Rust 反代)+ support(json_store/crypto/…)
   web/           交付层:DTO 解析、调 service、响应映射、中间件、嵌入 UI(web/http + web/routes)
   platform/      宿主运行时:daemon/supervisor/update/signing/paths/banner/autostart
 ```
@@ -52,7 +58,7 @@ src/
 - **细粒度授权出口**:细粒度授权统一经 app/core 暴露的显式判定接口(如 `core::authz::can_manage`),不散落在 handler/adapter。
 
 **infra/** — side effects. Two kinds, kept in separate directories:
-- **adapters**:`docker`(bollard)、`website`(站点/证书/access 清单的控制面:写盘 + ACME/htpasswd,无外部 nginx、无 confgen)、`edge`(进程内纯-Rust 反向代理,独占 :80/:443,从清单构建路由表)、`mysql`、`system`(useradd/sudo/chpasswd/PTY/fs)、`store`(manifest 持久化)、`metrics`、`file`。实现 `app::ports` 或被 app 直接调用。
+- **adapters**:`docker`(bollard)、`website`(站点/证书/access 清单的控制面:写盘 + ACME/htpasswd,无外部 nginx、无 confgen)、`edge`(进程内纯-Rust 反向代理,独占 :80/:443,从清单构建路由表)、`system`(useradd/sudo/chpasswd/PTY/fs)、`store`(manifest 持久化)、`metrics`、`file`。实现 `app::ports` 或被 app 直接调用。
 - **support**:`json_store`、`crypto`、`op_registry`、`audit`、`procs`、`totp`、`fetch` —— 技术支撑,不是外部系统适配器,**不建端口**,infra 内直接用。
 - infra 实现规则,**不决定**规则(规则在 core/app)。
 
@@ -83,14 +89,22 @@ platform 独立;跨层装配仅限"受控组合根集合"
 | `contracts/**` | `tokio`、`axum`、业务编排、领域不变量、依赖 `app/infra/web` |
 | `app/**` | `axum`、`bollard`、`reqwest`(外部系统只能经 `ports`)、`crate::web` |
 | `infra/**` | `axum`、`crate::web`、`crate::app` |
-| `web/**` | `bollard`、`tokio::process`、`std::process`、反向 `use` infra 具体适配器(应经 app facade)、细粒度授权/领域分支 |
+| `web/**` | `bollard`、`tokio::process`、`std::process`、细粒度授权/领域分支 |
 
 豁免:`platform/**`(宿主层)、`#[cfg(test)]`、re-export/type alias。跨层装配豁免仅限受控组合根集合。
+
+**web → infra 现状(治理债,非硬门禁)**:web 控制器目前**直接调用** infra 能力函数(如 `crate::infra::docker::*` 导出/上传、`crate::infra::website::web_static_upload`、`crate::infra::system::set_sudo`/`set_system_password`),遍布 ~13 个 web 文件。这不是理想的 `web→app→core` 收口,但当前**安全不变量由每个高危 handler 的 `require_admin`/`can_manage`/step-up + 审计**保证,而非层禁令。因此架构测试**不**硬禁 web 里的 `crate::infra`(否则会与 ~13 处既有形态冲突);把最高危变更(docker/system)收口到 app use-case 属**已登记的迁移债**。`account_controller` 的密码路径已是正确的 `app::ports` 适配器模式(web 适配器实现 app 端口),应视为范式而非违规。
+
+**外部程序例外(init/bootstrap、服务生命周期 & `dn7` 管理 CLI)**:「零外部程序」硬不变量针对**常驻服务运行时**(supervisor/panel 服务循环),它保持纯-Rust。向宿主 init 管理器(`systemctl`/`journalctl`/`service`/`update-rc.d`)注册、启停、查状态、看日志没有纯-Rust 等价物,故在**一次性生命周期路径**与**人手调用的 `dn7` 管理 CLI**里允许 shell-out,限于以下已审计位点:
+- `platform::init_cli::register_and_start_service`(首次安装启动)、`main.rs` 的 `run_reset`(`dn7 reset` 停服)——均在 `platform/**`。
+- `dn7` CLI 管理子命令(`crates/dn7-cli/src/{service,panel,uninstall,edge}.rs`):`dn7 service enable/disable`、`dn7 panel status/logs/restart`、`dn7 uninstall`、`dn7 edge` 重启——人手调用、不在服务循环内(`dn7 panel status` 已尽量用纯-Rust `/proc` 探测,仅 init 管理器交互才 shell-out)。
+
+这份允许清单由 `tests/architecture.rs` 的 `no_new_init_manager_shellouts` 门禁强制:任何**新增**的 `systemctl`/`journalctl`/`update-rc.d` shell-out(引号字面量)若不在允许文件内即失败。常驻运行时绝不 shell-out 到 init 管理器。
 
 ## 5. 端口抽象标准(何时建 trait)
 
 只有**同时**满足下面两条才在 `app/ports/` 建端口:
-1. 有真实外部副作用(Docker daemon、nginx 文件+reload、useradd/chpasswd、会话存储、审计落盘);**且**
+1. 有真实外部副作用(Docker daemon、站点/证书写盘 + 内置 edge reload、useradd/chpasswd、会话存储、审计落盘);**且**
 2. 需要在测试中 mock,或需要可替换实现。
 
 `json_store`/`crypto`/`paths` 这类纯工具**不建端口**。
@@ -117,7 +131,7 @@ platform 独立;跨层装配仅限"受控组合根集合"
 1. **目录级 deny**:按 §4 禁止项锁死各层。
 2. **模块级 allowlist**:`bollard` 仅 `src/infra/`,`axum` 仅 `src/web/`。
 3. **语义级**:`core` 默认禁 serde,仅白名单持久化实体文件可 derive
-   (`core/identity/model.rs`、`core/settings/model.rs`、`core/mysql/catalog.rs`、`core/website/model.rs`)。
+   (`core/identity/model.rs`、`core/settings/model.rs`、`core/website/model.rs`)。
 
 迁移期对未达标目录可加 `// arch-allow(<阶段/工单>): <原因>` 例外,但必须带原因、带可追溯标识、迁移完成后删除;架构测试统计其数量,应单调下降。
 
@@ -188,15 +202,13 @@ pub(crate) async fn run_op(...) -> Result<...> { ... }
 - **自包含算法** — 如 `infra/website/htpasswd::apr1_with_salt`(Apache apr1 MD5-crypt)。
 - **Config / DTO 组装** — 输入算完后基本是一大坨结构体/JSON:
   `infra/docker/create/build::build_create_spec`、
-  `infra/mysql/provision/install::create_mysql_container`、
   `infra/docker/containers/{list::container_row, inspect::inspect_container}`、
   `infra/website/sites/build::site_from_req`。
 - **Op 分发表** — 扁平 `match`,每臂一行调用:
-  `infra/docker/dispatch::run_op`、`infra/mysql/dispatch::run_op`、
+  `infra/docker/dispatch::run_op`、
   `infra/docker/containers/actions::container_action`、`web/routes::build_router`。
 - **编排管线** — 一串带进度上报的 await 步骤:
   `infra/website/certs/acme::acme_http01`、
-  `infra/mysql/provision/install::run_install_detached`、
   `web/http/controllers/settings_controller::apply_settings_update`。
 - **单遍解析器** — 对外部输出的有状态单循环:`infra/metrics/host::detect_mem_model`。
 
@@ -224,12 +236,11 @@ pub(crate) async fn run_op(...) -> Result<...> { ... }
 | docker 容器 bind 挂载 | `core/docker::host_bind_denied`(拒 docker.sock、`/`、`/etc` `/root` `/boot` `/proc` `/sys` `/dev` 及子路径) | 具名卷 / 非敏感路径 |
 | docker `privileged` | `infra/docker/create/build::enforce_create_policy` — 仅 super,默认拒 | `false`(非特权) |
 | docker `network` = host/`container:` | `core/docker::network_mode_privileged` 经 `enforce_create_policy` — 仅 super | bridge(隔离) |
-| mysql `expose` 宿主端口 | `mysql/provision/install::validate_port`;发布端口绑 `127.0.0.1` | 仅回环(非 `0.0.0.0`) |
 
-新增触及 nginx/系统/网络配置的旋钮时,补一行并确认四点齐备。能不暴露原始基础设施原语就不暴露;一个窄而经校验的产品设置,比直通安全得多。
+新增触及网站(内置 edge)/系统/网络配置的旋钮时,补一行并确认四点齐备。能不暴露原始基础设施原语就不暴露;一个窄而经校验的产品设置,比直通安全得多。
 
 ---
 
 # Part III — Current state
 
-分层迁移已完成:`src/` 顶层只有 `main.rs` + 六个分层目录(`core`/`contracts`/`app`/`infra`/`web`/`platform`),每个能力都是目录,所有 `mod.rs` 纯装配,无超 500 行文件。`tests/architecture.rs` 落地三层检查(目录级 deny + 模块 allowlist + core serde 白名单)。能力用例统一经 `app::<cap>` 入口(web→app→infra),`contracts` 为 nginx/mysql 提供 typed 命令,错误经 `core::Error` 在 web 边界单点映射。维护时按本文档继续守规则即可。
+分层迁移已完成:`src/` 顶层只有 `main.rs` + 六个分层目录(`core`/`contracts`/`app`/`infra`/`web`/`platform`),每个能力都是目录,所有 `mod.rs` 纯装配,无超 500 行文件。`tests/architecture.rs` 落地三层检查(目录级 deny + 模块 allowlist + core serde 白名单)。能力用例统一经 `app::<cap>` 入口(web→app→infra),`contracts` 为 website 等能力提供 typed 命令,错误经 `core::Error` 在 web 边界单点映射。维护时按本文档继续守规则即可。

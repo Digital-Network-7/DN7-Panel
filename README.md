@@ -10,8 +10,8 @@
 > people there.
 
 A small, single static Rust binary that turns a Linux host into a fully managed
-node via an **on-box web console** — monitoring, a web terminal, and Docker /
-Website / MySQL / file management — with no backend, no panel token, and no
+node via an **on-box web console** — monitoring, a web terminal, and
+containers / website / file management — with no backend, no panel token, and no
 runtime dependencies.
 
 > Part of the [Digital Network 7](https://dn7.cn) suite ·
@@ -32,8 +32,8 @@ runtime dependencies.
 
 DN7 Panel is designed for single-host or small-node operations where the person
 using the console is also trusted to administer the machine. Its strengths are
-simple deployment, no external control plane, and direct access to Docker,
-Website, MySQL/MariaDB, files, and a terminal from one embedded UI.
+simple deployment, no external control plane, and direct access to containers,
+website, files, and a terminal from one embedded UI.
 
 That also defines its limits. It is not a multi-tenant SaaS control plane, and
 it deliberately has a high local blast radius: many features operate with host
@@ -128,15 +128,13 @@ Capabilities:
 - **Monitoring** — CPU / memory / disk / network throughput, plus a history
   chart (CPU / memory / network over 15m / 1h / 6h / 1d / 7d), sampled in the
   background and persisted to `<data>/metrics-history.json`.
-- **Terminal** — a browser PTY shell on the host, and per-container shells
-  (`docker exec`).
-- **Docker** — images (pull, create), containers (lifecycle, logs, networks,
+- **Terminal** — a browser PTY shell on the host, and per-container exec shells.
+- **Containers** — images (pull, create), containers (lifecycle, logs, networks,
   in-container terminal, file transfer), networks, volumes, backups.
-- **Website** — Docker-mode setup, sites (proxy-host / proxy-container / static),
-  custom path rules, HTTPS via Let's Encrypt / self-signed / manual / a named
-  cert store, access lists, reload.
-- **MySQL** — one DN7-provisioned MySQL/MariaDB instance: lifecycle, connection
-  info, multiple databases, account management, port remap, `mysqldump` backup.
+- **Website** — container-mode setup, sites (proxy-host / proxy-container /
+  static), custom path rules, HTTPS via Let's Encrypt / self-signed / manual /
+  a named cert store, access lists, reload — served by the built-in edge / web
+  server (no external nginx).
 - **Files** — browse / upload / download / delete on the host and inside
   containers.
 
@@ -185,6 +183,17 @@ knobs; there is no `.env` loader.
 | `DN7_SITE_URL` | `https://dn7.cn` | Digital Network 7 mirror/API base used by the default update source |
 | `DN7_WEB_PORT` | parsed, rarely needed | runtime config fallback; current first-run web settings generate and persist a random high port, so prefer `dn7-panel port` or Settings |
 | `RUST_LOG` | `info,dn7_panel=info` | tracing filter for foreground/log output |
+
+### Runtime / dev flags
+
+A few flags select alternate runtime behavior or aid local development. They are
+read directly from the environment (no `.env` loader):
+
+| Var | Effect |
+|-----|--------|
+| `DN7_RUNTIME=dn7` | Select the in-house pure-Rust container runtime backend instead of talking to a Docker daemon (Linux-only; ignored elsewhere). |
+| `DN7_NO_GUARDIAN=1` | Disable the supervisor/guardian relaunch so the process stays in the foreground without respawning — for dev/foreground runs only. Any non-empty value other than `0` enables this. |
+| `DN7_ROOT_USERTEST=1` | Opt into the root-gated `/etc` account integration test (it edits the live `passwd`/`shadow`/`group`); run as root, e.g. `sudo DN7_ROOT_USERTEST=1 <testbin>`. When unset the test is skipped. |
 
 ## Security model
 
