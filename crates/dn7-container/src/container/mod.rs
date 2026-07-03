@@ -184,6 +184,16 @@ pub fn run_image(spec: &ImageRunSpec) -> Result<i32> {
 /// FIFO), stamping `meta` into the persisted state for inspect/recreate. The
 /// overlay stays mounted for the container's life; `delete` tears it down.
 pub fn create_from_image(spec: &ImageRunSpec, meta: StateMeta) -> Result<String> {
+    // Serialize same-id creates for the WHOLE assemble→create: two concurrent
+    // "create c1" requests (a double-click / retry storm) would otherwise stomp on
+    // one another's overlay bundle + exec FIFO, and the loser's rollback would
+    // delete the winner's cgroup — leaving nothing alive and a leaked cgroup. Under
+    // the lock the winner builds it and every loser sees `exists` and bails cleanly,
+    // BEFORE re-mounting the overlay onto the winner's bundle dir.
+    let _guard = State::lock(&spec.id)?;
+    if State::exists(&spec.id) {
+        return Err(Error::Exists(spec.id.clone()));
+    }
     let bundle = assemble_image_bundle(spec)?;
     match create_with_meta(&spec.id, &bundle, meta) {
         Ok(()) => Ok(spec.id.clone()),
@@ -199,11 +209,20 @@ pub fn create_from_image(spec: &ImageRunSpec, meta: StateMeta) -> Result<String>
 /// `create`: set up the container and park its init on the exec FIFO. The
 /// container is left in `created`; `start` releases it.
 pub fn create(id: &str, bundle_dir: &Path) -> Result<()> {
+    // Serialize same-id creates (see `create_from_image`). `create_with_meta` is a
+    // lock-free leaf — `rerun_locked` calls it while already holding this lock — so
+    // the top-level entry point is the right place to take it.
+    let _guard = State::lock(id)?;
     create_with_meta(id, bundle_dir, StateMeta::default())
 }
 
 /// Like [`create`] but stamps `meta` (image/name/limits/recreate-spec) into the
 /// persisted state, atomically with the first save.
+///
+/// **Lock-free leaf.** This does NOT take [`State::lock`] — callers that mutate
+/// the container concurrently (`create`, `create_from_image`, `rerun_locked`)
+/// hold it around the whole sequence. Adding the lock here would self-deadlock
+/// `rerun_locked`, which already owns it.
 pub fn create_with_meta(id: &str, bundle_dir: &Path, meta: StateMeta) -> Result<()> {
     if State::exists(id) {
         return Err(Error::Exists(id.into()));

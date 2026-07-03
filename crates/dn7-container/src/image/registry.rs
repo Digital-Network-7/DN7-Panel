@@ -48,13 +48,39 @@ impl Registry {
             "https://{}/v2/{}/manifests/{}",
             self.host, self.repo, reference
         );
-        let resp = self.authed_get(&url, media::ACCEPT)?;
+        let resp = self
+            .authed_get(&url, media::ACCEPT)
+            .map_err(|e| self.friendly_pull_err(reference, e))?;
         let ct = resp.header("content-type").unwrap_or("").to_string();
         let mut buf = Vec::new();
         resp.into_reader()
             .read_to_end(&mut buf)
             .map_err(|e| Error::Other(format!("read manifest: {e}")))?;
         Ok((buf, ct))
+    }
+
+    /// Turn a raw registry auth/not-found failure on a manifest fetch into a
+    /// message a human can act on. A registry (Docker Hub especially) answers
+    /// `401` — not `404` — for a repository that doesn't exist or that the
+    /// anonymous token can't reach, so a bare "HTTP 401" reads as a bug when the
+    /// real cause is almost always a typo'd name/tag or a private image.
+    fn friendly_pull_err(&self, reference: &str, e: Error) -> Error {
+        let msg = e.to_string();
+        if [
+            "registry HTTP 401",
+            "registry HTTP 403",
+            "registry HTTP 404",
+        ]
+        .iter()
+        .any(|p| msg.contains(p))
+        {
+            return Error::Other(format!(
+                "image not found: {}/{}:{} — no such name or tag, \
+                 or it is a private image that requires login",
+                self.host, self.repo, reference
+            ));
+        }
+        e
     }
 
     /// Open a blob (config or layer) by digest as a streaming reader. The caller
