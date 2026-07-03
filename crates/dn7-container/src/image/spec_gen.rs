@@ -138,6 +138,11 @@ pub struct CreateOpts<'a> {
     pub cpu_shares: Option<u64>,
     /// `linux.resources.pids.limit`.
     pub pids_limit: Option<i64>,
+    /// Allocate a controlling pseudo-terminal for the container's main process
+    /// (docker `-t`). Sets OCI `process.terminal`; the parent hands the init a
+    /// PTY slave as its console so an interactive shell (the image's default
+    /// command) stays alive instead of hitting EOF on stdin and exiting at once.
+    pub tty: bool,
 }
 
 impl<'a> CreateOpts<'a> {
@@ -155,6 +160,7 @@ impl<'a> CreateOpts<'a> {
             cpu_quota: None,
             cpu_shares: None,
             pids_limit: None,
+            tty: false,
         }
     }
 }
@@ -235,7 +241,7 @@ pub fn write_config(bundle_dir: &Path, cfg: &ImageConfig, opts: &CreateOpts) -> 
         "hostname": opts.hostname,
         "annotations": { "dn7.net": opts.net_mode },
         "process": {
-            "terminal": false,
+            "terminal": opts.tty,
             "user": { "uid": uid, "gid": gid },
             "args": args,
             "env": env,

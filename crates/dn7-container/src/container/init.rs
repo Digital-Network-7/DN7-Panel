@@ -125,9 +125,24 @@ fn try_run(ctx: &InitCtx) -> std::result::Result<(), String> {
         wait_on_exec_fifo(fd)?;
     }
 
-    // 11. Redirect stdout/stderr to the container log (detached containers).
+    // 11. Wire the container's console. For a tty container (`process.terminal`)
+    //     the inherited fd is a PTY *slave*: make it the controlling terminal on
+    //     stdin/stdout/stderr so the main process (e.g. an interactive shell)
+    //     blocks for input instead of hitting EOF and exiting immediately. For a
+    //     plain detached container it is the log file → stdout/stderr only. `None`
+    //     inherits the caller's stdio (foreground `run`).
     if let Some(fd) = ctx.log_fd {
-        redirect_stdio(fd)?;
+        let want_tty = ctx
+            .spec
+            .process
+            .as_ref()
+            .map(|p| p.terminal)
+            .unwrap_or(false);
+        if want_tty {
+            setup_tty(fd)?;
+        } else {
+            redirect_stdio(fd)?;
+        }
     }
 
     // 12. Seccomp — installed last, so only the user process (and the execve
@@ -273,6 +288,33 @@ fn apply_rlimits(rlimits: &[crate::oci::spec::Rlimit]) -> std::result::Result<()
                 rl.typ,
                 std::io::Error::last_os_error()
             ));
+        }
+    }
+    Ok(())
+}
+
+/// Make an inherited PTY *slave* fd the controlling terminal on stdin/stdout/
+/// stderr (a tty container). The shell then reads from the tty and blocks for
+/// input — the parent holds the master open for the container's lifetime, so the
+/// shell never sees EOF and stays alive (docker `-t` semantics). Mirrors the exec
+/// pty path; async-signal-safe (raw libc only). `setsid`/`TIOCSCTTY` are
+/// best-effort — the `dup2` of the slave onto stdin is what keeps the process
+/// alive; the session/controlling-tty bits only add full job-control semantics.
+fn setup_tty(slave: RawFd) -> std::result::Result<(), String> {
+    // SAFETY: post-fork/pre-exec, single-threaded; only async-signal-safe libc.
+    unsafe {
+        libc::setsid();
+        for target in [0, 1, 2] {
+            if libc::dup2(slave, target) < 0 {
+                return Err(format!(
+                    "dup2(pty → {target}): {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+        libc::ioctl(0, libc::TIOCSCTTY as _, 0);
+        if slave > 2 {
+            libc::close(slave);
         }
     }
     Ok(())

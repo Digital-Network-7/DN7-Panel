@@ -493,6 +493,7 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
         cpu_quota,
         cpu_shares: cpu_shares_i.map(|v| v as u64),
         pids_limit: None,
+        tty: req.tty.unwrap_or(false),
     };
     let meta = dn7_container::container::state::StateMeta {
         image: Some(cspec.image.clone()),
@@ -788,7 +789,7 @@ fn container_row(s: DnState) -> Value {
         "id": short_id,
         "name": name,
         "image": s.meta.image.clone().unwrap_or_default(),
-        "state": dn7_state_str(s.status),
+        "state": dn7_live_state(&s),
         "status": status,
         "ports": fmt_dn7_ports(&s.meta.ports_spec),
         "ip": ip,
@@ -814,7 +815,7 @@ async fn op_inspect_container(req: &Req) -> Result<Value> {
             "id": short_or(&r, &s.id),
             "name": s.meta.name.clone().unwrap_or_else(|| s.id.clone()),
             "image": s.meta.image.clone().unwrap_or_default(),
-            "state": dn7_state_str(s.status),
+            "state": dn7_live_state(&s),
             "running": running,
             "restart_policy": s.meta.restart_policy.clone().unwrap_or_default(),
             "created": s.created_iso(),
@@ -1343,12 +1344,34 @@ fn dn7_state_str(status: DnStatus) -> &'static str {
     }
 }
 
-/// A human status line (`Up 3 minutes` / `Created` / `Exited (0)`).
+/// The live state string the UI's status chip consumes. A frozen (`pause`d)
+/// container is Running at the pid/cgroup level, so its `status` is `Running`;
+/// `meta.paused` overlays that with the docker-parity `paused` state — otherwise
+/// a paused container would keep showing "running" and the pause/resume controls
+/// would desync.
+#[cfg(target_os = "linux")]
+fn dn7_live_state(s: &DnState) -> &'static str {
+    if s.meta.paused && matches!(s.status, DnStatus::Running) {
+        "paused"
+    } else {
+        dn7_state_str(s.status)
+    }
+}
+
+/// A human status line (`Up 3 minutes` / `Up 3 minutes (Paused)` / `Created` /
+/// `Exited (0)`).
 #[cfg(target_os = "linux")]
 fn dn7_status(s: &DnState) -> String {
     match s.status {
         DnStatus::Created => "Created".to_string(),
-        DnStatus::Running => format!("Up {}", dur_human(unix_now().saturating_sub(s.created))),
+        DnStatus::Running => {
+            let up = format!("Up {}", dur_human(unix_now().saturating_sub(s.created)));
+            if s.meta.paused {
+                format!("{up} (Paused)")
+            } else {
+                up
+            }
+        }
         DnStatus::Stopped => format!("Exited ({})", s.meta.exit_code),
     }
 }

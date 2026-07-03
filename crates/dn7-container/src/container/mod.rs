@@ -10,7 +10,7 @@ pub mod state;
 
 pub use pty::{exec_pty, ExecPty};
 
-use std::os::fd::RawFd;
+use std::os::fd::{IntoRawFd, RawFd};
 use std::path::Path;
 
 use nix::sys::signal::Signal;
@@ -60,6 +60,9 @@ pub struct ImageRunSpec {
     pub cpu_quota: Option<(i64, u64)>,
     pub cpu_shares: Option<u64>,
     pub pids_limit: Option<i64>,
+    /// Allocate a controlling PTY for the main process (docker `-t`) so an
+    /// interactive shell (or the image's default command) stays alive.
+    pub tty: bool,
 }
 
 /// `run`: create + start + wait, all in one process. The simplest end-to-end
@@ -146,6 +149,7 @@ fn assemble_image_bundle(spec: &ImageRunSpec) -> Result<std::path::PathBuf> {
         cpu_quota: spec.cpu_quota,
         cpu_shares: spec.cpu_shares,
         pids_limit: spec.pids_limit,
+        tty: spec.tty,
     };
     image::spec_gen::write_config(&bundle, &cfg, &opts)?;
 
@@ -225,8 +229,23 @@ fn create_inner(id: &str, bundle_dir: &Path, bundle: &Bundle, meta: StateMeta) -
         .map_err(Error::sys("mkfifo(exec.fifo)"))?;
     let fifo_fd = open_path(&fifo)?;
 
-    // Capture the detached container's stdout/stderr to console.log.
-    let log_fd = open_log(&State::log_path(id))?;
+    // The container's console fd handed to the init:
+    //   - tty container (`process.terminal`): a fresh PTY *slave* — the init makes
+    //     it its controlling terminal, and we keep the master here (draining it to
+    //     console.log) so the shell blocks for input instead of exiting on EOF.
+    //   - plain container: the append-only console.log file (stdout/stderr).
+    let tty = bundle
+        .spec
+        .process
+        .as_ref()
+        .map(|p| p.terminal)
+        .unwrap_or(false);
+    let (console_fd, pty_master) = if tty {
+        let pty = nix::pty::openpty(None, None).map_err(Error::sys("openpty"))?;
+        (pty.slave.into_raw_fd(), Some(pty.master))
+    } else {
+        (open_log(&State::log_path(id))?, None)
+    };
 
     let (rfd, wfd) = sync_pipe()?;
     let ctx = InitCtx {
@@ -235,7 +254,7 @@ fn create_inner(id: &str, bundle_dir: &Path, bundle: &Bundle, meta: StateMeta) -
         hostname: bundle.spec.hostname.clone(),
         sync_rfd: rfd,
         gate: Gate::Fifo(fifo_fd),
-        log_fd: Some(log_fd),
+        log_fd: Some(console_fd),
     };
 
     let mut stack = vec![0u8; INIT_STACK];
@@ -243,7 +262,14 @@ fn create_inner(id: &str, bundle_dir: &Path, bundle: &Bundle, meta: StateMeta) -
 
     close_fd(rfd);
     close_fd(fifo_fd); // the init holds its own inherited copy
-    close_fd(log_fd); // ditto
+    close_fd(console_fd); // ditto (the init dup'd the pty slave / log fd)
+                          // For a tty container, drain the PTY master to console.log on a dedicated
+                          // thread and — crucially — hold the master open for the container's lifetime,
+                          // so its slave (the shell's stdin/stdout) never sees EOF. The read returns 0
+                          // when the container process exits (all slave fds closed), ending the thread.
+    if let Some(master) = pty_master {
+        spawn_console_pump(master, State::log_path(id));
+    }
     if let Err(e) = cg.add_pid(pid.as_raw()) {
         let _ = nix::sys::signal::kill(pid, Signal::SIGKILL);
         let _ = waitpid(pid, None);
@@ -283,6 +309,47 @@ fn create_inner(id: &str, bundle_dir: &Path, bundle: &Bundle, meta: StateMeta) -
     spawn_reaper(id.to_string(), pid.as_raw());
     drop(stack);
     Ok(())
+}
+
+/// Drain a tty container's PTY master into its `console.log` and hold the master
+/// open for the container's lifetime — so the slave (the shell's stdin/stdout)
+/// never sees EOF and an interactive shell stays alive. The `read` returns 0 when
+/// the container process exits (all slave fds close), ending the thread. One
+/// parked thread per running tty container, like the reaper.
+fn spawn_console_pump(master: std::os::fd::OwnedFd, log_path: std::path::PathBuf) {
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    std::thread::spawn(move || {
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .ok();
+        let mut buf = [0u8; 4096];
+        loop {
+            // SAFETY: read into a valid local buffer from our own master fd.
+            let n = unsafe {
+                libc::read(
+                    master.as_raw_fd(),
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    buf.len(),
+                )
+            };
+            if n < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                break;
+            }
+            if n == 0 {
+                break; // EOF: the container process exited.
+            }
+            if let Some(f) = log.as_mut() {
+                let _ = f.write_all(&buf[..n as usize]);
+            }
+        }
+        // `master` drops here → the fd is closed.
+    });
 }
 
 /// Spawn a dedicated thread that blocking-`waitpid`s ONLY the given container

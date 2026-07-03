@@ -83,6 +83,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 cpu_quota: None,
                 cpu_shares: None,
                 pids_limit: None,
+                tty: pre.iter().any(|a| a == "-t" || a == "--tty"),
             };
             container::run_image(&spec).map_err(|e| e.to_string())
         }
@@ -119,6 +120,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 cpu_quota,
                 cpu_shares: None,
                 pids_limit: None,
+                tty: pre.iter().any(|a| a == "-t" || a == "--tty"),
             };
             let meta = container::state::StateMeta {
                 image: Some(reference.to_string()),
