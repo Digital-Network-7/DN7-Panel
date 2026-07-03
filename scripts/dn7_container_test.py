@@ -430,6 +430,23 @@ def section_ui():
     d8 = note(dop({"op": "remove_image", "ref": IMG}))
     rec("UI8", "remove in-use image → coded", d8.get("code") == "docker.image_in_use", f"code={d8.get('code')}")
 
+    # UI10..UI14 — the shared entry helpers (need_ref/validate_token) + container
+    # state + network guards, i.e. the ops the report called out (inspect_container,
+    # rename_network, set_network_ip): all coded now.
+    d10 = note(dop({"op": "inspect_container"}))  # missing ref
+    rec("UI10", "op w/o ref → coded (need_ref)", d10.get("code") == "docker.missing_ref", f"code={d10.get('code')}")
+    d11 = note(dop({"op": "inspect_container", "ref": "bad ref!!"}))  # illegal chars
+    rec("UI11", "op w/ bad ref → coded (validate_token)", d11.get("code") == "docker.bad_ref", f"code={d11.get('code')}")
+    dc = dop({"op": "create_container", "image": IMG, "name": "uc3", "command": "/bin/sleep 300", "start": False})
+    opwait((dc.get("data") or {}).get("op_id"))
+    d12 = note(dop({"op": "pause_container", "ref": "uc3"}))  # created, not running
+    rec("UI12", "action on wrong container state → coded", d12.get("code") == "docker.bad_container_state", f"code={d12.get('code')}")
+    rm("uc3")
+    d13 = note(dop({"op": "rename_network", "ref": "dn7"}))  # no new_name
+    rec("UI13", "rename_network w/o new name → coded", d13.get("code") == "docker.need_network_name", f"code={d13.get('code')}")
+    d14 = note(dop({"op": "set_network_ip", "ref": "uc1"}))  # no network field
+    rec("UI14", "set_network_ip w/o network → coded", d14.get("code") == "docker.need_network", f"code={d14.get('code')}")
+
     # UI9 — SWEEP: not a single error surfaced this section was raw/un-localizable.
     raw = [d for d in seen_errs if not coded(d)]
     rec("UI9", "no raw (un-localizable) errors surfaced", len(raw) == 0, f"{len(seen_errs)} errors, {len(raw)} raw" + (f" e.g. {json.dumps(raw[0])[:60]}" if raw else ""))

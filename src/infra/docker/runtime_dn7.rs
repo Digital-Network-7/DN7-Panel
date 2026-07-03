@@ -78,9 +78,7 @@ async fn run_blocking<F>(f: F) -> Result<Value>
 where
     F: FnOnce() -> Result<Value> + Send + 'static,
 {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|e| anyhow!("dn7 task panicked: {e}"))?
+    tokio::task::spawn_blocking(f).await.map_err(dn7_err)?
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -115,9 +113,8 @@ fn info() -> Result<Value> {
 fn list_images() -> Result<Value> {
     use super::images::{human_since, human_size, split_repo_tag};
 
-    let store = dn7_container::image::Store::open().map_err(|e| anyhow!("dn7 store: {e}"))?;
-    let summaries = dn7_container::image::list_summaries(&store)
-        .map_err(|e| anyhow!("dn7 list images: {e}"))?;
+    let store = dn7_container::image::Store::open().map_err(dn7_err)?;
+    let summaries = dn7_container::image::list_summaries(&store).map_err(dn7_err)?;
 
     let items: Vec<Value> = summaries
         .into_iter()
@@ -178,7 +175,7 @@ fn list_networks() -> Result<Value> {
 /// Size/refs are unknown for now (reported as Docker does without usage data).
 #[cfg(target_os = "linux")]
 fn list_volumes() -> Result<Value> {
-    let vols = dn7_container::image::volume::list().map_err(|e| anyhow!("dn7 volumes: {e}"))?;
+    let vols = dn7_container::image::volume::list().map_err(dn7_err)?;
     let items: Vec<Value> = vols
         .into_iter()
         .map(|v| {
@@ -244,13 +241,13 @@ fn start_pull(req: &Req) -> Result<Value> {
 async fn op_remove_image(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
     run_blocking(move || {
-        let store = dn7_container::image::Store::open().map_err(|e| anyhow!("dn7 store: {e}"))?;
+        let store = dn7_container::image::Store::open().map_err(dn7_err)?;
         // Refuse to delete an image still referenced by any dn7 container, so its
         // overlay lower layer can't be pulled out from under a running/stopped one.
         if let Some(users) = dn7_image_users(&r) {
             return Err(anyhow!("ERR_CODE:docker.image_in_use\u{1f}{users}"));
         }
-        dn7_container::image::remove_image(&store, &r).map_err(|e| anyhow!("{e}"))?;
+        dn7_container::image::remove_image(&store, &r).map_err(dn7_err)?;
         Ok(json!({ "removed": r }))
     })
     .await
@@ -304,9 +301,9 @@ async fn op_tag_image(req: &Req) -> Result<Value> {
     }
     let n = tags.len();
     run_blocking(move || {
-        let store = dn7_container::image::Store::open().map_err(|e| anyhow!("dn7 store: {e}"))?;
+        let store = dn7_container::image::Store::open().map_err(dn7_err)?;
         for t in &tags {
-            dn7_container::image::tag_image(&store, &src, t).map_err(|e| anyhow!("{e}"))?;
+            dn7_container::image::tag_image(&store, &src, t).map_err(dn7_err)?;
         }
         Ok(json!({ "tagged": src, "count": n }))
     })
@@ -337,7 +334,7 @@ async fn op_create_volume(req: &Req) -> Result<Value> {
         ));
     }
     run_blocking(move || {
-        dn7_container::image::volume::create(&name).map_err(|e| anyhow!("dn7 volume: {e}"))?;
+        dn7_container::image::volume::create(&name).map_err(dn7_err)?;
         Ok(json!({ "created": name }))
     })
     .await
@@ -351,7 +348,7 @@ async fn op_remove_volume(req: &Req) -> Result<Value> {
         return Err(docker_err(DockerError::VolumeManaged));
     }
     run_blocking(move || {
-        dn7_container::image::volume::remove(&name).map_err(|e| anyhow!("dn7 volume: {e}"))?;
+        dn7_container::image::volume::remove(&name).map_err(dn7_err)?;
         Ok(json!({ "removed": name }))
     })
     .await
@@ -462,8 +459,7 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
         } else {
             format!("{host}:{container}")
         };
-        volumes
-            .push(dn7_container::image::volume::resolve(&s).map_err(|e| anyhow!("dn7 卷: {e}"))?);
+        volumes.push(dn7_container::image::volume::resolve(&s).map_err(dn7_err)?);
     }
 
     let env_extra: Vec<String> = req
@@ -571,7 +567,7 @@ fn check_dn7_port_conflicts(req: &Req) -> Result<()> {
     // Map every host port published by a *running* dn7 container -> owner id/name.
     let mut held: std::collections::HashMap<(i64, String), String> =
         std::collections::HashMap::new();
-    for s in dn7_container::container::list().map_err(|e| anyhow!("dn7 list: {e}"))? {
+    for s in dn7_container::container::list().map_err(dn7_err)? {
         if !matches!(s.status, DnStatus::Running) {
             continue;
         }
@@ -658,10 +654,8 @@ async fn op_create_container(req: &Req, is_super: bool) -> Result<Value> {
             // Edit/upgrade: confirm the new image is present locally BEFORE
             // removing the old container (else a bad tag leaves nothing).
             if let Some(old) = &replace {
-                let store =
-                    dn7_container::image::Store::open().map_err(|e| anyhow!("dn7 store: {e}"))?;
-                let r =
-                    dn7_container::image::Reference::parse(&image).map_err(|e| anyhow!("{e}"))?;
+                let store = dn7_container::image::Store::open().map_err(dn7_err)?;
+                let r = dn7_container::image::Reference::parse(&image).map_err(dn7_err)?;
                 dn7_container::image::ImageRecord::load(&store, &r.store_key()).map_err(|_| {
                     anyhow!(
                         "镜像「{image}」在本地不存在，已保留原容器；请先拉取该镜像后再编辑/升级。"
@@ -672,13 +666,12 @@ async fn op_create_container(req: &Req, is_super: bool) -> Result<Value> {
             let id = dn7_container::container::create_from_image(&spec, meta)
                 .map_err(|e| anyhow!("dn7 create: {e}"))?;
             if start {
-                dn7_container::container::start(&id).map_err(|e| anyhow!("dn7 start: {e}"))?;
+                dn7_container::container::start(&id).map_err(dn7_err)?;
                 // Attach any additional requested networks (the primary was wired
                 // at create; these are hot-plugged now the container is running).
                 for a in &extra_nets {
                     let ip = a.ipv4.as_deref().filter(|s| !s.trim().is_empty());
-                    dn7_container::container::net_connect(&id, &a.network, ip)
-                        .map_err(|e| anyhow!("dn7 connect {}: {e}", a.network))?;
+                    dn7_container::container::net_connect(&id, &a.network, ip).map_err(dn7_err)?;
                 }
             }
             Ok(id)
@@ -783,7 +776,7 @@ fn create_body(req: &Req) -> Value {
 /// `list_containers`: one row per dn7 container, in the panel's list shape.
 #[cfg(target_os = "linux")]
 fn list_containers() -> Result<Value> {
-    let states = dn7_container::container::list().map_err(|e| anyhow!("dn7 list: {e}"))?;
+    let states = dn7_container::container::list().map_err(dn7_err)?;
     let items: Vec<Value> = states.into_iter().map(container_row).collect();
     Ok(json!({ "containers": items }))
 }
@@ -834,7 +827,7 @@ async fn op_inspect_container(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
     run_blocking(move || {
         let id = resolve_dn7_id(&r)?;
-        let s = dn7_container::container::state(&id).map_err(|e| anyhow!("dn7 inspect: {e}"))?;
+        let s = dn7_container::container::state(&id).map_err(dn7_err)?;
         let running = matches!(s.status, DnStatus::Running);
         Ok(json!({
             "id": short_or(&r, &s.id),
@@ -862,9 +855,9 @@ async fn op_container_stats(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
     run_blocking(move || {
         let id = resolve_dn7_id(&r)?;
-        let s1 = dn7_container::container::stats(&id).map_err(|e| anyhow!("dn7 stats: {e}"))?;
+        let s1 = dn7_container::container::stats(&id).map_err(dn7_err)?;
         std::thread::sleep(std::time::Duration::from_millis(100));
-        let s2 = dn7_container::container::stats(&id).map_err(|e| anyhow!("dn7 stats: {e}"))?;
+        let s2 = dn7_container::container::stats(&id).map_err(dn7_err)?;
         let cpu_delta = s2.cpu_usage_usec.saturating_sub(s1.cpu_usage_usec) as f64;
         let cpu_pct = cpu_delta / 100_000.0 * 100.0; // delta-µs / interval-µs * 100
         let online = std::thread::available_parallelism()
@@ -887,7 +880,7 @@ async fn op_get_container_config(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
     run_blocking(move || {
         let id = resolve_dn7_id(&r)?;
-        let s = DnState::load(&id).map_err(|e| anyhow!("dn7 inspect: {e}"))?;
+        let s = DnState::load(&id).map_err(dn7_err)?;
         let body = s.meta.create_spec.clone().unwrap_or_else(|| json!({}));
         Ok(json!({ "config": body }))
     })
@@ -905,32 +898,31 @@ async fn op_container_action(req: &Req, action: &str) -> Result<Value> {
         let id = resolve_dn7_id(&r)?;
         let verb = match action.as_str() {
             "start" => {
-                ctr::start_or_rerun(&id).map_err(|e| anyhow!("dn7 start: {e}"))?;
+                ctr::start_or_rerun(&id).map_err(dn7_err)?;
                 "started"
             }
             "stop" => {
-                ctr::stop(&id, std::time::Duration::from_secs(10))
-                    .map_err(|e| anyhow!("dn7 stop: {e}"))?;
+                ctr::stop(&id, std::time::Duration::from_secs(10)).map_err(dn7_err)?;
                 "stopped"
             }
             "restart" => {
-                ctr::restart(&id).map_err(|e| anyhow!("dn7 restart: {e}"))?;
+                ctr::restart(&id).map_err(dn7_err)?;
                 "restarted"
             }
             "pause" => {
-                ctr::pause(&id).map_err(|e| anyhow!("dn7 pause: {e}"))?;
+                ctr::pause(&id).map_err(dn7_err)?;
                 "paused"
             }
             "unpause" => {
-                ctr::unpause(&id).map_err(|e| anyhow!("dn7 unpause: {e}"))?;
+                ctr::unpause(&id).map_err(dn7_err)?;
                 "resumed"
             }
             "kill" => {
-                ctr::kill_now(&id).map_err(|e| anyhow!("dn7 kill: {e}"))?;
+                ctr::kill_now(&id).map_err(dn7_err)?;
                 "killed"
             }
             "remove" => {
-                ctr::delete(&id, true).map_err(|e| anyhow!("dn7 remove: {e}"))?;
+                ctr::delete(&id, true).map_err(dn7_err)?;
                 // A removed container may back a website proxy upstream; re-sync so
                 // a now-dangling site fails closed instead of proxying a stale IP.
                 crate::infra::website::resync_after_container_change();
@@ -952,7 +944,7 @@ async fn op_logs(req: &Req) -> Result<Value> {
     let tail = req.tail.unwrap_or(200).clamp(1, 2000) as usize;
     run_blocking(move || {
         let id = resolve_dn7_id(&r)?;
-        let bytes = dn7_container::container::logs(&id).map_err(|e| anyhow!("dn7 logs: {e}"))?;
+        let bytes = dn7_container::container::logs(&id).map_err(dn7_err)?;
         let text = String::from_utf8_lossy(&bytes);
         let lines: Vec<&str> = text.lines().collect();
         let start = lines.len().saturating_sub(tail);
@@ -976,9 +968,9 @@ async fn op_rename_container(req: &Req) -> Result<Value> {
     validate_name(&name)?;
     run_blocking(move || {
         let id = resolve_dn7_id(&r)?;
-        let mut s = DnState::load(&id).map_err(|e| anyhow!("dn7 rename: {e}"))?;
+        let mut s = DnState::load(&id).map_err(dn7_err)?;
         s.meta.name = Some(name.clone());
-        s.save().map_err(|e| anyhow!("dn7 rename: {e}"))?;
+        s.save().map_err(dn7_err)?;
         crate::infra::website::resync_after_container_change();
         Ok(json!({ "renamed": name }))
     })
@@ -1008,10 +1000,9 @@ async fn op_commit_container(req: &Req) -> Result<Value> {
     run_blocking(move || {
         let id = resolve_dn7_id(&r)?;
         let new_ref = format!("{repo}:{tag}");
-        let store = dn7_container::image::Store::open().map_err(|e| anyhow!("dn7 store: {e}"))?;
+        let store = dn7_container::image::Store::open().map_err(dn7_err)?;
         let bundle = dn7_container::container::bundle_dir(&id);
-        dn7_container::image::commit::commit(&store, &bundle, &new_ref)
-            .map_err(|e| anyhow!("dn7 commit: {e}"))?;
+        dn7_container::image::commit::commit(&store, &bundle, &new_ref).map_err(dn7_err)?;
         Ok(json!({ "image": new_ref }))
     })
     .await
@@ -1029,7 +1020,7 @@ async fn op_network_ips(req: &Req) -> Result<Value> {
             None => (String::new(), String::new()),
         };
         let mut cons = Vec::new();
-        for s in dn7_container::container::list().map_err(|e| anyhow!("dn7 list: {e}"))? {
+        for s in dn7_container::container::list().map_err(dn7_err)? {
             let Some(n) = &s.net else { continue };
             if n.network != net {
                 continue;
@@ -1058,7 +1049,7 @@ async fn op_inspect_container_networks(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
     run_blocking(move || {
         let id = resolve_dn7_id(&r)?;
-        let s = DnState::load(&id).map_err(|e| anyhow!("dn7 inspect: {e}"))?;
+        let s = DnState::load(&id).map_err(dn7_err)?;
         let attached: Vec<String> = s
             .net
             .as_ref()
@@ -1073,15 +1064,17 @@ async fn op_inspect_container_networks(req: &Req) -> Result<Value> {
 // dn7 supports a built-in default network plus user-defined bridge networks
 // (create/remove/rename), per-container static IPs, and runtime attach/detach.
 #[cfg(target_os = "linux")]
-/// Map a dn7 network failure (an op-layer guard, or a fixed string forwarded from
-/// the `registry`/`container` crate) to a stable `ERR_CODE` the web console
-/// localizes via `err.<code>`. The crate messages are constants we own, so
-/// substring matching stays stable; anything unmatched falls back to a generic
-/// localized "network operation failed" rather than leaking raw English.
+/// Map a dn7 failure (an op-layer guard, or a fixed string forwarded from the
+/// `registry`/`container` crate) to a stable `ERR_CODE` the web console localizes
+/// via `err.<code>`. The crate messages are constants we own, so substring
+/// matching stays stable; anything unmatched falls back to a generic localized
+/// "operation failed" rather than leaking raw English into a translated console.
 #[cfg(target_os = "linux")]
-fn net_err_code(msg: &str) -> &'static str {
+fn dn7_err_code(msg: &str) -> &'static str {
     let has = |n: &str| msg.contains(n);
-    if has("overlaps existing") {
+    if has("is in state") && has("cannot") {
+        "docker.bad_container_state"
+    } else if has("overlaps existing") {
         "docker.subnet_overlap"
     } else if has("invalid subnet CIDR") {
         "docker.bad_subnet_cidr"
@@ -1123,17 +1116,17 @@ fn net_err_code(msg: &str) -> &'static str {
         "docker.cant_disconnect_primary"
     } else if has("has no managed network") {
         "docker.no_managed_network"
-    } else if has("no such container") {
+    } else if has("no such container") || has("not found") {
         "docker.no_such_container"
     } else {
-        "docker.net_op_failed"
+        "docker.op_failed"
     }
 }
 
 /// Wrap a crate network error as a localized `ERR_CODE:` anyhow error.
 #[cfg(target_os = "linux")]
-fn net_err(e: impl std::fmt::Display) -> anyhow::Error {
-    anyhow!("ERR_CODE:{}", net_err_code(&e.to_string()))
+fn dn7_err(e: impl std::fmt::Display) -> anyhow::Error {
+    anyhow!("ERR_CODE:{}", dn7_err_code(&e.to_string()))
 }
 
 async fn op_create_network(req: &Req) -> Result<Value> {
@@ -1145,10 +1138,10 @@ async fn op_create_network(req: &Req) -> Result<Value> {
     run_blocking(move || {
         use dn7_container::net::registry;
         let (net, gw) = match subnet {
-            Some(s) => registry::parse_subnet(&s, &gateway).map_err(net_err)?,
-            None => (registry::allocate_free_subnet().map_err(net_err)?, None),
+            Some(s) => registry::parse_subnet(&s, &gateway).map_err(dn7_err)?,
+            None => (registry::allocate_free_subnet().map_err(dn7_err)?, None),
         };
-        let cfg = registry::create(&name, net, gw).map_err(net_err)?;
+        let cfg = registry::create(&name, net, gw).map_err(dn7_err)?;
         Ok(json!({
             "created": cfg.name,
             "bridge": cfg.bridge,
@@ -1162,7 +1155,7 @@ async fn op_create_network(req: &Req) -> Result<Value> {
 async fn op_remove_network(req: &Req) -> Result<Value> {
     let name = need_ref(req)?;
     run_blocking(move || {
-        dn7_container::net::registry::remove(&name).map_err(net_err)?;
+        dn7_container::net::registry::remove(&name).map_err(dn7_err)?;
         Ok(json!({ "removed": name }))
     })
     .await
@@ -1172,7 +1165,7 @@ async fn op_rename_network(req: &Req) -> Result<Value> {
     let old = need_ref(req)?;
     let new = trimmed(&req.new_name).ok_or_else(|| anyhow!("ERR_CODE:docker.need_network_name"))?;
     run_blocking(move || {
-        dn7_container::net::registry::rename(&old, &new).map_err(net_err)?;
+        dn7_container::net::registry::rename(&old, &new).map_err(dn7_err)?;
         Ok(json!({ "renamed": new }))
     })
     .await
@@ -1184,7 +1177,7 @@ async fn op_set_network_ip(req: &Req) -> Result<Value> {
     let ipv4 = trimmed(&req.ipv4).ok_or_else(|| anyhow!("ERR_CODE:docker.need_ipv4"))?;
     run_blocking(move || {
         let id = resolve_dn7_id(&cref)?;
-        dn7_container::container::net_set_ip(&id, &network, &ipv4).map_err(net_err)?;
+        dn7_container::container::net_set_ip(&id, &network, &ipv4).map_err(dn7_err)?;
         Ok(json!({ "ok": true, "ip": ipv4 }))
     })
     .await
@@ -1197,7 +1190,7 @@ async fn op_connect_network(req: &Req) -> Result<Value> {
     run_blocking(move || {
         let id = resolve_dn7_id(&cref)?;
         let (ip, ifname) = dn7_container::container::net_connect(&id, &network, ipv4.as_deref())
-            .map_err(net_err)?;
+            .map_err(dn7_err)?;
         Ok(json!({ "connected": network, "ip": ip, "ifname": ifname }))
     })
     .await
@@ -1208,7 +1201,7 @@ async fn op_disconnect_network(req: &Req) -> Result<Value> {
     let network = trimmed(&req.network).ok_or_else(|| anyhow!("ERR_CODE:docker.need_network"))?;
     run_blocking(move || {
         let id = resolve_dn7_id(&cref)?;
-        dn7_container::container::net_disconnect(&id, &network).map_err(net_err)?;
+        dn7_container::container::net_disconnect(&id, &network).map_err(dn7_err)?;
         Ok(json!({ "disconnected": network }))
     })
     .await
@@ -1242,8 +1235,8 @@ async fn op_retag_image(req: &Req) -> Result<Value> {
     }
     run_blocking(move || {
         use dn7_container::image;
-        let store = image::Store::open().map_err(|e| anyhow!("dn7 store: {e}"))?;
-        let r = image::Reference::parse(&reference).map_err(|e| anyhow!("{e}"))?;
+        let store = image::Store::open().map_err(dn7_err)?;
+        let r = image::Reference::parse(&reference).map_err(dn7_err)?;
         let rec = image::ImageRecord::load(&store, &r.store_key())
             .map_err(|_| anyhow!("no such image: {reference}"))?;
         let cd = rec.config_digest;
@@ -1252,7 +1245,7 @@ async fn op_retag_image(req: &Req) -> Result<Value> {
             .filter_map(|t| image::Reference::parse(t).ok().map(|x| x.canonical()))
             .collect();
         let current: Vec<String> = image::list_summaries(&store)
-            .map_err(|e| anyhow!("{e}"))?
+            .map_err(dn7_err)?
             .into_iter()
             .filter(|s| s.config_digest == cd)
             .map(|s| s.reference)
@@ -1266,10 +1259,10 @@ async fn op_retag_image(req: &Req) -> Result<Value> {
             .filter(|c| !desired_canon.contains(c))
             .collect();
         for t in &add {
-            image::tag_image(&store, &reference, t).map_err(|e| anyhow!("dn7 tag: {e}"))?;
+            image::tag_image(&store, &reference, t).map_err(dn7_err)?;
         }
         for c in &remove {
-            image::remove_image(&store, c).map_err(|e| anyhow!("dn7 untag: {e}"))?;
+            image::remove_image(&store, c).map_err(dn7_err)?;
         }
         Ok(json!({ "added": add.len(), "removed": remove.len() }))
     })
@@ -1316,7 +1309,7 @@ fn dn7_backup(reference: &str, name: &str) -> Result<String> {
     std::fs::create_dir_all(&dir).map_err(|e| anyhow!("无法创建备份目录：{e}"))?;
 
     // Recreate-body sidecar (the stored create spec).
-    let s = DnState::load(&id).map_err(|e| anyhow!("dn7 backup: {e}"))?;
+    let s = DnState::load(&id).map_err(dn7_err)?;
     let body = s.meta.create_spec.clone().unwrap_or_else(|| json!({}));
     let json_path = dir.join(format!("{ts}.json"));
     std::fs::write(
@@ -1326,14 +1319,14 @@ fn dn7_backup(reference: &str, name: &str) -> Result<String> {
     .map_err(|e| anyhow!("无法写入配置快照：{e}"))?;
 
     // Commit overlay → temp image → OCI tar → gzip.
-    let store = image::Store::open().map_err(|e| anyhow!("dn7 store: {e}"))?;
+    let store = image::Store::open().map_err(dn7_err)?;
     let tmp_ref = format!("dn7-backup:{name}-{ts}");
     let bundle = container::bundle_dir(&id);
-    image::commit::commit(&store, &bundle, &tmp_ref).map_err(|e| anyhow!("dn7 commit: {e}"))?;
+    image::commit::commit(&store, &bundle, &tmp_ref).map_err(dn7_err)?;
     let tmp_tar = dir.join(format!("{ts}.tar"));
     let tar_gz = dir.join(format!("{ts}.tar.gz"));
     let result = (|| -> Result<()> {
-        image::archive::save(&store, &tmp_ref, &tmp_tar).map_err(|e| anyhow!("dn7 save: {e}"))?;
+        image::archive::save(&store, &tmp_ref, &tmp_tar).map_err(dn7_err)?;
         gzip_file(&tmp_tar, &tar_gz)
     })();
     let _ = std::fs::remove_file(&tmp_tar);
@@ -1392,10 +1385,9 @@ fn dn7_restore(name: &str, file: &str, is_super: bool) -> Result<()> {
     // Gunzip → temp tar → load into the store under a fresh ref.
     let tmp_tar = dir.join(format!("{file}.restore.tar"));
     gunzip_file(&tar_gz, &tmp_tar)?;
-    let store = image::Store::open().map_err(|e| anyhow!("dn7 store: {e}"))?;
+    let store = image::Store::open().map_err(dn7_err)?;
     let restore_ref = format!("dn7-backup:{name}-{}", now_stamp());
-    let loaded =
-        image::archive::load(&store, &tmp_tar, &restore_ref).map_err(|e| anyhow!("dn7 load: {e}"));
+    let loaded = image::archive::load(&store, &tmp_tar, &restore_ref).map_err(dn7_err);
     let _ = std::fs::remove_file(&tmp_tar);
     loaded?;
 
@@ -1424,7 +1416,7 @@ fn dn7_restore(name: &str, file: &str, is_super: bool) -> Result<()> {
     let id = container::create_from_image(&plan.spec, plan.meta)
         .map_err(|e| anyhow!("dn7 create: {e}"))?;
     if plan.start {
-        container::start(&id).map_err(|e| anyhow!("dn7 start: {e}"))?;
+        container::start(&id).map_err(dn7_err)?;
     }
     Ok(())
 }
@@ -1457,7 +1449,7 @@ fn resolve_dn7_id(r: &str) -> Result<String> {
     if DnState::exists(r) {
         return Ok(r.to_string());
     }
-    let states = dn7_container::container::list().map_err(|e| anyhow!("dn7 list: {e}"))?;
+    let states = dn7_container::container::list().map_err(dn7_err)?;
     states
         .into_iter()
         .find(|s| s.id.starts_with(r))

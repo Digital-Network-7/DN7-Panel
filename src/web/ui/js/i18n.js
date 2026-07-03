@@ -283,7 +283,7 @@ const I18N = {
     'err.docker.cant_disconnect_primary': 'Can\'t disconnect the container\'s primary network.',
     'err.docker.no_managed_network': 'The container has no managed network.',
     'err.docker.no_such_container': 'No such container.',
-    'err.docker.net_op_failed': 'The network operation failed.',
+    
     'err.docker.port_in_use_container': 'Host port {0}/{1} is already used by container “{2}”.',
     'err.docker.port_in_use_process': 'Host port {0}/{1} is already used by another process.',
     'err.docker.port_duplicated': 'Host port {0}/{1} is mapped more than once.',
@@ -291,6 +291,10 @@ const I18N = {
     'term.conn_failed': 'connection failed',
     'dash.cpu': 'CPU',
     'common.request_failed': 'Request failed (HTTP {status})',
+    'err.docker.missing_ref': 'A container or image reference is required.',
+    'err.docker.bad_ref': 'Invalid reference.',
+    'err.docker.bad_container_state': 'The container\'s current state doesn\'t allow this action.',
+    'err.docker.op_failed': 'The operation failed.',
   },
   'zh-CN': {
     'common.cancel': '取消', 'common.ok': '确定', 'common.confirm': '请确认', 'common.unauthorized': '未授权',
@@ -565,7 +569,7 @@ const I18N = {
     'err.docker.cant_disconnect_primary': '无法断开容器的主网络。',
     'err.docker.no_managed_network': '容器没有受管网络。',
     'err.docker.no_such_container': '容器不存在。',
-    'err.docker.net_op_failed': '网络操作失败。',
+    
     'err.docker.port_in_use_container': '宿主机端口 {0}/{1} 已被容器「{2}」占用。',
     'err.docker.port_in_use_process': '宿主机端口 {0}/{1} 已被其他进程占用。',
     'err.docker.port_duplicated': '宿主机端口 {0}/{1} 在表单中重复。',
@@ -573,6 +577,10 @@ const I18N = {
     'term.conn_failed': '连接失败',
     'dash.cpu': 'CPU',
     'common.request_failed': '请求失败（HTTP {status}）',
+    'err.docker.missing_ref': '缺少容器/镜像引用。',
+    'err.docker.bad_ref': '引用格式无效。',
+    'err.docker.bad_container_state': '容器当前状态不允许该操作。',
+    'err.docker.op_failed': '操作失败。',
   },
   'zh-TW': {
     'common.cancel': '取消', 'common.ok': '確定', 'common.confirm': '請確認', 'common.unauthorized': '未授權',
@@ -847,7 +855,7 @@ const I18N = {
     'err.docker.cant_disconnect_primary': '無法中斷容器的主要網路。',
     'err.docker.no_managed_network': '容器沒有受管網路。',
     'err.docker.no_such_container': '容器不存在。',
-    'err.docker.net_op_failed': '網路操作失敗。',
+    
     'err.docker.port_in_use_container': '主機連接埠 {0}/{1} 已被容器「{2}」占用。',
     'err.docker.port_in_use_process': '主機連接埠 {0}/{1} 已被其他程序占用。',
     'err.docker.port_duplicated': '主機連接埠 {0}/{1} 在表單中重複。',
@@ -855,6 +863,10 @@ const I18N = {
     'term.conn_failed': '連線失敗',
     'dash.cpu': 'CPU',
     'common.request_failed': '請求失敗（HTTP {status}）',
+    'err.docker.missing_ref': '缺少容器/映像參照。',
+    'err.docker.bad_ref': '參照格式無效。',
+    'err.docker.bad_container_state': '容器目前狀態不允許此操作。',
+    'err.docker.op_failed': '操作失敗。',
   },
   ja: {
     'common.cancel': 'キャンセル', 'common.ok': 'OK', 'common.confirm': '確認してください', 'common.unauthorized': '認証されていません',
@@ -1129,7 +1141,7 @@ const I18N = {
     'err.docker.cant_disconnect_primary': 'コンテナのプライマリネットワークは切断できません。',
     'err.docker.no_managed_network': 'コンテナには管理対象のネットワークがありません。',
     'err.docker.no_such_container': 'コンテナが存在しません。',
-    'err.docker.net_op_failed': 'ネットワーク操作に失敗しました。',
+    
     'err.docker.port_in_use_container': 'ホストポート {0}/{1} はコンテナ「{2}」が使用中です。',
     'err.docker.port_in_use_process': 'ホストポート {0}/{1} は他のプロセスが使用中です。',
     'err.docker.port_duplicated': 'ホストポート {0}/{1} が重複しています。',
@@ -1137,6 +1149,10 @@ const I18N = {
     'term.conn_failed': '接続に失敗しました',
     'dash.cpu': 'CPU',
     'common.request_failed': 'リクエストに失敗しました（HTTP {status}）',
+    'err.docker.missing_ref': 'コンテナ/イメージの参照が必要です。',
+    'err.docker.bad_ref': '参照が無効です。',
+    'err.docker.bad_container_state': 'コンテナの現在の状態ではこの操作を実行できません。',
+    'err.docker.op_failed': '操作に失敗しました。',
   },
 };
 

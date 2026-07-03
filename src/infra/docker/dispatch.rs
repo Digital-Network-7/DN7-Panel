@@ -107,7 +107,7 @@ pub(crate) fn need_ref(req: &Req) -> Result<String> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("missing ref"))?;
+        .ok_or_else(|| docker_err(DockerError::MissingRef))?;
     validate_token(r)?;
     Ok(r.to_string())
 }
@@ -128,17 +128,14 @@ pub(crate) fn need_network(req: &Req) -> Result<String> {
 /// crafted value can't smuggle extra `docker` flags. Allows the characters that
 /// appear in image refs (registry/name:tag@sha256:...), container names and ids.
 pub(crate) fn validate_token(s: &str) -> Result<()> {
-    if s.is_empty() || s.len() > 256 {
-        return Err(anyhow!("invalid reference"));
-    }
-    if s.starts_with('-') {
-        return Err(anyhow!("invalid reference"));
+    if s.is_empty() || s.len() > 256 || s.starts_with('-') {
+        return Err(docker_err(DockerError::BadRef));
     }
     let ok = s
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | ':' | '@'));
     if !ok {
-        return Err(anyhow!("invalid reference"));
+        return Err(docker_err(DockerError::BadRef));
     }
     Ok(())
 }
