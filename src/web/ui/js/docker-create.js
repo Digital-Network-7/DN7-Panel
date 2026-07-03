@@ -77,7 +77,15 @@ function dkCreateModal(info, networks, opts) {
         <div><label class="lbl">${tr('dk.cpu_limit')}</label><div class="field-suffix"><input id="ccCpus" class="field" type="number" min="0" max="${cpuMax}" step="0.1" value="0" /><span class="suffix-tag">${tr('dk.unit_core')}</span></div><p class="formnote" style="margin-top:5px">${tr('dk.cpu_limit_hint', { n: cpuMax })}</p></div>
         <div><label class="lbl">${tr('dk.mem_limit')}</label><div class="field-suffix"><input id="ccMem" class="field" type="number" min="0" value="0" /><button type="button" class="suffix-btn" id="ccMemUnit">MB</button></div><p class="formnote" style="margin-top:5px" id="ccMemHint"></p></div>
       </div>
-      <label class="switch" style="margin-top:12px"><input type="checkbox" id="ccPriv" /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.privileged')}</b><span>${tr('dk.privileged_d')}</span></span></label>
+      <div class="formgrid res3" style="margin-top:12px">
+        <div><label class="lbl">${tr('dk.pids_limit')}</label><input id="ccPids" class="field" type="number" min="0" value="0" /><p class="formnote" style="margin-top:5px">${tr('dk.pids_limit_hint')}</p></div>
+        <div><label class="lbl">${tr('dk.stop_timeout')}</label><div class="field-suffix"><input id="ccStopT" class="field" type="number" min="0" value="10" /><span class="suffix-tag">${tr('dk.unit_sec')}</span></div></div>
+        <div><label class="lbl">${tr('dk.stop_signal')}</label><input id="ccStopSig" class="field mono" placeholder="SIGTERM" /></div>
+      </div>
+      <div class="switchrow" style="margin-top:12px">
+        <label class="switch"><input type="checkbox" id="ccPriv" /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.privileged')}</b><span>${tr('dk.privileged_d')}</span></span></label>
+        <label class="switch"><input type="checkbox" id="ccRm" /><span class="swbox"></span><span class="swtxt"><b>${tr('dk.auto_remove')}</b><span>${tr('dk.auto_remove_d')}</span></span></label>
+      </div>
     </div>
     <div id="ccEnvT" class="hidden">
       <label class="lbl">${tr('dk.env')}</label><div class="kvlist" id="ccEnv"></div><button type="button" class="kvadd" id="ccEnvAdd">${tr('dk.add_env')}</button>
@@ -260,6 +268,10 @@ function dkCreateModal(info, networks, opts) {
       $('ccCpus').value = cfg.cpus ? Number(cfg.cpus) : 0;
       $('ccMem').value = cfg.memory ? Math.round(Number(cfg.memory) / 1048576) : 0;
       $('ccPriv').checked = !!cfg.privileged;
+      $('ccPids').value = cfg.pids_limit || 0;
+      $('ccStopT').value = cfg.stop_timeout || 10;
+      $('ccStopSig').value = cfg.stop_signal || '';
+      $('ccRm').checked = !!cfg.auto_remove;
     } else {
       // New container: pre-add the default bridge network (random MAC). The
       // default bridge can't take a static IPv4, so none is generated for it.
@@ -344,6 +356,10 @@ function dkCreateModal(info, networks, opts) {
         dns: dns.length ? dns : undefined, cpu_shares: cpuShares || undefined,
         cpus: cpusV > 0 ? String(cpusV) : undefined, memory: memV > 0 ? memV + (memUnit === 'GB' ? 'g' : 'm') : undefined,
         privileged: $('ccPriv').checked || undefined,
+        pids_limit: Number($('ccPids').value) > 0 ? Number($('ccPids').value) : undefined,
+        stop_timeout: (Number($('ccStopT').value) > 0 && Number($('ccStopT').value) !== 10) ? Number($('ccStopT').value) : undefined,
+        stop_signal: $('ccStopSig').value.trim() || undefined,
+        auto_remove: $('ccRm').checked || undefined,
       };
       if (opts.replaceName) body.replace = opts.replaceName;
       $('ccGo').disabled = true; $('ccJob').classList.remove('hidden');

@@ -14,6 +14,8 @@ pub mod volume;
 pub use reference::Reference;
 pub use store::Store;
 
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -74,14 +76,26 @@ pub fn list_summaries(store: &Store) -> Result<Vec<ImageSummary>> {
         let Ok(rec) = ImageRecord::load(store, &key) else {
             continue;
         };
-        let size = blob_size(store, &rec.config_digest)
+        let compressed = blob_size(store, &rec.config_digest)
             + rec.layers.iter().map(|d| blob_size(store, d)).sum::<u64>();
-        let created_ts = std::fs::metadata(store.image_dir(&key).join("image.json"))
-            .and_then(|m| m.modified())
+        // Docker's SIZE is the UNCOMPRESSED on-disk size; use the extracted
+        // rootfs-cache (result cached in a `.size` sidecar) when present, else the
+        // compressed blob total as a floor for a pulled-but-never-run image.
+        let size = uncompressed_size(store, &rec.config_digest).unwrap_or(compressed);
+        // Docker's CREATED is the image BUILD time from the config blob, not the
+        // local pull time; fall back to the image.json mtime only if absent.
+        let created_ts = rec
+            .config(store)
             .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+            .and_then(|c| rfc3339_to_unix(&c.created))
+            .unwrap_or_else(|| {
+                std::fs::metadata(store.image_dir(&key).join("image.json"))
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0)
+            });
         out.push(ImageSummary {
             reference: rec.reference,
             config_digest: rec.config_digest,
@@ -91,6 +105,65 @@ pub fn list_summaries(store: &Store) -> Result<Vec<ImageSummary>> {
     }
     out.sort_by(|a, b| a.reference.cmp(&b.reference));
     Ok(out)
+}
+
+/// Uncompressed on-disk size of an image via its extracted rootfs-cache, cached
+/// in a `.size` sidecar so the tree is walked at most once. `None` if the image
+/// hasn't been extracted yet (never run) — the caller falls back to the blob sum.
+fn uncompressed_size(store: &Store, config_digest: &str) -> Option<u64> {
+    let base = store.image_rootfs_base(config_digest).ok()?;
+    if !base.join(".ready").exists() {
+        return None;
+    }
+    if let Ok(s) = std::fs::read_to_string(base.join(".size")) {
+        if let Ok(n) = s.trim().parse::<u64>() {
+            return Some(n);
+        }
+    }
+    let n = dir_size(&base.join("rootfs"));
+    let _ = std::fs::write(base.join(".size"), n.to_string());
+    Some(n)
+}
+
+/// Recursive on-disk byte size of a directory tree (regular files only).
+fn dir_size(p: &Path) -> u64 {
+    let mut total = 0;
+    if let Ok(rd) = std::fs::read_dir(p) {
+        for e in rd.flatten() {
+            match e.file_type() {
+                Ok(ft) if ft.is_dir() => total += dir_size(&e.path()),
+                Ok(ft) if ft.is_file() => total += e.metadata().map(|m| m.len()).unwrap_or(0),
+                _ => {}
+            }
+        }
+    }
+    total
+}
+
+/// Parse an RFC3339 UTC timestamp (`2021-03-04T05:06:07(.frac)?Z`) to Unix
+/// seconds. Minimal: assumes UTC, ignores fractional seconds + any offset.
+fn rfc3339_to_unix(s: &str) -> Option<i64> {
+    let s = s.trim();
+    let b = s.as_bytes();
+    if s.len() < 19
+        || b.get(4) != Some(&b'-')
+        || b.get(7) != Some(&b'-')
+        || b.get(13) != Some(&b':')
+        || b.get(16) != Some(&b':')
+    {
+        return None;
+    }
+    let n = |a: usize, z: usize| -> Option<i64> { s.get(a..z)?.parse().ok() };
+    let (y, mo, d) = (n(0, 4)?, n(5, 7)?, n(8, 10)?);
+    let (h, mi, se) = (n(11, 13)?, n(14, 16)?, n(17, 19)?);
+    // days-from-civil (Howard Hinnant), epoch 1970-01-01.
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = (if y2 >= 0 { y2 } else { y2 - 399 }) / 400;
+    let yoe = y2 - era * 400;
+    let doy = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h * 3_600 + mi * 60 + se)
 }
 
 fn blob_size(store: &Store, digest: &str) -> u64 {
@@ -231,6 +304,21 @@ mod summary_tests {
             })
             .unwrap();
         digest
+    }
+
+    #[test]
+    fn rfc3339_parses_to_unix() {
+        assert_eq!(super::rfc3339_to_unix("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            super::rfc3339_to_unix("2021-03-04T05:06:07Z"),
+            Some(1_614_834_367)
+        );
+        assert_eq!(
+            super::rfc3339_to_unix("2023-11-30T00:00:00.123456789Z"),
+            Some(1_701_302_400)
+        );
+        assert_eq!(super::rfc3339_to_unix("not-a-date"), None);
+        assert_eq!(super::rfc3339_to_unix(""), None);
     }
 
     #[test]

@@ -87,7 +87,17 @@ pub(crate) struct Req {
     #[serde(default)]
     pub(crate) cpu_shares: Option<i64>,
     #[serde(default)]
+    pub(crate) pids_limit: Option<i64>,
+    #[serde(default)]
     pub(crate) privileged: Option<bool>,
+    // create_container: stop behavior (docker --stop-signal / --stop-timeout) and
+    // auto-remove-on-exit (docker --rm).
+    #[serde(default)]
+    pub(crate) stop_signal: Option<String>,
+    #[serde(default)]
+    pub(crate) stop_timeout: Option<i64>,
+    #[serde(default)]
+    pub(crate) auto_remove: Option<bool>,
     // edit/upgrade: when set, remove this existing container (by id/name) before
     // creating the new one so it can reuse the same name.
     #[serde(default)]

@@ -94,6 +94,17 @@ pub struct StateMeta {
     /// Whether the container is currently frozen (`pause`d) — overlays the
     /// pid-derived running status, which can't distinguish a frozen process.
     pub paused: bool,
+    /// Signal sent by `stop` before the SIGKILL escalation (docker `--stop-signal`
+    /// / the image `STOPSIGNAL`); `None` = SIGTERM.
+    #[serde(default)]
+    pub stop_signal: Option<String>,
+    /// Grace period (seconds) `stop` waits before SIGKILL (docker `--stop-timeout`);
+    /// `None` = 10s.
+    #[serde(default)]
+    pub stop_timeout: Option<i64>,
+    /// Delete the container (and its overlay) as soon as it exits (docker `--rm`).
+    #[serde(default)]
+    pub auto_remove: bool,
 }
 
 /// The persisted container record.

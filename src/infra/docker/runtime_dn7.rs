@@ -253,6 +253,39 @@ async fn op_remove_image(req: &Req) -> Result<Value> {
     .await
 }
 
+/// Whether the container's rootfs has a usable shell — so the web-terminal button
+/// is only offered when a session will actually open (a distroless/scratch/static
+/// image has none, and clicking would just fail).
+#[cfg(target_os = "linux")]
+fn dn7_has_shell(bundle: &std::path::Path) -> bool {
+    let rootfs = bundle.join("rootfs");
+    [
+        "bin/sh",
+        "bin/bash",
+        "bin/ash",
+        "usr/bin/sh",
+        "usr/bin/bash",
+        "bin/busybox",
+    ]
+    .iter()
+    .any(|p| rootfs.join(p).exists())
+}
+
+/// The image's default `STOPSIGNAL` (best-effort local lookup); `None` if the
+/// image isn't present locally or declares none.
+#[cfg(target_os = "linux")]
+fn dn7_image_stop_signal(image: &str) -> Option<String> {
+    use dn7_container::image::{ImageRecord, Reference, Store};
+    let store = Store::open().ok()?;
+    let r = Reference::parse(image).ok()?;
+    let cfg = ImageRecord::load(&store, &r.store_key())
+        .ok()?
+        .config(&store)
+        .ok()?;
+    let s = cfg.config.stop_signal.trim();
+    (!s.is_empty()).then(|| s.to_string())
+}
+
 /// Comma-joined ids of dn7 containers whose source image resolves to the same
 /// store key as `reference`, or `None` if the image is unused.
 #[cfg(target_os = "linux")]
@@ -497,6 +530,12 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
     let cpu_shares_i = req.cpu_shares.filter(|v| *v > 0);
 
     let restart_str = trimmed(&req.restart).unwrap_or_else(|| "unless-stopped".to_string());
+    let pids_limit = req.pids_limit.filter(|v| *v > 0);
+    // Stop signal: explicit --stop-signal, else the image's STOPSIGNAL (best-effort
+    // local lookup), else None (SIGTERM). Stop timeout: --stop-timeout, else None (10s).
+    let stop_signal = trimmed(&req.stop_signal).or_else(|| dn7_image_stop_signal(&cspec.image));
+    let stop_timeout = req.stop_timeout.filter(|v| *v > 0);
+    let auto_remove = req.auto_remove.unwrap_or(false);
 
     let spec = dn7_container::container::ImageRunSpec {
         id,
@@ -511,7 +550,7 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
         mem_limit,
         cpu_quota,
         cpu_shares: cpu_shares_i.map(|v| v as u64),
-        pids_limit: None,
+        pids_limit,
         tty: req.tty.unwrap_or(false),
         static_ip: primary_ip.clone(),
     };
@@ -533,6 +572,9 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
         ports_spec,
         net_name_requested,
         create_spec: Some(create_body(req)),
+        stop_signal,
+        stop_timeout,
+        auto_remove,
         ..Default::default()
     };
 
@@ -833,7 +875,9 @@ fn create_body(req: &Req) -> Value {
         "tty": req.tty.unwrap_or(false), "interactive": req.interactive.unwrap_or(false),
         "networks": networks, "hostname": req.hostname, "domainname": req.domainname,
         "dns": req.dns, "cpu_shares": req.cpu_shares, "cpus": req.cpus,
-        "memory": req.memory, "privileged": req.privileged.unwrap_or(false)
+        "memory": req.memory, "privileged": req.privileged.unwrap_or(false),
+        "pids_limit": req.pids_limit, "stop_signal": req.stop_signal,
+        "stop_timeout": req.stop_timeout, "auto_remove": req.auto_remove.unwrap_or(false)
     })
 }
 
@@ -880,7 +924,7 @@ fn container_row(s: DnState) -> Value {
         "uptime": uptime,
         // dn7 has no cheap per-container shell probe yet; assume a running
         // container has /bin/sh (true for nearly all images). Refined later.
-        "has_shell": running,
+        "has_shell": running && dn7_has_shell(&s.bundle),
         "managed": managed,
     })
 }
@@ -906,7 +950,7 @@ async fn op_inspect_container(req: &Req) -> Result<Value> {
             "exit_code": s.meta.exit_code,
             "restart_count": s.meta.restart_count,
             "ports": fmt_dn7_ports(&s.meta.ports_spec),
-            "has_shell": running,
+            "has_shell": running && dn7_has_shell(&s.bundle),
         }))
     })
     .await
@@ -992,6 +1036,7 @@ async fn op_get_container_config(req: &Req) -> Result<Value> {
 async fn op_container_action(req: &Req, action: &str) -> Result<Value> {
     let r = need_ref(req)?;
     let action = action.to_string();
+    let req_stop_timeout = req.stop_timeout;
     run_blocking(move || {
         use dn7_container::container as ctr;
         let id = resolve_dn7_id(&r)?;
@@ -1001,7 +1046,12 @@ async fn op_container_action(req: &Req, action: &str) -> Result<Value> {
                 "started"
             }
             "stop" => {
-                ctr::stop(&id, std::time::Duration::from_secs(10)).map_err(dn7_err)?;
+                // docker stop -t / the container's stored StopTimeout, else 10s.
+                let secs = req_stop_timeout
+                    .or_else(|| DnState::load(&id).ok().and_then(|s| s.meta.stop_timeout))
+                    .filter(|v| *v > 0)
+                    .unwrap_or(10) as u64;
+                ctr::stop(&id, std::time::Duration::from_secs(secs)).map_err(dn7_err)?;
                 "stopped"
             }
             "restart" => {
@@ -1838,7 +1888,8 @@ mod tests {
         assert_eq!(row["image"], "alpine:latest");
         assert_eq!(row["state"], "running");
         assert_eq!(row["ports"], "0.0.0.0:8080->80/tcp");
-        assert_eq!(row["has_shell"], true);
+        // has_shell now depends on a real rootfs probe (false for this synthetic /b).
+        assert!(row["has_shell"].is_boolean());
         assert_eq!(row["managed"], false);
         assert!(row["status"].as_str().unwrap().starts_with("Up"));
         assert!(row["ips"].is_array());

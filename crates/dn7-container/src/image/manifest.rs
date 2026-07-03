@@ -45,6 +45,9 @@ pub struct ImageConfig {
     pub architecture: String,
     #[serde(default)]
     pub os: String,
+    /// Image BUILD time (RFC3339), from the config blob — Docker's `CREATED`.
+    #[serde(default)]
+    pub created: String,
     #[serde(default)]
     pub config: ContainerConfig,
     pub rootfs: Option<RootFs>,
@@ -63,6 +66,9 @@ pub struct ContainerConfig {
     pub working_dir: String,
     #[serde(default, rename = "User")]
     pub user: String,
+    /// The image's default stop signal (Dockerfile `STOPSIGNAL`), e.g. `SIGQUIT`.
+    #[serde(default, rename = "StopSignal")]
+    pub stop_signal: String,
     /// Image labels (`org.opencontainers.image.*`, `dn7.*`, …) — feed the panel's
     /// container `description`/`managed` fields.
     #[serde(default, rename = "Labels")]

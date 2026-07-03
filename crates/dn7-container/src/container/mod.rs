@@ -429,6 +429,15 @@ fn spawn_reaper(id: String, init_pid: i32) {
         s.meta.paused = false;
         let _ = s.save();
 
+        // Auto-remove (docker --rm): delete the container + overlay the moment it
+        // exits. Mutually exclusive with a restart policy (Docker rejects that
+        // combo at create), so this returns before the restart logic.
+        if s.meta.auto_remove {
+            drop(_guard);
+            let _ = delete(&id, true);
+            return;
+        }
+
         // Restart-policy supervisor: if the init exited on its own (not a user
         // stop) and the policy calls for it, auto-restart after a backoff. Release
         // the lock first — `rerun` re-takes it.
@@ -478,6 +487,27 @@ fn should_restart(policy: &str, exit_code: i32, restart_count: u32, user_stopped
     }
 }
 
+/// Parse a signal name (`SIGTERM`/`TERM`/`term`) or number to a `Signal`.
+fn parse_signal(name: &str) -> Option<Signal> {
+    let n = name.trim();
+    if let Ok(num) = n.parse::<i32>() {
+        return Signal::try_from(num).ok();
+    }
+    let upper = n.to_ascii_uppercase();
+    match upper.strip_prefix("SIG").unwrap_or(&upper) {
+        "TERM" => Some(Signal::SIGTERM),
+        "KILL" => Some(Signal::SIGKILL),
+        "INT" => Some(Signal::SIGINT),
+        "QUIT" => Some(Signal::SIGQUIT),
+        "HUP" => Some(Signal::SIGHUP),
+        "USR1" => Some(Signal::SIGUSR1),
+        "USR2" => Some(Signal::SIGUSR2),
+        "STOP" => Some(Signal::SIGSTOP),
+        "WINCH" => Some(Signal::SIGWINCH),
+        _ => None,
+    }
+}
+
 /// Exponential restart backoff (Docker-style): 100ms doubling, capped at 60s.
 fn restart_backoff(restart_count: u32) -> std::time::Duration {
     let ms = 100u64.saturating_mul(1u64 << restart_count.min(9)); // cap the shift
@@ -524,7 +554,15 @@ pub fn stop(id: &str, timeout: std::time::Duration) -> Result<()> {
     if s.refresh_status() != Status::Running {
         return Ok(());
     }
-    let _ = nix::sys::signal::kill(Pid::from_raw(s.pid), Signal::SIGTERM);
+    // Send the configured stop signal (docker --stop-signal / image STOPSIGNAL),
+    // defaulting to SIGTERM, before the SIGKILL escalation below.
+    let sig = s
+        .meta
+        .stop_signal
+        .as_deref()
+        .and_then(parse_signal)
+        .unwrap_or(Signal::SIGTERM);
+    let _ = nix::sys::signal::kill(Pid::from_raw(s.pid), sig);
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline && state::pid_alive(s.pid) {
         std::thread::sleep(std::time::Duration::from_millis(50));

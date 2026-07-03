@@ -379,6 +379,7 @@ mod tests {
         let mut cfg = ImageConfig {
             architecture: String::new(),
             os: String::new(),
+            created: String::new(),
             config: Default::default(),
             rootfs: None,
         };
