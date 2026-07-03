@@ -457,18 +457,22 @@ fn spawn_reaper(id: String, init_pid: i32) {
 
 /// Whether the restart-policy supervisor should auto-restart a container that
 /// just exited with `exit_code`, given its `policy`, prior automatic
-/// `restart_count`, and whether the stop was user-initiated. Mirrors Docker:
-/// `always` always; `unless-stopped` unless the user stopped it; `on-failure[:N]`
-/// only on a non-zero exit, up to N automatic restarts (0/absent = unlimited);
-/// `no`/empty never.
+/// `restart_count`, and whether this stop was user-initiated. Mirrors Docker's
+/// IN-SESSION behavior: a MANUAL stop/kill suppresses restart for every policy
+/// (`always` differs from `unless-stopped` only at daemon/boot restart — handled
+/// in `reconcile_restart_policies`). Otherwise: `always`/`unless-stopped` restart
+/// on any exit; `on-failure[:N]` only on a non-zero exit, up to N automatic
+/// restarts (0/absent = unlimited); `no`/empty never.
 fn should_restart(policy: &str, exit_code: i32, restart_count: u32, user_stopped: bool) -> bool {
+    if user_stopped {
+        return false;
+    }
     let (kind, max) = match policy.split_once(':') {
         Some((k, n)) => (k.trim(), n.trim().parse::<u32>().ok()),
         None => (policy.trim(), None),
     };
     match kind {
-        "always" => true,
-        "unless-stopped" => !user_stopped,
+        "always" | "unless-stopped" => true,
         "on-failure" => exit_code != 0 && max.is_none_or(|m| m == 0 || restart_count < m),
         _ => false,
     }
@@ -549,11 +553,18 @@ pub fn stop(id: &str, timeout: std::time::Duration) -> Result<()> {
 pub fn kill_now(id: &str) -> Result<()> {
     let _guard = State::lock(id)?;
     let mut s = State::load(id)?;
-    if s.refresh_status() == Status::Running {
-        let cg = Cgroup::at(&s.cgroup);
-        let _ = cg.kill_all();
-        wait_drained(&cg);
+    // Docker `kill` errors on a container that isn't running (unlike `stop`, which
+    // is idempotent) rather than reporting a misleading success.
+    if s.refresh_status() != Status::Running {
+        return Err(Error::BadState {
+            id: id.into(),
+            state: s.status.as_str(),
+            action: "kill",
+        });
     }
+    let cg = Cgroup::at(&s.cgroup);
+    let _ = cg.kill_all();
+    wait_drained(&cg);
     // Tear down networking (same rationale as `stop`): drop the stale DNAT + lease
     // so a reused host port isn't shadowed by a rule pointing at the dead IP.
     if let Some(net) = &s.net {

@@ -418,9 +418,11 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
     // Docker model: the id is a random, immutable 64-hex — NEVER the name. The
     // (validated, possibly mixed-case) name is a separate mutable label kept in
     // meta.name. Decoupling them is what lets rename touch only the name, lets
-    // ids stay stable, and lets names use Docker's charset (incl. uppercase).
-    let name = cspec.name.clone();
+    // ids stay stable, and lets names use Docker's charset (incl. uppercase). An
+    // unnamed container gets a friendly random name (Docker's adjective_surname),
+    // not an opaque token.
     let id = gen_container_id();
+    let name = cspec.name.clone().or_else(|| Some(gen_container_name()));
 
     let target = if display_name.is_empty() {
         cspec.image.clone()
@@ -757,6 +759,44 @@ fn gen_container_id() -> String {
         "{nanos:032x}{:032x}",
         pid.wrapping_mul(0x9E37_79B9_7F4A_7C15)
     )
+}
+
+/// A friendly random `adjective_surname` name (Docker's names-generator style)
+/// for an unnamed container, retried until free so it doesn't collide with an
+/// existing name; falls back to appending a short hex if the space is exhausted.
+#[cfg(target_os = "linux")]
+fn gen_container_name() -> String {
+    const ADJ: &[&str] = &[
+        "admiring", "bold", "brave", "calm", "clever", "cool", "dreamy", "eager", "elegant",
+        "fervent", "gentle", "gifted", "happy", "jolly", "keen", "kind", "lucid", "mystic",
+        "nifty", "peaceful", "quirky", "serene", "sharp", "silly", "stoic", "tender", "upbeat",
+        "vibrant", "wizardly", "zen",
+    ];
+    const SUR: &[&str] = &[
+        "babbage", "bardeen", "bohr", "curie", "darwin", "dijkstra", "euler", "fermi", "franklin",
+        "galileo", "gauss", "goldberg", "hamilton", "hawking", "hopper", "kepler", "knuth",
+        "liskov", "lovelace", "mendel", "newton", "noether", "pasteur", "perlman", "planck",
+        "ritchie", "shannon", "tesla", "torvalds", "turing",
+    ];
+    let pick = || -> String {
+        let mut buf = [0u8; 2];
+        let _ = std::fs::File::open("/dev/urandom").and_then(|mut f| {
+            use std::io::Read;
+            f.read_exact(&mut buf)
+        });
+        format!(
+            "{}_{}",
+            ADJ[buf[0] as usize % ADJ.len()],
+            SUR[buf[1] as usize % SUR.len()]
+        )
+    };
+    for _ in 0..24 {
+        let n = pick();
+        if !dn7_name_in_use(&n) {
+            return n;
+        }
+    }
+    format!("{}_{}", pick(), &gen_container_id()[..6])
 }
 
 /// The panel "recreate body" (`container_create_body` shape) built from the
