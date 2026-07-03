@@ -256,9 +256,41 @@ const I18N = {
     'err.docker.missing_name': 'Please enter a name', 'err.docker.missing_image_name': 'Please enter an image name', 'err.docker.no_stats': 'No stats available', 'err.docker.bad_backup': 'Invalid backup file', 'err.docker.backup_missing': 'Backup file not found', 'err.docker.backup_bad_config': 'Backup config is invalid or missing', 'err.docker.import_no_image': 'No image was loaded — not a valid image archive?',
     'err.docker.bad_cpu_format': 'Invalid CPU limit format (e.g. 0.5, 1, 2)', 'err.docker.cpu_out_of_range': 'CPU limit out of range', 'err.docker.bad_mem_format': 'Invalid memory limit format (e.g. 512m, 1g)', 'err.docker.mem_too_small': 'Memory limit must be greater than 0',
     'err.docker.cmd_no_newline': 'Command cannot contain newlines', 'err.docker.cmd_unclosed_quote': 'Unclosed quote in command', 'err.docker.cmd_too_many_args': 'Too many command arguments',
-    'err.dn7.network_create_unsupported': 'The dn7 runtime has a single built-in network ("dn7"); custom networks are not supported yet.', 'err.dn7.network_builtin_protected': 'The built-in dn7 network cannot be deleted.', 'err.dn7.network_rename_unsupported': 'The built-in dn7 network cannot be renamed.',
-    'err.dn7.network_static_ip_unsupported': 'The dn7 runtime auto-allocates addresses via IPAM; static IPs are not supported yet.', 'err.dn7.network_hotplug_unsupported': 'The dn7 runtime cannot connect a running container to a network; containers join the built-in network at creation.', 'err.dn7.network_disconnect_unsupported': 'The dn7 runtime cannot disconnect a container from its network.',
-    'err.dn7.create_privileged_unsupported': 'The dn7 runtime does not support privileged containers yet — use an unprivileged configuration instead.', 'err.dn7.create_netcfg_unsupported': 'The dn7 runtime does not support assigning a static IPv4 / MAC to a container yet (addresses are auto-allocated by IPAM).', 'err.dn7.create_multinet_unsupported': 'The dn7 runtime supports only a single network; a container cannot join multiple networks at once.', 'err.dn7.create_name_invalid': 'The dn7 runtime requires a lowercase container name (a-z 0-9 _ . -, up to 64 characters).',
+    
+    
+    'err.dn7.create_privileged_unsupported': 'The dn7 runtime does not support privileged containers yet — use an unprivileged configuration instead.', 'err.dn7.create_name_invalid': 'The dn7 runtime requires a lowercase container name (a-z 0-9 _ . -, up to 64 characters).',
+    'err.docker.need_network_name': 'Network name is required.',
+    'err.docker.need_network': 'A network is required.',
+    'err.docker.need_ipv4': 'An IPv4 address is required.',
+    'err.docker.subnet_overlap': 'That subnet overlaps an existing network.',
+    'err.docker.bad_subnet_cidr': 'Invalid subnet CIDR.',
+    'err.docker.bad_gateway_ip': 'Invalid gateway IP.',
+    'err.docker.gateway_outside_subnet': 'The gateway is not inside the subnet.',
+    'err.docker.subnet_prefix_range': 'Subnet prefix must be between /8 and /30.',
+    'err.docker.net_name_reserved': 'That network name is reserved.',
+    'err.docker.bad_net_name': 'Invalid network name (use a-z 0-9 _ . -).',
+    'err.docker.subnet_no_host': 'The subnet has no usable host address.',
+    'err.docker.subnet_pool_exhausted': 'No free private subnet available; specify one.',
+    'err.docker.net_exists': 'A network with that name already exists.',
+    'err.docker.no_such_network': 'No such network.',
+    'err.docker.net_still_attached': 'The network still has attached containers.',
+    'err.docker.net_builtin_immutable': 'Built-in networks can\'t be modified.',
+    'err.docker.ip_in_use': 'That IP is already in use on the network.',
+    'err.docker.not_connected': 'The container is not connected to that network.',
+    'err.docker.already_connected': 'The container is already connected to that network.',
+    'err.docker.net_exhausted': 'The network has no free addresses.',
+    'err.docker.not_bridge_net': 'The container is not on a bridge network.',
+    'err.docker.cant_disconnect_primary': 'Can\'t disconnect the container\'s primary network.',
+    'err.docker.no_managed_network': 'The container has no managed network.',
+    'err.docker.no_such_container': 'No such container.',
+    'err.docker.net_op_failed': 'The network operation failed.',
+    'err.docker.port_in_use_container': 'Host port {0}/{1} is already used by container “{2}”.',
+    'err.docker.port_in_use_process': 'Host port {0}/{1} is already used by another process.',
+    'err.docker.port_duplicated': 'Host port {0}/{1} is mapped more than once.',
+    'err.docker.image_in_use': 'The image is in use by container “{0}”.',
+    'term.conn_failed': 'connection failed',
+    'dash.cpu': 'CPU',
+    'common.request_failed': 'Request failed (HTTP {status})',
   },
   'zh-CN': {
     'common.cancel': '取消', 'common.ok': '确定', 'common.confirm': '请确认', 'common.unauthorized': '未授权',
@@ -357,7 +389,7 @@ const I18N = {
     'dk.host_port': '宿主端口', 'dk.container_port': '容器端口', 'dk.ipv6_hint': '同时将该端口发布到 IPv6（::）', 'dk.host_path': '宿主路径 /data/app', 'dk.container_path': '容器路径 /app', 'dk.readonly': '只读',
     'dk.create_network': '创建网络', 'dk.net_name': '网络名', 'dk.col_driver': '驱动', 'dk.col_scope': '范围', 'dk.confirm_rm_net': '删除网络 {name}？',
     'dk.tab_basic': '基本', 'dk.tab_ports': '端口', 'dk.tab_resources': '资源配置', 'dk.tab_env': '环境变量',
-    'dk.net_default': '默认（bridge）', 'dk.net_join': '加入网络', 'dk.mac_addr': 'MAC 地址', 'dk.gen_random': '随机生成', 'dk.ipv4_addr': 'IPv4 地址', 'dk.hostname': '主机名', 'dk.domainname': 'Domain', 'dk.dns': 'DNS 服务器', 'dk.dns_hint': 'IPv4 地址，用空格或逗号分隔。', 'dk.net_static_hint': '设置静态 IPv4/MAC 需要选择带子网的自定义网络。', 'dk.ipv4_need_subnet': '请先选择带子网的网络', 'dk.net_add': '+ 添加网络',
+    'dk.net_default': '默认（bridge）', 'dk.net_join': '加入网络', 'dk.mac_addr': 'MAC 地址', 'dk.gen_random': '随机生成', 'dk.ipv4_addr': 'IPv4 地址', 'dk.hostname': '主机名', 'dk.domainname': '域名', 'dk.dns': 'DNS 服务器', 'dk.dns_hint': 'IPv4 地址，用空格或逗号分隔。', 'dk.net_static_hint': '设置静态 IPv4/MAC 需要选择带子网的自定义网络。', 'dk.ipv4_need_subnet': '请先选择带子网的网络', 'dk.net_add': '+ 添加网络',
     'dk.cpu_weight': 'CPU 权重（份额）', 'dk.cpu_weight_hint': '默认 1024，数值越大在竞争时获得越多 CPU 时间。', 'dk.cpu_limit': 'CPU 限制', 'dk.cpu_limit_hint': '为 0 则关闭限制，最大 {n}。', 'dk.mem_limit': '内存限制', 'dk.mem_limit_hint': '为 0 则关闭限制，最大 {n}。', 'dk.mem_limit_off': '为 0 则关闭限制。', 'dk.privileged': '特权模式', 'dk.privileged_d': '允许容器在主机上执行某些特权操作（默认关闭）。',
     'dk.unit_core': '核', 'dk.vol_pick': '选择存储卷', 'dk.vol_src_host': '宿主机路径', 'dk.vol_src_vol': '存储卷',
     'dk.net_mode': '模式（驱动）', 'dk.net_subnet': 'IPv4 子网', 'dk.net_gateway': 'IPv4 网关', 'dk.net_iprange': 'IPv4 IP 范围', 'dk.net_ipam_hint': '子网/网关/范围为可选，留空使用运行时默认。', 'dk.optional': '（可选）', 'dk.net_ippool': 'IP 池', 'dk.net_ippool_title': 'IP 池 · ', 'dk.net_ip_none': '该网络下暂无容器', 'dk.net_confirm_dc': '将该容器从此网络断开？', 'dk.net_rename_title': '重命名网络 · ', 'dk.net_new_name': '新网络名称', 'dk.net_rename_warn': '运行时不支持原地重命名网络，将重建网络并重新连接所有容器（会有短暂网络中断）。', 'dk.net_rename_confirm': '将以新名称重建该网络并重新连接所有容器，是否继续？', 'dk.net_renamed': '网络已重命名', 'dk.net_builtin_block': '内置网络（bridge/host/none）无法重命名或删除。', 'dk.net_ip_outside': 'IPv4 {ip} 不在网络 {net} 的子网 {subnet} 内', 'dk.net_no_static': '该网络不支持静态 IP', 'dk.vol_builtin_block': '当前为内置存储卷，暂无法删除。',
@@ -506,9 +538,41 @@ const I18N = {
     'err.docker.missing_name': '请输入名称', 'err.docker.missing_image_name': '请输入镜像名', 'err.docker.no_stats': '暂无监控数据', 'err.docker.bad_backup': '备份文件无效', 'err.docker.backup_missing': '备份文件不存在', 'err.docker.backup_bad_config': '备份配置无效或缺失', 'err.docker.import_no_image': '未载入任何镜像（不是有效的镜像归档？）',
     'err.docker.bad_cpu_format': 'CPU 限制格式不正确（如 0.5、1、2）', 'err.docker.cpu_out_of_range': 'CPU 限制超出范围', 'err.docker.bad_mem_format': '内存限制格式不正确（如 512m、1g）', 'err.docker.mem_too_small': '内存限制需大于 0',
     'err.docker.cmd_no_newline': '命令不能包含换行', 'err.docker.cmd_unclosed_quote': '命令引号未闭合', 'err.docker.cmd_too_many_args': '命令参数过多',
-    'err.dn7.network_create_unsupported': 'dn7 运行时仅有内置网络「dn7」，暂不支持创建自定义网络。', 'err.dn7.network_builtin_protected': 'dn7 内置网络不可删除。', 'err.dn7.network_rename_unsupported': 'dn7 内置网络不可重命名。',
-    'err.dn7.network_static_ip_unsupported': 'dn7 运行时由 IPAM 自动分配地址，暂不支持设置静态 IP。', 'err.dn7.network_hotplug_unsupported': 'dn7 运行时暂不支持运行时动态接入网络（容器创建时即在内置网络）。', 'err.dn7.network_disconnect_unsupported': 'dn7 运行时暂不支持从网络断开容器。',
-    'err.dn7.create_privileged_unsupported': 'dn7 运行时暂不支持特权容器（privileged），请改用非特权配置。', 'err.dn7.create_netcfg_unsupported': 'dn7 运行时暂不支持为容器指定静态 IPv4 / MAC（由 IPAM 自动分配）。', 'err.dn7.create_multinet_unsupported': 'dn7 运行时暂只支持单一网络，无法同时接入多个网络。', 'err.dn7.create_name_invalid': 'dn7 运行时要求容器名为小写（a-z 0-9 _ . -，≤64 字符）。',
+    
+    
+    'err.dn7.create_privileged_unsupported': 'dn7 运行时暂不支持特权容器（privileged），请改用非特权配置。', 'err.dn7.create_name_invalid': 'dn7 运行时要求容器名为小写（a-z 0-9 _ . -，≤64 字符）。',
+    'err.docker.need_network_name': '网络名称不能为空。',
+    'err.docker.need_network': '请指定网络。',
+    'err.docker.need_ipv4': '请填写 IPv4 地址。',
+    'err.docker.subnet_overlap': '该子网与已有网络重叠。',
+    'err.docker.bad_subnet_cidr': '子网 CIDR 格式无效。',
+    'err.docker.bad_gateway_ip': '网关 IP 格式无效。',
+    'err.docker.gateway_outside_subnet': '网关不在子网范围内。',
+    'err.docker.subnet_prefix_range': '子网掩码需在 /8 与 /30 之间。',
+    'err.docker.net_name_reserved': '该网络名称为保留名。',
+    'err.docker.bad_net_name': '网络名称无效（仅限 a-z 0-9 _ . -）。',
+    'err.docker.subnet_no_host': '该子网没有可用的主机地址。',
+    'err.docker.subnet_pool_exhausted': '没有可用的私有子网，请手动指定。',
+    'err.docker.net_exists': '同名网络已存在。',
+    'err.docker.no_such_network': '网络不存在。',
+    'err.docker.net_still_attached': '网络仍有容器连接，无法删除。',
+    'err.docker.net_builtin_immutable': '内置网络无法修改。',
+    'err.docker.ip_in_use': '该 IP 在网络中已被占用。',
+    'err.docker.not_connected': '容器未连接到该网络。',
+    'err.docker.already_connected': '容器已连接到该网络。',
+    'err.docker.net_exhausted': '网络地址已用尽。',
+    'err.docker.not_bridge_net': '容器不在桥接网络上。',
+    'err.docker.cant_disconnect_primary': '无法断开容器的主网络。',
+    'err.docker.no_managed_network': '容器没有受管网络。',
+    'err.docker.no_such_container': '容器不存在。',
+    'err.docker.net_op_failed': '网络操作失败。',
+    'err.docker.port_in_use_container': '宿主机端口 {0}/{1} 已被容器「{2}」占用。',
+    'err.docker.port_in_use_process': '宿主机端口 {0}/{1} 已被其他进程占用。',
+    'err.docker.port_duplicated': '宿主机端口 {0}/{1} 在表单中重复。',
+    'err.docker.image_in_use': '镜像正被容器「{0}」使用，无法删除。',
+    'term.conn_failed': '连接失败',
+    'dash.cpu': 'CPU',
+    'common.request_failed': '请求失败（HTTP {status}）',
   },
   'zh-TW': {
     'common.cancel': '取消', 'common.ok': '確定', 'common.confirm': '請確認', 'common.unauthorized': '未授權',
@@ -607,7 +671,7 @@ const I18N = {
     'dk.host_port': '主機連接埠', 'dk.container_port': '容器連接埠', 'dk.ipv6_hint': '同時將此連接埠發佈到 IPv6（::）', 'dk.host_path': '主機路徑 /data/app', 'dk.container_path': '容器路徑 /app', 'dk.readonly': '唯讀',
     'dk.create_network': '建立網路', 'dk.net_name': '網路名稱', 'dk.col_driver': '驅動', 'dk.col_scope': '範圍', 'dk.confirm_rm_net': '刪除網路 {name}？',
     'dk.tab_basic': '基本', 'dk.tab_ports': '連接埠', 'dk.tab_resources': '資源配置', 'dk.tab_env': '環境變數',
-    'dk.net_default': '預設（bridge）', 'dk.net_join': '加入網路', 'dk.mac_addr': 'MAC 位址', 'dk.gen_random': '隨機產生', 'dk.ipv4_addr': 'IPv4 位址', 'dk.hostname': '主機名稱', 'dk.domainname': 'Domain', 'dk.dns': 'DNS 伺服器', 'dk.dns_hint': 'IPv4 位址，以空格或逗號分隔。', 'dk.net_static_hint': '設定靜態 IPv4/MAC 需選擇含子網路的自訂網路。', 'dk.ipv4_need_subnet': '請先選擇含子網路的網路', 'dk.net_add': '+ 新增網路',
+    'dk.net_default': '預設（bridge）', 'dk.net_join': '加入網路', 'dk.mac_addr': 'MAC 位址', 'dk.gen_random': '隨機產生', 'dk.ipv4_addr': 'IPv4 位址', 'dk.hostname': '主機名稱', 'dk.domainname': '網域', 'dk.dns': 'DNS 伺服器', 'dk.dns_hint': 'IPv4 位址，以空格或逗號分隔。', 'dk.net_static_hint': '設定靜態 IPv4/MAC 需選擇含子網路的自訂網路。', 'dk.ipv4_need_subnet': '請先選擇含子網路的網路', 'dk.net_add': '+ 新增網路',
     'dk.cpu_weight': 'CPU 權重（份額）', 'dk.cpu_weight_hint': '預設 1024，數值越大在競爭時取得越多 CPU 時間。', 'dk.cpu_limit': 'CPU 限制', 'dk.cpu_limit_hint': '為 0 則關閉限制，最大 {n}。', 'dk.mem_limit': '記憶體限制', 'dk.mem_limit_hint': '為 0 則關閉限制，最大 {n}。', 'dk.mem_limit_off': '為 0 則關閉限制。', 'dk.privileged': '特權模式', 'dk.privileged_d': '允許容器在主機上執行某些特權操作（預設關閉）。',
     'dk.unit_core': '核心', 'dk.vol_pick': '選擇儲存卷', 'dk.vol_src_host': '主機路徑', 'dk.vol_src_vol': '儲存卷',
     'dk.net_mode': '模式（驅動）', 'dk.net_subnet': 'IPv4 子網路', 'dk.net_gateway': 'IPv4 閘道', 'dk.net_iprange': 'IPv4 IP 範圍', 'dk.net_ipam_hint': '子網路/閘道/範圍為選填，留空使用執行階段預設。', 'dk.optional': '（選填）', 'dk.net_ippool': 'IP 池', 'dk.net_ippool_title': 'IP 池 · ', 'dk.net_ip_none': '此網路下尚無容器', 'dk.net_confirm_dc': '將此容器從此網路中斷開？', 'dk.net_rename_title': '重新命名網路 · ', 'dk.net_new_name': '新網路名稱', 'dk.net_rename_warn': '執行階段不支援原地重新命名網路，將重建網路並重新連接所有容器（會有短暫網路中斷）。', 'dk.net_rename_confirm': '將以新名稱重建此網路並重新連接所有容器，是否繼續？', 'dk.net_renamed': '網路已重新命名', 'dk.net_builtin_block': '內建網路（bridge/host/none）無法重新命名或刪除。', 'dk.net_ip_outside': 'IPv4 {ip} 不在網路 {net} 的子網路 {subnet} 內', 'dk.net_no_static': '此網路不支援靜態 IP', 'dk.vol_builtin_block': '目前為內建儲存卷，暫無法刪除。',
@@ -756,9 +820,41 @@ const I18N = {
     'err.docker.missing_name': '請輸入名稱', 'err.docker.missing_image_name': '請輸入映像名稱', 'err.docker.no_stats': '暫無監控資料', 'err.docker.bad_backup': '備份檔案無效', 'err.docker.backup_missing': '備份檔案不存在', 'err.docker.backup_bad_config': '備份組態無效或缺失', 'err.docker.import_no_image': '未載入任何映像（不是有效的映像封存檔？）',
     'err.docker.bad_cpu_format': 'CPU 限制格式不正確（如 0.5、1、2）', 'err.docker.cpu_out_of_range': 'CPU 限制超出範圍', 'err.docker.bad_mem_format': '記憶體限制格式不正確（如 512m、1g）', 'err.docker.mem_too_small': '記憶體限制需大於 0',
     'err.docker.cmd_no_newline': '指令不能包含換行', 'err.docker.cmd_unclosed_quote': '指令引號未閉合', 'err.docker.cmd_too_many_args': '指令參數過多',
-    'err.dn7.network_create_unsupported': 'dn7 執行階段僅有內建網路「dn7」，暫不支援建立自訂網路。', 'err.dn7.network_builtin_protected': 'dn7 內建網路不可刪除。', 'err.dn7.network_rename_unsupported': 'dn7 內建網路不可重新命名。',
-    'err.dn7.network_static_ip_unsupported': 'dn7 執行階段由 IPAM 自動分配位址，暫不支援設定靜態 IP。', 'err.dn7.network_hotplug_unsupported': 'dn7 執行階段暫不支援執行中動態接入網路（容器建立時即在內建網路）。', 'err.dn7.network_disconnect_unsupported': 'dn7 執行階段暫不支援將容器從網路中斷開。',
-    'err.dn7.create_privileged_unsupported': 'dn7 執行階段暫不支援特權容器（privileged），請改用非特權設定。', 'err.dn7.create_netcfg_unsupported': 'dn7 執行階段暫不支援為容器指定靜態 IPv4 / MAC（由 IPAM 自動分配）。', 'err.dn7.create_multinet_unsupported': 'dn7 執行階段暫只支援單一網路，無法同時接入多個網路。', 'err.dn7.create_name_invalid': 'dn7 執行階段要求容器名稱為小寫（a-z 0-9 _ . -，≤64 字元）。',
+    
+    
+    'err.dn7.create_privileged_unsupported': 'dn7 執行階段暫不支援特權容器（privileged），請改用非特權設定。', 'err.dn7.create_name_invalid': 'dn7 執行階段要求容器名稱為小寫（a-z 0-9 _ . -，≤64 字元）。',
+    'err.docker.need_network_name': '網路名稱不能為空。',
+    'err.docker.need_network': '請指定網路。',
+    'err.docker.need_ipv4': '請填寫 IPv4 位址。',
+    'err.docker.subnet_overlap': '該子網與現有網路重疊。',
+    'err.docker.bad_subnet_cidr': '子網 CIDR 格式無效。',
+    'err.docker.bad_gateway_ip': '閘道 IP 格式無效。',
+    'err.docker.gateway_outside_subnet': '閘道不在子網範圍內。',
+    'err.docker.subnet_prefix_range': '子網遮罩需介於 /8 與 /30 之間。',
+    'err.docker.net_name_reserved': '該網路名稱為保留名稱。',
+    'err.docker.bad_net_name': '網路名稱無效（僅限 a-z 0-9 _ . -）。',
+    'err.docker.subnet_no_host': '該子網沒有可用的主機位址。',
+    'err.docker.subnet_pool_exhausted': '沒有可用的私有子網，請手動指定。',
+    'err.docker.net_exists': '同名網路已存在。',
+    'err.docker.no_such_network': '網路不存在。',
+    'err.docker.net_still_attached': '網路仍有容器連接，無法刪除。',
+    'err.docker.net_builtin_immutable': '內建網路無法修改。',
+    'err.docker.ip_in_use': '該 IP 在網路中已被占用。',
+    'err.docker.not_connected': '容器未連接到該網路。',
+    'err.docker.already_connected': '容器已連接到該網路。',
+    'err.docker.net_exhausted': '網路位址已用盡。',
+    'err.docker.not_bridge_net': '容器不在橋接網路上。',
+    'err.docker.cant_disconnect_primary': '無法中斷容器的主要網路。',
+    'err.docker.no_managed_network': '容器沒有受管網路。',
+    'err.docker.no_such_container': '容器不存在。',
+    'err.docker.net_op_failed': '網路操作失敗。',
+    'err.docker.port_in_use_container': '主機連接埠 {0}/{1} 已被容器「{2}」占用。',
+    'err.docker.port_in_use_process': '主機連接埠 {0}/{1} 已被其他程序占用。',
+    'err.docker.port_duplicated': '主機連接埠 {0}/{1} 在表單中重複。',
+    'err.docker.image_in_use': '映像正被容器「{0}」使用，無法刪除。',
+    'term.conn_failed': '連線失敗',
+    'dash.cpu': 'CPU',
+    'common.request_failed': '請求失敗（HTTP {status}）',
   },
   ja: {
     'common.cancel': 'キャンセル', 'common.ok': 'OK', 'common.confirm': '確認してください', 'common.unauthorized': '認証されていません',
@@ -1006,9 +1102,41 @@ const I18N = {
     'err.docker.missing_name': '名前を入力してください', 'err.docker.missing_image_name': 'イメージ名を入力してください', 'err.docker.no_stats': '統計がありません', 'err.docker.bad_backup': 'バックアップファイルが無効です', 'err.docker.backup_missing': 'バックアップファイルが見つかりません', 'err.docker.backup_bad_config': 'バックアップ設定が無効または不足しています', 'err.docker.import_no_image': 'イメージが読み込まれませんでした（有効なイメージアーカイブではない可能性があります）',
     'err.docker.bad_cpu_format': 'CPU 上限の形式が不正です（例 0.5、1、2）', 'err.docker.cpu_out_of_range': 'CPU 上限が範囲外です', 'err.docker.bad_mem_format': 'メモリ上限の形式が不正です（例 512m、1g）', 'err.docker.mem_too_small': 'メモリ上限は0より大きくしてください',
     'err.docker.cmd_no_newline': 'コマンドに改行を含められません', 'err.docker.cmd_unclosed_quote': 'コマンドの引用符が閉じられていません', 'err.docker.cmd_too_many_args': 'コマンド引数が多すぎます',
-    'err.dn7.network_create_unsupported': 'dn7 ランタイムには組み込みネットワーク「dn7」のみがあり、カスタムネットワークの作成には未対応です。', 'err.dn7.network_builtin_protected': 'dn7 の組み込みネットワークは削除できません。', 'err.dn7.network_rename_unsupported': 'dn7 の組み込みネットワークは名前を変更できません。',
-    'err.dn7.network_static_ip_unsupported': 'dn7 ランタイムは IPAM がアドレスを自動割り当てします。静的 IP の設定には未対応です。', 'err.dn7.network_hotplug_unsupported': 'dn7 ランタイムは実行中のネットワーク接続に未対応です（コンテナは作成時に組み込みネットワークへ接続されます）。', 'err.dn7.network_disconnect_unsupported': 'dn7 ランタイムはコンテナのネットワーク切断に未対応です。',
-    'err.dn7.create_privileged_unsupported': 'dn7 ランタイムは特権コンテナ（privileged）に未対応です。非特権の設定を使用してください。', 'err.dn7.create_netcfg_unsupported': 'dn7 ランタイムはコンテナへの静的 IPv4 / MAC の指定に未対応です（アドレスは IPAM が自動割り当てします）。', 'err.dn7.create_multinet_unsupported': 'dn7 ランタイムは単一のネットワークのみをサポートします。複数のネットワークへ同時に接続することはできません。', 'err.dn7.create_name_invalid': 'dn7 ランタイムではコンテナ名を小文字にする必要があります（a-z 0-9 _ . -、64 文字以内）。',
+    
+    
+    'err.dn7.create_privileged_unsupported': 'dn7 ランタイムは特権コンテナ（privileged）に未対応です。非特権の設定を使用してください。', 'err.dn7.create_name_invalid': 'dn7 ランタイムではコンテナ名を小文字にする必要があります（a-z 0-9 _ . -、64 文字以内）。',
+    'err.docker.need_network_name': 'ネットワーク名を入力してください。',
+    'err.docker.need_network': 'ネットワークを指定してください。',
+    'err.docker.need_ipv4': 'IPv4 アドレスを入力してください。',
+    'err.docker.subnet_overlap': 'そのサブネットは既存のネットワークと重複しています。',
+    'err.docker.bad_subnet_cidr': 'サブネット CIDR が無効です。',
+    'err.docker.bad_gateway_ip': 'ゲートウェイ IP が無効です。',
+    'err.docker.gateway_outside_subnet': 'ゲートウェイがサブネット内にありません。',
+    'err.docker.subnet_prefix_range': 'サブネットのプレフィックスは /8〜/30 で指定してください。',
+    'err.docker.net_name_reserved': 'そのネットワーク名は予約されています。',
+    'err.docker.bad_net_name': 'ネットワーク名が無効です（a-z 0-9 _ . - のみ）。',
+    'err.docker.subnet_no_host': 'そのサブネットには利用可能なホストアドレスがありません。',
+    'err.docker.subnet_pool_exhausted': '空きのプライベートサブネットがありません。手動で指定してください。',
+    'err.docker.net_exists': '同名のネットワークが既に存在します。',
+    'err.docker.no_such_network': 'ネットワークが存在しません。',
+    'err.docker.net_still_attached': 'ネットワークにはまだ接続中のコンテナがあります。',
+    'err.docker.net_builtin_immutable': '組み込みネットワークは変更できません。',
+    'err.docker.ip_in_use': 'その IP はネットワーク上で既に使用されています。',
+    'err.docker.not_connected': 'コンテナはそのネットワークに接続されていません。',
+    'err.docker.already_connected': 'コンテナは既にそのネットワークに接続されています。',
+    'err.docker.net_exhausted': 'ネットワークに空きアドレスがありません。',
+    'err.docker.not_bridge_net': 'コンテナはブリッジネットワーク上にありません。',
+    'err.docker.cant_disconnect_primary': 'コンテナのプライマリネットワークは切断できません。',
+    'err.docker.no_managed_network': 'コンテナには管理対象のネットワークがありません。',
+    'err.docker.no_such_container': 'コンテナが存在しません。',
+    'err.docker.net_op_failed': 'ネットワーク操作に失敗しました。',
+    'err.docker.port_in_use_container': 'ホストポート {0}/{1} はコンテナ「{2}」が使用中です。',
+    'err.docker.port_in_use_process': 'ホストポート {0}/{1} は他のプロセスが使用中です。',
+    'err.docker.port_duplicated': 'ホストポート {0}/{1} が重複しています。',
+    'err.docker.image_in_use': 'イメージはコンテナ「{0}」が使用中のため削除できません。',
+    'term.conn_failed': '接続に失敗しました',
+    'dash.cpu': 'CPU',
+    'common.request_failed': 'リクエストに失敗しました（HTTP {status}）',
   },
 };
 
@@ -1051,8 +1179,14 @@ function tr(key, vars) {
 // Capability ops (docker/website) emit fixed validation errors this way.
 function codeMsg(s) {
   if (typeof s === 'string') {
-    const m = s.match(/^ERR_CODE:(.+)$/);
-    if (m) { const k = 'err.' + m[1]; const t = tr(k); return t !== k ? t : m[1]; }
+    const m = s.match(/^ERR_CODE:([\s\S]+)$/);
+    if (m) {
+      const parts = m[1].split('\u001f'); // code \x1f arg0 \x1f arg1 …
+      const code = parts[0]; const vars = {};
+      for (let i = 1; i < parts.length; i++) vars[i - 1] = parts[i];
+      const k = 'err.' + code; const t = tr(k, vars);
+      return t !== k ? t : code;
+    }
   }
   return s;
 }
@@ -1080,8 +1214,10 @@ function msgLine(s) {
 // string (which may itself carry an `ERR_CODE:` marker for capability ops).
 function srvMsg(body) {
   if (body && typeof body === 'object' && body.code) {
+    const vars = {};
+    if (Array.isArray(body.args)) body.args.forEach((a, i) => { vars[i] = a; });
     const k = 'err.' + body.code;
-    const m = tr(k);
+    const m = tr(k, vars);
     if (m !== k) return m;
   }
   const raw = (body && (body.error || (typeof body === 'string' ? body : ''))) || '';

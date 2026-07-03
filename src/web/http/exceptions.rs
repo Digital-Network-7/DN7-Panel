@@ -38,7 +38,16 @@ pub(crate) fn api_err_detail(
 pub(crate) fn op_err_body(e: anyhow::Error) -> Value {
     let s = e.to_string();
     match s.strip_prefix("ERR_CODE:") {
-        Some(code) => json!({ "ok": false, "code": code, "error": code }),
+        // `ERR_CODE:<code>` optionally followed by `\x1f`-separated positional
+        // args (`ERR_CODE:docker.port_in_use\x1f8080\x1ftcp`). The client localizes
+        // `err.<code>` and substitutes {0},{1},… so a coded message can still name
+        // the offending port/IP/etc.
+        Some(rest) => {
+            let mut parts = rest.split('\u{1f}');
+            let code = parts.next().unwrap_or("");
+            let args: Vec<&str> = parts.collect();
+            json!({ "ok": false, "code": code, "args": args, "error": code })
+        }
         None => json!({ "ok": false, "error": s }),
     }
 }

@@ -248,7 +248,7 @@ async fn op_remove_image(req: &Req) -> Result<Value> {
         // Refuse to delete an image still referenced by any dn7 container, so its
         // overlay lower layer can't be pulled out from under a running/stopped one.
         if let Some(users) = dn7_image_users(&r) {
-            return Err(anyhow!("镜像正被容器使用，无法删除（{users}）"));
+            return Err(anyhow!("ERR_CODE:docker.image_in_use\u{1f}{users}"));
         }
         dn7_container::image::remove_image(&store, &r).map_err(|e| anyhow!("{e}"))?;
         Ok(json!({ "removed": r }))
@@ -587,7 +587,7 @@ fn check_dn7_port_conflicts(req: &Req) -> Result<()> {
         match held.get(&(p.host, proto.clone())) {
             Some(owner) if !excluded.contains(owner) => {
                 return Err(anyhow!(
-                    "宿主机端口 {}/{} 已被容器「{}」占用，无法映射。",
+                    "ERR_CODE:docker.port_in_use_container\u{1f}{}\u{1f}{}\u{1f}{}",
                     p.host,
                     proto.to_uppercase(),
                     owner
@@ -597,7 +597,7 @@ fn check_dn7_port_conflicts(req: &Req) -> Result<()> {
             None => {
                 if port_busy(p.host, &proto) {
                     return Err(anyhow!(
-                        "宿主机端口 {}/{} 已被其他进程占用，无法映射。",
+                        "ERR_CODE:docker.port_in_use_process\u{1f}{}\u{1f}{}",
                         p.host,
                         proto.to_uppercase()
                     ));
@@ -1073,14 +1073,82 @@ async fn op_inspect_container_networks(req: &Req) -> Result<Value> {
 // dn7 supports a built-in default network plus user-defined bridge networks
 // (create/remove/rename), per-container static IPs, and runtime attach/detach.
 #[cfg(target_os = "linux")]
+/// Map a dn7 network failure (an op-layer guard, or a fixed string forwarded from
+/// the `registry`/`container` crate) to a stable `ERR_CODE` the web console
+/// localizes via `err.<code>`. The crate messages are constants we own, so
+/// substring matching stays stable; anything unmatched falls back to a generic
+/// localized "network operation failed" rather than leaking raw English.
+#[cfg(target_os = "linux")]
+fn net_err_code(msg: &str) -> &'static str {
+    let has = |n: &str| msg.contains(n);
+    if has("overlaps existing") {
+        "docker.subnet_overlap"
+    } else if has("invalid subnet CIDR") {
+        "docker.bad_subnet_cidr"
+    } else if has("invalid gateway IP") {
+        "docker.bad_gateway_ip"
+    } else if has("is not inside subnet") {
+        "docker.gateway_outside_subnet"
+    } else if has("prefix must be between") {
+        "docker.subnet_prefix_range"
+    } else if has("is reserved") {
+        "docker.net_name_reserved"
+    } else if has("invalid network name") {
+        "docker.bad_net_name"
+    } else if has("no usable host") {
+        "docker.subnet_no_host"
+    } else if has("no free private subnet") {
+        "docker.subnet_pool_exhausted"
+    } else if has("already exists") {
+        "docker.net_exists"
+    } else if has("no such network") {
+        "docker.no_such_network"
+    } else if has("still has") && has("attached") {
+        "docker.net_still_attached"
+    } else if has("can't be removed") || has("can't be renamed") {
+        "docker.net_builtin_immutable"
+    } else if has("already in use on network") {
+        "docker.ip_in_use"
+    } else if has("invalid ipv4") {
+        "docker.bad_ipv4"
+    } else if has("is not connected to network") {
+        "docker.not_connected"
+    } else if has("is already connected to network") {
+        "docker.already_connected"
+    } else if has("is exhausted") {
+        "docker.net_exhausted"
+    } else if has("not on a bridge network") {
+        "docker.not_bridge_net"
+    } else if has("primary network") {
+        "docker.cant_disconnect_primary"
+    } else if has("has no managed network") {
+        "docker.no_managed_network"
+    } else if has("no such container") {
+        "docker.no_such_container"
+    } else {
+        "docker.net_op_failed"
+    }
+}
+
+/// Wrap a crate network error as a localized `ERR_CODE:` anyhow error.
+#[cfg(target_os = "linux")]
+fn net_err(e: impl std::fmt::Display) -> anyhow::Error {
+    anyhow!("ERR_CODE:{}", net_err_code(&e.to_string()))
+}
+
 async fn op_create_network(req: &Req) -> Result<Value> {
-    let name = trimmed(&req.name).ok_or_else(|| anyhow!("network name is required"))?;
-    let subnet = trimmed(&req.subnet).ok_or_else(|| anyhow!("subnet (CIDR) is required"))?;
+    let name = trimmed(&req.name).ok_or_else(|| anyhow!("ERR_CODE:docker.need_network_name"))?;
+    // The subnet is optional (the modal labels it so): auto-assign a free private
+    // range when it's omitted, matching Docker instead of hard-failing.
+    let subnet = trimmed(&req.subnet);
     let gateway = req.gateway.clone().unwrap_or_default();
     run_blocking(move || {
         use dn7_container::net::registry;
-        let (net, gw) = registry::parse_subnet(&subnet, &gateway).map_err(|e| anyhow!("{e}"))?;
-        let cfg = registry::create(&name, net, gw).map_err(|e| anyhow!("{e}"))?;
+        let (net, gw) = match subnet {
+            Some(s) => registry::parse_subnet(&s, &gateway).map_err(net_err)?,
+            None => (registry::allocate_free_subnet().map_err(net_err)?, None),
+        };
+        let cfg = registry::create(&name, net, gw).map_err(net_err)?;
         Ok(json!({
             "created": cfg.name,
             "bridge": cfg.bridge,
@@ -1094,7 +1162,7 @@ async fn op_create_network(req: &Req) -> Result<Value> {
 async fn op_remove_network(req: &Req) -> Result<Value> {
     let name = need_ref(req)?;
     run_blocking(move || {
-        dn7_container::net::registry::remove(&name).map_err(|e| anyhow!("{e}"))?;
+        dn7_container::net::registry::remove(&name).map_err(net_err)?;
         Ok(json!({ "removed": name }))
     })
     .await
@@ -1102,9 +1170,9 @@ async fn op_remove_network(req: &Req) -> Result<Value> {
 #[cfg(target_os = "linux")]
 async fn op_rename_network(req: &Req) -> Result<Value> {
     let old = need_ref(req)?;
-    let new = trimmed(&req.new_name).ok_or_else(|| anyhow!("new network name is required"))?;
+    let new = trimmed(&req.new_name).ok_or_else(|| anyhow!("ERR_CODE:docker.need_network_name"))?;
     run_blocking(move || {
-        dn7_container::net::registry::rename(&old, &new).map_err(|e| anyhow!("{e}"))?;
+        dn7_container::net::registry::rename(&old, &new).map_err(net_err)?;
         Ok(json!({ "renamed": new }))
     })
     .await
@@ -1112,11 +1180,11 @@ async fn op_rename_network(req: &Req) -> Result<Value> {
 #[cfg(target_os = "linux")]
 async fn op_set_network_ip(req: &Req) -> Result<Value> {
     let cref = need_ref(req)?;
-    let network = trimmed(&req.network).ok_or_else(|| anyhow!("network is required"))?;
-    let ipv4 = trimmed(&req.ipv4).ok_or_else(|| anyhow!("ipv4 is required"))?;
+    let network = trimmed(&req.network).ok_or_else(|| anyhow!("ERR_CODE:docker.need_network"))?;
+    let ipv4 = trimmed(&req.ipv4).ok_or_else(|| anyhow!("ERR_CODE:docker.need_ipv4"))?;
     run_blocking(move || {
         let id = resolve_dn7_id(&cref)?;
-        dn7_container::container::net_set_ip(&id, &network, &ipv4).map_err(|e| anyhow!("{e}"))?;
+        dn7_container::container::net_set_ip(&id, &network, &ipv4).map_err(net_err)?;
         Ok(json!({ "ok": true, "ip": ipv4 }))
     })
     .await
@@ -1124,12 +1192,12 @@ async fn op_set_network_ip(req: &Req) -> Result<Value> {
 #[cfg(target_os = "linux")]
 async fn op_connect_network(req: &Req) -> Result<Value> {
     let cref = need_ref(req)?;
-    let network = trimmed(&req.network).ok_or_else(|| anyhow!("network is required"))?;
+    let network = trimmed(&req.network).ok_or_else(|| anyhow!("ERR_CODE:docker.need_network"))?;
     let ipv4 = trimmed(&req.ipv4);
     run_blocking(move || {
         let id = resolve_dn7_id(&cref)?;
         let (ip, ifname) = dn7_container::container::net_connect(&id, &network, ipv4.as_deref())
-            .map_err(|e| anyhow!("{e}"))?;
+            .map_err(net_err)?;
         Ok(json!({ "connected": network, "ip": ip, "ifname": ifname }))
     })
     .await
@@ -1137,10 +1205,10 @@ async fn op_connect_network(req: &Req) -> Result<Value> {
 #[cfg(target_os = "linux")]
 async fn op_disconnect_network(req: &Req) -> Result<Value> {
     let cref = need_ref(req)?;
-    let network = trimmed(&req.network).ok_or_else(|| anyhow!("network is required"))?;
+    let network = trimmed(&req.network).ok_or_else(|| anyhow!("ERR_CODE:docker.need_network"))?;
     run_blocking(move || {
         let id = resolve_dn7_id(&cref)?;
-        dn7_container::container::net_disconnect(&id, &network).map_err(|e| anyhow!("{e}"))?;
+        dn7_container::container::net_disconnect(&id, &network).map_err(net_err)?;
         Ok(json!({ "disconnected": network }))
     })
     .await
@@ -1394,7 +1462,7 @@ fn resolve_dn7_id(r: &str) -> Result<String> {
         .into_iter()
         .find(|s| s.id.starts_with(r))
         .map(|s| s.id)
-        .ok_or_else(|| anyhow!("no such container: {r}"))
+        .ok_or_else(|| anyhow!("ERR_CODE:docker.no_such_container"))
 }
 
 /// Keep the panel's id form (it passes a short id) when it's a prefix of the

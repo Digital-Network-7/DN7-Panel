@@ -150,7 +150,7 @@ function mountTerminal(hostEl, statusDot, pathProvider) {
     }).catch((e) => {
       if (disposed) return;
       setState('off');
-      term.feed('\r\n\x1b[91m' + (e && e.message ? e.message : 'connection failed') + '  \x1b[36m' + tr('term.reconnect_hint') + '\x1b[0m\r\n');
+      term.feed('\r\n\x1b[91m' + (e && e.message ? e.message : tr('term.conn_failed')) + '  \x1b[36m' + tr('term.reconnect_hint') + '\x1b[0m\r\n');
       reconnectArmed = true;
     });
   }

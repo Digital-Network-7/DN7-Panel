@@ -94,9 +94,7 @@ pub(crate) async fn guard_managed_ops(req: &Req) -> Result<()> {
     if req.op == "remove_image" {
         if let Some(r) = req.reference.as_deref() {
             if let Some(owner) = image_in_use_guard(r).await {
-                return Err(anyhow!(
-                    "镜像正在被容器「{owner}」引用，无法删除。请先删除相关容器后再试。"
-                ));
+                return Err(anyhow!("ERR_CODE:docker.image_in_use\u{1f}{owner}"));
             }
         }
     }

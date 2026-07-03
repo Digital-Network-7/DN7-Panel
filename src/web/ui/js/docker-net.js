@@ -1,8 +1,7 @@
 // Docker: networks + daemon settings tabs (split from docker.js).
-// The tab is runtime-aware: the native dn7 runtime has exactly one built-in
-// network and rejects create/rename/delete/static-IP, so instead of offering a
-// toolbox of always-failing actions it shows an explainer card and a read-only
-// list. The full toolbox only renders on the docker runtime.
+// Both runtimes support user-defined networks (create / rename / delete / IP
+// pool); the built-in networks (dn7 / bridge / host / none) are flagged and
+// their mutating actions are blocked. The create button renders for both.
 function dkNetworks(info) {
   const body = $('dkBody');
   if (!body) return; // tab left before an async refresh landed — nothing to render into
@@ -54,9 +53,10 @@ function dkNetworks(info) {
   });
 }
 
-// Create-network modal (docker runtime only). Subnet/gateway/range are checked
-// client-side (CIDR / IPv4 / gateway-in-subnet) so a typo fails right here with
-// a highlighted field instead of an opaque daemon error.
+// Create-network modal. Subnet/gateway/range are all optional and checked
+// client-side (CIDR / IPv4 / gateway-in-subnet) only when supplied, so a typo
+// fails right here with a highlighted field; an omitted subnet is auto-assigned
+// a free private range by the backend (Docker parity).
 function dkNetCreate(inf) {
   modal(tr('dk.create_network'), `
     <div class="formgrid">

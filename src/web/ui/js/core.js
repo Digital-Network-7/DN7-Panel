@@ -282,7 +282,7 @@ function stepUp(message) {
           .then(async (r) => {
             const txt = await r.text(); let b; try { b = JSON.parse(txt); } catch (_) { b = txt; }
             if (b && b.need_totp) { $('suCodeWrap').classList.remove('hidden'); const ci = $('suCode'); if (ci) ci.focus(); err.textContent = tr('stepup.need_code'); $('suGo').disabled = false; return; }
-            if (!r.ok || (b && b.ok === false)) throw new Error(srvMsg(b) || ('HTTP ' + r.status));
+            if (!r.ok || (b && b.ok === false)) throw new Error(srvMsg(b) || tr('common.request_failed', { status: r.status }));
             finish((b && b.data && b.data.token) || null);
           })
           .catch((e) => { err.textContent = e.message; $('suGo').disabled = false; });

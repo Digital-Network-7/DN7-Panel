@@ -147,6 +147,37 @@ pub fn create(name: &str, subnet: Ipv4Net, gateway: Option<Ipv4Addr>) -> Result<
     Ok(cfg)
 }
 
+/// Pick a free private `/24` that overlaps no existing network — used when a user
+/// creates a network without naming a subnet (Docker auto-assigns one, so the
+/// panel's "subnet (optional)" field is honoured rather than rejected). Scans
+/// `172.18.0.0/24 … 172.31.255.0/24` (skipping Docker's `172.17`), then falls
+/// back to `10.10.x.0/24`. Errors only if every candidate is taken.
+pub fn allocate_free_subnet() -> Result<Ipv4Net> {
+    let existing: Vec<Ipv4Net> = all().into_iter().map(|c| c.subnet.trunc()).collect();
+    let overlaps = |cand: &Ipv4Net| {
+        existing
+            .iter()
+            .any(|e| e.contains(&cand.network()) || cand.contains(&e.network()))
+    };
+    for second in 18u8..=31 {
+        for third in 0u8..=255 {
+            let cand = Ipv4Net::new(Ipv4Addr::new(172, second, third, 0), 24).expect("valid /24");
+            if !overlaps(&cand) {
+                return Ok(cand);
+            }
+        }
+    }
+    for third in 0u8..=255 {
+        let cand = Ipv4Net::new(Ipv4Addr::new(10, 10, third, 0), 24).expect("valid /24");
+        if !overlaps(&cand) {
+            return Ok(cand);
+        }
+    }
+    Err(Error::Other(
+        "no free private subnet available; specify one explicitly".into(),
+    ))
+}
+
 /// Remove a user network: refuse the built-in, refuse if any container still
 /// holds a lease on it, then delete the bridge + the config file.
 pub fn remove(name: &str) -> Result<()> {
@@ -248,6 +279,16 @@ mod tests {
         assert_eq!(resolve("bridge").unwrap().name, "dn7");
         assert_eq!(resolve("").unwrap().name, "dn7");
         assert!(resolve("nope").is_err());
+    }
+
+    #[test]
+    fn free_subnet_skips_the_builtin_and_is_a_24() {
+        // With no user networks on disk, `all()` is just the built-in dn7
+        // (172.18.0.0/24), so the first free candidate is 172.18.1.0/24.
+        let s = allocate_free_subnet().unwrap();
+        assert_eq!(s.prefix_len(), 24);
+        assert!(!s.contains(&"172.18.0.1".parse::<Ipv4Addr>().unwrap()));
+        assert!(s.network().is_private());
     }
 
     #[test]

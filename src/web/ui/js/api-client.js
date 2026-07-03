@@ -28,7 +28,7 @@ function api(path, opts = {}) {
     if (r.status === 401) { sessionExpired(); throw new Error(tr('common.unauthorized')); }
     const txt = await r.text();
     let body; try { body = JSON.parse(txt); } catch (e) { body = txt; }
-    if (!r.ok || (body && body.ok === false)) throw new Error(srvMsg(body) || ('HTTP ' + r.status));
+    if (!r.ok || (body && body.ok === false)) throw new Error(srvMsg(body) || tr('common.request_failed', { status: r.status }));
     return body;
   });
 }

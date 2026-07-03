@@ -149,7 +149,7 @@ pub(crate) async fn check_port_conflicts(req: &Req) -> Result<()> {
         match held.get(&key) {
             Some(owner) if !excluded.contains(owner) => {
                 return Err(anyhow!(
-                    "宿主机端口 {}/{} 已被容器「{}」占用，无法映射。",
+                    "ERR_CODE:docker.port_in_use_container\u{1f}{}\u{1f}{}\u{1f}{}",
                     p.host,
                     proto.to_uppercase(),
                     owner
@@ -160,7 +160,7 @@ pub(crate) async fn check_port_conflicts(req: &Req) -> Result<()> {
             None => {
                 if port_busy(p.host, &proto) {
                     return Err(anyhow!(
-                        "宿主机端口 {}/{} 已被其他进程占用，无法映射。",
+                        "ERR_CODE:docker.port_in_use_process\u{1f}{}\u{1f}{}",
                         p.host,
                         proto.to_uppercase()
                     ));
@@ -178,7 +178,7 @@ pub(crate) fn reject_duplicate_ports(ports: &[PortMap]) -> Result<()> {
         let proto = p.proto.as_deref().unwrap_or("tcp").to_string();
         if !seen.insert((p.host, proto.clone())) {
             return Err(anyhow!(
-                "宿主机端口 {}/{} 在表单中重复，请勿映射同一端口多次。",
+                "ERR_CODE:docker.port_duplicated\u{1f}{}\u{1f}{}",
                 p.host,
                 proto.to_uppercase()
             ));

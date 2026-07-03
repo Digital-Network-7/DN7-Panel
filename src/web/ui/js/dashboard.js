@@ -40,7 +40,7 @@ function renderDash(v) {
         <div class="card histcard tile-hero with-side">
           <div class="hist-head">
             <div class="subtabs hist-metric" id="histMetric">
-              <button data-m="cpu"${H.metric === 'cpu' ? ' class="on"' : ''}>CPU</button>
+              <button data-m="cpu"${H.metric === 'cpu' ? ' class="on"' : ''}>${tr('dash.cpu')}</button>
               <button data-m="mem"${H.metric === 'mem' ? ' class="on"' : ''}>${tr('dash.mem')}</button>
               <button data-m="net"${H.metric === 'net' ? ' class="on"' : ''}>${tr('dash.net')}</button>
             </div>
