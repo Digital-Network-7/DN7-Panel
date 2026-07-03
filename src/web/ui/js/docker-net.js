@@ -128,9 +128,12 @@ function dkNetIpPool(name) {
           const ipCell = d.editable
             ? `<input class="field mono" style="max-width:170px;padding:6px 9px" data-ipin="${esc(c.full_id)}" value="${esc(c.ipv4)}" />`
             : `<span class="mono">${esc(c.ipv4 || '-')}</span>`;
+          // Both set-IP and disconnect are gated on `editable`: the in-house dn7
+          // runtime auto-allocates addresses and has no per-endpoint hot-attach,
+          // so its IP pool is view-only (no buttons that would just error out).
           const acts = d.editable
             ? `<div class="actions"><button class="btn sm sec" data-save="${esc(c.full_id)}">${tr('ng.save')}</button><button class="btn sm danger" data-dc="${esc(c.full_id)}">${tr('dk.disconnect')}</button></div>`
-            : `<div class="actions"><button class="btn sm danger" data-dc="${esc(c.full_id)}">${tr('dk.disconnect')}</button></div>`;
+            : '';
           h += `<tr><td><b>${esc(c.name)}</b></td><td>${ipCell}</td><td class="act">${acts}</td></tr>`;
         });
         $('ipBody').innerHTML = h + '</table>';
