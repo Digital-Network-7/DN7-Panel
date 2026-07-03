@@ -35,6 +35,7 @@ pub(crate) async fn try_run_op(req: &Req, is_super: bool) -> Option<Result<Value
         "list_networks" => Some(run_blocking(list_networks).await),
         "list_volumes" => Some(run_blocking(list_volumes).await),
         "pull_image" => Some(start_pull(req)),
+        "prune_images" => Some(op_prune_images().await),
         "remove_image" => Some(op_remove_image(req).await),
         "tag_image" => Some(op_tag_image(req).await),
         "create_volume" => Some(op_create_volume(req).await),
@@ -238,6 +239,17 @@ fn start_pull(req: &Req) -> Result<Value> {
 /// in-use check (the shared `guard_managed_ops` guard consults the absent bollard
 /// daemon and no-ops under `DN7_RUNTIME=dn7`).
 #[cfg(target_os = "linux")]
+/// `prune_images`: reclaim orphaned image blobs + rootfs-caches (docker image prune).
+#[cfg(target_os = "linux")]
+async fn op_prune_images() -> Result<Value> {
+    run_blocking(|| {
+        let store = dn7_container::image::Store::open().map_err(dn7_err)?;
+        let (pruned, reclaimed) = dn7_container::image::prune(&store).map_err(dn7_err)?;
+        Ok(json!({ "pruned": pruned, "reclaimed": reclaimed }))
+    })
+    .await
+}
+
 async fn op_remove_image(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
     run_blocking(move || {
@@ -355,19 +367,19 @@ async fn op_create_volume(req: &Req) -> Result<Value> {
         .ok_or_else(|| docker_err(DockerError::MissingVolumeName))?
         .to_string();
     validate_name(&name)?;
-    if req
-        .path
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .is_some()
-    {
-        return Err(anyhow!(
-            "dn7: host-path named volumes are not supported yet; use a bind mount"
-        ));
-    }
+    // Optional host path (docker `local`-driver bind). Vet it against the same
+    // absolute-path + host-bind deny-list as a `-v` bind before backing the volume.
+    let path = match req.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(p) => {
+            validate_path(p)?;
+            validate_bind_source(p)?;
+            Some(p.to_string())
+        }
+        None => None,
+    };
     run_blocking(move || {
-        dn7_container::image::volume::create(&name).map_err(dn7_err)?;
+        let mp = path.as_deref().map(std::path::Path::new);
+        dn7_container::image::volume::create_with_mount(&name, mp).map_err(dn7_err)?;
         Ok(json!({ "created": name }))
     })
     .await
@@ -440,6 +452,10 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
         .first()
         .and_then(|a| a.ipv4.clone())
         .filter(|s| !s.trim().is_empty());
+    let primary_mac = rows
+        .first()
+        .and_then(|a| a.mac.clone())
+        .filter(|s| !s.trim().is_empty());
     let extra_nets: Vec<NetAttach> = rows.iter().skip(1).cloned().collect();
     let (net_mode, net_name_requested) = match primary_name.as_deref() {
         None | Some("bridge") | Some("dn7") => ("bridge".to_string(), None),
@@ -463,18 +479,28 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
         display_name
     };
 
-    // Published ports → dn7 `-p` string (ipv6 wildcard dropped — nft DNAT is v4).
+    // dn7's DNAT is IPv4-only, so an explicit IPv6 publish can't be honored —
+    // reject it clearly rather than silently dropping it (Docker parity).
+    if req.ports.iter().flatten().any(|p| p.ipv6.unwrap_or(false)) {
+        return Err(anyhow!("ERR_CODE:docker.ipv6_publish_unsupported"));
+    }
+    // Published ports → dn7 `-p` string, honoring an optional host-IP so a
+    // `127.0.0.1:8080:80` publish is scoped to loopback (not all interfaces).
     let ports_spec = req
         .ports
         .iter()
         .flatten()
         .map(|p| {
-            format!(
-                "{}:{}/{}",
-                p.host,
-                p.container,
-                p.proto.as_deref().unwrap_or("tcp")
-            )
+            let proto = p.proto.as_deref().unwrap_or("tcp");
+            match p
+                .host_ip
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                Some(ip) => format!("{ip}:{}:{}/{proto}", p.host, p.container),
+                None => format!("{}:{}/{proto}", p.host, p.container),
+            }
         })
         .collect::<Vec<_>>()
         .join(",");
@@ -553,6 +579,7 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
         pids_limit,
         tty: req.tty.unwrap_or(false),
         static_ip: primary_ip.clone(),
+        static_mac: primary_mac.clone(),
     };
     let meta = dn7_container::container::state::StateMeta {
         image: Some(cspec.image.clone()),
@@ -852,7 +879,8 @@ fn create_body(req: &Req) -> Value {
         .map(|p| {
             json!({
                 "host": p.host, "container": p.container,
-                "proto": p.proto.as_deref().unwrap_or("tcp"), "ipv6": p.ipv6.unwrap_or(false)
+                "proto": p.proto.as_deref().unwrap_or("tcp"), "ipv6": p.ipv6.unwrap_or(false),
+                "host_ip": p.host_ip
             })
         })
         .collect();
@@ -1698,9 +1726,15 @@ fn fmt_dn7_ports(spec: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     for p in spec.split(',').filter(|s| !s.is_empty()) {
         let (hostpart, proto) = p.rsplit_once('/').unwrap_or((p, "tcp"));
-        if let Some((hp, cp)) = hostpart.split_once(':') {
-            out.push(format!("0.0.0.0:{hp}->{cp}/{proto}"));
-        }
+        // `[host_ip:]host_port:container_port` — show the real bind IP (Docker
+        // shows the scoped IP, not always 0.0.0.0).
+        let parts: Vec<&str> = hostpart.split(':').collect();
+        let (ip, hp, cp) = match parts.as_slice() {
+            [hp, cp] => ("0.0.0.0", *hp, *cp),
+            [ip, hp, cp] => (*ip, *hp, *cp),
+            _ => continue,
+        };
+        out.push(format!("{ip}:{hp}->{cp}/{proto}"));
     }
     out.sort();
     out.dedup();

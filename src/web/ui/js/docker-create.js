@@ -119,7 +119,7 @@ function dkCreateModal(info, networks, opts) {
     tabs.querySelectorAll('button').forEach((btn) => btn.onclick = () => selTab(btn.dataset.s));
     // Dynamic row helpers.
     const portRow = (v) => kvRow('ccPorts', [
-      { ph: tr('dk.host_port'), val: v && v.h }, { sep: '→' }, { ph: tr('dk.container_port'), val: v && v.c },
+      { ph: tr('dk.host_ip'), val: v && v.ip }, { sep: ':' }, { ph: tr('dk.host_port'), val: v && v.h }, { sep: '→' }, { ph: tr('dk.container_port'), val: v && v.c },
     ], { proto: true, protoVal: v && v.proto, ipv6: true, ipv6Val: v && v.ipv6 });
     const envRow = (v) => kvRow('ccEnv', [
       { ph: 'KEY', val: v && v.k, flex: '0 0 34%' }, { sep: '=' }, { ph: 'VALUE', val: v && v.v, flex: '1 1 auto' },
@@ -257,7 +257,7 @@ function dkCreateModal(info, networks, opts) {
       $('ccTty').checked = !!cfg.tty;
       $('ccStdin').checked = !!cfg.interactive;
       $('ccStart').checked = true;
-      (cfg.ports || []).forEach((p) => portRow({ h: p.host, c: p.container, proto: p.proto, ipv6: p.ipv6 }));
+      (cfg.ports || []).forEach((p) => portRow({ ip: p.host_ip, h: p.host, c: p.container, proto: p.proto, ipv6: p.ipv6 }));
       (cfg.env || []).forEach((e) => { const i = e.indexOf('='); envRow({ k: i >= 0 ? e.slice(0, i) : e, v: i >= 0 ? e.slice(i + 1) : '' }); });
       (cfg.volumes || []).forEach((v) => volRow({ host: v.host, container: v.container, readonly: v.readonly }));
       (cfg.networks || []).forEach((n) => netRow(n));
@@ -340,7 +340,7 @@ function dkCreateModal(info, networks, opts) {
     const doSubmit = () => {
       const image = $('ccImg').value.trim(); if (!image) return toast(tr('dk.need_image'), 'err');
       if (!ccValidate()) return;
-      const ports = readKv('ccPorts').map((r) => ({ host: Number(r[0]), container: Number(r[1]), proto: r.proto || 'tcp', ipv6: r.ipv6 || undefined })).filter((p) => p.host && p.container);
+      const ports = readKv('ccPorts').map((r) => ({ host_ip: (r[0] || '').trim() || undefined, host: Number(r[1]), container: Number(r[2]), proto: r.proto || 'tcp', ipv6: r.ipv6 || undefined })).filter((p) => p.host && p.container);
       const env = readKv('ccEnv').map((r) => (r[0] ? r[0] + '=' + (r[1] || '') : '')).filter(Boolean);
       const volumes = readVolumes();
       const networks = readNetworks();

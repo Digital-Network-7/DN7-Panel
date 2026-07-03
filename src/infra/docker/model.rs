@@ -142,6 +142,8 @@ pub(crate) struct PortMap {
     #[serde(default)]
     pub(crate) proto: Option<String>, // "tcp" | "udp", default tcp
     #[serde(default)]
+    pub(crate) host_ip: Option<String>, // publish only on this host IPv4 (docker -p ip:hp:cp)
+    #[serde(default)]
     pub(crate) ipv6: Option<bool>, // also bind the host IPv6 wildcard (::) for this port
 }
 

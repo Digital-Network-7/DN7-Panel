@@ -69,6 +69,10 @@ pub struct ContainerConfig {
     /// The image's default stop signal (Dockerfile `STOPSIGNAL`), e.g. `SIGQUIT`.
     #[serde(default, rename = "StopSignal")]
     pub stop_signal: String,
+    /// Image `VOLUME` declarations (paths mapped to `{}`). Each gets an anonymous
+    /// named volume so its data lives outside the container layer, like Docker.
+    #[serde(default, rename = "Volumes")]
+    pub volumes: std::collections::HashMap<String, serde_json::Value>,
     /// Image labels (`org.opencontainers.image.*`, `dn7.*`, …) — feed the panel's
     /// container `description`/`managed` fields.
     #[serde(default, rename = "Labels")]

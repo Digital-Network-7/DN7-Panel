@@ -164,6 +164,7 @@ fn build_create_spec_basic() {
         host: 8080,
         container: 80,
         proto: None,
+        host_ip: None,
         ipv6: None,
     }]);
     req.env = Some(vec!["FOO=bar".into()]);
@@ -208,6 +209,7 @@ fn build_create_spec_rejects_bad_port() {
         host: 0,
         container: 80,
         proto: None,
+        host_ip: None,
         ipv6: None,
     }]);
     assert!(build_create_spec(&req).is_err());

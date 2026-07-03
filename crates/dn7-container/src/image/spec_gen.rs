@@ -145,6 +145,8 @@ pub struct CreateOpts<'a> {
     pub tty: bool,
     /// Static IPv4 on the primary network (`dn7.ip` annotation); `None` = auto.
     pub static_ip: Option<&'a str>,
+    /// Endpoint MAC on the primary network (`dn7.mac` annotation); `None` = derived.
+    pub static_mac: Option<&'a str>,
 }
 
 impl<'a> CreateOpts<'a> {
@@ -164,6 +166,7 @@ impl<'a> CreateOpts<'a> {
             pids_limit: None,
             tty: false,
             static_ip: None,
+            static_mac: None,
         }
     }
 }
@@ -267,6 +270,9 @@ pub fn write_config(bundle_dir: &Path, cfg: &ImageConfig, opts: &CreateOpts) -> 
     }
     if let Some(ip) = opts.static_ip.filter(|s| !s.trim().is_empty()) {
         spec["annotations"]["dn7.ip"] = serde_json::Value::String(ip.trim().to_string());
+    }
+    if let Some(mac) = opts.static_mac.filter(|s| !s.trim().is_empty()) {
+        spec["annotations"]["dn7.mac"] = serde_json::Value::String(mac.trim().to_string());
     }
 
     let p = bundle_dir.join("config.json");

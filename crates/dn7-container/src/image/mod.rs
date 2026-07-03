@@ -215,6 +215,38 @@ pub fn remove_image(store: &Store, reference: &str) -> Result<()> {
 /// Every blob digest (config + layers) still referenced after a delete: by any
 /// remaining stored image, plus any live container's committed base image
 /// (`parent.json` under its bundle). Cheap enough to run inline on each delete.
+/// `image prune`: reclaim orphaned content — blobs and extracted rootfs-caches no
+/// longer referenced by any stored image or live container's `parent.json`.
+/// Returns (items reclaimed, bytes freed).
+pub fn prune(store: &Store) -> Result<(usize, u64)> {
+    let referenced = referenced_digests(store);
+    let is_ref = |hex: &str| referenced.contains(&format!("sha256:{hex}"));
+    let (mut count, mut bytes) = (0usize, 0u64);
+    if let Ok(rd) = std::fs::read_dir(store.root().join("blobs").join("sha256")) {
+        for e in rd.flatten() {
+            let hex = e.file_name().to_string_lossy().into_owned();
+            if !is_ref(&hex) {
+                bytes += std::fs::metadata(e.path()).map(|m| m.len()).unwrap_or(0);
+                if std::fs::remove_file(e.path()).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+    }
+    if let Ok(rd) = std::fs::read_dir(store.root().join("rootfs-cache")) {
+        for e in rd.flatten() {
+            let hex = e.file_name().to_string_lossy().into_owned();
+            if e.path().is_dir() && !is_ref(&hex) {
+                bytes += dir_size(&e.path());
+                if std::fs::remove_dir_all(e.path()).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+    }
+    Ok((count, bytes))
+}
+
 fn referenced_digests(store: &Store) -> std::collections::HashSet<String> {
     let mut set = std::collections::HashSet::new();
     // Remaining stored images (scan images/*/image.json directly for their records).

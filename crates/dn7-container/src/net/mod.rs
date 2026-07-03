@@ -90,13 +90,21 @@ impl NetworkManager {
             ),
             _ => None,
         };
-        let result = self.apply_mode(id, pid, mode, &cfg, static_ip, &ports);
+        // Optional user-requested endpoint MAC (docker --mac-address). Honored only
+        // if well-formed; otherwise the IP-derived MAC stands.
+        let static_mac = spec
+            .annotations
+            .get("dn7.mac")
+            .map(|s| s.trim().to_string())
+            .filter(|s| config::is_valid_mac(s));
+        let result = self.apply_mode(id, pid, mode, &cfg, static_ip, static_mac, &ports);
         if result.is_err() {
             self.teardown_by_id(id);
         }
         result.map(Some)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_mode(
         &self,
         id: &str,
@@ -104,6 +112,7 @@ impl NetworkManager {
         mode: NetMode,
         cfg: &NetworkConfig,
         static_ip: Option<std::net::Ipv4Addr>,
+        static_mac: Option<String>,
         ports: &[PortMap],
     ) -> Result<NetState> {
         match mode {
@@ -130,23 +139,30 @@ impl NetworkManager {
                     extra: Vec::new(),
                 })
             }
-            NetMode::Bridge => self.apply_bridge(id, pid, cfg, static_ip, ports),
+            NetMode::Bridge => self.apply_bridge(id, pid, cfg, static_ip, static_mac, ports),
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_bridge(
         &self,
         id: &str,
         pid: i32,
         cfg: &NetworkConfig,
         static_ip: Option<std::net::Ipv4Addr>,
+        static_mac: Option<String>,
         ports: &[PortMap],
     ) -> Result<NetState> {
         let ipam = Ipam::new();
-        let lease = match static_ip {
+        let mut lease = match static_ip {
             Some(ip) => ipam.allocate_static(cfg, id, pid, ip)?,
             None => ipam.allocate(cfg, id, pid)?,
         };
+        // Honor a user-requested endpoint MAC (docker --mac-address); otherwise the
+        // IP-derived MAC the lease already carries is used.
+        if let Some(mac) = static_mac {
+            lease.mac = mac;
+        }
 
         let host = config::veth_host_name(id);
         let peer = config::veth_peer_name(id);

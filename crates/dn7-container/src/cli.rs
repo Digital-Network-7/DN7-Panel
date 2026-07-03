@@ -85,6 +85,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 pids_limit: None,
                 tty: pre.iter().any(|a| a == "-t" || a == "--tty"),
                 static_ip: flag_value(pre, "--ip").map(str::to_string),
+                static_mac: flag_value(pre, "--mac-address").map(str::to_string),
             };
             container::run_image(&spec).map_err(|e| e.to_string())
         }
@@ -123,6 +124,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 pids_limit: None,
                 tty: pre.iter().any(|a| a == "-t" || a == "--tty"),
                 static_ip: flag_value(pre, "--ip").map(str::to_string),
+                static_mac: flag_value(pre, "--mac-address").map(str::to_string),
             };
             let meta = container::state::StateMeta {
                 image: Some(reference.to_string()),

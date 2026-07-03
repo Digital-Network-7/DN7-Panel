@@ -25,15 +25,39 @@ pub struct VolumeInfo {
 
 /// Create a named volume (a managed directory). Idempotent.
 pub fn create(name: &str) -> Result<()> {
-    let p = named_path(name)?;
-    std::fs::create_dir_all(&p).map_err(Error::io(&p))
+    create_with_mount(name, None)
 }
 
-/// Remove a named volume and its contents. Absent is OK.
+/// Create a named volume, optionally backed by a host path (docker's `local`
+/// driver host bind). A host-path volume is a symlink at the volume name pointing
+/// at the (created) host directory, so `resolve`/`list`/bind all follow it. The
+/// CALLER must have vetted the host path against the bind deny-list. Idempotent.
+pub fn create_with_mount(name: &str, mountpoint: Option<&Path>) -> Result<()> {
+    let p = named_path(name)?;
+    match mountpoint {
+        Some(mp) => {
+            std::fs::create_dir_all(mp).map_err(Error::io(mp))?;
+            if p.exists() {
+                return Ok(());
+            }
+            std::fs::create_dir_all(Path::new(VOLUMES_DIR)).map_err(Error::io(VOLUMES_DIR))?;
+            std::os::unix::fs::symlink(mp, &p).map_err(Error::io(&p))
+        }
+        None => std::fs::create_dir_all(&p).map_err(Error::io(&p)),
+    }
+}
+
+/// Remove a named volume and its contents. Absent is OK. A host-path (symlink)
+/// volume only has its symlink dropped — the host data is NEVER deleted.
 pub fn remove(name: &str) -> Result<()> {
     let p = named_path(name)?;
-    match std::fs::remove_dir_all(&p) {
-        Ok(()) => Ok(()),
+    match std::fs::symlink_metadata(&p) {
+        Ok(m) if m.file_type().is_symlink() => std::fs::remove_file(&p).map_err(Error::io(&p)),
+        Ok(_) => match std::fs::remove_dir_all(&p) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Error::io(&p)(e)),
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(Error::io(&p)(e)),
     }
@@ -61,11 +85,13 @@ pub fn list() -> Result<Vec<VolumeInfo>> {
     };
     let mut out = Vec::new();
     for ent in entries.flatten() {
-        if ent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        // A managed dir, OR a symlink to a host-path volume (path().is_dir follows).
+        let is_vol = ent.file_type().map(|t| t.is_dir()).unwrap_or(false) || ent.path().is_dir();
+        if is_vol {
             if let Ok(name) = ent.file_name().into_string() {
                 out.push(VolumeInfo {
                     name,
-                    path: ent.path(),
+                    path: std::fs::canonicalize(ent.path()).unwrap_or_else(|_| ent.path()),
                 });
             }
         }

@@ -69,6 +69,15 @@ pub fn mac_for(ip: Ipv4Addr) -> String {
     format!("02:42:{:02x}:{:02x}:{:02x}:{:02x}", o[0], o[1], o[2], o[3])
 }
 
+/// Whether `s` is a well-formed MAC address (six colon-separated hex octets).
+pub fn is_valid_mac(s: &str) -> bool {
+    let parts: Vec<&str> = s.split(':').collect();
+    parts.len() == 6
+        && parts
+            .iter()
+            .all(|p| p.len() == 2 && u8::from_str_radix(p, 16).is_ok())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Proto {

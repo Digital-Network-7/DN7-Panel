@@ -307,6 +307,11 @@ const I18N = {
     'dk.unit_sec': 'sec',
     'dk.auto_remove': 'Auto-remove on exit',
     'dk.auto_remove_d': 'Delete the container the moment it exits (--rm).',
+    'dk.img_prune': 'Prune unused',
+    'dk.img_prune_confirm': 'Reclaim orphaned image layers no longer used by any image or container?',
+    'dk.img_pruned': 'Reclaimed {n} items ({size}).',
+    'dk.host_ip': 'Host IP (opt.)',
+    'err.docker.ipv6_publish_unsupported': 'IPv6 port publishing isn\'t supported (DNAT is IPv4-only).',
   },
   'zh-CN': {
     'common.cancel': '取消', 'common.ok': '确定', 'common.confirm': '请确认', 'common.unauthorized': '未授权',
@@ -605,6 +610,11 @@ const I18N = {
     'dk.unit_sec': '秒',
     'dk.auto_remove': '退出后自动删除',
     'dk.auto_remove_d': '容器退出后立即删除（--rm）。',
+    'dk.img_prune': '清理无用镜像',
+    'dk.img_prune_confirm': '回收不再被任何镜像或容器引用的悬空镜像层？',
+    'dk.img_pruned': '已回收 {n} 项（{size}）。',
+    'dk.host_ip': '主机 IP（可选）',
+    'err.docker.ipv6_publish_unsupported': '暂不支持 IPv6 端口发布（DNAT 仅支持 IPv4）。',
   },
   'zh-TW': {
     'common.cancel': '取消', 'common.ok': '確定', 'common.confirm': '請確認', 'common.unauthorized': '未授權',
@@ -903,6 +913,11 @@ const I18N = {
     'dk.unit_sec': '秒',
     'dk.auto_remove': '結束後自動移除',
     'dk.auto_remove_d': '容器結束後立即移除（--rm）。',
+    'dk.img_prune': '清理未使用映像',
+    'dk.img_prune_confirm': '回收不再被任何映像或容器引用的懸空映像層？',
+    'dk.img_pruned': '已回收 {n} 項（{size}）。',
+    'dk.host_ip': '主機 IP（可選）',
+    'err.docker.ipv6_publish_unsupported': '暫不支援 IPv6 連接埠發布（DNAT 僅支援 IPv4）。',
   },
   ja: {
     'common.cancel': 'キャンセル', 'common.ok': 'OK', 'common.confirm': '確認してください', 'common.unauthorized': '認証されていません',
@@ -1201,6 +1216,11 @@ const I18N = {
     'dk.unit_sec': '秒',
     'dk.auto_remove': '終了時に自動削除',
     'dk.auto_remove_d': '終了と同時にコンテナを削除（--rm）。',
+    'dk.img_prune': '未使用イメージを整理',
+    'dk.img_prune_confirm': 'どのイメージ・コンテナからも参照されない孤立レイヤーを回収しますか？',
+    'dk.img_pruned': '{n} 件を回収しました（{size}）。',
+    'dk.host_ip': 'ホスト IP（任意）',
+    'err.docker.ipv6_publish_unsupported': 'IPv6 のポート公開はサポートされていません（DNAT は IPv4 のみ）。',
   },
 };
 

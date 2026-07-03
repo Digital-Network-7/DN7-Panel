@@ -8,6 +8,7 @@ function dkImages(info) {
   mkHoverPanel($('dkAdv'), [
     { label: tr('dk.img_import'), fn: () => dkImportForm(info) },
     { label: tr('dk.pull_tasks'), fn: () => dkPullTasks() },
+    { label: tr('dk.img_prune'), fn: () => confirmDanger(tr('dk.img_prune_confirm')).then((ok) => { if (!ok) return; op('docker', { op: 'prune_images' }).then((r) => { toast(tr('dk.img_pruned', { n: r.pruned || 0, size: fmtBytes(r.reclaimed || 0) }), 'ok'); dkImages(info); }).catch((e) => toast(e.message, 'err')); }) },
   ]);
   op('docker', { op: 'list_images' }).then((d) => {
     const list = d.images || [];

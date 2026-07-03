@@ -65,6 +65,8 @@ pub struct ImageRunSpec {
     pub tty: bool,
     /// Static IPv4 on the primary network (docker `--ip`); `None` = auto-assign.
     pub static_ip: Option<String>,
+    /// Endpoint MAC on the primary network (docker `--mac-address`); `None` = derived.
+    pub static_mac: Option<String>,
 }
 
 /// `run`: create + start + wait, all in one process. The simplest end-to-end
@@ -140,12 +142,29 @@ fn assemble_image_bundle(spec: &ImageRunSpec) -> Result<std::path::PathBuf> {
     std::fs::create_dir_all(&bundle).map_err(Error::io(&bundle))?;
 
     let hostname = spec.hostname.clone().unwrap_or_else(|| spec.id.clone());
+    // Image VOLUME paths not covered by a user -v get an anonymous named volume
+    // (Docker parity), so their data lives outside the throwaway overlay upper
+    // (e.g. postgres/mysql data survives a container recreate/upgrade).
+    let mut volumes = spec.volumes.clone();
+    {
+        let have: std::collections::HashSet<String> =
+            volumes.iter().map(|v| v.dest.clone()).collect();
+        for vpath in cfg.config.volumes.keys() {
+            let vpath = vpath.trim();
+            if vpath.starts_with('/') && !have.contains(vpath) {
+                let name = anon_volume_name(&spec.id, vpath);
+                if let Ok(m) = image::volume::resolve(&format!("{name}:{vpath}")) {
+                    volumes.push(m);
+                }
+            }
+        }
+    }
     let opts = image::spec_gen::CreateOpts {
         hostname: &hostname,
         cmd_override: &spec.cmd,
         net_mode: &spec.net_mode,
         ports: &spec.ports,
-        volumes: &spec.volumes,
+        volumes: &volumes,
         env_extra: &spec.env_extra,
         mem_limit: spec.mem_limit,
         cpu_quota: spec.cpu_quota,
@@ -153,6 +172,7 @@ fn assemble_image_bundle(spec: &ImageRunSpec) -> Result<std::path::PathBuf> {
         pids_limit: spec.pids_limit,
         tty: spec.tty,
         static_ip: spec.static_ip.as_deref(),
+        static_mac: spec.static_mac.as_deref(),
     };
     image::spec_gen::write_config(&bundle, &cfg, &opts)?;
 
@@ -187,6 +207,18 @@ fn assemble_image_bundle(spec: &ImageRunSpec) -> Result<std::path::PathBuf> {
     crate::net::dns::write_hosts(&etc, &hostname, spec.static_ip.as_deref())?;
     crate::sys::overlay::mount_overlay(&lower, &upper, &work, &rootfs)?;
     Ok(bundle)
+}
+
+/// A stable anonymous-volume name for image `VOLUME path` in container `id`
+/// (Docker gives these long hex names, one per container instance). Deterministic
+/// per (id, path) so the same instance reuses it; a recreate with a fresh id gets
+/// a fresh volume — Docker's anonymous-volume semantics (use a named `-v` for
+/// data that must survive a recreate).
+fn anon_volume_name(id: &str, path: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let d = Sha256::digest(format!("{id}\0{path}").as_bytes());
+    let hex: String = d.iter().take(12).map(|b| format!("{b:02x}")).collect();
+    format!("dn7-anon-{hex}")
 }
 
 /// `run-image`: assemble a bundle from an image and run it foreground (create +
