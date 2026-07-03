@@ -672,12 +672,15 @@ where
         return Err(e);
     }
 
-    let reference = format!("imported:{ts}");
     let tmp2 = tmp.clone();
-    let ref2 = reference.clone();
     let rec = tokio::task::spawn_blocking(move || {
         let store = dn7_container::image::Store::open().map_err(|e| anyhow!("dn7 store: {e}"))?;
-        dn7_container::image::archive::load(&store, &tmp2, &ref2)
+        // Restore the image's real name from the archive itself (a dn7 export's
+        // OCI ref-name annotation, or a docker-save's RepoTags); fall back to a
+        // synthetic `imported:<ts>` only for a genuinely-unnamed archive.
+        let reference = dn7_container::image::archive::embedded_reference(&tmp2)
+            .unwrap_or_else(|| format!("imported:{ts}"));
+        dn7_container::image::archive::load(&store, &tmp2, &reference)
             .map_err(|e| anyhow!("dn7 load: {e}"))
     })
     .await

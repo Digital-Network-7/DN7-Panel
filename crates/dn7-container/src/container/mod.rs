@@ -1041,8 +1041,15 @@ fn spawn_init(ctx: InitCtx, stack: &mut [u8], bundle: &Bundle) -> Result<Pid> {
 
     // Build the re-exec argv + envp as C strings BEFORE the clone, so the child
     // allocates nothing. argv: [exe, "__dn7init", bundle_dir, sync_fd, gate, log_fd].
-    let exe = std::fs::read_link("/proc/self/exe")
-        .map_err(|e| Error::Other(format!("read /proc/self/exe: {e}")))?;
+    //
+    // Re-exec via the `/proc/self/exe` MAGIC SYMLINK, not its `read_link` target:
+    // the kernel resolves it to the running image's inode even after the on-disk
+    // binary is replaced (a self-update renames a new binary over it) or deleted —
+    // whereas `read_link` then yields "<path> (deleted)" and `execve` of that
+    // literal string fails ENOENT, killing the init before the network is wired
+    // and surfacing as a cryptic "move to netns failed: errno 3 (ESRCH)". So every
+    // container create/start would break after any self-update until a restart.
+    const SELF_EXE: &[u8] = b"/proc/self/exe";
     let (gate_arg, fifo_fd) = match ctx.gate {
         Gate::Immediate => ("immediate".to_string(), -1),
         Gate::Fifo(fd) => (fd.to_string(), fd),
@@ -1052,7 +1059,7 @@ fn spawn_init(ctx: InitCtx, stack: &mut [u8], bundle: &Bundle) -> Result<Pid> {
 
     let cstr = |b: Vec<u8>| CString::new(b).map_err(|_| Error::Other("argv has NUL".into()));
     let argv_owned: Vec<CString> = [
-        exe.as_os_str().as_encoded_bytes().to_vec(),
+        SELF_EXE.to_vec(),
         reexec::INIT_ARG.as_bytes().to_vec(),
         bundle.dir.as_os_str().as_encoded_bytes().to_vec(),
         sync_rfd.to_string().into_bytes(),

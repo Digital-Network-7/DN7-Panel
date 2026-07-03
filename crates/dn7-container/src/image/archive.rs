@@ -86,6 +86,45 @@ const MAX_BLOB_BYTES: u64 = 32 * 1024 * 1024 * 1024; // ≤ 32 GiB per blob (lay
 const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024 * 1024; // ≤ 64 GiB across all blobs
 const MAX_META_BYTES: u64 = 8 * 1024 * 1024; // ≤ 8 MiB for index.json (buffered)
 
+/// Peek an image archive's own embedded reference (`repo:tag`) WITHOUT loading
+/// it, so a local import can restore the image's real name instead of a synthetic
+/// `imported:<ts>`. Reads the OCI index's
+/// `org.opencontainers.image.ref.name` annotation (what dn7's own `save` writes)
+/// or a docker-`save` `manifest.json`'s first `RepoTags` entry. `None` when the
+/// archive carries no usable name (a bare untagged export) or can't be read.
+pub fn embedded_reference(input: &Path) -> Option<String> {
+    let file = File::open(input).ok()?;
+    let mut ar = tar::Archive::new(file);
+    for entry in ar.entries().ok()? {
+        let e = entry.ok()?;
+        let path = e.path().ok()?.to_string_lossy().into_owned();
+        let cand = if path == "index.json" {
+            let mut data = Vec::new();
+            e.take(MAX_META_BYTES + 1).read_to_end(&mut data).ok()?;
+            serde_json::from_slice::<Value>(&data).ok().and_then(|v| {
+                v["manifests"][0]["annotations"]["org.opencontainers.image.ref.name"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+        } else if path == "manifest.json" {
+            let mut data = Vec::new();
+            e.take(MAX_META_BYTES + 1).read_to_end(&mut data).ok()?;
+            serde_json::from_slice::<Value>(&data)
+                .ok()
+                .and_then(|v| v[0]["RepoTags"][0].as_str().map(str::to_owned))
+        } else {
+            None
+        };
+        // Accept the first well-formed, parseable reference we find.
+        if let Some(name) = cand {
+            if !name.is_empty() && Reference::parse(&name).is_ok() {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
 /// Import an OCI image-layout tar into the store, tagging it `reference`.
 ///
 /// Blobs are streamed entry-by-entry through the CAS store's hashing writer, so
