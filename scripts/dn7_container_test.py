@@ -65,11 +65,23 @@ def cid(n): return (crow(n) or {}).get("id", "")
 def ip_only(n):
     v = (crow(n) or {}).get("ip") or ""
     return v.split()[0] if v else ""
+def cgroup_dir(n):
+    # Docker-model ids are random hex (≠ name), so the cgroup dir is /dn7/<full-id>,
+    # not /dn7/<name>. Resolve it from the container's short id shown in the row.
+    row = crow(n)
+    sid = (row or {}).get("id", "")
+    base = "/sys/fs/cgroup/dn7/"
+    try:
+        for d in os.listdir(base):
+            if sid and d.startswith(sid) and os.path.isdir(base + d):
+                return base + d + "/"
+    except Exception: pass
+    return ""
 def pid_of(n):
-    try: return open(f"/sys/fs/cgroup/dn7/{n}/cgroup.procs").read().split()[0]
+    try: return open(cgroup_dir(n) + "cgroup.procs").read().split()[0]
     except: return ""
 def cgf(n, f):
-    try: return open(f"/sys/fs/cgroup/dn7/{n}/{f}").read().strip()
+    try: return open(cgroup_dir(n) + f).read().strip()
     except: return "ERR"
 def rm(n): dop({"op": "stop_container", "ref": n}, 40); dop({"op": "remove_container", "ref": n}, 40)
 def ifaces(name):
@@ -278,7 +290,7 @@ def section_adv():
     rec("A07", "stop a never-started container → no crash", (lambda d: d.get("ok") or clean_err(d))(dop({"op": "stop_container", "ref": "a5"})), "ok")
     rec("A08", "pause a non-running container → clean error", (lambda d: clean_err(d) or d.get("ok") is False)(dop({"op": "pause_container", "ref": "a5"})), "ok"); rm("a5")
     rec("A09", "all ops on nonexistent container → no 500", all(code({"op": o, "ref": "ghost404", "tail": 10}) < 500 for o in ["start_container", "stop_container", "remove_container", "logs", "container_stats", "inspect_container"]), "checked")
-    mk("a6"); pid = subprocess.run(["bash", "-c", "cat /sys/fs/cgroup/dn7/a6/cgroup.procs 2>/dev/null|head -1"], capture_output=True, text=True).stdout.strip()
+    mk("a6"); pid = pid_of("a6")
     subprocess.run(["kill", "-9", pid]); time.sleep(1); c = crow("a6")
     rec("A10", "hard-killed init → not shown running", c and c.get("state") in ("exited", "stopped"), f"state={c and c.get('state')}"); rm("a6")
     dop({"op": "create_network", "name": "advnet", "subnet": "172.27.0.0/24", "gateway": "172.27.0.1"})
@@ -308,8 +320,8 @@ def section_robust():
         d = dop(p); op = (d.get("data") or {}).get("op_id")
         return opwait(op) if op else ("refused", json.dumps(d))
     def memmax(n):
-        try: return open(f"/sys/fs/cgroup/dn7/{n}/memory.max").read().strip()
-        except: return "?"
+        v = cgf(n, "memory.max")
+        return v if v != "ERR" else "?"
 
     for n in ["b1", "b2", "c1", "c2", "c3", "c4", "c5", "m1"]: rm(n)
     dop({"op": "remove_network", "ref": "cyc"})
@@ -357,8 +369,10 @@ def section_robust():
         okc.append(st[0] == "done" and up and gone)
     rec("R08", "rapid create/delete/recreate x3", all(okc), f"cycles={okc}")
 
-    cg = subprocess.run(["bash", "-c", "ls /sys/fs/cgroup/dn7/ 2>/dev/null|grep -vE 'cpu|mem|io|pids|cgroup|^$'|tr '\\n' ' '"], capture_output=True, text=True).stdout.strip()
-    rec("LEAK", "no leftover container cgroups", all(x not in cg.split() for x in ["b1", "b2", "c1", "c2", "c3", "c4", "c5", "m1"]), f"dirs=[{cg}]")
+    # Container cgroup dirs are now hex ids (one subdir per live container); after
+    # this section's cleanup none should remain (no orphaned container cgroups).
+    cgn = subprocess.run(["bash", "-c", "ls -d /sys/fs/cgroup/dn7/*/ 2>/dev/null | wc -l"], capture_output=True, text=True).stdout.strip()
+    rec("LEAK", "no leftover container cgroups", cgn == "0", f"leftover_hex_dirs={cgn}")
     for n in ["b1", "b2", "c1", "c2", "c3", "c4", "c5", "m1"]: rm(n)
 
 
@@ -455,7 +469,91 @@ def section_ui():
     for nm in ["uinet", "uiovl"]: dop({"op": "remove_network", "ref": nm})
 
 
-SECTIONS = {"core": section_core, "net": section_net, "adv": section_adv, "robust": section_robust, "ui": section_ui}
+# ============================================================================
+# Docker-parity checks: the container model should match Docker Engine's, not
+# invent non-standard behavior — random immutable id ≠ name, mutable name,
+# unique names, resolve by name/id-prefix, cgroup limits visible inside, bounded
+# swap, host bind auto-create, and image re-import identical/replace semantics.
+def section_parity():
+    S = "parity"
+    def rec(i, name, ok, ev): add(S, i, name, ok, ev)
+    def mk(n, extra=None, start=True):
+        p = {"op": "create_container", "image": IMG, "name": n, "command": "/bin/sleep 300", "start": start}
+        if extra: p.update(extra)
+        d = dop(p); op = (d.get("data") or {}).get("op_id")
+        return (opwait(op) if op else ("refused", d)), d
+    def inspect(ref):
+        return dop({"op": "inspect_container", "ref": ref}).get("data") or {}
+    import re as _re
+    for n in ["pweb", "pWeb", "pweb2", "pbind"]: rm(n)
+
+    # P1 — id is a random 64-hex short-form (12 shown), decoupled from the name
+    mk("pweb")
+    c = crow("pweb"); cid_ = (c or {}).get("id", "")
+    rec("P1", "id is hex + distinct from name", bool(_re.fullmatch(r"[0-9a-f]{12}", cid_)) and cid_ != "pweb", f"id={cid_} name={c and c.get('name')}")
+
+    # P2 — Docker allows uppercase names (was rejected when id==name)
+    (st2, _), d2 = mk("pWeb")
+    rec("P2", "uppercase name accepted", st2 == "done" and crow("pWeb") is not None, f"{st2} {d2.get('code','')}")
+
+    # P3 — rename changes the NAME only; the id is immutable
+    before = (crow("pweb") or {}).get("id")
+    dop({"op": "rename_container", "ref": "pweb", "new_name": "pweb2"}); time.sleep(0.5)
+    after = (crow("pweb2") or {}).get("id")
+    rec("P3", "rename keeps the id (mutates name only)", before and before == after and crow("pweb") is None, f"id {before}=={after}, old-name gone")
+
+    # P4 — duplicate name rejected (Docker 409 Conflict), coded
+    (st4, _), d4 = mk("pweb2")  # pweb2 already exists
+    rec("P4", "duplicate name → docker.name_conflict", (st4 == "error") or d4.get("code") == "docker.name_conflict", f"{st4} code={d4.get('code')}")
+
+    # P5 — reference a container by NAME and by id-prefix
+    byname = inspect("pweb2"); byprefix = inspect((after or "xxxxxx")[:6])
+    rec("P5", "resolve by name + id-prefix", byname.get("name") == "pweb2" and byprefix.get("name") == "pweb2", f"name={byname.get('name')} prefix={byprefix.get('name')}")
+
+    # the container row shows the SHORT 12-hex id; the host cgroup dir is the full
+    # 64-hex id — resolve it by prefix.
+    def cgdir(short):
+        base = "/sys/fs/cgroup/dn7/"
+        try:
+            for d in os.listdir(base):
+                if short and d.startswith(short) and os.path.isdir(base + d):
+                    return base + d + "/"
+        except Exception: pass
+        return ""
+
+    # P6 — cgroup limits are VISIBLE inside the container (/sys/fs/cgroup mounted)
+    rm("plim"); mk("plim", {"memory": "64m", "cpus": "0.5"})
+    d_ = cgdir((crow("plim") or {}).get("id", ""))
+    p = ""
+    try: p = open(d_ + "cgroup.procs").read().split()[0]
+    except Exception: pass
+    inside = subprocess.run(["nsenter", "-t", p, "-m", "-p", "-n", "/bin/sh", "-c", "cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/cpu.max 2>/dev/null"], capture_output=True, text=True).stdout if p else ""
+    rec("P6", "cgroup limits visible inside container", "67108864" in inside and "50000 100000" in inside, f"inside={inside.split(chr(10))[:2]}")
+
+    # P7 — --memory bounds swap (Docker memory-swap=2X ⇒ swap.max = limit)
+    try: swx = open(d_ + "memory.swap.max").read().strip()
+    except Exception: swx = "ERR"
+    rec("P7", "memory-capped container has bounded swap", swx == "67108864", f"memory.swap.max={swx}"); rm("plim")
+
+    # P8 — a missing host bind source is auto-created (Docker parity)
+    subprocess.run(["rm", "-rf", "/tmp/dn7-autobind"])
+    (st8, _), _ = mk("pbind", {"volumes": [{"host": "/tmp/dn7-autobind", "container": "/data", "readonly": False}]})
+    made = subprocess.run(["bash", "-c", "test -d /tmp/dn7-autobind && echo yes"], capture_output=True, text=True).stdout.strip()
+    rec("P8", "missing host bind source auto-created", st8 == "done" and made == "yes", f"{st8} dir={made}"); rm("pbind")
+
+    # P9 — re-importing an identical image is reported as identical (not a blind 'imported')
+    code_, raw = http(f"/api/docker/download?ticket={tkt('download')}&kind=image&ref={urllib.parse.quote(IMG)}", raw=True, tok=TOK, t=120)
+    if code_ == 200:
+        _, up = http("/api/docker/image-upload", raw, TOK, ctype="application/octet-stream", t=120)
+        st9 = ((up or {}).get("data") or {}).get("status") if isinstance(up, dict) else None
+        rec("P9", "re-import identical image → 'identical'", st9 == "identical", f"status={st9}")
+    else:
+        rec("P9", "re-import identical image → 'identical'", "SKIP", f"export http={code_}")
+
+    for n in ["pweb", "pWeb", "pweb2", "plim", "pbind"]: rm(n)
+
+
+SECTIONS = {"core": section_core, "net": section_net, "adv": section_adv, "robust": section_robust, "ui": section_ui, "parity": section_parity}
 want = [a for a in sys.argv[1:] if a in SECTIONS] or list(SECTIONS)
 for name in want:
     print(f"\n########## SECTION: {name} ##########", flush=True)
