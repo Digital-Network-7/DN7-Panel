@@ -105,7 +105,7 @@ pub fn resolve(spec: &str) -> Result<VolumeMount> {
         )));
     }
     let source = if src.contains('/') {
-        PathBuf::from(src) // host bind mount
+        PathBuf::from(src) // host bind mount (auto-created at create time if absent)
     } else {
         let ok = !src.is_empty()
             && src

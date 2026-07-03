@@ -295,6 +295,11 @@ const I18N = {
     'err.docker.bad_ref': 'Invalid reference.',
     'err.docker.bad_container_state': 'The container\'s current state doesn\'t allow this action.',
     'err.docker.op_failed': 'The operation failed.',
+    'err.docker.name_conflict': 'A container with that name already exists.',
+    'err.docker.ambiguous_ref': 'The reference matches several containers; use a longer id.',
+    'err.docker.edit_image_missing': 'That image isn\'t present locally; the original container was kept — pull it first, then edit/upgrade.',
+    'dk.img_import_identical': 'Identical image “{name}” already exists — nothing changed.',
+    'dk.img_import_replaced': 'Replaced image “{name}” ({prev} → {size}).',
   },
   'zh-CN': {
     'common.cancel': '取消', 'common.ok': '确定', 'common.confirm': '请确认', 'common.unauthorized': '未授权',
@@ -581,6 +586,11 @@ const I18N = {
     'err.docker.bad_ref': '引用格式无效。',
     'err.docker.bad_container_state': '容器当前状态不允许该操作。',
     'err.docker.op_failed': '操作失败。',
+    'err.docker.name_conflict': '已存在同名容器。',
+    'err.docker.ambiguous_ref': '该引用匹配多个容器，请使用更长的 ID。',
+    'err.docker.edit_image_missing': '该镜像本地不存在，已保留原容器；请先拉取该镜像后再编辑/升级。',
+    'dk.img_import_identical': '镜像「{name}」已存在且完全相同，未做更改。',
+    'dk.img_import_replaced': '已替换同名镜像「{name}」（{prev} → {size}）。',
   },
   'zh-TW': {
     'common.cancel': '取消', 'common.ok': '確定', 'common.confirm': '請確認', 'common.unauthorized': '未授權',
@@ -867,6 +877,11 @@ const I18N = {
     'err.docker.bad_ref': '參照格式無效。',
     'err.docker.bad_container_state': '容器目前狀態不允許此操作。',
     'err.docker.op_failed': '操作失敗。',
+    'err.docker.name_conflict': '已存在同名容器。',
+    'err.docker.ambiguous_ref': '該參照符合多個容器，請使用更長的 ID。',
+    'err.docker.edit_image_missing': '該映像本機不存在，已保留原容器；請先拉取該映像後再編輯/升級。',
+    'dk.img_import_identical': '映像「{name}」已存在且完全相同，未做變更。',
+    'dk.img_import_replaced': '已替換同名映像「{name}」（{prev} → {size}）。',
   },
   ja: {
     'common.cancel': 'キャンセル', 'common.ok': 'OK', 'common.confirm': '確認してください', 'common.unauthorized': '認証されていません',
@@ -1153,6 +1168,11 @@ const I18N = {
     'err.docker.bad_ref': '参照が無効です。',
     'err.docker.bad_container_state': 'コンテナの現在の状態ではこの操作を実行できません。',
     'err.docker.op_failed': '操作に失敗しました。',
+    'err.docker.name_conflict': '同名のコンテナが既に存在します。',
+    'err.docker.ambiguous_ref': '参照が複数のコンテナに一致します。より長い ID を使用してください。',
+    'err.docker.edit_image_missing': 'そのイメージはローカルに存在しません。元のコンテナは保持されました。先にプルしてから編集/アップグレードしてください。',
+    'dk.img_import_identical': '同一のイメージ「{name}」が既に存在します（変更なし）。',
+    'dk.img_import_replaced': '同名イメージ「{name}」を置き換えました（{prev} → {size}）。',
   },
 };
 

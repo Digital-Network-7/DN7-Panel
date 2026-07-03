@@ -415,15 +415,12 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
         Some(other) => (other.to_string(), Some(other.to_string())),
     };
 
-    // Container id = the (validated) name, or a generated one when anonymous.
-    // dn7 ids are stricter than panel names (lowercase, ≤64, derive veth/netns
-    // names) — reject a name that can't be one.
+    // Docker model: the id is a random, immutable 64-hex — NEVER the name. The
+    // (validated, possibly mixed-case) name is a separate mutable label kept in
+    // meta.name. Decoupling them is what lets rename touch only the name, lets
+    // ids stay stable, and lets names use Docker's charset (incl. uppercase).
     let name = cspec.name.clone();
-    let id = match &name {
-        Some(n) if is_valid_dn7_id(n) => n.clone(),
-        Some(_) => return Err(anyhow!("ERR_CODE:dn7.create_name_invalid")),
-        None => gen_container_id(),
-    };
+    let id = gen_container_id();
 
     let target = if display_name.is_empty() {
         cspec.image.clone()
@@ -459,7 +456,15 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
         } else {
             format!("{host}:{container}")
         };
-        volumes.push(dn7_container::image::volume::resolve(&s).map_err(dn7_err)?);
+        let vm = dn7_container::image::volume::resolve(&s).map_err(dn7_err)?;
+        // Docker auto-creates a missing host bind source (as a directory) so
+        // `-v ./data:/data` just works instead of failing ENOENT at mount time.
+        // (Named volumes are already materialized by resolve; the deny-list has
+        // vetted this host path.) Runs in the root serving loop, so the mkdir works.
+        if !vm.source.exists() {
+            let _ = std::fs::create_dir_all(&vm.source);
+        }
+        volumes.push(vm);
     }
 
     let env_extra: Vec<String> = req
@@ -480,7 +485,8 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
         .map(|d| d.trim().to_string())
         .filter(|d| !d.is_empty())
         .collect();
-    let hostname = trimmed(&req.hostname);
+    // Docker defaults an unset hostname to the container's short (12-hex) id.
+    let hostname = trimmed(&req.hostname).or_else(|| Some(id.chars().take(12).collect()));
 
     let mem_limit = trimmed(&req.memory).map(|m| mem_to_bytes(&m) as i64);
     let cpus_val = trimmed(&req.cpus).and_then(|c| c.parse::<f64>().ok());
@@ -651,17 +657,32 @@ async fn op_create_container(req: &Req, is_super: bool) -> Result<Value> {
     tokio::spawn(async move {
         op_push(&op_id_t, &pmsg("dk.creating_container", &[]));
         let created = tokio::task::spawn_blocking(move || -> Result<String> {
+            // Serialize concurrent same-name creates + enforce unique names
+            // (Docker returns 409 Conflict). The name-scoped lock is held across
+            // the whole delete→check→create so a replace can reuse its own name.
+            let _name_guard = match meta.name.as_deref() {
+                Some(nm) => Some(DnState::lock(&format!("namelock-{nm}")).map_err(dn7_err)?),
+                None => None,
+            };
             // Edit/upgrade: confirm the new image is present locally BEFORE
             // removing the old container (else a bad tag leaves nothing).
             if let Some(old) = &replace {
                 let store = dn7_container::image::Store::open().map_err(dn7_err)?;
                 let r = dn7_container::image::Reference::parse(&image).map_err(dn7_err)?;
-                dn7_container::image::ImageRecord::load(&store, &r.store_key()).map_err(|_| {
-                    anyhow!(
-                        "镜像「{image}」在本地不存在，已保留原容器；请先拉取该镜像后再编辑/升级。"
-                    )
-                })?;
-                let _ = dn7_container::container::delete(old, true); // best-effort
+                dn7_container::image::ImageRecord::load(&store, &r.store_key())
+                    .map_err(|_| anyhow!("ERR_CODE:docker.edit_image_missing"))?;
+                // `old` is a user ref (usually the name); ids are now random hex,
+                // so resolve it to the real id before deleting — otherwise the old
+                // container leaks and its name blocks the replacement.
+                if let Ok(old_id) = resolve_dn7_id(old) {
+                    let _ = dn7_container::container::delete(&old_id, true); // best-effort
+                }
+            }
+            // Reject a duplicate name now that any replaced container is gone.
+            if let Some(nm) = meta.name.as_deref() {
+                if dn7_name_in_use(nm) {
+                    return Err(anyhow!("ERR_CODE:docker.name_conflict"));
+                }
             }
             let id = dn7_container::container::create_from_image(&spec, meta)
                 .map_err(|e| anyhow!("dn7 create: {e}"))?;
@@ -712,27 +733,30 @@ fn trimmed(o: &Option<String>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Whether `s` is a valid dn7 container id: lowercase `[a-z0-9][a-z0-9_.-]{0,63}`
-/// (stricter than panel names — ids derive veth/netns/cgroup names).
+/// A fresh, random, immutable container id (see the callers for the Docker model).
 #[cfg(target_os = "linux")]
-fn is_valid_dn7_id(s: &str) -> bool {
-    if s.is_empty() || s.len() > 64 {
-        return false;
-    }
-    let first = s.chars().next().unwrap();
-    (first.is_ascii_lowercase() || first.is_ascii_digit())
-        && s.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '.' | '-'))
-}
-
-/// A unique lowercase id for an anonymous container (no name given).
-#[cfg(target_os = "linux")]
+/// A fresh container id: Docker-style 256-bit random, lowercase hex (64 chars),
+/// independent of the name. The short form (first 12) is what the UI shows and
+/// what `docker`-parity clients expect. Immutable for the container's lifetime —
+/// rename changes only the display name, never this.
 fn gen_container_id() -> String {
+    use std::io::Read;
+    let mut buf = [0u8; 32];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        if f.read_exact(&mut buf).is_ok() {
+            return buf.iter().map(|b| format!("{b:02x}")).collect();
+        }
+    }
+    // Fallback (no /dev/urandom): 128 bits of nanos ⊕ pid, still collision-safe.
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("dn7c{nanos:x}")
+    let pid = std::process::id() as u128;
+    format!(
+        "{nanos:032x}{:032x}",
+        pid.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    )
 }
 
 /// The panel "recreate body" (`container_create_body` shape) built from the
@@ -967,8 +991,14 @@ async fn op_rename_container(req: &Req) -> Result<Value> {
         .to_string();
     validate_name(&name)?;
     run_blocking(move || {
+        let _guard = DnState::lock(&format!("namelock-{name}")).map_err(dn7_err)?;
         let id = resolve_dn7_id(&r)?;
         let mut s = DnState::load(&id).map_err(dn7_err)?;
+        // Renaming to the same name is a no-op; otherwise the target must be free
+        // (Docker rejects a rename onto an existing name).
+        if s.meta.name.as_deref() != Some(name.as_str()) && dn7_name_in_use(&name) {
+            return Err(anyhow!("ERR_CODE:docker.name_conflict"));
+        }
         s.meta.name = Some(name.clone());
         s.save().map_err(dn7_err)?;
         crate::infra::website::resync_after_container_change();
@@ -1092,6 +1122,8 @@ fn dn7_err_code(msg: &str) -> &'static str {
         "docker.subnet_no_host"
     } else if has("no free private subnet") {
         "docker.subnet_pool_exhausted"
+    } else if has("container") && has("already exists") {
+        "docker.name_conflict"
     } else if has("already exists") {
         "docker.net_exists"
     } else if has("no such network") {
@@ -1445,16 +1477,31 @@ fn gunzip_file(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
 /// Resolve a panel-supplied ref (full id/name, or a 12-char short id) to the full
 /// dn7 container id — mirrors Docker's id-prefix resolution.
 #[cfg(target_os = "linux")]
+/// Resolve a user-supplied container ref to its immutable id, Docker-style:
+/// exact id → exact name → unambiguous id-prefix. An ambiguous prefix errors
+/// instead of silently picking one.
 fn resolve_dn7_id(r: &str) -> Result<String> {
     if DnState::exists(r) {
-        return Ok(r.to_string());
+        return Ok(r.to_string()); // exact id — the state dir is keyed by id
     }
     let states = dn7_container::container::list().map_err(dn7_err)?;
-    states
-        .into_iter()
-        .find(|s| s.id.starts_with(r))
-        .map(|s| s.id)
-        .ok_or_else(|| anyhow!("ERR_CODE:docker.no_such_container"))
+    if let Some(s) = states.iter().find(|s| s.meta.name.as_deref() == Some(r)) {
+        return Ok(s.id.clone()); // exact name (names are unique)
+    }
+    let mut prefix = states.iter().filter(|s| s.id.starts_with(r));
+    match (prefix.next(), prefix.next()) {
+        (Some(s), None) => Ok(s.id.clone()),
+        (Some(_), Some(_)) => Err(anyhow!("ERR_CODE:docker.ambiguous_ref")),
+        _ => Err(anyhow!("ERR_CODE:docker.no_such_container")),
+    }
+}
+
+/// Whether a container already carries display name `name` (Docker names are
+/// unique). Best-effort: a list failure reports "not in use".
+fn dn7_name_in_use(name: &str) -> bool {
+    dn7_container::container::list()
+        .map(|v| v.iter().any(|s| s.meta.name.as_deref() == Some(name)))
+        .unwrap_or(false)
 }
 
 /// Keep the panel's id form (it passes a short id) when it's a prefix of the
@@ -1626,7 +1673,9 @@ mod tests {
             "restart": "always"
         }));
         let plan = build_dn7_create(&req).unwrap();
-        assert_eq!(plan.spec.id, "web");
+        assert_eq!(plan.spec.id.len(), 64); // random hex id, decoupled from the name
+        assert_ne!(plan.spec.id, "web");
+        assert_eq!(plan.meta.name.as_deref(), Some("web"));
         assert_eq!(plan.spec.reference, "alpine");
         assert_eq!(plan.spec.ports, "8080:80/tcp");
         assert_eq!(plan.spec.env_extra, vec!["FOO=bar".to_string()]);
@@ -1674,21 +1723,25 @@ mod tests {
     }
 
     #[test]
-    fn build_dn7_create_rejects_uppercase_name() {
+    fn build_dn7_create_accepts_uppercase_name_with_a_hex_id() {
+        // Docker allows [a-zA-Z0-9][a-zA-Z0-9_.-]; the id is random hex, not the name.
         let req = req_from(json!({"op": "create_container", "image": "alpine", "name": "WebApp"}));
-        assert!(build_dn7_create(&req).is_err());
+        let plan = build_dn7_create(&req).expect("uppercase names are allowed");
+        assert_eq!(plan.meta.name.as_deref(), Some("WebApp"));
+        assert_eq!(plan.spec.id.len(), 64);
+        assert_ne!(plan.spec.id, "WebApp");
+        assert!(plan.spec.id.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
-    fn dn7_id_validation() {
-        assert!(is_valid_dn7_id("web"));
-        assert!(is_valid_dn7_id("my-app_1.2"));
-        assert!(!is_valid_dn7_id("WebApp"));
-        assert!(!is_valid_dn7_id("-leading"));
-        assert!(!is_valid_dn7_id(""));
-        assert!(gen_container_id()
+    fn gen_container_id_is_random_lowercase_64_hex() {
+        let a = gen_container_id();
+        let b = gen_container_id();
+        assert_eq!(a.len(), 64);
+        assert!(a
             .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '.' | '-')));
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)));
+        assert_ne!(a, b, "ids must be random");
     }
 
     #[test]

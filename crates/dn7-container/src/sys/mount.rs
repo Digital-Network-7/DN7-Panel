@@ -63,6 +63,23 @@ pub fn setup_rootfs(rootfs: &Path, spec: &Spec) -> Result<()> {
         MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC | MsFlags::MS_RDONLY,
         None,
     )?;
+    // /sys/fs/cgroup — the container's OWN cgroup, read-only (Docker's
+    // cgroupns=private). We're already placed in our target cgroup, so entering a
+    // cgroup namespace now roots the view at that subtree; a fresh cgroup2 mount
+    // then shows `memory.max`/`cpu.max`/… = this container's limits (so `cat
+    // /sys/fs/cgroup/memory.max` and cgroup-aware tools reflect the cap) without
+    // leaking the host's tree. Best-effort: skip the mount if the namespace can't
+    // be created rather than exposing the whole host hierarchy.
+    if nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWCGROUP).is_ok() {
+        let _ = mount_at(
+            rootfs,
+            "sys/fs/cgroup",
+            Some("cgroup2"),
+            Some("cgroup2"),
+            MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC | MsFlags::MS_RDONLY,
+            None,
+        );
+    }
     // /dev — a small tmpfs we then populate.
     mount_at(
         rootfs,

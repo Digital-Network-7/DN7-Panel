@@ -555,7 +555,9 @@ fn rerun_locked(id: &str) -> Result<()> {
     let bundle = s.bundle.clone();
     let mut meta = s.meta.clone();
     meta.paused = false;
-    meta.restart_count = meta.restart_count.saturating_add(1);
+    // Docker does NOT bump RestartCount on a manual restart/start — it's a
+    // crash-loop diagnostic reserved for the restart-policy supervisor's
+    // automatic restarts. Keep manual rerun count-neutral.
     State::remove_dir(id)?;
     // `create_with_meta` does not take the lock (it's a create-path leaf), so it's
     // safe to call while we hold it; `start_locked` likewise skips the lock.

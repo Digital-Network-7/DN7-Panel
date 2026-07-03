@@ -143,8 +143,14 @@ function dkImportForm(info) {
         Busy.dec();
         const req = xhr; xhr = null;
         let b = {}; try { b = JSON.parse(req.responseText || '{}'); } catch (e) { b = {}; }
-        if (req.status < 200 || req.status >= 300 || (b && b.ok === false)) return fail(srvMsg(b) || ('HTTP ' + req.status));
-        toast(tr('dk.img_imported'), 'ok'); close();
+        if (req.status < 200 || req.status >= 300 || (b && b.ok === false)) return fail(srvMsg(b) || tr('common.request_failed', { status: req.status }));
+        const d = (b && b.data) || {};
+        // Docker `load` semantics: an identical image is a no-op; a same-tag but
+        // different image takes over the tag — tell the user which happened.
+        if (d.status === 'identical') toast(tr('dk.img_import_identical', { name: d.reference || '' }), 'ok');
+        else if (d.status === 'replaced') toast(tr('dk.img_import_replaced', { name: d.reference || '', prev: fmtBytes(d.prev_size || 0), size: fmtBytes(d.size || 0) }), 'ok');
+        else toast(tr('dk.img_imported'), 'ok');
+        close();
         // The import can finish after the user has left the Docker tab — only
         // refresh the list if it's still mounted (else dkImages throws on a null
         // dkBody and trips the global crash banner despite a successful import).

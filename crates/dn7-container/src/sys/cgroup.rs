@@ -148,11 +148,18 @@ impl Cgroup {
         if let Some(mem) = &r.memory {
             if let Some(limit) = mem.limit {
                 self.write("memory.max", &bytes_or_max(limit))?;
-            }
-            // OCI `swap` is mem+swap; v2 `memory.swap.max` is swap-only.
-            if let (Some(swap), Some(limit)) = (mem.swap, mem.limit) {
-                if swap > limit {
-                    self.write("memory.swap.max", &(swap - limit).to_string())?;
+                // OCI `swap` is mem+swap; v2 `memory.swap.max` is swap-only. Match
+                // Docker's mapping: `--memory=X` with no `--memory-swap` ⇒
+                // memory-swap=2X ⇒ swap-only budget = the memory limit (so a capped
+                // container can't thrash unlimited host swap); a value == limit ⇒
+                // swap disabled (0); a larger value ⇒ that much swap-only; -1 ⇒ max.
+                match mem.swap {
+                    Some(swap) if swap < 0 => self.write("memory.swap.max", "max")?,
+                    Some(swap) if swap > limit => {
+                        self.write("memory.swap.max", &(swap - limit).to_string())?
+                    }
+                    Some(_) => self.write("memory.swap.max", "0")?,
+                    None => self.write("memory.swap.max", &limit.to_string())?,
                 }
             }
         }

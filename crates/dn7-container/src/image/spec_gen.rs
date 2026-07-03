@@ -197,7 +197,7 @@ pub fn write_config(bundle_dir: &Path, cfg: &ImageConfig, opts: &CreateOpts) -> 
     } else {
         cfg.config.working_dir.clone()
     };
-    let (uid, gid) = parse_user(&cfg.config.user);
+    let (uid, gid) = parse_user(&cfg.config.user, &bundle_dir.join("rootfs"));
 
     // Host mode shares the host's network namespace → omit it; every other mode
     // gets a private netns the network layer wires up (or leaves isolated).
@@ -313,10 +313,12 @@ fn command(cfg: &ImageConfig, cmd_override: &[String]) -> Vec<String> {
     args
 }
 
-/// Parse an image `User` field. Numeric `uid[:gid]` is honoured; a *name* (e.g.
-/// `nginx`) needs `/etc/passwd` resolution inside the rootfs — deferred — so it
-/// falls back to root for now.
-fn parse_user(user: &str) -> (u32, u32) {
+/// Parse an image `User` field (`uid[:gid]` or `name[:group]`), Docker-style: a
+/// numeric id is honoured as-is; a *name* is resolved against the image's own
+/// `/etc/passwd` (and `/etc/group` for a named group), and a bare user name also
+/// adopts that user's primary gid. Only a genuinely-absent name falls back to
+/// root — so `USER nginx` no longer silently runs the container as uid 0.
+fn parse_user(user: &str, rootfs: &Path) -> (u32, u32) {
     if user.is_empty() {
         return (0, 0);
     }
@@ -324,9 +326,48 @@ fn parse_user(user: &str) -> (u32, u32) {
         Some((u, g)) => (u, Some(g)),
         None => (user, None),
     };
-    let uid = u.parse::<u32>().unwrap_or(0);
-    let gid = g.and_then(|g| g.parse::<u32>().ok()).unwrap_or(0);
+    let (uid, primary_gid) = match u.parse::<u32>() {
+        Ok(n) => (n, None),
+        Err(_) => match passwd_lookup(rootfs, u) {
+            Some((uid, gid)) => (uid, Some(gid)),
+            None => (0, None),
+        },
+    };
+    let gid = match g {
+        Some(g) => g
+            .parse::<u32>()
+            .ok()
+            .or_else(|| group_lookup(rootfs, g))
+            .unwrap_or(0),
+        None => primary_gid.unwrap_or(0),
+    };
     (uid, gid)
+}
+
+/// `(uid, primary_gid)` for `name` from `<rootfs>/etc/passwd`, if present.
+fn passwd_lookup(rootfs: &Path, name: &str) -> Option<(u32, u32)> {
+    let txt = std::fs::read_to_string(rootfs.join("etc/passwd")).ok()?;
+    for line in txt.lines() {
+        let f: Vec<&str> = line.split(':').collect();
+        if f.len() >= 4 && f[0] == name {
+            let uid = f[2].parse().ok()?;
+            let gid = f[3].parse().unwrap_or(uid);
+            return Some((uid, gid));
+        }
+    }
+    None
+}
+
+/// gid for group `name` from `<rootfs>/etc/group`, if present.
+fn group_lookup(rootfs: &Path, name: &str) -> Option<u32> {
+    let txt = std::fs::read_to_string(rootfs.join("etc/group")).ok()?;
+    for line in txt.lines() {
+        let f: Vec<&str> = line.split(':').collect();
+        if f.len() >= 3 && f[0] == name {
+            return f[2].parse().ok();
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -348,11 +389,25 @@ mod tests {
     }
 
     #[test]
-    fn parse_user_numeric_only() {
-        assert_eq!(parse_user(""), (0, 0));
-        assert_eq!(parse_user("1000"), (1000, 0));
-        assert_eq!(parse_user("1000:1001"), (1000, 1001));
-        assert_eq!(parse_user("nginx"), (0, 0)); // name → root (deferred)
+    fn parse_user_numeric_and_named() {
+        let none = std::path::Path::new("/nonexistent-rootfs");
+        assert_eq!(parse_user("", none), (0, 0));
+        assert_eq!(parse_user("1000", none), (1000, 0));
+        assert_eq!(parse_user("1000:1001", none), (1000, 1001));
+        assert_eq!(parse_user("nginx", none), (0, 0)); // no passwd available → root
+                                                       // A named user resolves against the image's /etc/passwd + /etc/group.
+        let dir = std::env::temp_dir().join(format!("dn7-passwd-test-{}", std::process::id()));
+        let rootfs = dir.join("rootfs");
+        std::fs::create_dir_all(rootfs.join("etc")).unwrap();
+        std::fs::write(
+            rootfs.join("etc/passwd"),
+            "root:x:0:0::/root:/bin/sh\nnginx:x:101:102::/:/sbin/nologin\n",
+        )
+        .unwrap();
+        std::fs::write(rootfs.join("etc/group"), "root:x:0:\nstaff:x:50:\n").unwrap();
+        assert_eq!(parse_user("nginx", &rootfs), (101, 102)); // uid + primary gid
+        assert_eq!(parse_user("nginx:staff", &rootfs), (101, 50)); // named group
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

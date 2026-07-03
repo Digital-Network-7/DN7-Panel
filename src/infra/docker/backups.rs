@@ -673,21 +673,49 @@ where
     }
 
     let tmp2 = tmp.clone();
-    let rec = tokio::task::spawn_blocking(move || {
-        let store = dn7_container::image::Store::open().map_err(|e| anyhow!("dn7 store: {e}"))?;
+    let out = tokio::task::spawn_blocking(move || -> Result<Value> {
+        use dn7_container::image::{archive, list_summaries, ImageRecord, Reference, Store};
+        let store = Store::open().map_err(|e| anyhow!("dn7 store: {e}"))?;
         // Restore the image's real name from the archive itself (a dn7 export's
         // OCI ref-name annotation, or a docker-save's RepoTags); fall back to a
         // synthetic `imported:<ts>` only for a genuinely-unnamed archive.
-        let reference = dn7_container::image::archive::embedded_reference(&tmp2)
-            .unwrap_or_else(|| format!("imported:{ts}"));
-        dn7_container::image::archive::load(&store, &tmp2, &reference)
-            .map_err(|e| anyhow!("dn7 load: {e}"))
+        let reference =
+            archive::embedded_reference(&tmp2).unwrap_or_else(|| format!("imported:{ts}"));
+        let key = Reference::parse(&reference)
+            .map_err(|e| anyhow!("dn7 load: {e}"))?
+            .store_key();
+        // Snapshot any image already under this tag BEFORE load moves the tag, so
+        // we can tell the user "identical" vs "replaced" (Docker `load` semantics:
+        // an identical image is a no-op; a different one takes over the tag).
+        let size_of = |d: &str| -> Option<u64> {
+            list_summaries(&store)
+                .ok()?
+                .into_iter()
+                .find(|s| s.config_digest == d)
+                .map(|s| s.size)
+        };
+        let prev = ImageRecord::load(&store, &key).ok();
+        let prev_size = prev.as_ref().and_then(|p| size_of(&p.config_digest));
+        let rec = archive::load(&store, &tmp2, &reference).map_err(|e| anyhow!("dn7 load: {e}"))?;
+        let status = match &prev {
+            Some(p) if p.config_digest == rec.config_digest => "identical",
+            Some(_) => "replaced",
+            None => "loaded",
+        };
+        Ok(json!({
+            "loaded": [rec.reference.clone()],
+            "reference": rec.reference,
+            "status": status,
+            "digest": rec.config_digest,
+            "size": size_of(&rec.config_digest),
+            "prev_digest": prev.as_ref().map(|p| p.config_digest.clone()),
+            "prev_size": prev_size,
+        }))
     })
     .await
     .map_err(|e| anyhow!("import task: {e}"));
     let _ = std::fs::remove_file(&tmp);
-    let rec = rec??;
-    Ok(json!({ "loaded": [rec.reference] }))
+    out?
 }
 #[cfg(not(target_os = "linux"))]
 async fn dn7_import_image<S>(_body: S) -> Result<Value>
