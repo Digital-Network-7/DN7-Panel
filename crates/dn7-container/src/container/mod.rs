@@ -728,6 +728,37 @@ pub fn start_or_rerun(id: &str) -> Result<()> {
     }
 }
 
+/// Reclaim orphaned container cgroups: `/sys/fs/cgroup/dn7/<id>` directories with
+/// NO live process and NO backing state — a rare create/remove race can leave an
+/// empty one behind. Best-effort self-heal (called at boot alongside the restart
+/// reconcile). Never touches a dir that still has processes or a live state dir.
+/// Returns the count reclaimed.
+pub fn reclaim_orphan_cgroups() -> usize {
+    let base = std::path::Path::new("/sys/fs/cgroup/dn7");
+    let Ok(rd) = std::fs::read_dir(base) else {
+        return 0;
+    };
+    let mut n = 0;
+    for e in rd.flatten() {
+        if !e.path().is_dir() {
+            continue; // skip the dn7-level control files
+        }
+        let Ok(id) = e.file_name().into_string() else {
+            continue;
+        };
+        if State::exists(&id) {
+            continue; // still a real container
+        }
+        let empty = std::fs::read_to_string(e.path().join("cgroup.procs"))
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true);
+        if empty && Cgroup::at(&default_cgroup(&id)).delete().is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Boot reconcile: after a panel/host restart the container inits are gone, so
 /// bring back the ones whose restart policy asks for it — Docker's daemon does
 /// the same at start. `always` restarts anything that had been started (even if

@@ -334,6 +334,8 @@ async fn run_panel(cfg: PanelConfig) -> Result<()> {
     tokio::task::spawn_blocking(|| {
         // Embedded DNS responders for every network (container-name resolution).
         dn7_container::net::dns_server::ensure_all();
+        // Reap any orphaned (empty, stateless) container cgroups left by a race.
+        dn7_container::container::reclaim_orphan_cgroups();
         let n = dn7_container::container::reconcile_restart_policies();
         if n > 0 {
             tracing::info!(

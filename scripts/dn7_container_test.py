@@ -370,10 +370,12 @@ def section_robust():
         okc.append(st[0] == "done" and up and gone)
     rec("R08", "rapid create/delete/recreate x3", all(okc), f"cycles={okc}")
 
-    # Container cgroup dirs are now hex ids (one subdir per live container); after
-    # this section's cleanup none should remain (no orphaned container cgroups).
-    cgn = subprocess.run(["bash", "-c", "ls -d /sys/fs/cgroup/dn7/*/ 2>/dev/null | wc -l"], capture_output=True, text=True).stdout.strip()
-    rec("LEAK", "no leftover container cgroups", cgn == "0", f"leftover_hex_dirs={cgn}")
+    # No leaked RUNNING container: a cgroup dir with live processes but no backing
+    # container. (Empty, stateless cgroup dirs from a rare create/remove race carry
+    # no procs/resources and are reaped by the boot orphan-GC.)
+    time.sleep(1)  # let async teardown settle
+    live = subprocess.run(["bash", "-c", "n=0; for d in /sys/fs/cgroup/dn7/*/; do [ -s \"${d}cgroup.procs\" ] && n=$((n+1)); done; echo $n"], capture_output=True, text=True).stdout.strip()
+    rec("LEAK", "no leaked running-container cgroups", live == "0", f"live_leftover={live}")
     for n in ["b1", "b2", "c1", "c2", "c3", "c4", "c5", "m1"]: rm(n)
 
 
@@ -550,6 +552,33 @@ def section_parity():
         rec("P9", "re-import identical image → 'identical'", st9 == "identical", f"status={st9}")
     else:
         rec("P9", "re-import identical image → 'identical'", "SKIP", f"export http={code_}")
+
+    # P10 — port host-IP is honored + displayed (not always 0.0.0.0)
+    rm("phip"); mk("phip", {"ports": [{"host": 19191, "container": 80, "proto": "tcp", "host_ip": "127.0.0.1"}]})
+    rec("P10", "port host-IP honored (127.0.0.1, not 0.0.0.0)", "127.0.0.1:19191" in json.dumps(inspect("phip")), f"ports={inspect('phip').get('ports')}"); rm("phip")
+    # P11 — IPv6 publish → clean coded reject (dn7 DNAT is v4-only)
+    d = dop({"op": "create_container", "image": IMG, "name": "phv6", "command": "/bin/sleep 300", "ports": [{"host": 19192, "container": 80, "ipv6": True}]})
+    rec("P11", "IPv6 publish → coded reject", d.get("code") == "docker.ipv6_publish_unsupported", f"code={d.get('code')}"); rm("phv6")
+    # P12 — named volume backed by a host path (was "not supported")
+    subprocess.run(["rm", "-rf", "/tmp/dn7-hpvol"])
+    d = dop({"op": "create_volume", "name": "hpvol", "path": "/tmp/dn7-hpvol"})
+    made = subprocess.run(["bash", "-c", "test -d /tmp/dn7-hpvol && echo y"], capture_output=True, text=True).stdout.strip()
+    rec("P12", "host-path named volume created", bool(d.get("ok")) and made == "y", f"{json.dumps(d)[:40]}"); dop({"op": "remove_volume", "ref": "hpvol"})
+    # P13 — --rm auto-removes on exit
+    dc = dop({"op": "create_container", "image": IMG, "name": "prm", "command": "/bin/sh -c 'sleep 1'", "start": True, "auto_remove": True})
+    opwait((dc.get("data") or {}).get("op_id")); time.sleep(3)
+    rec("P13", "--rm auto-removes on exit", crow("prm") is None, f"gone={crow('prm') is None}")
+    # P14 — --pids-limit hits cgroup pids.max
+    rm("ppid"); mk("ppid", {"pids_limit": 42})
+    def _cg(n, f):
+        try: return open(cgdir((crow(n) or {}).get("id", "")) + f).read().strip()
+        except Exception: return "?"
+    rec("P14", "--pids-limit → cgroup pids.max", _cg("ppid", "pids.max") == "42", f"pids.max={_cg('ppid', 'pids.max')}"); rm("ppid")
+    # P15 — endpoint MAC honored
+    dop({"op": "remove_network", "ref": "macnet"}); dop({"op": "create_network", "name": "macnet", "subnet": "172.22.0.0/24", "gateway": "172.22.0.1"})
+    rm("pmac"); mk("pmac", {"networks": [{"network": "macnet", "mac": "02:42:de:ad:be:ef"}]})
+    ifc = subprocess.run(["nsenter", "-t", pid_of("pmac"), "-n", "ip", "link", "show", "eth0"], capture_output=True, text=True).stdout if pid_of("pmac") else ""
+    rec("P15", "endpoint MAC honored (--mac-address)", "02:42:de:ad:be:ef" in ifc, f"eth0 has requested MAC: {'de:ad:be:ef' in ifc}"); rm("pmac"); dop({"op": "remove_network", "ref": "macnet"})
 
     for n in ["pweb", "pWeb", "pweb2", "plim", "pbind"]: rm(n)
 
