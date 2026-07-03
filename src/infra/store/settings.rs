@@ -35,13 +35,11 @@ pub(crate) fn save(s: &WebSettings) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{LazyLock, Mutex};
-
     // `path()` resolves through `data_dir()`, which honors the process-global
-    // `DN7_RUNTIME_DIR`. This test sets it, so serialize against a parallel
-    // runner (mirrors the guard used by the docker/backups + files-controller
-    // tests) and restore the previous value on exit.
-    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+    // `DN7_RUNTIME_DIR`. This test sets it, so serialize against every other
+    // env-mutating test (docker/backups + files-controller) via the one
+    // crate-wide `test_support::ENV_LOCK`, and restore the previous value on exit.
+    use crate::test_support::ENV_LOCK;
 
     fn quarantine_copies() -> Vec<std::path::PathBuf> {
         let p = path();
@@ -66,7 +64,7 @@ mod tests {
     // than clobber the superadmin credential + TOTP secret with a fresh default.
     #[test]
     fn corrupt_web_json_is_quarantined_and_not_clobbered() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = ENV_LOCK.blocking_lock();
         let prev = std::env::var_os("DN7_RUNTIME_DIR");
         let base = std::env::temp_dir().join(format!(
             "dn7-websettings-test-{:016x}{:016x}",

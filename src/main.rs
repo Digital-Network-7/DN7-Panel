@@ -5,6 +5,21 @@ mod infra;
 mod platform;
 mod web;
 
+/// Test-only shared lock serializing every test that mutates the process-global
+/// `DN7_RUNTIME_DIR` env var. Those tests live in three modules (settings /
+/// docker backups / files controller); a single crate-wide lock is the only way
+/// they can mutually exclude. Per-module locks (the previous state) let, say, a
+/// settings test and a backups test flip the env var out from under each other
+/// mid-run — a rare-but-real gate flake. Held via `.blocking_lock()` from sync
+/// `#[test]`s and `.lock().await` from `#[tokio::test]`s.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::LazyLock;
+    use tokio::sync::Mutex;
+
+    pub(crate) static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+}
+
 use platform::{autostart, banner, daemon, panel, paths, procfile, supervisor};
 
 use anyhow::Result;

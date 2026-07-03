@@ -700,14 +700,12 @@ where
 #[cfg(test)]
 mod stage_tests {
     use super::*;
-    use std::sync::LazyLock;
-    use tokio::sync::Mutex;
+    use crate::test_support::ENV_LOCK;
 
     // `stage_export` resolves the staging dir through `data_dir()`, which honors
     // the process-global `DN7_RUNTIME_DIR`. The tests set/read it, so serialize
-    // them (and restore the previous value) to stay hermetic under a parallel
-    // test runner.
-    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+    // them (and restore the previous value) against every other env-mutating test
+    // via the one crate-wide `test_support::ENV_LOCK` — held across `.await`.
 
     // Point `data_dir()` (hence the staging dir) at a private temp dir; returns
     // the base so the caller can assert paths / clean up.

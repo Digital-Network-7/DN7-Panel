@@ -948,15 +948,15 @@ pub(crate) async fn website_static_upload(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ENV_LOCK;
     use futures::Stream;
     use std::pin::Pin;
-    use std::sync::Mutex;
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
     // Both tests mutate the process-global `DN7_RUNTIME_DIR` (to redirect the audit
     // log to a private dir) and then read it back, so they must not run
-    // concurrently — serialize them on this lock.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // concurrently with each other OR with any other env-mutating test — serialize
+    // on the one crate-wide `test_support::ENV_LOCK`.
 
     // A no-op waker so we can drive a synchronous (always-Ready) stream by hand,
     // without spinning up an async runtime.
@@ -1009,7 +1009,7 @@ mod tests {
 
     #[test]
     fn audited_stream_records_ok_on_clean_eof() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = ENV_LOCK.blocking_lock();
         let dir = temp_data_dir();
         let inner = futures::stream::iter(vec![chunk("hel"), chunk("lo")]);
         let s = AuditedStream::new(inner, "owner".into(), "files.download", "/x".into(), None);
@@ -1027,7 +1027,7 @@ mod tests {
 
     #[test]
     fn audited_stream_records_failure_on_mid_stream_error() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = ENV_LOCK.blocking_lock();
         let dir = temp_data_dir();
         let err = || -> std::io::Result<bytes::Bytes> { Err(std::io::Error::other("boom")) };
         let inner = futures::stream::iter(vec![chunk("hel"), err()]);
