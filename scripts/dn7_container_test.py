@@ -290,9 +290,10 @@ def section_adv():
     rec("A07", "stop a never-started container → no crash", (lambda d: d.get("ok") or clean_err(d))(dop({"op": "stop_container", "ref": "a5"})), "ok")
     rec("A08", "pause a non-running container → clean error", (lambda d: clean_err(d) or d.get("ok") is False)(dop({"op": "pause_container", "ref": "a5"})), "ok"); rm("a5")
     rec("A09", "all ops on nonexistent container → no 500", all(code({"op": o, "ref": "ghost404", "tail": 10}) < 500 for o in ["start_container", "stop_container", "remove_container", "logs", "container_stats", "inspect_container"]), "checked")
-    mk("a6"); pid = pid_of("a6")
-    subprocess.run(["kill", "-9", pid]); time.sleep(1); c = crow("a6")
-    rec("A10", "hard-killed init → not shown running", c and c.get("state") in ("exited", "stopped"), f"state={c and c.get('state')}"); rm("a6")
+    # restart:no so the supervisor doesn't (correctly) auto-restart the kill.
+    mk("a6", {"restart": "no"}); pid = pid_of("a6")
+    subprocess.run(["kill", "-9", pid]); time.sleep(1.5); c = crow("a6")
+    rec("A10", "hard-killed init (restart:no) → not shown running", c and c.get("state") in ("exited", "stopped"), f"state={c and c.get('state')}"); rm("a6")
     dop({"op": "create_network", "name": "advnet", "subnet": "172.27.0.0/24", "gateway": "172.27.0.1"})
     rec("A11", "overlapping subnet rejected", (lambda d: clean_err(d) and "overlap" in json.dumps(d))(dop({"op": "create_network", "name": "ov", "subnet": "172.27.0.0/24"})), "ok")
     rec("A12", "invalid CIDR rejected", clean_err(dop({"op": "create_network", "name": "ov", "subnet": "not-a-cidr"})), "ok")
@@ -553,7 +554,55 @@ def section_parity():
     for n in ["pweb", "pWeb", "pweb2", "plim", "pbind"]: rm(n)
 
 
-SECTIONS = {"core": section_core, "net": section_net, "adv": section_adv, "robust": section_robust, "ui": section_ui, "parity": section_parity}
+# ============================================================================
+# The two headline Docker features: the restart-policy supervisor and the
+# embedded container-to-container DNS.
+def section_super():
+    S = "super"
+    def rec(i, name, ok, ev): add(S, i, name, ok, ev)
+    def mk(n, extra=None, cmd="/bin/sleep 300"):
+        p = {"op": "create_container", "image": IMG, "name": n, "command": cmd, "start": True}
+        if extra: p.update(extra)
+        d = dop(p); op = (d.get("data") or {}).get("op_id")
+        return opwait(op) if op else ("refused", "")
+    def insp(n): return dop({"op": "inspect_container", "ref": n}).get("data") or {}
+    for n in ["salways", "sno", "sstop", "dalpha", "dbeta"]: rm(n)
+    dop({"op": "remove_network", "ref": "sdns"})
+
+    # SUP1 — restart=always auto-restarts a process that keeps exiting
+    mk("salways", {"restart": "always"}, cmd="/bin/sh -c 'sleep 1; exit 1'")
+    time.sleep(6)
+    rc = insp("salways").get("restart_count", 0)
+    rec("SUP1", "restart=always auto-restarts (count climbs)", rc >= 1, f"restart_count={rc}")
+    # SUP2 — restart=no leaves an exited container exited
+    mk("sno", {"restart": "no"}, cmd="/bin/sh -c 'sleep 1; exit 0'"); time.sleep(4)
+    c = crow("sno")
+    rec("SUP2", "restart=no stays exited", c and c.get("state") == "exited" and insp("sno").get("restart_count", 0) == 0, f"state={c and c.get('state')}")
+    # SUP3 — a user stop is NOT auto-restarted (unless-stopped default)
+    mk("sstop"); time.sleep(1); dop({"op": "stop_container", "ref": "sstop"}); time.sleep(4)
+    c = crow("sstop")
+    rec("SUP3", "user-stopped unless-stopped stays stopped", c and c.get("state") in ("exited", "stopped"), f"state={c and c.get('state')}")
+    for n in ["salways", "sno", "sstop"]: rm(n)
+
+    # SUP4 — embedded DNS resolves a peer container BY NAME
+    dop({"op": "create_network", "name": "sdns", "subnet": "172.23.0.0/24", "gateway": "172.23.0.1"})
+    mk("dbeta", {"networks": [{"network": "sdns"}]}); time.sleep(1)
+    mk("dalpha", {"networks": [{"network": "sdns"}]}); time.sleep(1)
+    betaip = (crow("dbeta") or {}).get("ip", "").split()[0]
+    pa = pid_of("dalpha")
+    look = subprocess.run(["nsenter", "-t", pa, "-m", "-p", "-n", "/bin/sh", "-c", "nslookup dbeta 2>/dev/null"], capture_output=True, text=True).stdout if pa else ""
+    rec("SUP4", "container DNS resolves a peer by name", bool(betaip) and betaip in look, f"nslookup dbeta → {betaip}")
+    # SUP5 — ping by name works (name → IP → reachable)
+    png = subprocess.run(["nsenter", "-t", pa, "-m", "-p", "-n", "/bin/ping", "-c1", "-W2", "dbeta"], capture_output=True, text=True) if pa else None
+    rec("SUP5", "ping a peer by name", bool(png) and png.returncode == 0, f"rc={png and png.returncode}")
+    # SUP6 — external names still resolve (responder forwards upstream)
+    ext = subprocess.run(["nsenter", "-t", pa, "-m", "-p", "-n", "/bin/sh", "-c", "nslookup github.com 2>&1"], capture_output=True, text=True).stdout if pa else ""
+    rec("SUP6", "external DNS forwarded upstream", "Address" in ext and "github.com" in ext.lower() and ext.count("Address") >= 2, f"resolved={('Address' in ext)}")
+    for n in ["dalpha", "dbeta"]: rm(n)
+    dop({"op": "remove_network", "ref": "sdns"})
+
+
+SECTIONS = {"core": section_core, "net": section_net, "adv": section_adv, "robust": section_robust, "ui": section_ui, "parity": section_parity, "super": section_super}
 want = [a for a in sys.argv[1:] if a in SECTIONS] or list(SECTIONS)
 for name in want:
     print(f"\n########## SECTION: {name} ##########", flush=True)
