@@ -63,6 +63,8 @@ pub struct ImageRunSpec {
     /// Allocate a controlling PTY for the main process (docker `-t`) so an
     /// interactive shell (or the image's default command) stays alive.
     pub tty: bool,
+    /// Static IPv4 on the primary network (docker `--ip`); `None` = auto-assign.
+    pub static_ip: Option<String>,
 }
 
 /// `run`: create + start + wait, all in one process. The simplest end-to-end
@@ -150,6 +152,7 @@ fn assemble_image_bundle(spec: &ImageRunSpec) -> Result<std::path::PathBuf> {
         cpu_shares: spec.cpu_shares,
         pids_limit: spec.pids_limit,
         tty: spec.tty,
+        static_ip: spec.static_ip.as_deref(),
     };
     image::spec_gen::write_config(&bundle, &cfg, &opts)?;
 
@@ -1004,6 +1007,164 @@ pub fn delete(id: &str, force: bool) -> Result<()> {
         let _ = std::fs::remove_dir_all(&s.bundle);
     }
     State::remove_dir(id)
+}
+
+/// Connect a RUNNING container to an ADDITIONAL network (docker `network
+/// connect`): allocate a lease on `network`, wire a new veth as the next free
+/// `ethN`, and record the attachment. Returns `(ip, ifname)`. Fail-closed: any
+/// wiring error tears the partial attachment back down.
+pub fn net_connect(id: &str, network: &str, static_ip: Option<&str>) -> Result<(String, String)> {
+    use crate::net::{backend, config, ipam::Ipam, registry};
+    let _guard = State::lock(id)?;
+    let mut s = State::load(id)?;
+    if s.refresh_status() != Status::Running {
+        return Err(Error::BadState {
+            id: id.into(),
+            state: s.status.as_str(),
+            action: "network connect",
+        });
+    }
+    let pid = s.pid;
+    let net = s
+        .net
+        .as_ref()
+        .ok_or_else(|| Error::Other("container has no managed network".into()))?;
+    if net.mode != "bridge" {
+        return Err(Error::Other(
+            "container is not on a bridge network; connect is not applicable".into(),
+        ));
+    }
+    let cfg = registry::resolve(network).map_err(|e| Error::Other(e.to_string()))?;
+    if net.network == cfg.name || net.extra.iter().any(|a| a.network == cfg.name) {
+        return Err(Error::Other(format!(
+            "container is already connected to network {}",
+            cfg.name
+        )));
+    }
+    let ifname = format!("eth{}", 1 + net.extra.len());
+    let ipam = Ipam::new();
+    let lease = match static_ip {
+        Some(ip) => {
+            let want: std::net::Ipv4Addr = ip
+                .trim()
+                .parse()
+                .map_err(|_| Error::Other(format!("invalid ipv4: {ip}")))?;
+            ipam.allocate_static(&cfg, id, pid, want)?
+        }
+        None => ipam.allocate(&cfg, id, pid)?,
+    };
+    let host = config::veth_host_name_for(id, &cfg.name);
+    let peer = config::veth_peer_name_for(id, &cfg.name);
+    let wire = (|| -> Result<()> {
+        backend::ensure_bridge(&cfg)?;
+        backend::make_veth(&host, &peer)?;
+        backend::attach_to_bridge(&host, &cfg.bridge)?;
+        backend::move_peer(&peer, pid)?;
+        backend::config_attachment(
+            pid,
+            &peer,
+            &ifname,
+            lease.ip,
+            cfg.subnet.prefix_len(),
+            &lease.mac,
+        )?;
+        if crate::net::firewall::have_nft() {
+            let _ = crate::net::firewall::ensure_base(&cfg);
+        }
+        Ok(())
+    })();
+    if let Err(e) = wire {
+        let _ = backend::teardown_veth(&host);
+        let _ = ipam.free(&cfg.name, id);
+        return Err(e);
+    }
+    let att = config::Attachment {
+        network: cfg.name.clone(),
+        bridge: cfg.bridge.clone(),
+        veth_host: host,
+        ifname: ifname.clone(),
+        ip: lease.ip,
+        mac: lease.mac.clone(),
+    };
+    s.net.as_mut().unwrap().extra.push(att);
+    s.save()?;
+    Ok((lease.ip.to_string(), ifname))
+}
+
+/// Disconnect a container from a SECONDARY network (docker `network
+/// disconnect`). The primary network can't be disconnected — remove the
+/// container instead.
+pub fn net_disconnect(id: &str, network: &str) -> Result<()> {
+    use crate::net::{backend, ipam::Ipam, registry};
+    let _guard = State::lock(id)?;
+    let mut s = State::load(id)?;
+    let cfg = registry::resolve(network).map_err(|e| Error::Other(e.to_string()))?;
+    let net = s
+        .net
+        .as_mut()
+        .ok_or_else(|| Error::Other("container has no managed network".into()))?;
+    if net.network == cfg.name {
+        return Err(Error::Other(
+            "can't disconnect the container's primary network; remove the container instead".into(),
+        ));
+    }
+    let pos = net
+        .extra
+        .iter()
+        .position(|a| a.network == cfg.name)
+        .ok_or_else(|| {
+            Error::Other(format!(
+                "container is not connected to network {}",
+                cfg.name
+            ))
+        })?;
+    let att = net.extra.remove(pos);
+    let _ = backend::teardown_veth(&att.veth_host);
+    let _ = Ipam::new().free(&cfg.name, id);
+    s.save()
+}
+
+/// Change a container's IPv4 on a network (docker static-IP edit): reserve the
+/// address in IPAM and reconfigure the live interface (primary `eth0` or a
+/// secondary `ethN`). The container must be running.
+pub fn net_set_ip(id: &str, network: &str, ipv4: &str) -> Result<()> {
+    use crate::net::{backend, ipam::Ipam, registry};
+    let _guard = State::lock(id)?;
+    let mut s = State::load(id)?;
+    if s.refresh_status() != Status::Running {
+        return Err(Error::BadState {
+            id: id.into(),
+            state: s.status.as_str(),
+            action: "set network ip",
+        });
+    }
+    let pid = s.pid;
+    let cfg = registry::resolve(network).map_err(|e| Error::Other(e.to_string()))?;
+    let want: std::net::Ipv4Addr = ipv4
+        .trim()
+        .parse()
+        .map_err(|_| Error::Other(format!("invalid ipv4: {ipv4}")))?;
+    let lease = Ipam::new().allocate_static(&cfg, id, pid, want)?;
+    let prefix = cfg.subnet.prefix_len();
+    let net = s
+        .net
+        .as_mut()
+        .ok_or_else(|| Error::Other("container has no managed network".into()))?;
+    if net.network == cfg.name {
+        backend::set_iface_ip(pid, "eth0", net.ip, want, prefix)?;
+        net.ip = Some(want);
+        net.mac = Some(lease.mac);
+    } else if let Some(a) = net.extra.iter_mut().find(|a| a.network == cfg.name) {
+        backend::set_iface_ip(pid, &a.ifname, Some(a.ip), want, prefix)?;
+        a.ip = want;
+        a.mac = lease.mac;
+    } else {
+        return Err(Error::Other(format!(
+            "container is not connected to network {}",
+            cfg.name
+        )));
+    }
+    s.save()
 }
 
 /// Poll the cgroup until it holds no processes (or a short deadline elapses), so

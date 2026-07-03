@@ -66,6 +66,48 @@ pub fn config_inside(
     })
 }
 
+/// Configure a moved peer as a SECONDARY interface (`eth1`+) inside the netns:
+/// rename to `ifname`, set MAC + address, bring up. Unlike [`config_inside`] it
+/// adds NO default route — the container's primary interface owns the default
+/// route; the kernel auto-installs the on-link route to this network's subnet.
+pub fn config_attachment(
+    pid: i32,
+    peer: &str,
+    ifname: &str,
+    ip_addr: Ipv4Addr,
+    prefix: u8,
+    mac: &str,
+) -> Result<()> {
+    let mac = parse_mac(mac)?;
+    nl::with_netns(pid, |sock| {
+        let idx = nl::if_index(peer)?;
+        sock.set_name(idx, ifname)?;
+        sock.set_mac(idx, &mac)?;
+        sock.add_addr(idx, ip_addr, prefix)?;
+        sock.set_up(idx)
+    })
+}
+
+/// Change interface `ifname`'s IPv4 inside the container netns: remove `old` (if
+/// any) and add `new`. Used by `set_network_ip` on a running container.
+pub fn set_iface_ip(
+    pid: i32,
+    ifname: &str,
+    old: Option<Ipv4Addr>,
+    new: Ipv4Addr,
+    prefix: u8,
+) -> Result<()> {
+    nl::with_netns(pid, |sock| {
+        let idx = nl::if_index(ifname)?;
+        if let Some(o) = old {
+            if o != new {
+                let _ = sock.del_addr(idx, o, prefix);
+            }
+        }
+        sock.add_addr(idx, new, prefix)
+    })
+}
+
 /// Bring `lo` up inside the netns (None mode — isolation, but a working loopback).
 pub fn lo_up(pid: i32) -> Result<()> {
     nl::with_netns(pid, |sock| {
@@ -81,6 +123,32 @@ pub fn teardown_veth(host: &str) -> Result<()> {
     match nl::if_index(host) {
         Ok(idx) => sock.del_link(idx),
         Err(_) => Ok(()), // already gone
+    }
+}
+
+/// Delete a user network's host bridge. Idempotent (an already-gone bridge is
+/// not an error). Any veths still attached are detached by the kernel.
+pub fn delete_bridge(bridge: &str) -> Result<()> {
+    let mut sock = NlSock::open()?;
+    match nl::if_index(bridge) {
+        Ok(idx) => sock.del_link(idx),
+        Err(_) => Ok(()),
+    }
+}
+
+/// Rename a bridge interface in place. Best-effort: a missing interface (the
+/// bridge was never materialized) is not an error.
+pub fn rename_bridge(old: &str, new: &str) -> Result<()> {
+    let mut sock = NlSock::open()?;
+    match nl::if_index(old) {
+        Ok(idx) => {
+            // The link must be down to rename it; bring it back up after.
+            let _ = sock.set_down(idx);
+            sock.set_name(idx, new)?;
+            let idx = nl::if_index(new)?;
+            sock.set_up(idx)
+        }
+        Err(_) => Ok(()),
     }
 }
 

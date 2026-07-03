@@ -21,34 +21,26 @@ function dkNetworks(info) {
       $('dkRefN').onclick = () => dkNetworks();
       return;
     }
-    const head = dn7
-      ? `<div class="card" style="margin-bottom:14px"><h3 style="margin:0 0 8px;font-size:14px">${tr('dk.dn7_net_title')}</h3>`
-        + `<p class="formnote" style="margin:0 0 6px">${tr('dk.dn7_net_body')}</p>`
-        + `<p class="formnote" style="margin:0">${tr('dk.dn7_net_custom')}</p></div>`
-        + `<div class="sechead"><span class="sp"></span><button class="btn sec sm" id="dkRefN">${tr('dk.refresh')}</button></div>`
-      : `<div class="sechead"><span class="sp"></span><button class="btn sm" id="dkNetNew">${tr('dk.create_network')}</button><button class="btn sec sm" id="dkRefN">${tr('dk.refresh')}</button></div>`;
+    // Both runtimes support user-defined networks now; the create button shows
+    // for both. Per-network mutating actions are gated on the built-in flag.
+    const head = `<div class="sechead"><span class="sp"></span><button class="btn sm" id="dkNetNew">${tr('dk.create_network')}</button><button class="btn sec sm" id="dkRefN">${tr('dk.refresh')}</button></div>`;
     body.innerHTML = head + `<div id="dkNList">${loading()}</div>`;
     $('dkRefN').onclick = () => dkNetworks(inf);
-    if (!dn7) $('dkNetNew').onclick = () => dkNetCreate(inf);
+    $('dkNetNew').onclick = () => dkNetCreate(inf);
     op('docker', { op: 'list_networks' }).then((d) => {
       let h = `<table class="optable nettbl"><tr><th>${tr('dk.col_name')}</th><th>${tr('dk.col_driver')}</th><th>${tr('dk.col_scope')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
       (d.networks || []).forEach((n) => {
-        const predefined = dn7 || ['bridge', 'host', 'none'].includes(n.name);
+        // Prefer the backend `builtin` flag; fall back to the well-known names.
+        const predefined = ('builtin' in n) ? n.builtin : ['bridge', 'host', 'none', 'dn7'].includes(n.name);
         const builtin = predefined ? ` <span class="chip">${tr('dk.builtin')}</span>` : '';
-        let acts;
-        if (dn7) {
-          // Actions have no dn7 equivalent — the explainer card above says why.
-          acts = '<span class="mut">-</span>';
-        } else {
-          const rnBtn = predefined
-            ? `<button class="btn sm sec" data-rnbuiltin="1">${tr('dk.rename')}</button>`
-            : `<button class="btn sm sec" data-rn="${esc(n.name)}">${tr('dk.rename')}</button>`;
-          const ipBtn = `<button class="btn sm sec" data-ip="${esc(n.name)}">${tr('dk.net_ippool')}</button>`;
-          const rmBtn = predefined
-            ? `<button class="btn sm danger" data-rmbuiltin="1">${tr('dk.delete')}</button>`
-            : `<button class="btn sm danger" data-rm="${esc(n.name)}">${tr('dk.delete')}</button>`;
-          acts = `<div class="actions">${rnBtn}${ipBtn}${rmBtn}</div>`;
-        }
+        const rnBtn = predefined
+          ? `<button class="btn sm sec" data-rnbuiltin="1">${tr('dk.rename')}</button>`
+          : `<button class="btn sm sec" data-rn="${esc(n.name)}">${tr('dk.rename')}</button>`;
+        const ipBtn = `<button class="btn sm sec" data-ip="${esc(n.name)}">${tr('dk.net_ippool')}</button>`;
+        const rmBtn = predefined
+          ? `<button class="btn sm danger" data-rmbuiltin="1">${tr('dk.delete')}</button>`
+          : `<button class="btn sm danger" data-rm="${esc(n.name)}">${tr('dk.delete')}</button>`;
+        const acts = `<div class="actions">${rnBtn}${ipBtn}${rmBtn}</div>`;
         h += `<tr><td data-tip="${esc(n.name)}"><div class="clamp1"><b>${esc(n.name)}</b>${builtin}</div></td><td class="mut">${esc(n.driver)}</td><td class="mut">${esc(n.scope)}</td><td class="act">${acts}</td></tr>`;
       });
       $('dkNList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';

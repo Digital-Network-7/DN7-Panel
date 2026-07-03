@@ -40,6 +40,18 @@ pub fn veth_peer_name(id: &str) -> String {
     format!("dn7p{}", &hex_sha(id)[..8])
 }
 
+/// Host-side veth name for a container's SECONDARY attachment to `net` (docker
+/// `network connect`) — keyed by `(id, net)` so it can't collide with the
+/// primary veth or another attachment.
+pub fn veth_host_name_for(id: &str, net: &str) -> String {
+    format!("dn7v{}", &hex_sha(&format!("{id}\u{0}{net}"))[..8])
+}
+
+/// Peer-end name for a secondary attachment (renamed to `ethN` inside the netns).
+pub fn veth_peer_name_for(id: &str, net: &str) -> String {
+    format!("dn7p{}", &hex_sha(&format!("{id}\u{0}{net}"))[..8])
+}
+
 /// Lowercase hex of `sha256(s)`.
 fn hex_sha(s: &str) -> String {
     let digest = Sha256::digest(s.as_bytes());
@@ -141,6 +153,23 @@ pub struct NetState {
     pub mac: Option<String>,
     #[serde(default)]
     pub ports: Vec<PortMap>,
+    /// Secondary network attachments (docker `network connect`): additional
+    /// interfaces (`eth1`, `eth2`, …) beyond the primary `eth0`.
+    #[serde(default)]
+    pub extra: Vec<Attachment>,
+}
+
+/// A secondary network attachment: a container joined to an ADDITIONAL network
+/// beyond its primary, with its own veth pair, interface, and IP lease.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attachment {
+    pub network: String,
+    pub bridge: String,
+    pub veth_host: String,
+    /// In-container interface name (`eth1`, `eth2`, …).
+    pub ifname: String,
+    pub ip: Ipv4Addr,
+    pub mac: String,
 }
 
 #[cfg(test)]

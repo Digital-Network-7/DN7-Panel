@@ -20,6 +20,7 @@ use crate::error::{Error, Result};
 const RTM_NEWLINK: u16 = 16;
 const RTM_DELLINK: u16 = 17;
 const RTM_NEWADDR: u16 = 20;
+const RTM_DELADDR: u16 = 21;
 const RTM_NEWROUTE: u16 = 24;
 
 // nlmsg flags.
@@ -57,6 +58,7 @@ const RTN_UNICAST: u8 = 1;
 
 /// errno for "object already exists" — tolerated on idempotent setup.
 pub const EEXIST: i32 = 17;
+pub const EADDRNOTAVAIL: i32 = 99;
 /// errno for "no such device" — tolerated on idempotent teardown.
 pub const ENODEV: i32 = 19;
 
@@ -307,6 +309,16 @@ impl NlSock {
         })
     }
 
+    /// Administratively bring link `index` DOWN (clear `IFF_UP`) — required
+    /// before renaming an interface.
+    pub fn set_down(&mut self, index: i32) -> Result<()> {
+        self.talk_ok("set down", &[], |seq| {
+            let mut m = MsgBuf::new(RTM_NEWLINK, NLM_F_ACK, seq);
+            m.ifinfo(AF_UNSPEC, index, 0, IFF_UP);
+            m.finish()
+        })
+    }
+
     /// Set link `index`'s master to bridge `master_index`.
     pub fn set_master(&mut self, index: i32, master_index: i32) -> Result<()> {
         self.talk_ok("set master", &[], |seq| {
@@ -351,6 +363,18 @@ impl NlSock {
     pub fn add_addr(&mut self, index: i32, addr: Ipv4Addr, prefix: u8) -> Result<()> {
         self.talk_ok("add addr", &[EEXIST], |seq| {
             let mut m = MsgBuf::new(RTM_NEWADDR, NLM_F_CREATE | NLM_F_ACK, seq);
+            m.ifaddr(AF_INET, prefix, index as u32);
+            m.attr(IFA_LOCAL, &addr.octets());
+            m.attr(IFA_ADDRESS, &addr.octets());
+            m.finish()
+        })
+    }
+
+    /// Remove address `addr/prefix` from link `index` (idempotent — tolerates
+    /// EADDRNOTAVAIL/ENODEV when the address is already gone).
+    pub fn del_addr(&mut self, index: i32, addr: Ipv4Addr, prefix: u8) -> Result<()> {
+        self.talk_ok("del addr", &[EADDRNOTAVAIL, ENODEV], |seq| {
+            let mut m = MsgBuf::new(RTM_DELADDR, NLM_F_ACK, seq);
             m.ifaddr(AF_INET, prefix, index as u32);
             m.attr(IFA_LOCAL, &addr.octets());
             m.attr(IFA_ADDRESS, &addr.octets());

@@ -16,6 +16,7 @@ pub mod firewall;
 pub mod ipam;
 mod nft;
 pub mod nl;
+pub mod registry;
 
 pub use config::{NetState, PortMap, Proto};
 pub use ipam::{Ipam, NetworkConfig};
@@ -47,14 +48,15 @@ impl NetworkManager {
         NetworkManager
     }
 
-    /// Read the requested mode from the spec's `dn7.net` annotation.
+    /// Read the requested mode from the spec's `dn7.net` annotation. Any value
+    /// other than `none`/`host` is a bridge attachment — either the built-in
+    /// `bridge`/`dn7` or a user-defined network name (resolved in `apply`).
     fn mode_of(spec: &Spec) -> Result<Option<NetMode>> {
         match spec.annotations.get("dn7.net").map(String::as_str) {
             None => Ok(None),
-            Some("bridge") => Ok(Some(NetMode::Bridge)),
             Some("none") => Ok(Some(NetMode::None)),
             Some("host") => Ok(Some(NetMode::Host)),
-            Some(other) => Err(Error::Other(format!("unknown dn7.net mode: {other}"))),
+            Some(_) => Ok(Some(NetMode::Bridge)),
         }
     }
 
@@ -70,14 +72,39 @@ impl NetworkManager {
             Some(s) => config::parse_ports(s)?,
             None => Vec::new(),
         };
-        let result = self.apply_mode(id, pid, mode, &ports);
+        // Resolve the bridge attachment: the `dn7.net` name → a network config
+        // (built-in default or a user network), plus an optional `dn7.ip` static
+        // address for that network.
+        let net_name = spec
+            .annotations
+            .get("dn7.net")
+            .map(String::as_str)
+            .unwrap_or("");
+        let cfg = registry::resolve(net_name)?;
+        let static_ip = match spec.annotations.get("dn7.ip") {
+            Some(s) if !s.trim().is_empty() => Some(
+                s.trim()
+                    .parse()
+                    .map_err(|_| Error::Other(format!("invalid dn7.ip: {s:?}")))?,
+            ),
+            _ => None,
+        };
+        let result = self.apply_mode(id, pid, mode, &cfg, static_ip, &ports);
         if result.is_err() {
             self.teardown_by_id(id);
         }
         result.map(Some)
     }
 
-    fn apply_mode(&self, id: &str, pid: i32, mode: NetMode, ports: &[PortMap]) -> Result<NetState> {
+    fn apply_mode(
+        &self,
+        id: &str,
+        pid: i32,
+        mode: NetMode,
+        cfg: &NetworkConfig,
+        static_ip: Option<std::net::Ipv4Addr>,
+        ports: &[PortMap],
+    ) -> Result<NetState> {
         match mode {
             NetMode::Host => Ok(NetState {
                 mode: "host".into(),
@@ -87,6 +114,7 @@ impl NetworkManager {
                 ip: None,
                 mac: None,
                 ports: Vec::new(),
+                extra: Vec::new(),
             }),
             NetMode::None => {
                 backend::lo_up(pid)?;
@@ -98,21 +126,31 @@ impl NetworkManager {
                     ip: None,
                     mac: None,
                     ports: Vec::new(),
+                    extra: Vec::new(),
                 })
             }
-            NetMode::Bridge => self.apply_bridge(id, pid, ports),
+            NetMode::Bridge => self.apply_bridge(id, pid, cfg, static_ip, ports),
         }
     }
 
-    fn apply_bridge(&self, id: &str, pid: i32, ports: &[PortMap]) -> Result<NetState> {
-        let cfg = NetworkConfig::default_dn7();
+    fn apply_bridge(
+        &self,
+        id: &str,
+        pid: i32,
+        cfg: &NetworkConfig,
+        static_ip: Option<std::net::Ipv4Addr>,
+        ports: &[PortMap],
+    ) -> Result<NetState> {
         let ipam = Ipam::new();
-        let lease = ipam.allocate(&cfg, id, pid)?;
+        let lease = match static_ip {
+            Some(ip) => ipam.allocate_static(cfg, id, pid, ip)?,
+            None => ipam.allocate(cfg, id, pid)?,
+        };
 
         let host = config::veth_host_name(id);
         let peer = config::veth_peer_name(id);
 
-        backend::ensure_bridge(&cfg)?;
+        backend::ensure_bridge(cfg)?;
         backend::make_veth(&host, &peer)?;
         backend::attach_to_bridge(&host, &cfg.bridge)?;
         backend::move_peer(&peer, pid)?;
@@ -130,7 +168,7 @@ impl NetworkManager {
         // `nft`, so a port request without it is a hard error.
         let mut published = Vec::new();
         if firewall::have_nft() {
-            firewall::ensure_base(&cfg)?;
+            firewall::ensure_base(cfg)?;
             for p in ports {
                 firewall::publish_port(id, p, lease.ip)?;
                 published.push(p.clone());
@@ -145,12 +183,13 @@ impl NetworkManager {
 
         Ok(NetState {
             mode: "bridge".into(),
-            network: cfg.name,
-            bridge: cfg.bridge,
+            network: cfg.name.clone(),
+            bridge: cfg.bridge.clone(),
             veth_host: host,
             ip: Some(lease.ip),
             mac: Some(lease.mac),
             ports: published,
+            extra: Vec::new(),
         })
     }
 
@@ -167,6 +206,12 @@ impl NetworkManager {
                 &state.network
             };
             let _ = Ipam::new().free(net, id);
+            // Secondary attachments (docker `network connect`): each has its own
+            // veth + lease on its network.
+            for a in &state.extra {
+                let _ = backend::teardown_veth(&a.veth_host);
+                let _ = Ipam::new().free(&a.network, id);
+            }
         }
     }
 

@@ -143,6 +143,8 @@ pub struct CreateOpts<'a> {
     /// PTY slave as its console so an interactive shell (the image's default
     /// command) stays alive instead of hitting EOF on stdin and exiting at once.
     pub tty: bool,
+    /// Static IPv4 on the primary network (`dn7.ip` annotation); `None` = auto.
+    pub static_ip: Option<&'a str>,
 }
 
 impl<'a> CreateOpts<'a> {
@@ -161,6 +163,7 @@ impl<'a> CreateOpts<'a> {
             cpu_shares: None,
             pids_limit: None,
             tty: false,
+            static_ip: None,
         }
     }
 }
@@ -261,6 +264,9 @@ pub fn write_config(bundle_dir: &Path, cfg: &ImageConfig, opts: &CreateOpts) -> 
 
     if !opts.ports.is_empty() {
         spec["annotations"]["dn7.ports"] = serde_json::Value::String(opts.ports.to_string());
+    }
+    if let Some(ip) = opts.static_ip.filter(|s| !s.trim().is_empty()) {
+        spec["annotations"]["dn7.ip"] = serde_json::Value::String(ip.trim().to_string());
     }
 
     let p = bundle_dir.join("config.json");

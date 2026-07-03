@@ -154,15 +154,20 @@ fn list_images() -> Result<Value> {
 /// network(s); ids are a stable hash of the name (dn7 has no random network ids).
 #[cfg(target_os = "linux")]
 fn list_networks() -> Result<Value> {
-    let items: Vec<Value> = dn7_container::net::ipam::list_networks()
+    use dn7_container::net::registry;
+    let items: Vec<Value> = registry::all()
         .into_iter()
         .map(|n| {
+            let builtin = registry::is_builtin(&n.name);
             json!({
                 "id": short_hash(&n.name),
                 "name": n.name,
                 "driver": "bridge",
                 "scope": "local",
                 "subnet": n.subnet.to_string(),
+                "gateway": n.gateway.to_string(),
+                // The built-in default is protected; user networks are removable.
+                "builtin": builtin,
             })
         })
         .collect();
@@ -364,6 +369,9 @@ struct Dn7CreatePlan {
     /// Edit/upgrade: an existing container to remove before creating.
     replace: Option<String>,
     image: String,
+    /// Additional networks to attach after the container starts (the primary is
+    /// wired at create; docker `network connect` for each of these).
+    extra_nets: Vec<NetAttach>,
 }
 
 /// Validate `req` (reusing the panel's `build_create_spec`, so validation + error
@@ -376,31 +384,38 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
     // from the now-known-valid `req` to avoid a bollard round-trip.
     let (cspec, display_name) = build_create_spec(req)?;
 
-    // Reject what dn7 cannot deliver — never silently degrade a security/identity
-    // option (a falsely-unprivileged container or a dropped static IP is worse
-    // than a clear failure).
+    // Reject what dn7 cannot deliver — never silently degrade a security option.
     if req.privileged.unwrap_or(false) {
         return Err(anyhow!("ERR_CODE:dn7.create_privileged_unsupported"));
     }
-    if cspec.config.networking_config.is_some() {
-        return Err(anyhow!("ERR_CODE:dn7.create_netcfg_unsupported"));
-    }
-    if !cspec.extra_networks.is_empty() {
-        return Err(anyhow!("ERR_CODE:dn7.create_multinet_unsupported"));
-    }
 
-    // Map the (single) requested network to dn7's bridge|host|none. A custom
-    // bridge name lands on the one dn7 bridge; record it for inspect display.
-    let net_name = cspec
+    // Networking: the PRIMARY attachment (its network + optional static IP) is
+    // wired at create; any additional networks the form requested are attached
+    // after start via `net_connect`. The primary comes from the first `networks`
+    // row if present, else the host_config network_mode. A network NAME (built-in
+    // `bridge`/`dn7` or a user network) passes through as the mode so the runtime
+    // resolves it; `host`/`none` are the special modes.
+    let rows: Vec<NetAttach> = req.networks.clone().unwrap_or_default();
+    let hc_mode = cspec
         .config
         .host_config
         .as_ref()
         .and_then(|h| h.network_mode.clone());
-    let (net_mode, net_name_requested) = match net_name.as_deref() {
+    let primary_name = rows
+        .first()
+        .map(|a| a.network.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or(hc_mode);
+    let primary_ip = rows
+        .first()
+        .and_then(|a| a.ipv4.clone())
+        .filter(|s| !s.trim().is_empty());
+    let extra_nets: Vec<NetAttach> = rows.iter().skip(1).cloned().collect();
+    let (net_mode, net_name_requested) = match primary_name.as_deref() {
         None | Some("bridge") | Some("dn7") => ("bridge".to_string(), None),
         Some("host") => ("host".to_string(), None),
         Some("none") => ("none".to_string(), None),
-        Some(other) => ("bridge".to_string(), Some(other.to_string())),
+        Some(other) => (other.to_string(), Some(other.to_string())),
     };
 
     // Container id = the (validated) name, or a generated one when anonymous.
@@ -494,6 +509,7 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
         cpu_shares: cpu_shares_i.map(|v| v as u64),
         pids_limit: None,
         tty: req.tty.unwrap_or(false),
+        static_ip: primary_ip.clone(),
     };
     let meta = dn7_container::container::state::StateMeta {
         image: Some(cspec.image.clone()),
@@ -523,6 +539,7 @@ fn build_dn7_create(req: &Req) -> Result<Dn7CreatePlan> {
         start: cspec.start,
         replace: cspec.replace.clone(),
         image: cspec.image,
+        extra_nets,
     })
 }
 
@@ -631,6 +648,7 @@ async fn op_create_container(req: &Req, is_super: bool) -> Result<Value> {
         start,
         replace,
         image,
+        extra_nets,
         ..
     } = plan;
 
@@ -655,6 +673,13 @@ async fn op_create_container(req: &Req, is_super: bool) -> Result<Value> {
                 .map_err(|e| anyhow!("dn7 create: {e}"))?;
             if start {
                 dn7_container::container::start(&id).map_err(|e| anyhow!("dn7 start: {e}"))?;
+                // Attach any additional requested networks (the primary was wired
+                // at create; these are hot-plugged now the container is running).
+                for a in &extra_nets {
+                    let ip = a.ipv4.as_deref().filter(|s| !s.trim().is_empty());
+                    dn7_container::container::net_connect(&id, &a.network, ip)
+                        .map_err(|e| anyhow!("dn7 connect {}: {e}", a.network))?;
+                }
             }
             Ok(id)
         })
@@ -1018,8 +1043,10 @@ async fn op_network_ips(req: &Req) -> Result<Value> {
             }));
         }
         cons.sort_by_key(|c| c["name"].as_str().unwrap_or("").to_string());
-        // dn7 auto-allocates addresses (no per-endpoint static IP) → not editable.
-        Ok(json!({ "name": net, "subnet": subnet, "gateway": gateway, "editable": false, "containers": cons }))
+        // User networks support per-endpoint static-IP edit + disconnect; the
+        // built-in default network is view-only.
+        let editable = !dn7_container::net::registry::is_builtin(&net);
+        Ok(json!({ "name": net, "subnet": subnet, "gateway": gateway, "editable": editable, "containers": cons }))
     })
     .await
 }
@@ -1043,33 +1070,80 @@ async fn op_inspect_container_networks(req: &Req) -> Result<Value> {
     .await
 }
 
-// dn7 has exactly one built-in bridge network; the create/remove/rename and
-// runtime attach/detach/static-IP operations have no equivalent and are rejected
-// with a stable `ERR_CODE:` code (localized by the UI via `err.dn7.*` keys)
-// rather than silently no-oping.
+// dn7 supports a built-in default network plus user-defined bridge networks
+// (create/remove/rename), per-container static IPs, and runtime attach/detach.
 #[cfg(target_os = "linux")]
-async fn op_create_network(_req: &Req) -> Result<Value> {
-    Err(anyhow!("ERR_CODE:dn7.network_create_unsupported"))
+async fn op_create_network(req: &Req) -> Result<Value> {
+    let name = trimmed(&req.name).ok_or_else(|| anyhow!("network name is required"))?;
+    let subnet = trimmed(&req.subnet).ok_or_else(|| anyhow!("subnet (CIDR) is required"))?;
+    let gateway = req.gateway.clone().unwrap_or_default();
+    run_blocking(move || {
+        use dn7_container::net::registry;
+        let (net, gw) = registry::parse_subnet(&subnet, &gateway).map_err(|e| anyhow!("{e}"))?;
+        let cfg = registry::create(&name, net, gw).map_err(|e| anyhow!("{e}"))?;
+        Ok(json!({
+            "created": cfg.name,
+            "bridge": cfg.bridge,
+            "subnet": cfg.subnet.to_string(),
+            "gateway": cfg.gateway.to_string(),
+        }))
+    })
+    .await
 }
 #[cfg(target_os = "linux")]
-async fn op_remove_network(_req: &Req) -> Result<Value> {
-    Err(anyhow!("ERR_CODE:dn7.network_builtin_protected"))
+async fn op_remove_network(req: &Req) -> Result<Value> {
+    let name = need_ref(req)?;
+    run_blocking(move || {
+        dn7_container::net::registry::remove(&name).map_err(|e| anyhow!("{e}"))?;
+        Ok(json!({ "removed": name }))
+    })
+    .await
 }
 #[cfg(target_os = "linux")]
-async fn op_rename_network(_req: &Req) -> Result<Value> {
-    Err(anyhow!("ERR_CODE:dn7.network_rename_unsupported"))
+async fn op_rename_network(req: &Req) -> Result<Value> {
+    let old = need_ref(req)?;
+    let new = trimmed(&req.new_name).ok_or_else(|| anyhow!("new network name is required"))?;
+    run_blocking(move || {
+        dn7_container::net::registry::rename(&old, &new).map_err(|e| anyhow!("{e}"))?;
+        Ok(json!({ "renamed": new }))
+    })
+    .await
 }
 #[cfg(target_os = "linux")]
-async fn op_set_network_ip(_req: &Req) -> Result<Value> {
-    Err(anyhow!("ERR_CODE:dn7.network_static_ip_unsupported"))
+async fn op_set_network_ip(req: &Req) -> Result<Value> {
+    let cref = need_ref(req)?;
+    let network = trimmed(&req.network).ok_or_else(|| anyhow!("network is required"))?;
+    let ipv4 = trimmed(&req.ipv4).ok_or_else(|| anyhow!("ipv4 is required"))?;
+    run_blocking(move || {
+        let id = resolve_dn7_id(&cref)?;
+        dn7_container::container::net_set_ip(&id, &network, &ipv4).map_err(|e| anyhow!("{e}"))?;
+        Ok(json!({ "ok": true, "ip": ipv4 }))
+    })
+    .await
 }
 #[cfg(target_os = "linux")]
-async fn op_connect_network(_req: &Req) -> Result<Value> {
-    Err(anyhow!("ERR_CODE:dn7.network_hotplug_unsupported"))
+async fn op_connect_network(req: &Req) -> Result<Value> {
+    let cref = need_ref(req)?;
+    let network = trimmed(&req.network).ok_or_else(|| anyhow!("network is required"))?;
+    let ipv4 = trimmed(&req.ipv4);
+    run_blocking(move || {
+        let id = resolve_dn7_id(&cref)?;
+        let (ip, ifname) = dn7_container::container::net_connect(&id, &network, ipv4.as_deref())
+            .map_err(|e| anyhow!("{e}"))?;
+        Ok(json!({ "connected": network, "ip": ip, "ifname": ifname }))
+    })
+    .await
 }
 #[cfg(target_os = "linux")]
-async fn op_disconnect_network(_req: &Req) -> Result<Value> {
-    Err(anyhow!("ERR_CODE:dn7.network_disconnect_unsupported"))
+async fn op_disconnect_network(req: &Req) -> Result<Value> {
+    let cref = need_ref(req)?;
+    let network = trimmed(&req.network).ok_or_else(|| anyhow!("network is required"))?;
+    run_blocking(move || {
+        let id = resolve_dn7_id(&cref)?;
+        dn7_container::container::net_disconnect(&id, &network).map_err(|e| anyhow!("{e}"))?;
+        Ok(json!({ "disconnected": network }))
+    })
+    .await
 }
 
 /// `retag_image`: reconcile an image's tags. Current tags = every stored
@@ -1513,12 +1587,30 @@ mod tests {
     }
 
     #[test]
-    fn build_dn7_create_rejects_static_ipv4() {
+    fn build_dn7_create_threads_network_and_static_ipv4() {
+        // A user-selected network + static IP now flow into the spec (the primary
+        // network becomes the mode; the IP becomes `spec.static_ip`), instead of
+        // being rejected.
         let req = req_from(json!({
             "op": "create_container", "image": "alpine",
-            "networks": [{"network": "dn7", "ipv4": "172.18.0.9"}]
+            "networks": [{"network": "mynet", "ipv4": "172.20.0.9"}]
         }));
-        assert!(build_dn7_create(&req).is_err());
+        let plan = build_dn7_create(&req).unwrap();
+        assert_eq!(plan.spec.net_mode, "mynet");
+        assert_eq!(plan.spec.static_ip.as_deref(), Some("172.20.0.9"));
+        assert!(plan.extra_nets.is_empty());
+    }
+
+    #[test]
+    fn build_dn7_create_extra_networks_become_attachments() {
+        let req = req_from(json!({
+            "op": "create_container", "image": "alpine",
+            "networks": [{"network": "dn7"}, {"network": "second"}]
+        }));
+        let plan = build_dn7_create(&req).unwrap();
+        assert_eq!(plan.spec.net_mode, "bridge"); // "dn7" primary → built-in bridge
+        assert_eq!(plan.extra_nets.len(), 1);
+        assert_eq!(plan.extra_nets[0].network, "second");
     }
 
     #[test]

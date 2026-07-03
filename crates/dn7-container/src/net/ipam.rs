@@ -153,6 +153,89 @@ impl Ipam {
         Ok(dead)
     }
 
+    /// Allocate `container_id` a SPECIFIC address in `cfg`'s subnet (docker static
+    /// IP). Errors if it's outside the subnet, the gateway/network/broadcast, or
+    /// already leased to a different container. Reassigns if the same container
+    /// asks for a new address.
+    pub fn allocate_static(
+        &self,
+        cfg: &NetworkConfig,
+        container_id: &str,
+        pid: i32,
+        want: Ipv4Addr,
+    ) -> Result<Lease> {
+        let _guard = self.lock(&cfg.name)?;
+        let mut table = self.load(&cfg.name)?;
+        if !cfg.subnet.contains(&want)
+            || want == cfg.gateway
+            || want == cfg.subnet.network()
+            || want == cfg.subnet.broadcast()
+        {
+            return Err(Error::Other(format!(
+                "{want} is not a usable host address in {}",
+                cfg.subnet
+            )));
+        }
+        if let Some(ex) = table.leases.iter().find(|l| l.container_id == container_id) {
+            if ex.ip == want {
+                return Ok(ex.clone());
+            }
+        }
+        if table
+            .leases
+            .iter()
+            .any(|l| l.ip == want && l.container_id != container_id)
+        {
+            return Err(Error::Other(format!(
+                "address {want} is already in use on network {}",
+                cfg.name
+            )));
+        }
+        table.leases.retain(|l| l.container_id != container_id);
+        let lease = Lease {
+            ip: want,
+            mac: mac_for(want),
+            container_id: container_id.to_string(),
+            pid,
+        };
+        table.leases.push(lease.clone());
+        self.save(&cfg.name, &table)?;
+        Ok(lease)
+    }
+
+    /// Count leases on `net` whose owning pid is still alive — i.e. containers
+    /// actually attached (a dead pid's lease is a leak, not an attachment).
+    pub fn active_leases(&self, net: &str) -> usize {
+        use nix::sys::signal::kill;
+        use nix::unistd::Pid;
+        self.load(net)
+            .unwrap_or_default()
+            .leases
+            .iter()
+            .filter(|l| !matches!(kill(Pid::from_raw(l.pid), None), Err(nix::Error::ESRCH)))
+            .count()
+    }
+
+    /// Delete a network's whole lease table (on network removal).
+    pub fn drop_table(&self, net: &str) -> Result<()> {
+        let dir = self.net_dir(net);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).map_err(Error::io(&dir))?;
+        }
+        Ok(())
+    }
+
+    /// Move a network's lease table to a new name (on network rename).
+    pub fn rename_table(&self, old: &str, new: &str) -> Result<()> {
+        let from = self.net_dir(old);
+        if from.exists() {
+            let to = self.net_dir(new);
+            let _ = std::fs::remove_dir_all(&to);
+            std::fs::rename(&from, &to).map_err(Error::io(&to))?;
+        }
+        Ok(())
+    }
+
     fn net_dir(&self, net: &str) -> PathBuf {
         self.run_root.join(net)
     }
