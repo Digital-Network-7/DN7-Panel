@@ -879,23 +879,58 @@ async fn op_container_stats(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
     run_blocking(move || {
         let id = resolve_dn7_id(&r)?;
+        let pid = DnState::load(&id).map_err(dn7_err)?.pid;
+        let t0 = std::time::Instant::now();
         let s1 = dn7_container::container::stats(&id).map_err(dn7_err)?;
         std::thread::sleep(std::time::Duration::from_millis(100));
         let s2 = dn7_container::container::stats(&id).map_err(dn7_err)?;
+        // CPU% over the ACTUAL measured interval (not an assumed 100ms), like docker.
+        let elapsed_us = t0.elapsed().as_micros().max(1) as f64;
         let cpu_delta = s2.cpu_usage_usec.saturating_sub(s1.cpu_usage_usec) as f64;
-        let cpu_pct = cpu_delta / 100_000.0 * 100.0; // delta-µs / interval-µs * 100
+        let cpu_pct = cpu_delta / elapsed_us * 100.0;
         let online = std::thread::available_parallelism()
             .map(|n| n.get() as u64)
             .unwrap_or(1);
+        // Network: sum non-lo ifaces from /proc/<pid>/net/dev (the container's netns).
+        let (net_rx, net_tx) = read_proc_net_dev(pid);
+        // Memory like `docker stats`: current minus reclaimable page cache; an
+        // unlimited container reports host RAM as its limit (so the % is meaningful).
+        let mem_used = s2.memory_current.saturating_sub(s2.inactive_file);
+        let mem_limit = s2.memory_max.unwrap_or_else(mem_total_bytes);
         Ok(json!({
             "cpu_pct": (cpu_pct * 100.0).round() / 100.0,
             "cpu_online": online,
-            "mem_used": s2.memory_current,
-            "mem_limit": s2.memory_max.unwrap_or(0),
-            "net_rx": 0, "net_tx": 0, "blk_read": 0, "blk_write": 0,
+            "mem_used": mem_used,
+            "mem_limit": mem_limit,
+            "net_rx": net_rx, "net_tx": net_tx,
+            "blk_read": s2.io_rbytes, "blk_write": s2.io_wbytes,
         }))
     })
     .await
+}
+
+/// Sum non-loopback RX/TX bytes from `/proc/<pid>/net/dev`. That file reflects
+/// the network namespace of `pid`, so the container's init pid gives the
+/// container's own traffic totals (`docker stats` NET I/O).
+#[cfg(target_os = "linux")]
+fn read_proc_net_dev(pid: i32) -> (u64, u64) {
+    let (mut rx, mut tx) = (0u64, 0u64);
+    if let Ok(txt) = std::fs::read_to_string(format!("/proc/{pid}/net/dev")) {
+        for line in txt.lines() {
+            let Some((iface, rest)) = line.split_once(':') else {
+                continue; // header rows carry no data colon
+            };
+            if iface.trim() == "lo" {
+                continue;
+            }
+            let f: Vec<&str> = rest.split_whitespace().collect();
+            if f.len() >= 9 {
+                rx += f[0].parse::<u64>().unwrap_or(0); // receive bytes
+                tx += f[8].parse::<u64>().unwrap_or(0); // transmit bytes
+            }
+        }
+    }
+    (rx, tx)
 }
 
 /// `get_container_config`: the stored recreate body (for the edit/upgrade form).

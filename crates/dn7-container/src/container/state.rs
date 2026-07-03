@@ -57,9 +57,14 @@ pub struct StateMeta {
     pub image: Option<String>,
     /// The container's display name (the panel name; `id` is derived from it).
     pub name: Option<String>,
-    /// Restart policy name (`no`|`unless-stopped`|`always`) — stored for inspect
-    /// fidelity; dn7 has no supervisor, so it does NOT auto-restart (noop).
+    /// Restart policy (`no`|`always`|`unless-stopped`|`on-failure[:N]`). Enforced
+    /// by the per-container reaper (`container::spawn_reaper`) + the boot reconcile.
     pub restart_policy: Option<String>,
+    /// Whether the last transition to Stopped was an explicit user stop/kill (vs a
+    /// crash/exit). The restart supervisor honours it: `unless-stopped` does NOT
+    /// auto-restart a user-stopped container. Reset on every (re)start.
+    #[serde(default)]
+    pub stopped_by_user: bool,
     pub tty: bool,
     pub open_stdin: bool,
     pub hostname: Option<String>,

@@ -16,7 +16,10 @@ pub fn ensure_bridge(cfg: &NetworkConfig) -> Result<()> {
     sock.add_bridge(&cfg.bridge)?;
     let idx = nl::if_index(&cfg.bridge)?;
     sock.add_addr(idx, cfg.gateway, cfg.subnet.prefix_len())?;
-    sock.set_up(idx)
+    sock.set_up(idx)?;
+    // Bring up the network's embedded DNS responder (container-name resolution).
+    crate::net::dns_server::ensure_running(cfg);
+    Ok(())
 }
 
 /// Create a veth pair (`host` end stays on the host, `peer` is moved into the

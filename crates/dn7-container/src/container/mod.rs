@@ -163,9 +163,28 @@ fn assemble_image_bundle(spec: &ImageRunSpec) -> Result<std::path::PathBuf> {
     let rootfs = bundle.join("rootfs");
     let upper = bundle.join("upper");
     let work = bundle.join("work");
-    if spec.net_mode == "bridge" {
-        crate::net::dns::write_resolv_conf_with(&upper.join("etc"), &spec.dns)?;
-    }
+    // Docker provides /etc/resolv.conf AND /etc/hosts in every net mode (host
+    // mode mirrors the host's resolvers; none still gets the standard files). On a
+    // bridge network point the container at the embedded resolver (its gateway) so
+    // peer names resolve, with the host upstreams as a fallback if it's down.
+    let etc = upper.join("etc");
+    let servers: Vec<String> = match spec.net_mode.as_str() {
+        "host" | "none" => spec.dns.clone(),
+        net => match crate::net::registry::resolve(net) {
+            Ok(cfg) => {
+                let mut v = vec![cfg.gateway.to_string()];
+                v.extend(if spec.dns.is_empty() {
+                    crate::net::dns::host_upstreams()
+                } else {
+                    spec.dns.clone()
+                });
+                v
+            }
+            Err(_) => spec.dns.clone(),
+        },
+    };
+    crate::net::dns::write_resolv_conf_with(&etc, &servers)?;
+    crate::net::dns::write_hosts(&etc, &hostname, spec.static_ip.as_deref())?;
     crate::sys::overlay::mount_overlay(&lower, &upper, &work, &rootfs)?;
     Ok(bundle)
 }
@@ -409,7 +428,56 @@ fn spawn_reaper(id: String, init_pid: i32) {
         s.meta.exit_code = code;
         s.meta.paused = false;
         let _ = s.save();
+
+        // Restart-policy supervisor: if the init exited on its own (not a user
+        // stop) and the policy calls for it, auto-restart after a backoff. Release
+        // the lock first — `rerun` re-takes it.
+        let policy = s.meta.restart_policy.clone().unwrap_or_default();
+        let (rc, user_stopped) = (s.meta.restart_count, s.meta.stopped_by_user);
+        drop(_guard);
+        if should_restart(&policy, code, rc, user_stopped) {
+            std::thread::sleep(restart_backoff(rc));
+            // Re-check under the lock that nothing restarted/removed it meanwhile,
+            // then count this automatic restart and rerun (which re-takes the lock).
+            {
+                let Ok(_g) = State::lock(&id) else { return };
+                let Ok(mut cur) = State::load(&id) else {
+                    return;
+                };
+                if cur.refresh_status() != Status::Stopped || cur.meta.stopped_by_user {
+                    return; // gone, running again, or user-stopped in the window
+                }
+                cur.meta.restart_count = cur.meta.restart_count.saturating_add(1);
+                let _ = cur.save();
+            }
+            let _ = rerun(&id);
+        }
     });
+}
+
+/// Whether the restart-policy supervisor should auto-restart a container that
+/// just exited with `exit_code`, given its `policy`, prior automatic
+/// `restart_count`, and whether the stop was user-initiated. Mirrors Docker:
+/// `always` always; `unless-stopped` unless the user stopped it; `on-failure[:N]`
+/// only on a non-zero exit, up to N automatic restarts (0/absent = unlimited);
+/// `no`/empty never.
+fn should_restart(policy: &str, exit_code: i32, restart_count: u32, user_stopped: bool) -> bool {
+    let (kind, max) = match policy.split_once(':') {
+        Some((k, n)) => (k.trim(), n.trim().parse::<u32>().ok()),
+        None => (policy.trim(), None),
+    };
+    match kind {
+        "always" => true,
+        "unless-stopped" => !user_stopped,
+        "on-failure" => exit_code != 0 && max.is_none_or(|m| m == 0 || restart_count < m),
+        _ => false,
+    }
+}
+
+/// Exponential restart backoff (Docker-style): 100ms doubling, capped at 60s.
+fn restart_backoff(restart_count: u32) -> std::time::Duration {
+    let ms = 100u64.saturating_mul(1u64 << restart_count.min(9)); // cap the shift
+    std::time::Duration::from_millis(ms.min(60_000))
 }
 
 /// `start`: open the exec FIFO's read end, which unblocks the parked init and
@@ -472,6 +540,7 @@ pub fn stop(id: &str, timeout: std::time::Duration) -> Result<()> {
     }
     s.status = Status::Stopped;
     s.meta.paused = false;
+    s.meta.stopped_by_user = true; // an explicit stop/kill — don't auto-restart
     s.save()
 }
 
@@ -492,6 +561,7 @@ pub fn kill_now(id: &str) -> Result<()> {
     }
     s.status = Status::Stopped;
     s.meta.paused = false;
+    s.meta.stopped_by_user = true; // an explicit stop/kill — don't auto-restart
     s.save()
 }
 
@@ -555,9 +625,10 @@ fn rerun_locked(id: &str) -> Result<()> {
     let bundle = s.bundle.clone();
     let mut meta = s.meta.clone();
     meta.paused = false;
-    // Docker does NOT bump RestartCount on a manual restart/start — it's a
-    // crash-loop diagnostic reserved for the restart-policy supervisor's
-    // automatic restarts. Keep manual rerun count-neutral.
+    meta.stopped_by_user = false; // a (re)start clears the user-stop latch
+                                  // Docker does NOT bump RestartCount on a manual restart/start — it's a
+                                  // crash-loop diagnostic reserved for the restart-policy supervisor's
+                                  // automatic restarts. Keep manual rerun count-neutral.
     State::remove_dir(id)?;
     // `create_with_meta` does not take the lock (it's a create-path leaf), so it's
     // safe to call while we hold it; `start_locked` likewise skips the lock.
@@ -574,6 +645,40 @@ pub fn start_or_rerun(id: &str) -> Result<()> {
         Status::Stopped => rerun(id),
         Status::Running => Ok(()),
     }
+}
+
+/// Boot reconcile: after a panel/host restart the container inits are gone, so
+/// bring back the ones whose restart policy asks for it — Docker's daemon does
+/// the same at start. `always` restarts anything that had been started (even if
+/// the user stopped it); `unless-stopped` restarts it UNLESS the user stopped it.
+/// A never-started (`Created`) container is left alone. Returns the count restarted.
+pub fn reconcile_restart_policies() -> usize {
+    let Ok(states) = list() else { return 0 };
+    let mut n = 0;
+    for mut s in states {
+        // Never-started containers aren't auto-booted (they were never running).
+        if s.status == Status::Created {
+            continue;
+        }
+        let policy = s.meta.restart_policy.clone().unwrap_or_default();
+        let kind = policy
+            .split_once(':')
+            .map(|(k, _)| k)
+            .unwrap_or(&policy)
+            .trim();
+        let want = match kind {
+            "always" => true,
+            "unless-stopped" => !s.meta.stopped_by_user,
+            _ => false,
+        };
+        if !want || s.refresh_status() == Status::Running {
+            continue;
+        }
+        if rerun(&s.id).is_ok() {
+            n += 1;
+        }
+    }
+    n
 }
 
 /// `restart`: stop (if running) then re-execute; a never-started container is
@@ -651,9 +756,11 @@ pub fn exec(id: &str, args: &[String]) -> Result<i32> {
     }
     let ns = open_ns_fds(s.pid)?;
     let sec = load_bundle_spec(&s.bundle).and_then(|spec| sec_downgrade_for(&spec));
+    let (env, cwd) = container_env_cwd(&s.bundle);
     let mut cmd = std::process::Command::new(&args[0]);
     cmd.args(&args[1..]);
-    enter_namespaces(&mut cmd, ns, open_cgroup_procs(&s.cgroup), sec);
+    apply_image_env(&mut cmd, &env);
+    enter_namespaces(&mut cmd, ns, open_cgroup_procs(&s.cgroup), sec, cwd);
     let status = cmd
         .status()
         .map_err(|e| Error::Other(format!("exec: {e}")))?;
@@ -784,6 +891,43 @@ pub(crate) fn sec_downgrade_for(spec: &crate::oci::spec::Spec) -> Option<SecDown
     })
 }
 
+/// The container's image environment (as `(K,V)` pairs) + working dir (as a C
+/// string for a post-`setns` `chdir`), read from its bundle spec. So an exec /
+/// web-terminal runs with the image's PATH/env and starts in its WorkingDir,
+/// like `docker exec`, instead of inheriting the panel's env + landing in `/`.
+pub(crate) fn container_env_cwd(
+    id_bundle: &Path,
+) -> (Vec<(String, String)>, Option<std::ffi::CString>) {
+    let mut env = Vec::new();
+    let mut cwd = None;
+    if let Some(spec) = load_bundle_spec(id_bundle) {
+        if let Some(p) = spec.process.as_ref() {
+            for e in &p.env {
+                if let Some((k, v)) = e.split_once('=') {
+                    env.push((k.to_string(), v.to_string()));
+                }
+            }
+            if !p.cwd.is_empty() && p.cwd != "/" {
+                cwd = std::ffi::CString::new(p.cwd.clone()).ok();
+            }
+        }
+    }
+    (env, cwd)
+}
+
+/// Apply the image env to `cmd` as the base environment (Docker semantics),
+/// preserving the caller's `TERM` so a web terminal still renders correctly.
+pub(crate) fn apply_image_env(cmd: &mut std::process::Command, env: &[(String, String)]) {
+    let term = std::env::var("TERM").ok();
+    cmd.env_clear();
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    if let Some(t) = term {
+        cmd.env("TERM", t);
+    }
+}
+
 /// Load the container's bundle spec (for [`sec_downgrade_for`]). Separate from the
 /// state load so callers can build the downgrade pre-fork.
 fn load_bundle_spec(bundle: &Path) -> Option<crate::oci::spec::Spec> {
@@ -904,18 +1048,25 @@ pub(crate) fn enter_namespaces(
     ns_fds: Vec<std::os::fd::OwnedFd>,
     cgroup_procs: Option<std::os::fd::OwnedFd>,
     sec: Option<SecDowngrade>,
+    cwd: Option<std::ffi::CString>,
 ) {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
     // SAFETY: runs in the forked child before exec; `setns`/`as_raw_fd`/`write`/
-    // `getpid`/`capset`/`setres*id`/`prctl` are async-signal-safe and allocate
-    // nothing (the fd vec + groups vec are built pre-fork).
+    // `getpid`/`capset`/`setres*id`/`prctl`/`chdir` are async-signal-safe and
+    // allocate nothing (the fd vec + groups vec + cwd CString are built pre-fork).
     unsafe {
         cmd.pre_exec(move || {
             for fd in &ns_fds {
                 if libc::setns(fd.as_raw_fd(), 0) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
+            }
+            // chdir into the image WorkingDir AFTER setns(mnt) so it resolves in the
+            // container's filesystem, matching `docker exec`'s cwd. Best-effort: a
+            // missing WorkingDir shouldn't sink the exec (falls back to the mnt root).
+            if let Some(cwd) = &cwd {
+                libc::chdir(cwd.as_ptr());
             }
             // Join the container cgroup: write our own pid to the pre-opened
             // cgroup.procs fd (valid regardless of the container's mount ns). Done
@@ -953,12 +1104,14 @@ pub fn exec_capture(id: &str, argv: &[String], env: &[(String, String)]) -> Resu
     }
     let ns = open_ns_fds(s.pid)?;
     let sec = load_bundle_spec(&s.bundle).and_then(|spec| sec_downgrade_for(&spec));
+    let (img_env, cwd) = container_env_cwd(&s.bundle);
     let mut cmd = std::process::Command::new(&argv[0]);
     cmd.args(&argv[1..]);
+    apply_image_env(&mut cmd, &img_env); // image env base…
     for (k, v) in env {
-        cmd.env(k, v);
+        cmd.env(k, v); // …caller-injected vars override
     }
-    enter_namespaces(&mut cmd, ns, open_cgroup_procs(&s.cgroup), sec);
+    enter_namespaces(&mut cmd, ns, open_cgroup_procs(&s.cgroup), sec, cwd);
     let out = cmd
         .output()
         .map_err(|e| Error::Other(format!("exec: {e}")))?;

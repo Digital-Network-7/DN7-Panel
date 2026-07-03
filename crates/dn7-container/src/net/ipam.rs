@@ -127,6 +127,15 @@ impl Ipam {
         Ok(())
     }
 
+    /// All current leases on `net` (for the embedded DNS name→IP mapping). Empty
+    /// if the table can't be read.
+    pub fn leases(&self, net: &str) -> Vec<Lease> {
+        self.lock(net)
+            .and_then(|_g| self.load(net))
+            .map(|t| t.leases)
+            .unwrap_or_default()
+    }
+
     /// Drop leases whose pid is no longer live (crash/leak reconciliation).
     /// Returns the number reclaimed.
     pub fn reclaim_dead(&self, net: &str, is_live: impl Fn(i32) -> bool) -> Result<usize> {

@@ -12,6 +12,7 @@
 pub mod backend;
 pub mod config;
 pub mod dns;
+pub mod dns_server;
 pub mod firewall;
 pub mod ipam;
 mod nft;

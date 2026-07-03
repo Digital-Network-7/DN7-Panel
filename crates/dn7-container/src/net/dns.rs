@@ -51,6 +51,27 @@ pub fn write_resolv_conf(etc_dir: &Path) -> Result<()> {
     write_resolv_conf_with(etc_dir, &host_upstreams())
 }
 
+/// Write a managed `/etc/hosts` (like Docker): the standard localhost/loopback
+/// lines plus the container's own `hostname` mapped to its IP (its static IP if
+/// known, else the loopback so self-resolution still works — peer names resolve
+/// via the embedded DNS). Fixes from-scratch images where `localhost` is unmapped.
+pub fn write_hosts(etc_dir: &Path, hostname: &str, ip: Option<&str>) -> Result<()> {
+    std::fs::create_dir_all(etc_dir).map_err(Error::io(etc_dir))?;
+    let mut s = String::from(
+        "127.0.0.1\tlocalhost\n\
+         ::1\tlocalhost ip6-localhost ip6-loopback\n\
+         fe00::0\tip6-localnet\n\
+         ff00::0\tip6-mcastprefix\n\
+         ff02::1\tip6-allnodes\n\
+         ff02::2\tip6-allrouters\n",
+    );
+    if !hostname.is_empty() {
+        s.push_str(&format!("{}\t{hostname}\n", ip.unwrap_or("127.0.1.1")));
+    }
+    let p = etc_dir.join("hosts");
+    std::fs::write(&p, s).map_err(Error::io(&p))
+}
+
 /// Like [`write_resolv_conf`] but with explicit nameservers (the container's
 /// requested DNS); falls back to the host upstreams when `servers` is empty.
 pub fn write_resolv_conf_with(etc_dir: &Path, servers: &[String]) -> Result<()> {

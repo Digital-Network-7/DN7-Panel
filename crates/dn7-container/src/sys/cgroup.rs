@@ -17,8 +17,14 @@ pub struct CgroupStats {
     pub cpu_usage_usec: u64,
     pub memory_current: u64,
     pub memory_max: Option<u64>,
+    /// `inactive_file` from `memory.stat` — reclaimable page cache. `docker stats`
+    /// reports memory as `memory.current - inactive_file`.
+    pub inactive_file: u64,
     pub pids_current: u64,
     pub pids_max: Option<u64>,
+    /// Cumulative block-IO bytes across all devices, from `io.stat`.
+    pub io_rbytes: u64,
+    pub io_wbytes: u64,
 }
 
 /// The unified cgroup v2 mount point.
@@ -134,12 +140,16 @@ impl Cgroup {
     /// Read a resource snapshot. Missing files (controller not enabled) read as 0
     /// / unlimited, so this never fails for a live container.
     pub fn stats(&self) -> CgroupStats {
+        let (io_rbytes, io_wbytes) = sum_io_stat(&self.path.join("io.stat"));
         CgroupStats {
             cpu_usage_usec: read_keyed(&self.path.join("cpu.stat"), "usage_usec").unwrap_or(0),
             memory_current: read_u64(&self.path.join("memory.current")).unwrap_or(0),
             memory_max: read_max_u64(&self.path.join("memory.max")),
+            inactive_file: read_keyed(&self.path.join("memory.stat"), "inactive_file").unwrap_or(0),
             pids_current: read_u64(&self.path.join("pids.current")).unwrap_or(0),
             pids_max: read_max_u64(&self.path.join("pids.max")),
+            io_rbytes,
+            io_wbytes,
         }
     }
 
@@ -270,6 +280,21 @@ fn read_keyed(p: &Path, key: &str) -> Option<u64> {
         }
     }
     None
+}
+
+/// Sum `rbytes=`/`wbytes=` across every device line of a cgroup v2 `io.stat`.
+fn sum_io_stat(p: &Path) -> (u64, u64) {
+    let (mut r, mut w) = (0u64, 0u64);
+    if let Ok(txt) = std::fs::read_to_string(p) {
+        for tok in txt.split_whitespace() {
+            if let Some(v) = tok.strip_prefix("rbytes=") {
+                r += v.parse::<u64>().unwrap_or(0);
+            } else if let Some(v) = tok.strip_prefix("wbytes=") {
+                w += v.parse::<u64>().unwrap_or(0);
+            }
+        }
+    }
+    (r, w)
 }
 
 /// `-1` (OCI "unlimited") → `max`; any other value verbatim.

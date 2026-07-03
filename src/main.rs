@@ -326,6 +326,22 @@ async fn run_panel(cfg: PanelConfig) -> Result<()> {
         ));
     }
     tracing::info!(web_port = cfg.web_port, "panel role starting");
+    // Restart-policy boot reconcile: bring back containers whose policy
+    // (always / unless-stopped) asks for it after a panel/host restart, like
+    // Docker's daemon. Off the serving path (spawn_blocking) so it never delays
+    // the web server; best-effort.
+    #[cfg(target_os = "linux")]
+    tokio::task::spawn_blocking(|| {
+        // Embedded DNS responders for every network (container-name resolution).
+        dn7_container::net::dns_server::ensure_all();
+        let n = dn7_container::container::reconcile_restart_policies();
+        if n > 0 {
+            tracing::info!(
+                restarted = n,
+                "restart-policy: recovered containers at boot"
+            );
+        }
+    });
     panel::run(cfg).await
 }
 

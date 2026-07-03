@@ -66,16 +66,20 @@ pub fn exec_pty(id: &str, argv: &[String]) -> Result<ExecPty> {
     // Re-apply PID 1's uid/gid/capability downgrade so the terminal shell is no
     // more privileged than the container itself (built pre-fork from the bundle).
     let sec = super::load_bundle_spec(&s.bundle).and_then(|spec| super::sec_downgrade_for(&spec));
+    // Run with the image's env + WorkingDir (like `docker exec`), then force a
+    // 256-color TERM for the web terminal.
+    let (env, cwd) = super::container_env_cwd(&s.bundle);
     let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..])
-        .env("TERM", "xterm-256color")
+    cmd.args(&argv[1..]);
+    super::apply_image_env(&mut cmd, &env);
+    cmd.env("TERM", "xterm-256color")
         .stdin(Stdio::from(s_in))
         .stdout(Stdio::from(s_out))
         .stderr(Stdio::from(s_err));
-    // setns + cgroup-join + security-downgrade pre_exec (runs first, before the
-    // setsid/TIOCSCTTY one), so the shell is accounted against the container's
+    // setns + cgroup-join + cwd + security-downgrade pre_exec (runs first, before
+    // the setsid/TIOCSCTTY one), so the shell is accounted against the container's
     // cgroup, can't escape the memory limit, and can't exceed PID 1's privilege.
-    super::enter_namespaces(&mut cmd, ns, super::open_cgroup_procs(&s.cgroup), sec);
+    super::enter_namespaces(&mut cmd, ns, super::open_cgroup_procs(&s.cgroup), sec, cwd);
     // SAFETY: runs in the forked child before exec, AFTER the setns pre_exec; only
     // async-signal-safe libc calls. fd 0 is the pty slave, so it becomes the
     // controlling terminal.
