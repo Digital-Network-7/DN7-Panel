@@ -78,10 +78,11 @@ pub async fn changelog(cfg: &PanelConfig) -> ChangelogResult {
     // rather than an empty "(no release notes)" placeholder.
     for e in &mut entries {
         if e.notes.is_empty() {
-            e.notes = vec![
+            e.notes.insert(
+                "en".to_string(),
                 "Routine maintenance: stability, performance and security improvements."
                     .to_string(),
-            ];
+            );
         }
     }
     ChangelogResult { current, entries }

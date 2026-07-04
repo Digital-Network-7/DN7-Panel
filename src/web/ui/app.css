@@ -552,6 +552,8 @@
 .upd-cl .cl-date { margin-left:auto; font-size:11px; font-weight:400; color:var(--mut); }
 .upd-cl .cl-notes { margin:6px 0 0; padding-left:18px; }
 .upd-cl .cl-notes li { font-size:12.5px; line-height:1.7; color:var(--mut); }
+/* Per-language release note (paragraph form; replaces the old commit bullets). */
+.upd-cl .cl-note { margin:6px 0 0; font-size:12.5px; line-height:1.7; color:var(--mut); }
 .upd-cl .cl-toggle { width:100%; text-align:center; background:none; border:none; border-top:1px solid var(--line); padding:11px; cursor:pointer; color:var(--br); font-size:12.5px; }
 .upd-cl .cl-toggle:hover { background:var(--hov); }
 

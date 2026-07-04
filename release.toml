@@ -1,17 +1,30 @@
-# ── DN7 Panel version scheme ────────────────────────────────────────────────
-# Display form:  DN7 Panel <codename> <year>.<major>.<minor>   e.g.  Phanes 27.0.0
+# ── DN7 Panel version + release notes ───────────────────────────────────────
+# Single source of truth for the release. Display form:
+#   DN7 Panel <codename> <version>          e.g.  Phanes 27.0.0
 #
 #   codename  release codename, one per year (Apple-style). Sequence: Greek
 #             primordials in cosmogonic order — Phanes (creation), then Chaos,
-#             Gaia, Eros, Nyx, Aether, Uranus, Pontus, …
-#   year      2-digit brand year (Apple-style +1: the 2026 line ships as 27).
-#   major     big version within the year; resets to 0 each new year.
+#             Gaia, Eros, Nyx, Aether, Uranus, Pontus, …  Turns over with the year.
+#   version   <year>.<major>.<minor>. year = Apple-style +1 (the 2026 line is 27);
+#             major resets to 0 each new year; all three are set BY HAND.
 #
-# All three are set here BY HAND — bumping the year/major is an editorial act and
-# the codename turns over with the year. CI only auto-increments the minor: it
-# reads year+major here, finds the latest v<year>.<major>.* tag, adds one, stamps
-# the full <year>.<major>.<minor> into Cargo.toml and tags v<year>.<major>.<minor>.
-# The codename is compiled into the binary by build.rs (DN7_CODENAME env).
+# On every push CI verifies the build, then compares this `version` to the latest
+# released one:
+#   • greater (or no releases yet) → a real release "<codename> <version>",
+#     tagged v<version>, pushed to the dn7.cn stable channel;
+#   • unchanged → a sub-build "<codename> <version> build <YY><Month><NN>"
+#     (month letter A–L from the commit; NN from 00, resets each month), GitHub
+#     only — NOT pushed to dn7.cn.
+# The codename is compiled into the binary by build.rs (DN7_CODENAME); the numeric
+# version rides in via Cargo.toml (CARGO_PKG_VERSION, stamped by CI).
 codename = "Phanes"
-year = 27
-major = 0
+version = "27.0.0"
+
+# Per-language release notes (locale keys match the panel's i18n). The panel's
+# "What's New" shows the entry for the current UI language; CI puts them all in
+# the GitHub Release body + releases.json.
+[notes]
+"zh-CN" = "DN7 Panel 的首个正式版本。一个纯静态的单文件二进制,在网页控制台里管理整台 Linux 服务器——监控、网页终端、容器、网站、文件五合一,零外部依赖、开箱即用,任意 Linux 发行版皆可运行。代号 Phanes(希腊神话的原初创世之神),标记万物之始。"
+"zh-TW" = "DN7 Panel 的首個正式版本。一個純靜態的單一檔案二進位,在網頁主控台管理整台 Linux 伺服器——監控、網頁終端機、容器、網站、檔案五合一,零外部相依、開箱即用,任意 Linux 發行版皆可執行。代號 Phanes(希臘神話的原初創世之神),標記萬物之始。"
+"en" = "The first release of DN7 Panel — a single, fully static binary that manages an entire Linux server from one web console: monitoring, a web terminal, containers, websites, and files, with zero external dependencies, running on any Linux distribution. Codenamed Phanes, the Greek primordial of creation — the beginning of everything."
+"ja" = "DN7 Panel の最初の正式リリース。監視・Web ターミナル・コンテナ・Web サイト・ファイル管理を 1 つの Web コンソールに統合した、完全静的な単一バイナリの Linux サーバー管理パネルです。外部依存はゼロ、あらゆる Linux ディストリビューションで動作します。コードネームは Phanes——ギリシャ神話の原初の創造神、すべての始まりを象徴します。"

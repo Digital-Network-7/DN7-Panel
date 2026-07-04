@@ -170,13 +170,17 @@ pub async fn release_from(cfg: &PanelConfig, source: SourceKind) -> Result<Relea
 // ---------------------------------------------------------------------------
 
 /// One release's notes, as published in the `releases.json` changelog index.
+/// `notes` is a per-language map (locale → paragraph); the UI shows the entry
+/// for the current language. `codename` is the release codename (e.g. "Phanes").
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ReleaseNote {
     pub version: String,
     #[serde(default)]
     pub date: String,
     #[serde(default)]
-    pub notes: Vec<String>,
+    pub codename: String,
+    #[serde(default)]
+    pub notes: std::collections::HashMap<String, String>,
 }
 
 /// Fetch + parse the changelog index from a specific source. GitHub serves it

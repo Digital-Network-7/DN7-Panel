@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """Generate releases.json — the panel's changelog index.
 
-Built in CI on each release from the repo's git history: one entry per
-`v1.*` tag (plus the version being released right now, derived from HEAD),
-each with the commit subjects since the previous tag. Published as a GitHub
-release asset (reachable via `releases/latest/download/releases.json`, no
-api.github.com) and mirrored by dn7.cn, so the panel can show "what's new"
-from whichever source is available.
+Built in CI on each release. Each entry is { version, date, codename, notes }
+where `notes` is a per-language map { "en": "...", "zh-CN": "...", … } read from
+release.toml for the version currently being released; past versions carry an
+empty map (their notes lived in their own release at the time). Published as a
+GitHub release asset (releases/latest/download/releases.json, no api.github.com)
+and mirrored by dn7.cn, so the panel can show "what's new" in the UI language.
 
 Usage: gen_releases.py <output_path>   (reads NEW_VERSION from the env)
 """
 import json
 import os
+import re
 import subprocess
 import sys
+import tomllib
 
 
 def sh(*args):
@@ -28,45 +30,6 @@ def ver_key(v):
         return (0, 0, 0)
 
 
-def notes_for(rev_range):
-    raw = sh("git", "log", rev_range, "--no-merges", "--pretty=format:%s")
-    # Conventional-commit grouping: parse `type(scope): subject`, drop noise
-    # types (chore/ci/docs/…), tag the rest, and order by importance so the
-    # changelog reads cleanly.
-    DROP = {"chore", "ci", "build", "docs", "style", "test", "release", "refactor", "deps", "wip"}
-    TAG = {
-        "feat": "Feature", "feature": "Feature", "fix": "Fix", "bugfix": "Fix",
-        "perf": "Performance", "security": "Security", "sec": "Security",
-        "ui": "UI", "api": "API", "i18n": "i18n",
-    }
-    PRIORITY = {"Feature": 0, "Fix": 1, "Performance": 2, "Security": 3, "UI": 4, "API": 5, "i18n": 6}
-    import re
-    items = []  # (priority, tag, subject)
-    for line in raw.splitlines():
-        s = line.strip()
-        if not s or s.lower().startswith("merge "):
-            continue
-        m = re.match(r"^([a-zA-Z][\w]*)(?:\([^)]*\))?!?:\s*(.+)$", s)
-        if m:
-            typ = m.group(1).lower()
-            if typ in DROP:
-                continue
-            tag = TAG.get(typ, typ.capitalize())
-            subject = m.group(2).strip()
-        else:
-            tag, subject = None, s  # unprefixed: keep as-is, lowest priority
-        prio = PRIORITY.get(tag, 9) if tag else 10
-        items.append((prio, tag, subject))
-        if len(items) >= 60:
-            break
-    # Stable sort by priority (preserves chronological order within a group).
-    items.sort(key=lambda x: x[0])
-    out = []
-    for _, tag, subject in items[:40]:
-        out.append(f"{tag}: {subject}" if tag else subject)
-    return out
-
-
 def date_of(ref):
     return sh("git", "log", "-1", "--format=%cs", ref)
 
@@ -75,31 +38,31 @@ def main():
     out_path = sys.argv[1] if len(sys.argv) > 1 else "releases.json"
     new_version = os.environ.get("NEW_VERSION", "").strip().lstrip("v")
 
-    tags = [t for t in sh("git", "tag", "-l", "v1.*").splitlines() if t.strip()]
-    tags.sort(key=ver_key)  # ascending
+    with open("release.toml", "rb") as f:
+        rel = tomllib.load(f)
+    cur_notes = rel.get("notes", {})
+    cur_codename = rel.get("codename", "")
 
-    entries = []
-    # Per-tag entries: notes are commits since the previous tag.
-    for i, tag in enumerate(tags):
-        rng = f"{tags[i-1]}..{tag}" if i > 0 else tag
-        entries.append({
-            "version": tag.lstrip("v"),
-            "date": date_of(tag),
-            "notes": notes_for(rng),
-        })
+    # Only real version tags (v<x>.<y>.<z>); build-code tags (e.g. 27G00) excluded.
+    tags = [t for t in sh("git", "tag", "-l", "v[0-9]*").splitlines()
+            if re.match(r"^v\d+\.\d+\.\d+$", t.strip())]
+    tags.sort(key=ver_key)
 
-    # The release in flight: its tag doesn't exist yet, so derive it from HEAD.
+    def entry(version, ref):
+        cur = version == new_version
+        return {
+            "version": version,
+            "date": date_of(ref),
+            "codename": cur_codename if cur else "",
+            "notes": cur_notes if cur else {},
+        }
+
+    entries = [entry(t.lstrip("v"), t) for t in tags]
+    # The release in flight: its v-tag may not exist yet, so derive from HEAD.
     if new_version and new_version not in [t.lstrip("v") for t in tags]:
-        rng = f"{tags[-1]}..HEAD" if tags else "HEAD"
-        entries.append({
-            "version": new_version,
-            "date": date_of("HEAD"),
-            "notes": notes_for(rng),
-        })
+        entries.append(entry(new_version, "HEAD"))
 
-    # Newest first.
     entries.sort(key=lambda e: ver_key(e["version"]), reverse=True)
-
     doc = {"product": "DN7 Panel", "releases": entries}
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(doc, f, ensure_ascii=False, indent=2)

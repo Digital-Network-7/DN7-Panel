@@ -29,31 +29,50 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
       codename: ${{ steps.v.outputs.codename }}
+      is_new: ${{ steps.v.outputs.is_new }}
+      build_code: ${{ steps.v.outputs.build_code }}
+      rel_name: ${{ steps.v.outputs.rel_name }}
+      rel_tag: ${{ steps.v.outputs.rel_tag }}
     steps:
       - name: Checkout (with tags)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Compute version from release.toml (year.major.minor)
+      - name: Compute version + build code from release.toml
         id: v
         run: |
-          # year + major + codename are set by hand in release.toml; the minor is
-          # auto-incremented from the latest v<year>.<major>.* tag (0 if none).
-          year=$(grep -E '^year' release.toml | grep -oE '[0-9]+' | head -1)
-          major=$(grep -E '^major' release.toml | grep -oE '[0-9]+' | head -1)
-          codename=$(grep -E '^codename' release.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          base="${year}.${major}"
-          latest=$(git tag -l "v${base}.*" | sort -V | tail -1)
+          version=$(python3 -c "import tomllib;print(tomllib.load(open('release.toml','rb'))['version'])")
+          codename=$(python3 -c "import tomllib;print(tomllib.load(open('release.toml','rb'))['codename'])")
+          # Build code <year><month-letter><NN>: month letter A–L from the COMMIT's
+          # month (Jan=A…Dec=L); NN is a 2-digit sequence from 00 that resets each
+          # month (max existing <prefix> tag + 1).
+          mon=$(git show -s --format=%cd --date=format:%m HEAD); mon=$((10#$mon))
+          letter=$(printf '%s' "ABCDEFGHIJKL" | cut -c "$mon")
+          prefix="${version%%.*}${letter}"
+          last=$(git tag -l "${prefix}*" | sed "s/^${prefix}//" | grep -E '^[0-9]+$' | sort -n | tail -1)
+          if [ -z "$last" ]; then seq=0; else seq=$((10#$last + 1)); fi
+          build_code=$(printf "%s%02d" "$prefix" "$seq")
+          # A "real" version when release.toml's version is strictly greater than the
+          # latest released one (or none exist) — otherwise it's a sub-build.
+          latest=$(git tag -l 'v[0-9]*' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
           if [ -z "$latest" ]; then
-            version="${base}.0"
+            is_new=true
+          elif [ "$version" != "$latest" ] && [ "$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -1)" = "$version" ]; then
+            is_new=true
           else
-            patch=${latest##*.}
-            version="${base}.$((patch + 1))"
+            is_new=false
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "codename=$codename" >> "$GITHUB_OUTPUT"
-          echo "next: $codename $version"
+          if [ "$is_new" = "true" ]; then
+            rel_name="${codename} ${version}"; rel_tag="v${version}"
+          else
+            rel_name="${codename} ${version} build ${build_code}"; rel_tag="${build_code}"
+          fi
+          {
+            echo "version=$version"; echo "codename=$codename"; echo "is_new=$is_new"
+            echo "build_code=$build_code"; echo "rel_name=$rel_name"; echo "rel_tag=$rel_tag"
+          } >> "$GITHUB_OUTPUT"
+          echo "→ ${rel_name}  (tag ${rel_tag}, prerelease=$([ "$is_new" = true ] && echo no || echo yes))"
 
   # Gate: formatting, lints (warnings = errors), and the test suite must pass
   # before anything is built/signed/released — so regressions and lint failures
@@ -217,29 +236,48 @@ jobs:
           NEW_VERSION: ${{ needs.version.outputs.version }}
         run: python3 .github/gen_releases.py dist/releases.json
 
+      - name: Compose release body (per-language notes from release.toml)
+        id: body
+        run: |
+          notes=$(python3 -c "import tomllib; d=tomllib.load(open('release.toml','rb')); print('\n'.join(f'**{k}**\n\n{v}\n' for k,v in d.get('notes',{}).items()))")
+          {
+            echo "body<<DN7EOF"
+            printf '%s\n' "$notes"
+            echo "Static (musl) Linux build (x86_64 + arm64), Ed25519-signed and verified before self-update."
+            echo "Commit: ${{ github.sha }}"
+            echo "DN7EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.version.outputs.version }}
-          name: ${{ needs.version.outputs.codename }} ${{ needs.version.outputs.version }}
-          body: |
-            Automated static (musl) Linux build of ${{ env.BIN_NAME }} ${{ needs.version.outputs.codename }} ${{ needs.version.outputs.version }} (x86_64 + arm64).
-            Runs on any Linux regardless of glibc version.
-            Each binary is Ed25519-signed (signature appended to the file) and verified by the panel before self-update.
-            Commit: ${{ github.sha }}
+          tag_name: ${{ needs.version.outputs.rel_tag }}
+          name: ${{ needs.version.outputs.rel_name }}
+          # Sub-builds (version unchanged) are prereleases, so the panel's
+          # `/releases/latest` self-update check skips them.
+          prerelease: ${{ needs.version.outputs.is_new != 'true' }}
+          body: ${{ steps.body.outputs.body }}
           files: dist/*
 
-      # Push the freshly-built, signed binaries to dn7.cn — the domestic origin
-      # / "stable channel". The site authenticates the upload purely by the
-      # appended Ed25519 signature (it verifies against the same embedded key
-      # the panel trusts), so there is no shared token to manage. The binaries
-      # land as a new (unstable) version; an operator promotes one to "stable"
-      # in the dn7.cn admin backend. GitHub remains the always-latest "preview"
-      # channel, so this push only feeds the curated channel.
-      #
-      # Override the target by setting the repo variable DN7_INGEST_URL (e.g.
-      # https://api.teaops.dn7.cn) — defaults to https://dn7.cn.
-      - name: Push binaries to dn7.cn (stable-channel origin)
+      # A real version's tag is v<version>; also drop its build-code tag so the
+      # monthly build-code sequence stays consistent (sub-builds ARE tagged by
+      # their build code, so they advance it on their own).
+      - name: Tag build code (real versions)
+        if: needs.version.outputs.is_new == 'true'
+        run: |
+          git tag "${{ needs.version.outputs.build_code }}" "${{ github.sha }}" || true
+          git push origin "${{ needs.version.outputs.build_code }}" || true
+
+      # Push the signed binaries to dn7.cn — the domestic "stable channel" — but
+      # ONLY for real version bumps. Sub-builds are GitHub prereleases and never
+      # feed the curated channel. The site authenticates the upload purely by the
+      # appended Ed25519 signature (verified against the same embedded key the
+      # panel trusts), so there is no shared token to manage. The binaries land as
+      # a new (unstable) version; an operator promotes one to "stable" in the
+      # dn7.cn admin backend. Override the target with the repo variable
+      # DN7_INGEST_URL (default https://dn7.cn).
+      - name: Push binaries to dn7.cn (real versions only)
+        if: needs.version.outputs.is_new == 'true'
         env:
           SITE: ${{ vars.DN7_INGEST_URL || 'https://dn7.cn' }}
           V: ${{ needs.version.outputs.version }}
