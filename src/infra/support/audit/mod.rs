@@ -278,30 +278,11 @@ fn append_and_trim(line: &str) {
     let _ = trim_if_large(&p, MAX_BYTES, KEEP_BYTES);
 }
 
-/// Read up to `limit` most-recent entries, newest first.
-pub fn read(limit: usize) -> Vec<Entry> {
-    let limit = limit.clamp(1, 5000);
-    let raw = match std::fs::read_to_string(path()) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    let mut out: Vec<Entry> = raw
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str::<Entry>(l).ok())
-        .collect();
-    out.reverse(); // newest first
-    out.truncate(limit);
-    out
-}
-
-/// Erase the audit log. Serialized against the append path via [`LOG_LOCK`] so
-/// a concurrent `spawn_blocking` append can't interleave with the truncate and
-/// corrupt or resurrect partial content.
-pub fn clear() -> std::io::Result<()> {
-    let _guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    std::fs::write(path(), b"")
-}
+/// Read side of the log: whole-file read, filtering, and real pagination.
+mod query;
+#[cfg(test)]
+pub use query::read;
+pub use query::{query, Page, Query};
 
 /// Trim the log in place to its last `keep_bytes` (line-aligned) when it grows
 /// past `max_bytes`. Mirrors the daemon-log janitor in `logrotate`.

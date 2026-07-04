@@ -7,11 +7,33 @@ use super::super::*;
 
 #[derive(serde::Deserialize)]
 pub(crate) struct LogsQuery {
+    /// Entries to skip (post-filter) — the page offset.
+    #[serde(default)]
+    offset: Option<usize>,
+    /// Max entries to return (page size; export requests a large window).
     #[serde(default)]
     limit: Option<usize>,
+    /// "ok" | "fail" — anything else (or absent) means both.
+    #[serde(default)]
+    result: Option<String>,
+    /// Action group filter (e.g. "auth", "docker").
+    #[serde(default)]
+    module: Option<String>,
+    /// Inclusive unix-second lower bound (client sends the day start in the
+    /// configured display timezone).
+    #[serde(default)]
+    from_ts: Option<i64>,
+    /// Inclusive unix-second upper bound (client sends the day end).
+    #[serde(default)]
+    to_ts: Option<i64>,
+    /// Free-text substring over the raw fields.
+    #[serde(default)]
+    q: Option<String>,
 }
 
-/// GET /api/logs — the audit log, newest first. Super-admin (Owner) only.
+/// GET /api/logs — a filtered, paginated page of the audit log, newest first.
+/// Super-admin (Owner) only. Returns `{ entries, total, modules }` so the UI
+/// can drive real (server-side) pagination.
 pub(crate) async fn logs_list(
     State(state): State<Shared>,
     headers: header::HeaderMap,
@@ -20,30 +42,22 @@ pub(crate) async fn logs_list(
     if let Err(r) = require_super(&state, &headers) {
         return r;
     }
-    let entries = audit::read(q.limit.unwrap_or(500));
-    Json(json!({ "ok": true, "data": { "entries": entries } })).into_response()
-}
-
-/// POST /api/logs/clear — erase the audit log. Owner only, plus a fresh
-/// step-up re-auth: wiping the trail is as audit-hostile as it gets, so a
-/// stolen session alone must not be able to do it (same gate as settings /
-/// update apply).
-pub(crate) async fn logs_clear(
-    State(state): State<Shared>,
-    headers: header::HeaderMap,
-) -> Response {
-    let actor = match require_super(&state, &headers) {
-        Ok(a) => a,
-        Err(r) => return r,
+    let filter = audit::Query {
+        ok: match q.result.as_deref() {
+            Some("ok") => Some(true),
+            Some("fail") => Some(false),
+            _ => None,
+        },
+        module: q.module.filter(|s| !s.is_empty()),
+        from_ts: q.from_ts,
+        to_ts: q.to_ts,
+        text: q.q.filter(|s| !s.trim().is_empty()),
     };
-    if let Some(r) = require_stepup(&state, &headers, &actor.username) {
-        return r;
-    }
-    if let Err(e) = audit::clear() {
-        return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
-    }
-    // Durable: the record that erased the trail must itself survive a crash
-    // between the truncate and the append (see audit module doc).
-    audit::record_durable(&actor.username, "logs.clear", "", true, "").await;
-    Json(json!({ "ok": true })).into_response()
+    let page: audit::Page = audit::query(&filter, q.offset.unwrap_or(0), q.limit.unwrap_or(50));
+    Json(json!({ "ok": true, "data": {
+        "entries": page.entries,
+        "total": page.total,
+        "modules": page.modules,
+    }}))
+    .into_response()
 }
