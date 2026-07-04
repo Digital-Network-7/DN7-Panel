@@ -1,0 +1,17 @@
+# ── DN7 Panel version scheme ────────────────────────────────────────────────
+# Display form:  DN7 Panel <codename> <year>.<major>.<minor>   e.g.  Phanes 27.0.0
+#
+#   codename  release codename, one per year (Apple-style). Sequence: Greek
+#             primordials in cosmogonic order — Phanes (creation), then Chaos,
+#             Gaia, Eros, Nyx, Aether, Uranus, Pontus, …
+#   year      2-digit brand year (Apple-style +1: the 2026 line ships as 27).
+#   major     big version within the year; resets to 0 each new year.
+#
+# All three are set here BY HAND — bumping the year/major is an editorial act and
+# the codename turns over with the year. CI only auto-increments the minor: it
+# reads year+major here, finds the latest v<year>.<major>.* tag, adds one, stamps
+# the full <year>.<major>.<minor> into Cargo.toml and tags v<year>.<major>.<minor>.
+# The codename is compiled into the binary by build.rs (DN7_CODENAME env).
+codename = "Phanes"
+year = 27
+major = 0

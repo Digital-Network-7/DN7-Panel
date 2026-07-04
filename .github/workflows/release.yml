@@ -1,10 +1,12 @@
 name: Build Linux Release
 
-# Build Linux release binaries on every push. The version is derived from the
-# latest `v1.5.*` git tag (first release => 1.5.0, then 1.5.1, 1.5.2, ...), so
-# it never skips a number and isn't coupled to the run counter. Binaries are
-# built for the *musl* targets and statically linked, then signed (Ed25519) and
-# published as a GitHub Release with the binaries + detached `.sig` attached.
+# Build Linux release binaries on every push. Versioning is the <codename>
+# <year>.<major>.<minor> scheme (see release.toml): codename/year/major are set
+# by hand in release.toml; this workflow reads them and auto-increments the minor
+# from the latest `v<year>.<major>.*` tag (first => .0), so it never skips a
+# number and isn't coupled to the run counter. Binaries are built for the *musl*
+# targets and statically linked, then signed (Ed25519) and published as a GitHub
+# Release named "<codename> <version>" with the binaries + detached `.sig`.
 #
 # Signing: each binary is signed with the release private key (Actions secret
 # DN7_SIGN_KEY, an Ed25519 PKCS8 PEM). Deployed panels verify the signature
@@ -26,24 +28,32 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      codename: ${{ steps.v.outputs.codename }}
     steps:
       - name: Checkout (with tags)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Compute next version (1.5.x)
+      - name: Compute version from release.toml (year.major.minor)
         id: v
         run: |
-          latest=$(git tag -l 'v1.5.*' | sort -V | tail -1)
+          # year + major + codename are set by hand in release.toml; the minor is
+          # auto-incremented from the latest v<year>.<major>.* tag (0 if none).
+          year=$(grep -E '^year' release.toml | grep -oE '[0-9]+' | head -1)
+          major=$(grep -E '^major' release.toml | grep -oE '[0-9]+' | head -1)
+          codename=$(grep -E '^codename' release.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          base="${year}.${major}"
+          latest=$(git tag -l "v${base}.*" | sort -V | tail -1)
           if [ -z "$latest" ]; then
-            version="1.5.0"
+            version="${base}.0"
           else
             patch=${latest##*.}
-            version="1.5.$((patch + 1))"
+            version="${base}.$((patch + 1))"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "next version: $version"
+          echo "codename=$codename" >> "$GITHUB_OUTPUT"
+          echo "next: $codename $version"
 
   # Gate: formatting, lints (warnings = errors), and the test suite must pass
   # before anything is built/signed/released — so regressions and lint failures
@@ -211,9 +221,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.version.outputs.version }}
-          name: v${{ needs.version.outputs.version }}
+          name: ${{ needs.version.outputs.codename }} ${{ needs.version.outputs.version }}
           body: |
-            Automated static (musl) Linux build of ${{ env.BIN_NAME }} v${{ needs.version.outputs.version }} (x86_64 + arm64).
+            Automated static (musl) Linux build of ${{ env.BIN_NAME }} ${{ needs.version.outputs.codename }} ${{ needs.version.outputs.version }} (x86_64 + arm64).
             Runs on any Linux regardless of glibc version.
             Each binary is Ed25519-signed (signature appended to the file) and verified by the panel before self-update.
             Commit: ${{ github.sha }}

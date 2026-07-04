@@ -57,7 +57,9 @@ function showApp() {
     if (window.updateBadge && Auth.me.is_admin) updateBadge();
   }).catch(() => {});
   api('/api/info').then((b) => {
-    $('panelVer').textContent = 'v' + (b.data.version || '?');
+    // "<codename> <version>", e.g. "Phanes 27.0.0" (codename "dev" on local builds).
+    const cn = b.data.codename ? b.data.codename + ' ' : '';
+    $('panelVer').textContent = cn + (b.data.version || '?');
     if (b.data.hostname) $('panelVer').title = b.data.hostname;
   }).catch(() => {});
   if (window.updateJobsBadge) updateJobsBadge();
