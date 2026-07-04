@@ -118,6 +118,97 @@ impl Store {
         })
     }
 
+    /// Like [`Self::save_blob_from_reader`], but resumable: bytes left in the
+    /// `.tmp` by an earlier failed attempt are re-hashed and `open` is asked for
+    /// a reader starting at that offset (an HTTP `Range` request). `open` returns
+    /// `(reader, start)` — a `start` of 0 (source can't resume) truncates and
+    /// restarts. On a mid-stream error the partial `.tmp` is KEPT for the next
+    /// attempt; a digest mismatch or cap breach discards it (the bytes are bad).
+    /// `on_bytes` is called with byte counts as they land (resumed prefix first),
+    /// for pull-progress reporting.
+    pub fn save_blob_resumable(
+        &self,
+        digest: &str,
+        max_bytes: u64,
+        open: &mut dyn FnMut(u64) -> Result<(Box<dyn Read + Send>, u64)>,
+        on_bytes: &mut dyn FnMut(u64),
+    ) -> Result<()> {
+        if self.has_blob(digest) {
+            return Ok(());
+        }
+        let (_, want_hex) = split_digest(digest)?;
+        let final_path = self.blob_path(digest)?;
+        let tmp = final_path.with_extension("tmp");
+
+        let offset = fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+        let (mut reader, start) = open(offset)?;
+
+        // Re-hash the kept prefix (the digest must cover every byte), or truncate
+        // when the source restarted from 0.
+        let mut hasher = Sha256::new();
+        let file = if start > 0 {
+            let mut prefix = File::open(&tmp).map_err(Error::io(&tmp))?;
+            let mut buf = [0u8; 64 * 1024];
+            let mut hashed: u64 = 0;
+            while hashed < start {
+                let want = usize::try_from((start - hashed).min(buf.len() as u64)).unwrap_or(0);
+                let n = prefix.read(&mut buf[..want]).map_err(Error::io(&tmp))?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                hashed += n as u64;
+            }
+            if hashed != start {
+                // tmp shrank under us — bad state, start clean.
+                let _ = fs::remove_file(&tmp);
+                return Err(Error::Other(format!(
+                    "blob resume: partial file for {digest} changed size"
+                )));
+            }
+            on_bytes(start);
+            fs::OpenOptions::new()
+                .append(true)
+                .open(&tmp)
+                .map_err(Error::io(&tmp))?
+        } else {
+            File::create(&tmp).map_err(Error::io(&tmp))?
+        };
+
+        let mut out = BufWriter::new(file);
+        let mut total = start;
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                // Keep the partial tmp — the caller may retry with a Range resume.
+                Err(e) => return Err(Error::Other(format!("stream blob {digest}: {e}"))),
+            };
+            total += n as u64;
+            if total > max_bytes {
+                let _ = fs::remove_file(&tmp);
+                return Err(Error::Other(format!("blob {digest} exceeds size cap")));
+            }
+            hasher.update(&buf[..n]);
+            if let Err(e) = out.write_all(&buf[..n]) {
+                return Err(Error::Other(format!("write blob {digest}: {e}")));
+            }
+            on_bytes(n as u64);
+        }
+        if let Err(e) = out.flush() {
+            return Err(Error::Other(format!("write blob {digest}: {e}")));
+        }
+        let got_hex = hex_encode(&hasher.finalize());
+        if got_hex != want_hex {
+            let _ = fs::remove_file(&tmp);
+            return Err(Error::Other(format!(
+                "blob digest mismatch: wanted {want_hex}, got {got_hex}"
+            )));
+        }
+        fs::rename(&tmp, &final_path).map_err(Error::io(&final_path))
+    }
+
     pub fn read_blob(&self, digest: &str) -> Result<Vec<u8>> {
         let p = self.blob_path(digest)?;
         fs::read(&p).map_err(Error::io(&p))

@@ -105,6 +105,19 @@ pub struct StateMeta {
     /// Delete the container (and its overlay) as soon as it exits (docker `--rm`).
     #[serde(default)]
     pub auto_remove: bool,
+    /// When the current/most-recent run started (Unix seconds) — Docker's
+    /// `StartedAt`, distinct from create time. `None` = never started.
+    #[serde(default)]
+    pub started_at: Option<u64>,
+    /// When the init last exited (Unix seconds), recorded by the reaper (with a
+    /// stop/kill fallback for inits reaped by another process).
+    #[serde(default)]
+    pub finished_at: Option<u64>,
+    /// Whether the last exit was the kernel OOM killer (cgroup `memory.events`
+    /// `oom_kill` > 0 at reap time) — distinguishes an OOM 137 from a manual
+    /// `kill -9`.
+    #[serde(default)]
+    pub oom_killed: bool,
 }
 
 /// The persisted container record.
@@ -147,6 +160,12 @@ impl State {
     /// The creation time as an ISO-8601 UTC string (no `chrono` dependency).
     pub fn created_iso(&self) -> String {
         epoch_to_iso(self.created)
+    }
+
+    /// Format any Unix-seconds timestamp with the same ISO shape as
+    /// [`Self::created_iso`] (for `startedAt`/`finishedAt` display).
+    pub fn epoch_iso(secs: u64) -> String {
+        epoch_to_iso(secs)
     }
 
     /// `<runtime-root>/<id>`.

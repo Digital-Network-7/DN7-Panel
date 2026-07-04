@@ -399,6 +399,7 @@ fn spawn_console_pump(master: std::os::fd::OwnedFd, log_path: std::path::PathBuf
             .open(&log_path)
             .ok();
         let mut buf = [0u8; 4096];
+        let mut since_check: u64 = 0;
         loop {
             // SAFETY: read into a valid local buffer from our own master fd.
             let n = unsafe {
@@ -419,6 +420,13 @@ fn spawn_console_pump(master: std::os::fd::OwnedFd, log_path: std::path::PathBuf
             }
             if let Some(f) = log.as_mut() {
                 let _ = f.write_all(&buf[..n as usize]);
+            }
+            // Enforce the log cap inline: check the size every ~256 KiB written.
+            // The handle is O_APPEND, so it keeps working across the truncate.
+            since_check += n as u64;
+            if since_check >= 256 * 1024 {
+                since_check = 0;
+                rotate_log_path_if_oversized(&log_path);
             }
         }
         // `master` drops here → the fd is closed.
@@ -459,7 +467,14 @@ fn spawn_reaper(id: String, init_pid: i32) {
         s.status = Status::Stopped;
         s.meta.exit_code = code;
         s.meta.paused = false;
+        s.meta.finished_at = Some(unix_now());
+        // The cgroup outlives the init until delete/rerun, so its memory.events
+        // still tells us whether THIS run tripped the kernel OOM killer — which
+        // is how a 137 from OOM is told apart from a manual `kill -9`.
+        s.meta.oom_killed = Cgroup::at(&s.cgroup).oom_kill_count() > 0;
         let _ = s.save();
+        // Bound the log across runs even if nobody ever read it while running.
+        rotate_log_if_oversized(&id);
 
         // Auto-remove (docker --rm): delete the container + overlay the moment it
         // exits. Mutually exclusive with a restart policy (Docker rejects that
@@ -574,6 +589,9 @@ fn start_locked(id: &str) -> Result<()> {
         return Err(Error::Other("exec.fifo closed without handoff".into()));
     }
     state.status = Status::Running;
+    state.meta.started_at = Some(unix_now());
+    state.meta.finished_at = None;
+    state.meta.oom_killed = false;
     state.save()
 }
 
@@ -615,6 +633,7 @@ pub fn stop(id: &str, timeout: std::time::Duration) -> Result<()> {
     s.status = Status::Stopped;
     s.meta.paused = false;
     s.meta.stopped_by_user = true; // an explicit stop/kill — don't auto-restart
+    s.meta.finished_at = Some(unix_now()); // the reaper refines this if it runs
     s.save()
 }
 
@@ -643,6 +662,7 @@ pub fn kill_now(id: &str) -> Result<()> {
     s.status = Status::Stopped;
     s.meta.paused = false;
     s.meta.stopped_by_user = true; // an explicit stop/kill — don't auto-restart
+    s.meta.finished_at = Some(unix_now()); // the reaper refines this if it runs
     s.save()
 }
 
@@ -794,17 +814,26 @@ pub fn reconcile_restart_policies() -> usize {
 }
 
 /// `restart`: stop (if running) then re-execute; a never-started container is
-/// simply started.
+/// simply started. The stop leg honours the container's configured grace
+/// period (docker `--stop-timeout` / image `StopTimeout`), like `stop` itself.
 pub fn restart(id: &str) -> Result<()> {
     let mut s = State::load(id)?;
     match s.refresh_status() {
         Status::Created => start(id),
         Status::Running => {
-            stop(id, std::time::Duration::from_secs(10))?;
+            stop(id, stop_grace_period(&s))?;
             rerun(id)
         }
         Status::Stopped => rerun(id),
     }
+}
+
+/// The grace period `stop` waits between the stop signal and the SIGKILL
+/// escalation: the container's `stop_timeout` when set (> 0), else Docker's
+/// default 10 s.
+pub fn stop_grace_period(s: &State) -> std::time::Duration {
+    let secs = s.meta.stop_timeout.filter(|t| *t > 0).unwrap_or(10);
+    std::time::Duration::from_secs(secs as u64)
 }
 
 /// `state`: the current record, with `status` reconciled against the live pid.
@@ -826,17 +855,23 @@ pub fn list() -> Result<Vec<State>> {
     State::all()
 }
 
-/// Resolve a full id/name or a short-id prefix to the full container id (Docker's
-/// id-prefix resolution).
+/// Resolve a reference to a full container id: exact id → exact name →
+/// unambiguous short-id prefix (Docker's resolution order; mirrors the panel's
+/// `resolve_dn7_id`). Names are unique, so an exact-name hit is unambiguous.
 pub fn resolve(r: &str) -> Result<String> {
     if State::exists(r) {
-        return Ok(r.to_string());
+        return Ok(r.to_string()); // exact id — the state dir is keyed by id
     }
-    State::all()?
-        .into_iter()
-        .find(|s| s.id.starts_with(r))
-        .map(|s| s.id)
-        .ok_or_else(|| Error::NotFound(r.into()))
+    let all = State::all()?;
+    if let Some(s) = all.iter().find(|s| s.meta.name.as_deref() == Some(r)) {
+        return Ok(s.id.clone()); // exact name
+    }
+    let mut prefix = all.iter().filter(|s| s.id.starts_with(r));
+    match (prefix.next(), prefix.next()) {
+        (Some(s), None) => Ok(s.id.clone()),
+        (Some(_), Some(_)) => Err(Error::Other(format!("ambiguous reference: {r}"))),
+        _ => Err(Error::NotFound(r.into())),
+    }
 }
 
 /// The host path of a container's (overlay) rootfs — file operations read/write
@@ -1164,16 +1199,57 @@ pub(crate) fn enter_namespaces(
 ) {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
-    // SAFETY: runs in the forked child before exec; `setns`/`as_raw_fd`/`write`/
-    // `getpid`/`capset`/`setres*id`/`prctl`/`chdir` are async-signal-safe and
-    // allocate nothing (the fd vec + groups vec + cwd CString are built pre-fork).
+    // SAFETY: runs in the forked child before exec; `setns`/`fork`/`waitpid`/
+    // `_exit`/`as_raw_fd`/`write`/`getpid`/`capset`/`setres*id`/`prctl`/`chdir`
+    // are async-signal-safe and allocate nothing (the fd vec + groups vec + cwd
+    // CString are built pre-fork).
     unsafe {
         cmd.pre_exec(move || {
+            // Join the container's namespaces. NOTE: `setns(CLONE_NEWPID)` only
+            // moves FUTURE children into the pid namespace, not this process — so
+            // we double-fork below to place the exec'd process truly inside it
+            // (else its own pid, `ps`, and signals stay in the host pidns).
             for fd in &ns_fds {
                 if libc::setns(fd.as_raw_fd(), 0) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
             }
+            // Double-fork: the child is in the container's pid namespace. This
+            // (parent) side waits for it and mirrors its exit status, so the
+            // caller's `waitpid` + stdio/pty capture keep working unchanged.
+            let child = libc::fork();
+            if child < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if child > 0 {
+                // Close inherited fds — critically `Command`'s CLOEXEC exec-notify
+                // pipe. `Command::spawn` returns only once that pipe is fully
+                // closed (= exec succeeded); the real child (grandchild) closes
+                // its copy on execve, but THIS waiter also inherited a copy and
+                // would keep it open until it exits — pinning the caller's
+                // `Command::spawn` (and thus a tokio worker, for a pty session)
+                // for the whole session. Dropping fds ≥ 3 here lets spawn return
+                // as soon as the grandchild execs. stdio (0-2) stays for pty/pipe.
+                libc::close_range(3, libc::c_uint::MAX, 0);
+                let mut status: libc::c_int = 0;
+                while libc::waitpid(child, &mut status, 0) < 0 {
+                    if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                        break;
+                    }
+                }
+                let code = if libc::WIFEXITED(status) {
+                    libc::WEXITSTATUS(status)
+                } else if libc::WIFSIGNALED(status) {
+                    128 + libc::WTERMSIG(status)
+                } else {
+                    1
+                };
+                libc::_exit(code);
+            }
+            // Child (container pid namespace) — finish setup, then the runtime's
+            // later pre_exec hooks (e.g. setsid/TIOCSCTTY for a pty) + execvp run
+            // here, inside the container.
+            //
             // chdir into the image WorkingDir AFTER setns(mnt) so it resolves in the
             // container's filesystem, matching `docker exec`'s cwd. Best-effort: a
             // missing WorkingDir shouldn't sink the exec (falls back to the mnt root).
@@ -1182,7 +1258,8 @@ pub(crate) fn enter_namespaces(
             }
             // Join the container cgroup: write our own pid to the pre-opened
             // cgroup.procs fd (valid regardless of the container's mount ns). Done
-            // AFTER setns so we're accounted against the right hierarchy.
+            // AFTER the fork so the REAL process (not the transient parent) is
+            // accounted against the container's hierarchy.
             if let Some(procs) = &cgroup_procs {
                 let mut buf = [0u8; 24];
                 let n = fmt_pid(libc::getpid(), &mut buf);
@@ -1238,18 +1315,117 @@ fn exit_code_of(st: std::process::ExitStatus) -> i32 {
     st.code().unwrap_or_else(|| 128 + st.signal().unwrap_or(0))
 }
 
-/// The captured stdout/stderr of a (detached) container. Empty if it hasn't
-/// written anything; errors only if the container is unknown.
+/// Rotation cap for a container's `console.log`. Past this size the file is
+/// copied to `console.log.1` (replacing the previous rotation) and truncated to
+/// 0 — logrotate's copytruncate. Both writer shapes survive it: the tty pump and
+/// a plain container's init both write O_APPEND, so the next write lands at the
+/// new EOF. Total on-disk cap per container is therefore 2× this value.
+pub const LOG_ROTATE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Rotate `console.log` if it grew past [`LOG_ROTATE_BYTES`]. Cheap when it
+/// hasn't (one stat). Called from the read paths, the tty pump, the reaper, and
+/// the panel's periodic janitor — so even a never-read chatterbox is bounded.
+pub fn rotate_log_if_oversized(id: &str) {
+    rotate_log_path_if_oversized(&State::log_path(id));
+}
+
+fn rotate_log_path_if_oversized(p: &Path) {
+    let Ok(md) = std::fs::metadata(p) else { return };
+    if md.len() <= LOG_ROTATE_BYTES {
+        return;
+    }
+    let rotated = rotated_log_path(p);
+    // Copy-then-truncate: bytes written between the two calls are lost, which is
+    // the standard copytruncate trade-off (a rename would strand the writers'
+    // already-open fds on the moved file instead).
+    if std::fs::copy(p, &rotated).is_ok() {
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(p)
+            .and_then(|f| f.set_len(0));
+    }
+}
+
+/// Rotate every known container's log if oversized; returns how many rotated.
+/// The panel calls this on a slow timer as the backstop for running containers
+/// nobody is watching.
+pub fn rotate_all_logs() -> usize {
+    let Ok(states) = list() else { return 0 };
+    let mut n = 0;
+    for s in states {
+        let p = State::log_path(&s.id);
+        let oversized = std::fs::metadata(&p)
+            .map(|m| m.len() > LOG_ROTATE_BYTES)
+            .unwrap_or(false);
+        if oversized {
+            rotate_log_if_oversized(&s.id);
+            n += 1;
+        }
+    }
+    n
+}
+
+fn rotated_log_path(log: &Path) -> std::path::PathBuf {
+    let mut os = log.as_os_str().to_os_string();
+    os.push(".1");
+    std::path::PathBuf::from(os)
+}
+
+/// The captured stdout/stderr of a (detached) container: the rotated tail (if
+/// any) followed by the current file. Empty if it hasn't written anything;
+/// errors only if the container is unknown.
 pub fn logs(id: &str) -> Result<Vec<u8>> {
     if !State::exists(id) {
         return Err(Error::NotFound(id.into()));
     }
+    rotate_log_if_oversized(id);
     let p = State::log_path(id);
+    let mut out = std::fs::read(rotated_log_path(&p)).unwrap_or_default();
     match std::fs::read(&p) {
-        Ok(b) => Ok(b),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(Error::Io { path: p, source: e }),
+        Ok(b) => out.extend_from_slice(&b),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(Error::Io { path: p, source: e }),
     }
+    Ok(out)
+}
+
+/// An incremental read of the container's log for live-follow: bytes appended to
+/// the CURRENT `console.log` since `offset`, plus the offset to poll from next.
+/// An `offset` past the current size (the file was rotated or truncated between
+/// polls) restarts from 0, so a follower self-heals across rotation at the cost
+/// of re-seeing the fresh file once.
+pub fn logs_from(id: &str, offset: u64) -> Result<(Vec<u8>, u64)> {
+    use std::io::{Read, Seek, SeekFrom};
+    if !State::exists(id) {
+        return Err(Error::NotFound(id.into()));
+    }
+    rotate_log_if_oversized(id);
+    let p = State::log_path(id);
+    let mut f = match std::fs::File::open(&p) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 0)),
+        Err(e) => return Err(Error::Io { path: p, source: e }),
+    };
+    let len = f
+        .metadata()
+        .map_err(|e| Error::Io {
+            path: p.clone(),
+            source: e,
+        })?
+        .len();
+    let from = if offset > len { 0 } else { offset };
+    f.seek(SeekFrom::Start(from)).map_err(|e| Error::Io {
+        path: p.clone(),
+        source: e,
+    })?;
+    // Bound one poll's payload; the follower catches up over subsequent polls.
+    let take = (len - from).min(2 * 1024 * 1024);
+    let mut buf = vec![0u8; usize::try_from(take).unwrap_or(0)];
+    f.read_exact(&mut buf).map_err(|e| Error::Io {
+        path: p.clone(),
+        source: e,
+    })?;
+    Ok((buf, from + take))
 }
 
 /// `delete`: tear down a container's cgroup and state. A container whose init is
@@ -1624,10 +1800,14 @@ fn open_log(path: &Path) -> Result<RawFd> {
         .map_err(|_| Error::Other("log path has NUL".into()))?;
     // SAFETY: open a regular file for writing; the returned fd is inherited by
     // the init (so NOT cloexec) and dup2'd onto its stdout/stderr.
+    // O_APPEND (not O_TRUNC): logs persist across restarts like Docker's, and —
+    // crucially — an append-mode writer keeps working after the copytruncate
+    // rotation in `rotate_log_if_oversized` (every write lands at current EOF,
+    // so truncating to 0 doesn't leave a sparse hole).
     let fd = unsafe {
         libc::open(
             c.as_ptr(),
-            libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
+            libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
             0o644,
         )
     };

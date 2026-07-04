@@ -216,13 +216,8 @@ fn start_pull(req: &Req) -> Result<Value> {
     tokio::spawn(async move {
         op_push(&op_id_t, &pmsg("dk.pulling", &[image.as_str()]));
         let img = image.clone();
-        let pulled = tokio::task::spawn_blocking(move || {
-            let store = dn7_container::image::Store::open().map_err(|e| e.to_string())?;
-            dn7_container::image::pull(&img, &store)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        })
-        .await;
+        let op_id_b = op_id_t.clone();
+        let pulled = tokio::task::spawn_blocking(move || dn7_pull_mirrored(&img, &op_id_b)).await;
         match pulled {
             Ok(Ok(())) => {
                 op_push(&op_id_t, &pmsg("dk.done", &[]));
@@ -233,6 +228,69 @@ fn start_pull(req: &Req) -> Result<Value> {
         }
     });
     Ok(json!({ "op_id": op_id, "target": target }))
+}
+
+/// Pull into the dn7 store, going through the configured Docker Hub mirrors
+/// first (settings `mirrors` — the same list the bollard path consults) and
+/// falling back to the upstream registry. Blobs saved by a failed mirror attempt
+/// are content-addressed, so the next source resumes instead of restarting.
+/// Layer phases are pushed as docker-CLI-style lines — the op registry's
+/// `pull_pct` estimator and the pull-tasks UI already understand that shape.
+#[cfg(target_os = "linux")]
+fn dn7_pull_mirrored(image: &str, op_id: &str) -> std::result::Result<(), String> {
+    use dn7_container::image::{self as dnimg, PullEvent, PullOpts};
+
+    let store = dnimg::Store::open().map_err(|e| e.to_string())?;
+    let layer_id = |digest: &str| {
+        let h = digest.strip_prefix("sha256:").unwrap_or(digest);
+        h.chars().take(12).collect::<String>()
+    };
+    let op = op_id.to_string();
+    let progress = move |ev: PullEvent| match ev {
+        PullEvent::Layer { digest, cached, .. } => {
+            let id = layer_id(&digest);
+            if cached {
+                op_push(&op, &format!("{id}: Already exists"));
+            } else {
+                op_push(&op, &format!("{id}: Pulling fs layer"));
+                op_push(&op, &format!("{id}: Downloading"));
+            }
+        }
+        PullEvent::LayerDone { digest, .. } => {
+            op_push(&op, &format!("{}: Pull complete", layer_id(&digest)));
+        }
+        PullEvent::Bytes { .. } => {}
+    };
+
+    // Mirrors only make sense for Docker Hub images; other registries go direct.
+    let is_hub = dnimg::Reference::parse(image)
+        .map(|r| r.registry == dnimg::reference::DOCKER_HUB_API)
+        .unwrap_or(false);
+    let mirrors: Vec<String> = if is_hub {
+        load_dk_settings().mirrors
+    } else {
+        Vec::new()
+    };
+
+    let mut last_err = String::new();
+    for host in mirrors.iter().map(Some).chain(std::iter::once(None)) {
+        let opts = PullOpts {
+            host_override: host.map(String::as_str),
+            // Fail over to the next source quickly while probing mirrors.
+            connect_timeout: host.map(|_| std::time::Duration::from_secs(6)),
+            progress: Some(&progress),
+        };
+        match dnimg::pull_with(image, &store, opts) {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                last_err = e.to_string();
+                if let Some(h) = host {
+                    op_push(op_id, &pmsg("dk.pull_mirror_fail", &[h.as_str()]));
+                }
+            }
+        }
+    }
+    Err(last_err)
 }
 
 /// `remove_image`: drop the image record from the dn7 store, after a dn7-native
@@ -945,6 +1003,9 @@ fn container_row(s: DnState) -> Value {
         "image": s.meta.image.clone().unwrap_or_default(),
         "state": dn7_live_state(&s),
         "status": status,
+        // Structured, so the UI can badge an OOM kill instead of the user
+        // guessing what their 137 means.
+        "oom_killed": s.meta.oom_killed,
         "ports": fmt_dn7_ports(&s.meta.ports_spec),
         "ip": ip,
         "ips": ips,
@@ -973,8 +1034,11 @@ async fn op_inspect_container(req: &Req) -> Result<Value> {
             "running": running,
             "restart_policy": s.meta.restart_policy.clone().unwrap_or_default(),
             "created": s.created_iso(),
-            // dn7 doesn't track a separate start timestamp yet; reuse created.
-            "started_at": s.created_iso(),
+            // The current run's real start time; a never-started container shows
+            // its create time (the closest truthful stand-in).
+            "started_at": s.meta.started_at.map(DnState::epoch_iso).unwrap_or_else(|| s.created_iso()),
+            "finished_at": s.meta.finished_at.map(DnState::epoch_iso).unwrap_or_default(),
+            "oom_killed": s.meta.oom_killed,
             "exit_code": s.meta.exit_code,
             "restart_count": s.meta.restart_count,
             "ports": fmt_dn7_ports(&s.meta.ports_spec),
@@ -985,7 +1049,8 @@ async fn op_inspect_container(req: &Req) -> Result<Value> {
 }
 
 /// `container_stats`: cgroup-v2 counters. CPU% is derived from two `cpu.stat`
-/// samples ~100ms apart; net/blk are not wired yet (reported 0).
+/// samples ~100ms apart; network comes from the container netns's
+/// `/proc/<pid>/net/dev`, block I/O from the cgroup's `io.stat`.
 #[cfg(target_os = "linux")]
 async fn op_container_stats(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
@@ -1114,18 +1179,40 @@ async fn op_container_action(req: &Req, action: &str) -> Result<Value> {
     .await
 }
 
-/// `logs`: the captured stdout/stderr of a dn7 container, last `tail` lines.
+/// `logs`: the captured stdout/stderr of a dn7 container.
+///
+/// Two modes:
+/// - initial (`tail` lines, default): last N lines of the whole log (rotated
+///   part included), plus `next_offset` — the byte position a live follower
+///   should poll from.
+/// - follow (`offset` set): only the bytes appended to the current log file
+///   since `offset` (see `logs_from`), plus the new `next_offset`. The UI polls
+///   this while the log view is open, which is how `docker logs -f` feels
+///   without holding a stream.
+///
+/// ANSI SGR (color) sequences survive sanitization in both modes — the UI
+/// renders them as real colors.
 #[cfg(target_os = "linux")]
 async fn op_logs(req: &Req) -> Result<Value> {
     let r = need_ref(req)?;
     let tail = req.tail.unwrap_or(200).clamp(1, 2000) as usize;
+    let offset = req.offset;
     run_blocking(move || {
         let id = resolve_dn7_id(&r)?;
+        if let Some(off) = offset {
+            let (bytes, next) = dn7_container::container::logs_from(&id, off).map_err(dn7_err)?;
+            let text = sanitize_log_keep_sgr(&String::from_utf8_lossy(&bytes));
+            return Ok(json!({ "logs": text, "next_offset": next }));
+        }
         let bytes = dn7_container::container::logs(&id).map_err(dn7_err)?;
+        let next = std::fs::metadata(DnState::log_path(&id))
+            .map(|m| m.len())
+            .unwrap_or(0);
         let text = String::from_utf8_lossy(&bytes);
         let lines: Vec<&str> = text.lines().collect();
         let start = lines.len().saturating_sub(tail);
-        Ok(json!({ "logs": lines[start..].join("\n") }))
+        let text = sanitize_log_keep_sgr(&lines[start..].join("\n"));
+        Ok(json!({ "logs": text, "next_offset": next }))
     })
     .await
 }
@@ -1699,7 +1786,10 @@ fn dn7_status(s: &DnState) -> String {
     match s.status {
         DnStatus::Created => "Created".to_string(),
         DnStatus::Running => {
-            let up = format!("Up {}", dur_human(unix_now().saturating_sub(s.created)));
+            // Uptime counts from the CURRENT run's start — a restarted container
+            // shows minutes, not the days since it was first created.
+            let since = s.meta.started_at.unwrap_or(s.created);
+            let up = format!("Up {}", dur_human(unix_now().saturating_sub(since)));
             if s.meta.paused {
                 format!("{up} (Paused)")
             } else {

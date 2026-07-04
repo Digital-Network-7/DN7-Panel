@@ -109,6 +109,13 @@ fn parse_one_port(s: &str) -> Result<PortMap> {
         Some((a, p)) => (a, parse_proto(p)?),
         None => (s, Proto::Tcp),
     };
+    // Docker's bracketed-IPv6 form: name the limitation instead of the generic
+    // "bad port spec" (dn7's DNAT is IPv4-only).
+    if addr_part.starts_with('[') {
+        return Err(Error::Other(format!(
+            "IPv6 host addresses are not supported in port mappings ({s:?}); DNAT is IPv4-only"
+        )));
+    }
     let parts: Vec<&str> = addr_part.split(':').collect();
     let (host_ip, hp, cp) = match parts.as_slice() {
         [hp, cp] => (IpAddr::from([0, 0, 0, 0]), *hp, *cp),

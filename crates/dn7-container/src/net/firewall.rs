@@ -115,8 +115,10 @@ fn comment_udata(id: &str) -> Vec<u8> {
     v
 }
 
-/// Extract the v4 host IP to scope a published port to, or `None` (wildcard) for
-/// an unspecified or IPv6 host address (DNAT here is IPv4-only).
+/// Extract the v4 host IP to scope a published port to, or `None` (wildcard)
+/// for an unspecified host address. IPv6 must be rejected by the caller BEFORE
+/// this point (see `publish_port`) — mapping it to the wildcard would silently
+/// widen `[::1]:8080` from loopback-only to every interface.
 fn host_v4(host: IpAddr) -> Option<Ipv4Addr> {
     match host {
         IpAddr::V4(v4) if !v4.is_unspecified() => Some(v4),
@@ -216,6 +218,15 @@ pub fn ensure_base(cfg: &NetworkConfig) -> Result<()> {
 /// the prerouting chain (external traffic) and the output chain (host-local). Each
 /// rule is tagged with a `dn7:<id>` comment for teardown.
 pub fn publish_port(id: &str, p: &PortMap, container_ip: Ipv4Addr) -> Result<()> {
+    // The DNAT rules below are IPv4-only. Refuse an IPv6 host address outright:
+    // treating it as the wildcard (the old behavior) silently turned an
+    // intended loopback-only publish into an all-interfaces one.
+    if matches!(p.host_ip, IpAddr::V6(_)) {
+        return Err(Error::Other(format!(
+            "cannot publish {}:{} -> {}: IPv6 host addresses are not supported (DNAT is IPv4-only)",
+            p.host_ip, p.host_port, p.container_port
+        )));
+    }
     let host = host_v4(p.host_ip);
     let udata = comment_udata(id);
 

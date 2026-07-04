@@ -29,8 +29,15 @@ struct TokenResp {
 
 impl Registry {
     pub fn new(host: &str, repo: &str) -> Registry {
+        Self::with_connect_timeout(host, repo, Duration::from_secs(20))
+    }
+
+    /// Like [`Registry::new`] with a caller-chosen connect timeout — mirror
+    /// probing wants to fail over to the next host in seconds, not the default
+    /// 20 s a direct pull tolerates.
+    pub fn with_connect_timeout(host: &str, repo: &str, connect: Duration) -> Registry {
         let agent = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(20))
+            .timeout_connect(connect)
             .timeout_read(Duration::from_secs(120))
             .build();
         Registry {
@@ -87,36 +94,77 @@ impl Registry {
     /// caps + hashes the copy (see `Store::save_blob_from_reader`), so a hostile
     /// registry streaming an unbounded layer can't fill the disk — the cap trips
     /// mid-copy and the partial temp file is discarded.
-    pub fn blob_reader(&mut self, digest: &str) -> Result<impl Read> {
+    pub fn blob_reader(&mut self, digest: &str) -> Result<impl Read + Send> {
+        self.blob_reader_at(digest, 0).map(|(r, _)| r)
+    }
+
+    /// Open a blob reader starting at byte `offset` (an HTTP `Range` request, to
+    /// resume a partial download). Returns the reader and the offset it actually
+    /// starts at: `offset` when the registry honored the range (206), else 0 —
+    /// the caller must then restart its copy from scratch.
+    pub fn blob_reader_at(&mut self, digest: &str, offset: u64) -> Result<(impl Read + Send, u64)> {
         let url = format!("https://{}/v2/{}/blobs/{}", self.host, self.repo, digest);
-        let resp = self.authed_get(&url, "*/*")?;
-        Ok(resp.into_reader())
+        let resp = match self.authed_get_at(&url, "*/*", offset) {
+            // 416 = our partial file is at/past the blob's end (stale or already
+            // complete tmp) — the range is useless, restart from byte 0.
+            Err(Error::Other(ref m)) if offset > 0 && m.contains("registry HTTP 416") => {
+                self.authed_get_at(&url, "*/*", 0)?
+            }
+            other => other?,
+        };
+        let start = if offset > 0 && resp.status() == 206 {
+            offset
+        } else {
+            0
+        };
+        Ok((resp.into_reader(), start))
     }
 
     /// GET `url`, transparently acquiring a bearer token on a 401 and retrying.
+    /// Transient failures (transport errors, 5xx) are retried with a short
+    /// backoff so one dropped connection doesn't abort a multi-layer pull.
     fn authed_get(&mut self, url: &str, accept: &str) -> Result<ureq::Response> {
-        match self.send(url, accept) {
-            Ok(resp) => return Ok(resp),
-            Err(ureq::Error::Status(401, resp)) => {
-                let challenge = resp
-                    .header("www-authenticate")
-                    .ok_or_else(|| Error::Other("401 without WWW-Authenticate".into()))?
-                    .to_string();
-                self.acquire_token(&challenge)?;
+        self.authed_get_at(url, accept, 0)
+    }
+
+    fn authed_get_at(&mut self, url: &str, accept: &str, offset: u64) -> Result<ureq::Response> {
+        let mut refreshed_token = false;
+        let mut attempt = 0u32;
+        loop {
+            match self.send(url, accept, offset) {
+                Ok(resp) => return Ok(resp),
+                Err(ureq::Error::Status(401, resp)) if !refreshed_token => {
+                    let challenge = resp
+                        .header("www-authenticate")
+                        .ok_or_else(|| Error::Other("401 without WWW-Authenticate".into()))?
+                        .to_string();
+                    self.acquire_token(&challenge)?;
+                    refreshed_token = true;
+                }
+                Err(e) if attempt + 1 < SEND_ATTEMPTS && is_transient(&e) => {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(500 * u64::from(attempt)));
+                }
+                Err(e) => return Err(map_ureq(e)),
             }
-            Err(e) => return Err(map_ureq(e)),
         }
-        // Retry once now that we hold a token.
-        self.send(url, accept).map_err(map_ureq)
     }
 
     // `ureq::Error` is large (~272 B) and is the external type we must pass
     // through here; boxing it would only churn the one call site in `authed_get`.
     #[allow(clippy::result_large_err)]
-    fn send(&self, url: &str, accept: &str) -> std::result::Result<ureq::Response, ureq::Error> {
+    fn send(
+        &self,
+        url: &str,
+        accept: &str,
+        offset: u64,
+    ) -> std::result::Result<ureq::Response, ureq::Error> {
         let mut r = self.agent.get(url).set("Accept", accept);
         if let Some(t) = &self.token {
             r = r.set("Authorization", &format!("Bearer {t}"));
+        }
+        if offset > 0 {
+            r = r.set("Range", &format!("bytes={offset}-"));
         }
         r.call()
     }
@@ -187,6 +235,18 @@ fn urlencode(s: &str) -> String {
         }
     }
     out
+}
+
+/// Total send attempts per request (1 initial + retries) for transient failures.
+const SEND_ATTEMPTS: u32 = 3;
+
+/// Worth retrying: network-level failures and registry-side 5xx. Auth failures
+/// and 4xx are deterministic — retrying only wastes the user's time.
+fn is_transient(e: &ureq::Error) -> bool {
+    match e {
+        ureq::Error::Transport(_) => true,
+        ureq::Error::Status(code, _) => *code >= 500,
+    }
 }
 
 fn map_ureq(e: ureq::Error) -> Error {

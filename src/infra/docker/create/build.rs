@@ -67,6 +67,13 @@ pub(crate) fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
     // Port mappings -> exposed_ports + host port bindings.
     let (exposed, bindings) = spec_ports(req)?;
 
+    // Published ports are meaningless in host/none network mode (host mode
+    // already exposes every port; none has no connectivity at all) — reject the
+    // combination instead of letting the mapping silently do nothing.
+    if !bindings.is_empty() && matches!(network.as_deref(), Some("host") | Some("none")) {
+        return Err(docker_err(DockerError::PortsWithHostNet));
+    }
+
     // Environment variables.
     let env = spec_env(req)?;
 
@@ -179,6 +186,7 @@ pub(crate) fn build_create_spec(req: &Req) -> Result<(CreateSpec, String)> {
 }
 
 /// Restart policy from the request (whitelisted; default unless-stopped).
+/// `on-failure[:N]` carries N through as Docker's maximum-retry-count.
 fn spec_restart(req: &Req) -> Result<RestartPolicy> {
     let restart = req
         .restart
@@ -189,13 +197,18 @@ fn spec_restart(req: &Req) -> Result<RestartPolicy> {
     if !restart_allowed(restart) {
         return Err(docker_err(DockerError::BadRestartPolicy));
     }
+    let (kind, retries) = match restart.split_once(':') {
+        Some((k, n)) => (k, n.parse::<i64>().ok()),
+        None => (restart, None),
+    };
     Ok(RestartPolicy {
-        name: Some(match restart {
+        name: Some(match kind {
             "always" => RestartPolicyNameEnum::ALWAYS,
             "no" => RestartPolicyNameEnum::NO,
+            "on-failure" => RestartPolicyNameEnum::ON_FAILURE,
             _ => RestartPolicyNameEnum::UNLESS_STOPPED,
         }),
-        maximum_retry_count: None,
+        maximum_retry_count: retries,
     })
 }
 

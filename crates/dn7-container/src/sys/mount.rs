@@ -80,6 +80,11 @@ pub fn setup_rootfs(rootfs: &Path, spec: &Spec) -> Result<()> {
             None,
         );
     }
+    // Bind our LXCFS-style virtualized procfs/sysfs files over the real ones so
+    // free/top/lscpu inside the container see the cgroup memory + CPU limits, not
+    // the host's. After /proc and /sys are mounted (the bind targets must exist).
+    // Best-effort: a failure here must never fail container start.
+    bind_virtual_procfs(rootfs);
     // /dev — a small tmpfs we then populate.
     mount_at(
         rootfs,
@@ -117,6 +122,28 @@ pub fn setup_rootfs(rootfs: &Path, spec: &Spec) -> Result<()> {
         apply_bundle_mount(rootfs, m)?;
     }
     Ok(())
+}
+
+/// Bind each shared virtual file (`[meminfo|cpuinfo|stat|online]`) over the
+/// container's real procfs/sysfs file. No-op (and never an error) when the FUSE
+/// fs isn't mounted or a bind fails — the container then keeps the host files.
+/// The sources are host mounts that predate this mount namespace, so they stay
+/// visible here despite `make_private()`. Each target already exists (regular
+/// file) after the proc/sys mounts, so we bind file-over-file.
+fn bind_virtual_procfs(rootfs: &Path) {
+    use crate::sys::meminfo::{available, BINDS, FS_DIR};
+    if !available() {
+        return;
+    }
+    for (file, target) in BINDS {
+        let _ = mount(
+            Some(Path::new(FS_DIR).join(file).as_path()),
+            rootfs.join(target).as_path(),
+            None::<&str>,
+            MsFlags::MS_BIND,
+            None::<&str>,
+        );
+    }
 }
 
 /// Mount `fstype` at `<rootfs>/<rel>`.

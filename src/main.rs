@@ -336,6 +336,15 @@ async fn run_panel(cfg: PanelConfig) -> Result<()> {
         dn7_container::net::dns_server::ensure_all();
         // Reap any orphaned (empty, stateless) container cgroups left by a race.
         dn7_container::container::reclaim_orphan_cgroups();
+        // Virtualized /proc/meminfo (LXCFS-style) so free/top inside a container
+        // see its cgroup memory limit, not host RAM. Best-effort: on failure,
+        // containers keep the host meminfo. Started before reconcile so
+        // boot-recovered containers can bind it.
+        if dn7_container::sys::meminfo::ensure_started() {
+            tracing::info!("meminfo-fs: virtualized /proc/meminfo mounted");
+        } else {
+            tracing::warn!("meminfo-fs: unavailable — containers see host /proc/meminfo");
+        }
         let n = dn7_container::container::reconcile_restart_policies();
         if n > 0 {
             tracing::info!(

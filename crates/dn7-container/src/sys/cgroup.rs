@@ -137,6 +137,13 @@ impl Cgroup {
             .unwrap_or(false)
     }
 
+    /// Cumulative kernel-OOM kills in this cgroup (`memory.events` `oom_kill`).
+    /// 0 when the file is missing (controller off, or the cgroup already gone).
+    /// The cgroup is recreated per run, so a non-zero count means THIS run.
+    pub fn oom_kill_count(&self) -> u64 {
+        read_keyed(&self.path.join("memory.events"), "oom_kill").unwrap_or(0)
+    }
+
     /// Read a resource snapshot. Missing files (controller not enabled) read as 0
     /// / unlimited, so this never fails for a live container.
     pub fn stats(&self) -> CgroupStats {
@@ -185,6 +192,21 @@ impl Cgroup {
                     format!("{quota} {period}")
                 };
                 self.write("cpu.max", &val)?;
+                // Pin to ceil(quota/period) whole CPUs (cgroup v2 cpuset) so the
+                // container's sched_getaffinity — hence `nproc`/`lscpu` — reflects
+                // the limit, not just the virtualized /proc. `cpu.max` above still
+                // enforces the (possibly fractional) time budget on those CPUs.
+                // `pick_cpus` spreads load so over-subscribed hosts (Σcpus > host)
+                // overlap evenly instead of all piling onto cpu 0. Best-effort:
+                // skipped when the host doesn't delegate the cpuset controller
+                // (then only quota + the /proc virtualization apply).
+                if quota > 0 && period > 0 {
+                    let n = (quota as u64).div_ceil(period).max(1) as usize;
+                    let host = std::thread::available_parallelism()
+                        .map(|p| p.get())
+                        .unwrap_or(1);
+                    let _ = self.write("cpuset.cpus", &pick_cpus(n, host, &self.path));
+                }
             }
         }
         if let Some(pids) = &r.pids {
@@ -218,7 +240,7 @@ fn ensure_v2() -> Result<()> {
 /// doesn't delegate (a clear error surfaces later when a limit can't be written).
 fn enable_controllers_along(rel: &str) -> Result<()> {
     let avail = available_controllers();
-    let want: Vec<&str> = ["memory", "cpu", "pids"]
+    let want: Vec<&str> = ["memory", "cpu", "cpuset", "pids"]
         .into_iter()
         .filter(|c| avail.iter().any(|a| a == c))
         .collect();
@@ -251,6 +273,92 @@ fn available_controllers() -> Vec<String> {
     std::fs::read_to_string(Path::new(CG_ROOT).join("cgroup.controllers"))
         .map(|s| s.split_whitespace().map(str::to_string).collect())
         .unwrap_or_default()
+}
+
+/// Choose `n` host CPUs to pin a new container to, spreading load: pick the `n`
+/// least-loaded cores (fewest sibling dn7 containers already pinned there), so a
+/// host whose total requested CPUs exceed its physical cores overlaps EVENLY
+/// instead of every container piling onto cpu 0. An under-subscribed host still
+/// gets dedicated, non-overlapping cores. `self_path` (the container being
+/// placed) is excluded from the tally. Returns a cpuset list like "0,3,5".
+fn pick_cpus(n: usize, host: usize, self_path: &Path) -> String {
+    let host = host.max(1);
+    let mut load = vec![0u32; host];
+    if let Ok(dir) = std::fs::read_dir(Path::new(CG_ROOT).join("dn7")) {
+        for e in dir.flatten() {
+            let p = e.path();
+            if p == self_path {
+                continue; // don't count the container we're placing
+            }
+            if let Ok(s) = std::fs::read_to_string(p.join("cpuset.cpus")) {
+                for c in parse_cpu_list(s.trim()) {
+                    if c < host {
+                        load[c] += 1;
+                    }
+                }
+            }
+        }
+    }
+    pick_from_load(&load, n)
+}
+
+/// Pick the `n` least-loaded cores (ties → lowest index) from a per-core load
+/// histogram; returns a sorted cpuset list ("0,3,5"). Split from [`pick_cpus`]
+/// so the selection is unit-testable without reading `/sys`.
+fn pick_from_load(load: &[u32], n: usize) -> String {
+    let n = n.clamp(1, load.len().max(1));
+    let mut cores: Vec<usize> = (0..load.len()).collect();
+    cores.sort_by_key(|&c| (load[c], c));
+    cores.truncate(n);
+    cores.sort_unstable();
+    cores
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Parse a cpuset list ("0-3,7") into its cpu indices `[0,1,2,3,7]`.
+fn parse_cpu_list(s: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    for part in s.split(',').filter(|p| !p.is_empty()) {
+        match part.split_once('-') {
+            Some((a, b)) => {
+                if let (Ok(a), Ok(b)) = (a.parse::<usize>(), b.parse::<usize>()) {
+                    out.extend(a..=b);
+                }
+            }
+            None => {
+                if let Ok(c) = part.parse::<usize>() {
+                    out.push(c);
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod cpuset_tests {
+    use super::{parse_cpu_list, pick_from_load};
+
+    #[test]
+    fn parse_cpu_list_ranges_and_singletons() {
+        assert_eq!(parse_cpu_list("0-3,7"), vec![0, 1, 2, 3, 7]);
+        assert_eq!(parse_cpu_list("0,1"), vec![0, 1]);
+        assert_eq!(parse_cpu_list(""), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn pick_from_load_least_loaded_first() {
+        // All idle → the lowest n cores.
+        assert_eq!(pick_from_load(&[0, 0, 0, 0, 0, 0, 0, 0], 2), "0,1");
+        // Cores 0,1 busy → picks the idle ones (spread under over-subscription).
+        assert_eq!(pick_from_load(&[2, 2, 0, 0], 2), "2,3");
+        // Ties break by lowest index; n clamped to host.
+        assert_eq!(pick_from_load(&[1, 0, 1, 0], 1), "1");
+        assert_eq!(pick_from_load(&[0, 0, 0, 0], 99), "0,1,2,3");
+    }
 }
 
 /// Read a single-integer cgroup file.

@@ -56,6 +56,7 @@ pub(crate) enum DockerError {
     PathBadChars,
     PathNotAbsolute,
     PortRange,
+    PortsWithHostNet,
     PrivilegedRequiresSuper,
     PullIncomplete,
     TagEmpty,
@@ -120,6 +121,7 @@ impl DockerError {
             PathBadChars => "docker.path_bad_chars",
             PathNotAbsolute => "docker.path_not_absolute",
             PortRange => "docker.port_range",
+            PortsWithHostNet => "docker.ports_with_host_net",
             PrivilegedRequiresSuper => "docker.privileged_requires_super",
             PullIncomplete => "docker.pull_incomplete",
             TagEmpty => "docker.tag_empty",
@@ -145,9 +147,16 @@ impl std::fmt::Display for DockerError {
 
 impl std::error::Error for DockerError {}
 
-/// Whitelisted container restart policies.
+/// Whitelisted container restart policies: the three simple ones plus
+/// `on-failure` with an optional bounded retry count (`on-failure:N`, Docker's
+/// max-retries — the guardrail against an infinite crash loop).
 pub(crate) fn restart_allowed(p: &str) -> bool {
-    matches!(p, "no" | "unless-stopped" | "always")
+    if matches!(p, "no" | "unless-stopped" | "always" | "on-failure") {
+        return true;
+    }
+    p.strip_prefix("on-failure:")
+        .and_then(|n| n.parse::<u32>().ok())
+        .is_some_and(|n| n <= 1000)
 }
 
 /// Whitelisted network drivers offered in the create-network dialog.
@@ -262,7 +271,12 @@ mod tests {
     #[test]
     fn whitelists() {
         assert!(restart_allowed("always"));
-        assert!(!restart_allowed("on-failure"));
+        assert!(restart_allowed("on-failure"));
+        assert!(restart_allowed("on-failure:5"));
+        assert!(!restart_allowed("on-failure:"));
+        assert!(!restart_allowed("on-failure:x"));
+        assert!(!restart_allowed("on-failure:9999"));
+        assert!(!restart_allowed("sometimes"));
         assert!(net_driver_allowed("bridge"));
         assert!(!net_driver_allowed("weave"));
     }

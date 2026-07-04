@@ -41,6 +41,10 @@ pub(crate) struct Req {
     pub(crate) reference: Option<String>,
     #[serde(default)]
     pub(crate) tail: Option<i64>,
+    /// Byte offset for incremental log follow (`logs` with the dn7 runtime):
+    /// return only bytes appended since this position.
+    #[serde(default)]
+    pub(crate) offset: Option<u64>,
     #[serde(default)]
     pub(crate) op_id: Option<String>,
     // create_container fields

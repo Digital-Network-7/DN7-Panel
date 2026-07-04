@@ -466,14 +466,62 @@ mod summary_tests {
     }
 }
 
+/// A progress event emitted during [`pull_with`]. Byte counts are compressed
+/// (wire) bytes; `total` excludes layers already present in the store.
+#[derive(Debug, Clone)]
+pub enum PullEvent {
+    /// A layer fetch is starting (or being skipped — `cached`).
+    Layer {
+        index: usize,
+        count: usize,
+        digest: String,
+        size: u64,
+        cached: bool,
+    },
+    /// A layer finished downloading and verified.
+    LayerDone {
+        index: usize,
+        count: usize,
+        digest: String,
+    },
+    /// Cumulative bytes downloaded so far vs the planned total.
+    Bytes { done: u64, total: u64 },
+}
+
+/// Options for [`pull_with`]. `host_override` pulls through a different registry
+/// host (a Docker Hub mirror) while recording the image under its canonical
+/// reference; `connect_timeout` tightens failover when probing mirrors.
+#[derive(Default)]
+pub struct PullOpts<'a> {
+    pub host_override: Option<&'a str>,
+    pub connect_timeout: Option<std::time::Duration>,
+    pub progress: Option<&'a dyn Fn(PullEvent)>,
+}
+
 /// Pull `reference` into `store`: resolve a multi-arch index to this host's
 /// platform, fetch + verify the config and every layer, and persist a record.
 /// Re-pulling is cheap — blobs already present are skipped.
 pub fn pull(reference: &str, store: &Store) -> Result<ImageRecord> {
+    pull_with(reference, store, PullOpts::default())
+}
+
+/// [`pull`] with progress reporting and mirror/host control — see [`PullOpts`].
+pub fn pull_with(reference: &str, store: &Store, opts: PullOpts) -> Result<ImageRecord> {
     let r = Reference::parse(reference)?;
-    let mut reg = Registry::new(&r.registry, &r.repository);
+    let host = opts.host_override.unwrap_or(&r.registry);
+    let mut reg = match opts.connect_timeout {
+        Some(t) => Registry::with_connect_timeout(host, &r.repository, t),
+        None => Registry::new(host, &r.repository),
+    };
     let (arch, os) = host_platform();
-    log(&format!("resolving {} ({os}/{arch})", r.canonical()));
+    if opts.host_override.is_some() {
+        log(&format!(
+            "resolving {} via {host} ({os}/{arch})",
+            r.canonical()
+        ));
+    } else {
+        log(&format!("resolving {} ({os}/{arch})", r.canonical()));
+    }
 
     // Top-level manifest: may be a single-platform manifest or a multi-arch index.
     let (top_bytes, top_ct) = reg.get_manifest(&r.reference)?;
@@ -499,31 +547,66 @@ pub fn pull(reference: &str, store: &Store) -> Result<ImageRecord> {
     // pull at MAX_TOTAL_BYTES. A cap breach (or digest mismatch) aborts the pull.
     let mut total: u64 = 0;
 
+    // Progress bookkeeping: the planned wire total is the advertised size of the
+    // layers we still have to fetch; `done` advances as bytes land and is
+    // reported at most every megabyte so a chatty callback can't slow the copy.
+    let emit = |ev: PullEvent| {
+        if let Some(p) = opts.progress {
+            p(ev)
+        }
+    };
+    let count = manifest.layers.len();
+    let plan_total: u64 = manifest
+        .layers
+        .iter()
+        .filter(|l| !store.has_blob(&l.digest))
+        .map(|l| l.size.max(0) as u64)
+        .sum();
+    let done = std::cell::Cell::new(0u64);
+    let last_emit = std::cell::Cell::new(0u64);
+
     // Config blob.
     let config_digest = manifest.config.digest.clone();
     log(&format!("config {}", short(&config_digest)));
-    pull_blob(store, &mut reg, &config_digest, &mut total)?;
+    pull_blob(store, &mut reg, &config_digest, &mut total, &mut |_| {})?;
 
     // Layer blobs (ordered).
-    let mut layers = Vec::with_capacity(manifest.layers.len());
+    let mut layers = Vec::with_capacity(count);
     for (i, layer) in manifest.layers.iter().enumerate() {
         let d = layer.digest.clone();
-        if store.has_blob(&d) {
-            log(&format!(
-                "layer {}/{} {} (cached)",
-                i + 1,
-                manifest.layers.len(),
-                short(&d)
-            ));
+        let cached = store.has_blob(&d);
+        emit(PullEvent::Layer {
+            index: i + 1,
+            count,
+            digest: d.clone(),
+            size: layer.size.max(0) as u64,
+            cached,
+        });
+        if cached {
+            log(&format!("layer {}/{} {} (cached)", i + 1, count, short(&d)));
         } else {
             log(&format!(
                 "layer {}/{} {} ({} bytes)",
                 i + 1,
-                manifest.layers.len(),
+                count,
                 short(&d),
                 layer.size
             ));
-            pull_blob(store, &mut reg, &d, &mut total)?;
+            pull_blob(store, &mut reg, &d, &mut total, &mut |n| {
+                done.set(done.get() + n);
+                if done.get().saturating_sub(last_emit.get()) >= 1024 * 1024 {
+                    last_emit.set(done.get());
+                    emit(PullEvent::Bytes {
+                        done: done.get(),
+                        total: plan_total,
+                    });
+                }
+            })?;
+            emit(PullEvent::LayerDone {
+                index: i + 1,
+                count,
+                digest: d.clone(),
+            });
         }
         layers.push(d);
     }
@@ -541,13 +624,43 @@ pub fn pull(reference: &str, store: &Store) -> Result<ImageRecord> {
 /// Stream one blob from the registry into the store, size-capped. `total` is the
 /// running sum of bytes already pulled for this image; the per-blob cap is the
 /// smaller of [`store::MAX_BLOB_BYTES`] and the remaining total budget, so a
-/// single huge blob and a swarm of medium blobs are both bounded. The stored
-/// size is charged against `total` afterwards (the CapReader guarantees it's
-/// within the passed cap, so the total can't run away). A cap breach or digest
-/// mismatch surfaces as an error and aborts the pull.
-fn pull_blob(store: &Store, reg: &mut Registry, digest: &str, total: &mut u64) -> Result<()> {
-    let mut rdr = reg.blob_reader(digest)?;
-    store.save_blob_from_reader(digest, &mut rdr, blob_cap(*total))?;
+/// single huge blob and a swarm of medium blobs are both bounded. A cap breach
+/// or digest mismatch surfaces as an error and aborts the pull. Transient
+/// network failures are retried (the partial temp file is kept and resumed via
+/// an HTTP Range request, so a 95%-downloaded layer doesn't start over).
+fn pull_blob(
+    store: &Store,
+    reg: &mut Registry,
+    digest: &str,
+    total: &mut u64,
+    on_bytes: &mut dyn FnMut(u64),
+) -> Result<()> {
+    let cap = blob_cap(*total);
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let res = store.save_blob_resumable(
+            digest,
+            cap,
+            &mut |offset| {
+                let (rdr, start) = reg.blob_reader_at(digest, offset)?;
+                Ok((Box::new(rdr) as Box<dyn std::io::Read + Send>, start))
+            },
+            on_bytes,
+        );
+        match res {
+            Ok(()) => break,
+            Err(e) if attempt < BLOB_ATTEMPTS && is_transient_pull_err(&e) => {
+                log(&format!(
+                    "layer {} interrupted ({e}); retrying ({attempt}/{})",
+                    short(digest),
+                    BLOB_ATTEMPTS - 1,
+                ));
+                std::thread::sleep(std::time::Duration::from_millis(1000 * u64::from(attempt)));
+            }
+            Err(e) => return Err(e),
+        }
+    }
     // A blob already present short-circuits the write, so re-derive its on-disk
     // size rather than assuming we streamed it.
     *total = total.saturating_add(blob_size(store, digest));
@@ -555,6 +668,16 @@ fn pull_blob(store: &Store, reg: &mut Registry, digest: &str, total: &mut u64) -
         return Err(Error::Other("image exceeds total size cap".into()));
     }
     Ok(())
+}
+
+/// Total attempts per blob (1 initial + resume retries).
+const BLOB_ATTEMPTS: u32 = 3;
+
+/// A pull error worth resuming: mid-stream drops and registry-side hiccups.
+/// Digest mismatches / size-cap breaches are NOT — the bytes themselves are bad.
+fn is_transient_pull_err(e: &Error) -> bool {
+    let m = e.to_string();
+    m.contains("stream blob") || m.contains("registry transport") || m.contains("registry HTTP 5")
 }
 
 /// The per-blob byte cap given `total` bytes already pulled for this image: the

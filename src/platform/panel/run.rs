@@ -72,6 +72,12 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     // best-effort so a gc hiccup never blocks the console coming up.
     reclaim_container_net_at_boot();
 
+    // Periodic container-log janitor: rotate any oversized console.log so a
+    // chatty container nobody is watching can't fill the disk. The inline
+    // rotation points (tty pump, read paths, exit reaper) cover the common
+    // cases; this timer is the backstop for a long-running detached container.
+    spawn_container_log_janitor();
+
     // Background self-update checker (GitHub + dn7.cn). Applies automatically
     // only when auto-update is enabled in settings; otherwise just keeps the
     // "update available" hint warm.
@@ -142,6 +148,30 @@ fn reclaim_container_net_at_boot() {
 /// Off-Linux the in-house runtime doesn't exist, so there's nothing to reclaim.
 #[cfg(not(target_os = "linux"))]
 fn reclaim_container_net_at_boot() {}
+
+/// Rotate oversized container `console.log`s on a slow timer (in-house runtime
+/// only). Synchronous filesystem stats over at most a few dozen containers —
+/// runs on the blocking pool each tick.
+#[cfg(target_os = "linux")]
+fn spawn_container_log_janitor() {
+    if !dn7_container::selected() {
+        return;
+    }
+    tokio::spawn(async {
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let n = tokio::task::spawn_blocking(dn7_container::container::rotate_all_logs).await;
+            if let Ok(n @ 1..) = n {
+                tracing::info!(rotated = n, "container log janitor: rotated oversized logs");
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn spawn_container_log_janitor() {}
 
 /// Poll the loopback console port until it accepts a connection (the listener is
 /// up), then write the boot-ok marker exactly once. Bounded to a short window so

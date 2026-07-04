@@ -1,18 +1,66 @@
 //! Container log tailing + log sanitization.
 use super::*;
 
-/// Tail a container's logs (via the daemon API).
 /// Strip non-text bytes from decoded log output: keep newlines/tabs and any
 /// valid printable character (including CJK/emoji), drop control characters and
-/// the U+FFFD replacement marker left by invalid UTF-8. This turns a binary
-/// line (e.g. a raw TLS handshake logged verbatim) into harmless short text
-/// instead of a wall of escapes / boxes.
-pub(crate) fn sanitize_log(s: &str) -> String {
-    let filtered: String = s
-        .chars()
-        .filter(|&c| c == '\n' || c == '\r' || c == '\t' || (!c.is_control() && c != '\u{FFFD}'))
-        .collect();
-    strip_hex_escapes(&filtered)
+/// the U+FFFD replacement marker left by invalid UTF-8 — so a binary line (e.g.
+/// a raw TLS handshake logged verbatim) becomes harmless short text instead of
+/// a wall of escapes / boxes. ANSI SGR (color/style, `ESC [ … m`) sequences pass
+/// through intact so the log viewer can render them as real colors; every other
+/// escape sequence — cursor movement, screen clears, OSC titles — is dropped
+/// whole (previously only the ESC byte was dropped, leaving `[31m` garbage in
+/// the text).
+pub(crate) fn sanitize_log_keep_sgr(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut kept = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\u{1b}' {
+            // CSI sequence: ESC [ <params 0x30–0x3F> <intermediates 0x20–0x2F>
+            // <final 0x40–0x7E>. Keep only a plain SGR (digit/`;` params, final
+            // `m`); everything else — cursor moves, clears, `?25l` — drops whole.
+            if chars.get(i + 1) == Some(&'[') {
+                let mut j = i + 2;
+                let mut plain = true;
+                while j < chars.len() && matches!(chars[j], '\u{30}'..='\u{3f}') {
+                    plain &= chars[j].is_ascii_digit() || chars[j] == ';';
+                    j += 1;
+                }
+                while j < chars.len() && matches!(chars[j], '\u{20}'..='\u{2f}') {
+                    plain = false;
+                    j += 1;
+                }
+                if plain && chars.get(j) == Some(&'m') {
+                    kept.extend(&chars[i..=j]);
+                }
+                i = if j < chars.len() { j + 1 } else { chars.len() };
+                continue;
+            }
+            // OSC sequence: ESC ] … (BEL | ESC \). Drop it whole.
+            if chars.get(i + 1) == Some(&']') {
+                let mut j = i + 2;
+                while j < chars.len() && chars[j] != '\u{7}' && chars[j] != '\u{1b}' {
+                    j += 1;
+                }
+                i = (j + if chars.get(j) == Some(&'\u{1b}') {
+                    2
+                } else {
+                    1
+                })
+                .min(chars.len());
+                continue;
+            }
+            // Any other two-byte escape: drop both.
+            i = (i + 2).min(chars.len());
+            continue;
+        }
+        if c == '\n' || c == '\r' || c == '\t' || (!c.is_control() && c != '\u{FFFD}') {
+            kept.push(c);
+        }
+        i += 1;
+    }
+    strip_hex_escapes(&kept)
 }
 
 /// Remove literal C-style hex escapes like `\x16\x03\x01…` that some servers
@@ -81,8 +129,9 @@ pub(crate) async fn container_logs(req: &Req) -> Result<Value> {
     }
     // Decode leniently, then drop non-text bytes so a stray binary line (e.g. a
     // TLS handshake probe logged verbatim) doesn't fill the view with control /
-    // replacement characters. Keeps newlines/tabs and all valid (incl. CJK) text.
-    let mut text = sanitize_log(&String::from_utf8_lossy(&bytes));
+    // replacement characters. Keeps newlines/tabs, all valid (incl. CJK) text,
+    // and ANSI SGR color sequences (rendered by the log viewer).
+    let mut text = sanitize_log_keep_sgr(&String::from_utf8_lossy(&bytes));
     // If there's no output, a constantly-restarting container is the usual
     // cause. Surface its state + last exit code so the user understands why.
     if text.trim().is_empty() {

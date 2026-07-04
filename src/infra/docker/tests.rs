@@ -4,12 +4,34 @@ use super::*;
 fn sanitizes_binary_log() {
     // Control bytes + invalid UTF-8 are dropped; text + newlines/CJK kept.
     let raw = String::from_utf8_lossy(b"hi\n\x16\x03\x01\x00ok\xEE\x01world\t!");
-    let out = sanitize_log(&raw);
+    let out = sanitize_log_keep_sgr(&raw);
     assert_eq!(out, "hi\nokworld\t!");
-    assert_eq!(sanitize_log("日志 ok"), "日志 ok");
+    assert_eq!(sanitize_log_keep_sgr("日志 ok"), "日志 ok");
     // Literal web-server-style hex escapes in an access log line are stripped.
     let access = "1.2.3.4 - - \"\\x16\\x03\\x01\\x00\\xEE\" 400 154 \"-\"";
-    assert_eq!(sanitize_log(access), "1.2.3.4 - - \"\" 400 154 \"-\"");
+    assert_eq!(
+        sanitize_log_keep_sgr(access),
+        "1.2.3.4 - - \"\" 400 154 \"-\""
+    );
+}
+
+#[test]
+fn sanitize_keeps_sgr_drops_other_escapes() {
+    // SGR color sequences survive; the colored text renders in the viewer.
+    let colored = "\u{1b}[32mINFO\u{1b}[0m ready";
+    assert_eq!(sanitize_log_keep_sgr(colored), colored);
+    // Multi-param SGR too.
+    let multi = "\u{1b}[1;31mERROR\u{1b}[0m boom";
+    assert_eq!(sanitize_log_keep_sgr(multi), multi);
+    // Cursor movement / screen clears are dropped WHOLE (no `[2J` residue).
+    assert_eq!(sanitize_log_keep_sgr("a\u{1b}[2Jb"), "ab");
+    assert_eq!(sanitize_log_keep_sgr("a\u{1b}[1;1Hb"), "ab");
+    // Private-param sequences (hide cursor) drop whole too — no `25l` residue.
+    assert_eq!(sanitize_log_keep_sgr("a\u{1b}[?25lb"), "ab");
+    // OSC title sequences are dropped whole (BEL-terminated).
+    assert_eq!(sanitize_log_keep_sgr("x\u{1b}]0;title\u{7}y"), "xy");
+    // A bare trailing ESC doesn't panic or leak.
+    assert_eq!(sanitize_log_keep_sgr("tail\u{1b}"), "tail");
 }
 
 #[test]
@@ -80,6 +102,7 @@ fn mk_req(image: &str) -> Req {
         registry: None,
         reference: None,
         tail: None,
+        offset: None,
         op_id: None,
         name: None,
         ports: None,
@@ -124,7 +147,10 @@ fn restart_whitelist() {
     assert!(restart_allowed("no"));
     assert!(restart_allowed("unless-stopped"));
     assert!(restart_allowed("always"));
-    assert!(!restart_allowed("on-failure"));
+    assert!(restart_allowed("on-failure"));
+    assert!(restart_allowed("on-failure:3"));
+    assert!(!restart_allowed("on-failure:"));
+    assert!(!restart_allowed("on-failure:abc"));
     assert!(!restart_allowed("; rm -rf /"));
 }
 
@@ -218,8 +244,11 @@ fn build_create_spec_rejects_bad_port() {
 #[test]
 fn build_create_spec_rejects_bad_restart() {
     let mut req = mk_req("nginx");
-    req.restart = Some("on-failure".into());
+    req.restart = Some("sometimes".into());
     assert!(build_create_spec(&req).is_err());
+    // on-failure[:N] is a legal policy now (N caps the crash-loop retries).
+    req.restart = Some("on-failure:5".into());
+    assert!(build_create_spec(&req).is_ok());
 }
 
 #[test]
