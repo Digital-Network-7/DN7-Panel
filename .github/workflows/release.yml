@@ -66,7 +66,7 @@ jobs:
           if [ "$is_new" = "true" ]; then
             rel_name="${codename} ${version}"; rel_tag="v${version}"
           else
-            rel_name="${codename} ${version} build ${build_code}"; rel_tag="${build_code}"
+            rel_name="${codename} ${version} (${build_code})"; rel_tag="${build_code}"
           fi
           {
             echo "version=$version"; echo "codename=$codename"; echo "is_new=$is_new"

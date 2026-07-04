@@ -12,7 +12,7 @@
 # released one:
 #   • greater (or no releases yet) → a real release "<codename> <version>",
 #     tagged v<version>, pushed to the dn7.cn stable channel;
-#   • unchanged → a sub-build "<codename> <version> (<YY><Month><NN>)"
+#   • unchanged → a sub-build "<codename> <version> build <YY><Month><NN>"
 #     (month letter A–L from the commit; NN from 00, resets each month), GitHub
 #     only — NOT pushed to dn7.cn.
 # The codename is compiled into the binary by build.rs (DN7_CODENAME); the numeric
