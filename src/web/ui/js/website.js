@@ -271,11 +271,7 @@ function ngAddSite(reload, site) {
         ${afCard('code', 'mu', 'code', tr('ng.af_expert'), tr('ng.af_expert_d'), 'nsConfOn',
           `<textarea id="nsConf" class="field mono confbox" rows="6" spellcheck="false" placeholder="${tr('ng.conf_ph')}"></textarea><p class="afnote">${afsvg('warn', 14)}${tr('ng.conf_note')}</p>`)}
       </div>
-    </div>
-    <div class="modal-foot">
-      <div class="hidden" id="nsJob" style="width:100%"></div>
-      <button class="btn" id="nsGo">${editing ? tr('ng.save') : tr('ng.create')}</button>
-    </div>`, (close) => {
+    </div>`, (close, root) => {
     document.querySelectorAll('#nsTabs button').forEach((b) => b.onclick = () => {
       document.querySelectorAll('#nsTabs button').forEach((x) => x.className = x === b ? 'on' : '');
       document.querySelectorAll('.ftab-pane').forEach((p) => p.className = 'ftab-pane' + (p.dataset.p === b.dataset.t ? ' on' : ''));
@@ -597,8 +593,13 @@ function ngAddSite(reload, site) {
         else { toast(okMsg, 'ok'); close(); reload(); }
       }).catch((e) => { toast(e.message, 'err'); $('nsJob').innerHTML = ''; $('nsGo').disabled = false; });
     };
-    bindDirty('nsGo');
-  }, { onDismiss: () => { if (getJob('website:issue')) reload(); } });
+    // Explicit .modal-b root: #nsGo now lives in the sibling .modal-foot, so the
+    // closest('.modal-b') fallback would miss the form fields.
+    bindDirty('nsGo', root.querySelector('.modal-b'));
+  }, {
+    foot: `<div class="hidden" id="nsJob" style="width:100%"></div><button class="btn" id="nsGo">${editing ? tr('ng.save') : tr('ng.create')}</button>`,
+    onDismiss: () => { if (getJob('website:issue')) reload(); },
+  });
 }
 
 // Upload staged static content to a site's webroot. ZIP → one extract request;

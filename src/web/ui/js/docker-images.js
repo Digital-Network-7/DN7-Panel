@@ -2,7 +2,7 @@
 function dkImages(info) {
   const body = $('dkBody');
   if (!body) return; // tab left before an async refresh landed — nothing to render into
-  body.innerHTML = `<div class="sechead"><span class="sp"></span><button class="btn sm" id="dkPull">${tr('dk.pull_image')}</button><button class="btn sec sm" id="dkRefI">${tr('dk.refresh')}</button><button class="btn sec sm" id="dkAdv">${tr('dk.advanced')} ▾</button></div><div id="dkIList">` + loading() + '</div>';
+  body.innerHTML = `<div class="sechead"><input id="dkImgSearch" class="field" placeholder="${esc(tr('dk.img_search'))}" style="max-width:220px" aria-label="${esc(tr('dk.img_search'))}" /><span class="sp"></span><button class="btn sm" id="dkPull">${tr('dk.pull_image')}</button><button class="btn sec sm" id="dkRefI">${tr('dk.refresh')}</button><button class="btn sec sm" id="dkAdv">${tr('dk.advanced')} ▾</button></div><div id="dkIList">` + loading() + '</div>';
   $('dkRefI').onclick = () => dkImages(info);
   $('dkPull').onclick = dkPullForm;
   mkHoverPanel($('dkAdv'), [
@@ -12,37 +12,115 @@ function dkImages(info) {
   ]);
   op('docker', { op: 'list_images' }).then((d) => {
     const list = d.images || [];
-    if (!list.length) { $('dkIList').innerHTML = `<div class="empty">${tr('dk.no_images')}</div>`; return; }
-    let h = `<table class="optable frztbl imgtbl">`
-      + `<colgroup><col style="width:130px"><col style="width:300px"><col style="width:120px"><col style="width:160px"><col style="width:130px"><col style="width:${ngActW(210)}px"></colgroup>`
-      + `<tr><th>${tr('dk.col_id')}</th><th>${tr('dk.col_tags')}</th><th>${tr('dk.col_size')}</th><th>${tr('dk.col_created')}</th><th>${tr('dk.col_status')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
+    const search = $('dkImgSearch');
+    if (!list.length) { $('dkIList').innerHTML = `<div class="empty">${tr('dk.no_images')}</div>`; if (search) search.disabled = true; return; }
+
+    // The backend returns one row per tag; collapse rows that share an image id
+    // (the same image under multiple tags) into ONE card, gathering every tag.
+    const byId = new Map();
     list.forEach((im) => {
-      const ref = im.in_use
+      const key = im.id || im.name;
+      let g = byId.get(key);
+      if (!g) { g = { id: im.id, name: im.name, size: im.size, created_ts: im.created_ts, in_use: false, managed: false, tags: [] }; byId.set(key, g); }
+      ((im.tags && im.tags.length) ? im.tags : [im.name]).forEach((t) => { if (t && !g.tags.includes(t)) g.tags.push(t); });
+      g.in_use = g.in_use || !!im.in_use;
+      g.managed = g.managed || !!im.managed;
+      if (!g.size && im.size) g.size = im.size;
+    });
+    const groups = Array.from(byId.values());
+    const gMatch = (g, q) => String(g.id || '').toLowerCase().includes(q) || g.tags.some((t) => String(t).toLowerCase().includes(q));
+
+    // One image → one card. Title row: image id + in-use chip on the left, the
+    // ⋯ menu (download / tag / delete) on the right. Then a tags line ("标签：" +
+    // every tag as a chip, shown short, clamped to one line), then a size (left) /
+    // created (right) meta line. When the chips overflow the line, wireCards
+    // reveals a … and a hover popup listing the full tag set.
+    const card = (g, i) => {
+      const status = g.in_use
         ? `<span class="chip on"><span class="dot-s on"></span>${tr('dk.img_inuse')}</span>`
         : `<span class="chip">${tr('dk.img_idle')}</span>`;
-      const delBtn = im.managed
-        ? `<button class="btn sm danger" data-rmbuiltin="1">${tr('dk.delete')}</button>`
-        : im.in_use
-          ? `<button class="btn sm danger" data-rmused="1">${tr('dk.delete')}</button>`
-          : `<button class="btn sm danger" data-rm="${esc(im.name)}">${tr('dk.delete')}</button>`;
-      const tags = (im.tags && im.tags.length) ? im.tags : [im.name];
-      const tagHtml = tags.map((t) => `<span class="imgtag">${esc(t)}</span>`).join('');
-      const acts = `<div class="actions"><button class="btn sm sec" data-dl="${esc(im.name)}">${tr('dk.img_download')}</button><button class="btn sm sec" data-tag="${esc(im.name)}" data-tags="${esc(JSON.stringify(tags))}">${tr('dk.tag_btn')}</button>${delBtn}</div>`;
-      h += `<tr><td class="mono mut" style="font-size:11px" data-tip="${esc(im.id)}">${esc(im.id)}</td>`
-        + `<td data-tip="${esc(tags.join('\n'))}"><div class="clamp1">${tagHtml}</div></td>`
-        + `<td>${esc(im.size)}</td><td class="mut">${esc(fmtDateTime(im.created_ts))}</td><td>${ref}</td>`
-        + `<td class="act">${acts}</td></tr>`;
-    });
-    $('dkIList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
-    document.querySelectorAll('#dkIList [data-dl]').forEach((b) => b.onclick = () => dkImageDownload(b.dataset.dl));
-    document.querySelectorAll('#dkIList [data-tag]').forEach((b) => b.onclick = () => dkTagForm(b.dataset.tag, JSON.parse(b.dataset.tags || '[]'), info));
-    document.querySelectorAll('#dkIList [data-rmbuiltin]').forEach((b) => b.onclick = () => toast(tr('dk.img_builtin_block'), 'err'));
-    document.querySelectorAll('#dkIList [data-rmused]').forEach((b) => b.onclick = () => toast(tr('dk.img_in_use_block'), 'err'));
-    document.querySelectorAll('#dkIList [data-rm]').forEach((b) => b.onclick = async () => { if (await confirmDanger(tr('dk.confirm_rm_img', { name: b.dataset.rm }))) op('docker', { op: 'remove_image', ref: b.dataset.rm }).then(() => { toast(tr('common.deleted'), 'ok'); dkImages(info); }).catch((e) => toast(e.message, 'err')); });
-    wireStickyShadows($('dkIList').querySelector('.tablewrap'));
-    wireCellTips($('dkIList'));
+      // Each tag as a chip, shown short (drop docker.io/library/).
+      const chipsHtml = g.tags.map((t) => `<span class="imgtag">${esc(dockerShortRef(t))}</span>`).join('');
+      return `<div class="imgcard" data-gi="${i}">
+        <div class="imgcard-top">
+          <div class="imgcard-title"><span class="imgcard-id" title="${esc(g.id)}">${esc(g.id)}</span>${status}</div>
+          <button class="imgcard-menu" aria-label="${esc(tr('dk.col_actions'))}" title="${esc(tr('dk.col_actions'))}">⋯</button>
+        </div>
+        <div class="imgcard-tagline"><span class="imgcard-taglbl">${tr('dk.img_tags_label')}</span><span class="imgcard-tagchips">${chipsHtml}</span><span class="imgcard-tagmore" aria-hidden="true">…</span></div>
+        <div class="imgcard-meta"><span>${esc(g.size)}</span><span>${esc(fmtDateTime(g.created_ts))}</span></div>
+      </div>`;
+    };
+
+    // Delete removes the whole image = every tag (the last untag drops the image).
+    const delImage = (g) => {
+      if (g.managed) { toast(tr('dk.img_builtin_block'), 'err'); return; }
+      if (g.in_use) { toast(tr('dk.img_in_use_block'), 'err'); return; }
+      confirmDanger(tr('dk.confirm_rm_img', { name: g.tags.map(dockerShortRef).join(', ') })).then(async (ok) => {
+        if (!ok) return;
+        try { for (const t of g.tags) await op('docker', { op: 'remove_image', ref: t }); toast(tr('common.deleted'), 'ok'); }
+        catch (e) { toast(e.message, 'err'); }
+        dkImages(info);
+      });
+    };
+
+    const wireCards = (shown) => {
+      document.querySelectorAll('#dkIList .imgcard').forEach((cardEl) => {
+        const g = shown[Number(cardEl.dataset.gi)];
+        if (!g) return;
+        const menu = cardEl.querySelector('.imgcard-menu');
+        if (menu) mkHoverPanel(menu, [
+          { label: tr('dk.img_download'), fn: () => dkImageDownload(g.name) },
+          { label: tr('dk.tag_btn'), fn: () => dkTagForm(g.name, g.tags, info) },
+          { sep: true },
+          { label: tr('dk.delete'), cls: 'danger', fn: () => delImage(g) },
+        ]);
+        // Reveal the … and enable the full-tags hover popup only when the chips
+        // actually overflow the one-line row (scrollWidth > clientWidth).
+        const chipsEl = cardEl.querySelector('.imgcard-tagchips');
+        const lineEl = cardEl.querySelector('.imgcard-tagline');
+        if (chipsEl && lineEl && chipsEl.scrollWidth > chipsEl.clientWidth + 0.5) {
+          lineEl.classList.add('truncated');
+          const full = g.tags.map((t) => `<span class="imgtag">${esc(dockerShortRef(t))}</span>`).join('');
+          lineEl.addEventListener('mouseenter', () => showImgTagPop(lineEl, full));
+          lineEl.addEventListener('mouseleave', hideImgTagPop);
+        }
+      });
+    };
+
+    const render = () => {
+      const q = (search.value || '').trim().toLowerCase();
+      const shown = q ? groups.filter((g) => gMatch(g, q)) : groups;
+      if (!shown.length) {
+        $('dkIList').innerHTML = `<div class="empty">${esc(tr('dk.img_no_match'))}<div style="margin-top:10px"><button class="btn sec sm" id="dkImgClr">${tr('log.clear_filters')}</button></div></div>`;
+        $('dkImgClr').onclick = () => { search.value = ''; render(); search.focus(); };
+        return;
+      }
+      $('dkIList').innerHTML = `<div class="imgcards">${shown.map(card).join('')}</div>`;
+      wireCards(shown);
+    };
+    search.oninput = render;
+    render();
   }).catch((e) => { $('dkIList').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
 }
+
+// Body-anchored popup showing an image's full tag set (as chips) — revealed when
+// a card's one-line tags row is truncated and hovered. One reused element,
+// positioned below the row (flips above near the viewport bottom), mirroring the
+// table cell tooltip (dkTipBox). Display-only, so it hides on the row's mouseleave.
+function imgTagPop() {
+  let p = $('imgTagPop');
+  if (!p) { p = el('div', { id: 'imgTagPop', class: 'imgtag-pop' }); document.body.appendChild(p); }
+  return p;
+}
+function showImgTagPop(anchor, html) {
+  const p = imgTagPop(); p.innerHTML = html; p.style.display = 'flex';
+  const r = anchor.getBoundingClientRect();
+  const pw = p.offsetWidth, ph = p.offsetHeight;
+  let left = Math.min(r.left, window.innerWidth - pw - 8); if (left < 8) left = 8;
+  let top = r.bottom + 6; if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6);
+  p.style.left = left + 'px'; p.style.top = top + 'px';
+}
+function hideImgTagPop() { const p = $('imgTagPop'); if (p) p.style.display = 'none'; }
 
 // Manage an image's tags: the box is pre-filled with the current tags as
 // removable chips; add new ones with Enter, remove existing ones with ×. On
@@ -50,7 +128,7 @@ function dkImages(info) {
 function dkTagForm(name, existing, info) {
   const orig = (existing || []).filter(Boolean);
   const chips = orig.slice();
-  modal(tr('dk.tag_title') + name, `
+  modal(tr('dk.tag_title') + dockerShortRef(name), `
     <label class="lbl">${tr('dk.tag_manage')}</label>
     <div class="taginput" id="tgBox"><input id="tgInput" placeholder="${tr('dk.tag_ph')}" /></div>
     <p class="formnote" style="margin-top:6px">${tr('dk.tag_hint')}</p>
@@ -62,7 +140,9 @@ function dkTagForm(name, existing, info) {
       box.querySelectorAll('.tagchip').forEach((e) => e.remove());
       chips.forEach((t, i) => {
         const c = el('span', { class: 'tagchip' });
-        c.innerHTML = `<span>${esc(t)}</span><button type="button">×</button>`;
+        // Display short (drop registry-1.docker.io/library/); the chip's value
+        // stays the full ref in `chips`, so the retag reconcile is unaffected.
+        c.innerHTML = `<span title="${esc(t)}">${esc(dockerShortRef(t))}</span><button type="button">×</button>`;
         c.querySelector('button').onclick = () => { chips.splice(i, 1); render(); };
         box.insertBefore(c, input);
       });

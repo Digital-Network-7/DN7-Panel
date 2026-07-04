@@ -45,7 +45,7 @@ function dkCreateModal(info, networks, opts) {
       <div class="formgrid">
         <div class="full"><label class="lbl">${tr('dk.image')}</label><select id="ccImg" class="field" data-selx-search><option value="">${tr('dk.image_ph')}</option></select></div>
         <div><label class="lbl">${tr('dk.ctn_name')}</label><input id="ccName" class="field" placeholder="my-app" /></div>
-        <div><label class="lbl">${tr('dk.restart_policy')}</label><select id="ccRestart" class="field"><option value="unless-stopped">unless-stopped</option><option value="always">always</option><option value="no">no</option></select></div>
+        <div><label class="lbl">${tr('dk.restart_policy')}</label><div style="display:flex;gap:6px"><select id="ccRestart" class="field" style="flex:1 1 auto"><option value="unless-stopped">unless-stopped</option><option value="always">always</option><option value="on-failure">on-failure</option><option value="no">no</option></select><input id="ccRestartN" class="field hidden" type="number" min="0" max="1000" value="0" style="flex:0 0 92px" title="${esc(tr('dk.restart_max_retries'))}" placeholder="N" /></div></div>
         <div class="full"><label class="lbl">${tr('dk.start_cmd')}</label><input id="ccCmd" class="field" placeholder="${tr('dk.cmd_ph')}" /></div>
       </div>
       <div class="switchrow" style="margin-top:10px">
@@ -55,10 +55,13 @@ function dkCreateModal(info, networks, opts) {
       </div>
     </div>
     <div id="ccNet" class="hidden">
+      <div style="margin-bottom:12px"><label class="lbl">${tr('dk.net_mode')}</label><select id="ccNetMode" class="field" style="max-width:260px"><option value="">${tr('dk.net_mode_bridge')}</option><option value="host">host</option><option value="none">none</option></select><p class="formnote hidden" id="ccNetModeHint" style="margin-top:5px"></p></div>
+      <div id="ccNetRows">
       <label class="lbl">${tr('dk.net_join')}</label>
       <div class="kvlist" id="ccNets"></div>
       <button type="button" class="kvadd" id="ccNetAdd">${tr('dk.net_add')}</button>
       <p class="formnote" style="margin-top:8px">${tr('dk.net_static_hint')}</p>
+      </div>
       <div class="formgrid" style="margin-top:16px">
         <div><label class="lbl">${tr('dk.hostname')}</label><input id="ccHost" class="field" placeholder="web-01" /></div>
         <div><label class="lbl">${tr('dk.domainname')}</label><input id="ccDomain" class="field" placeholder="example.com" /></div>
@@ -89,10 +92,6 @@ function dkCreateModal(info, networks, opts) {
     </div>
     <div id="ccEnvT" class="hidden">
       <label class="lbl">${tr('dk.env')}</label><div class="kvlist" id="ccEnv"></div><button type="button" class="kvadd" id="ccEnvAdd">${tr('dk.add_env')}</button>
-    </div>
-    <div class="modal-foot">
-      <div id="ccJob" class="mf-job hidden"></div>
-      <button class="btn" id="ccGo">${opts.submitLabel || tr('dk.create')}</button>
     </div>`, (close, root) => {
     // Image options: fetch, then apply any prefill inside the same promise so a
     // slow list_images can never wipe the injected current image and silently
@@ -102,7 +101,9 @@ function dkCreateModal(info, networks, opts) {
       const names = (d.images || []).map((im) => im.name).filter((n) => n && n !== '<none>:<none>');
       if (preselect && !names.includes(preselect)) names.unshift(preselect);
       if (!names.length) { sel.innerHTML = `<option value="">${tr('dk.no_images_pull')}</option>`; return; }
-      sel.innerHTML = names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+      // Value keeps the full ref (used on create); display drops the
+      // registry-1.docker.io/library/ prefix for readability.
+      sel.innerHTML = names.map((n) => `<option value="${esc(n)}">${esc(dockerShortRef(n))}</option>`).join('');
       if (preselect) sel.value = preselect;
       // Options arriving is not a user edit — re-baseline the dirty snapshot.
       const mb = root.querySelector('.modal-b');
@@ -120,7 +121,9 @@ function dkCreateModal(info, networks, opts) {
     // Dynamic row helpers.
     const portRow = (v) => kvRow('ccPorts', [
       { ph: tr('dk.host_ip'), val: v && v.ip }, { sep: ':' }, { ph: tr('dk.host_port'), val: v && v.h }, { sep: '→' }, { ph: tr('dk.container_port'), val: v && v.c },
-    ], { proto: true, protoVal: v && v.proto, ipv6: true, ipv6Val: v && v.ipv6 });
+      // dn7's DNAT is IPv4-only (create rejects ipv6 publishes) — don't offer
+      // the toggle there at all.
+    ], { proto: true, protoVal: v && v.proto, ipv6: !isDn7, ipv6Val: v && v.ipv6 });
     const envRow = (v) => kvRow('ccEnv', [
       { ph: 'KEY', val: v && v.k, flex: '0 0 34%' }, { sep: '=' }, { ph: 'VALUE', val: v && v.v, flex: '1 1 auto' },
     ]);
@@ -222,11 +225,34 @@ function dkCreateModal(info, networks, opts) {
       refreshNetUI();
     };
     $('ccNetAdd').onclick = () => netRow({ genip: true });
-    const readNetworks = () => Array.from($('ccNets').querySelectorAll('.netrow')).map((r) => ({
-      network: r.querySelector('.nr-net').value,
-      mac: r.querySelector('.nr-mac').value.trim() || undefined,
-      ipv4: r.querySelector('.nr-ip').value.trim() || undefined,
-    })).filter((n) => n.network);
+    // Network MODE: default (bridge / custom rows) vs the exclusive host/none
+    // modes. host/none hide the attachment rows and take no port mappings.
+    const netMode = () => $('ccNetMode').value;
+    const syncNetMode = () => {
+      const m = netMode();
+      $('ccNetRows').classList.toggle('hidden', !!m);
+      const hint = $('ccNetModeHint');
+      hint.classList.toggle('hidden', !m);
+      if (m) hint.textContent = m === 'host' ? tr('dk.net_mode_host_hint') : tr('dk.net_mode_none_hint');
+    };
+    $('ccNetMode').onchange = syncNetMode;
+    const readNetworks = () => {
+      const m = netMode();
+      if (m) return [{ network: m }];
+      return Array.from($('ccNets').querySelectorAll('.netrow')).map((r) => ({
+        network: r.querySelector('.nr-net').value,
+        mac: r.querySelector('.nr-mac').value.trim() || undefined,
+        ipv4: r.querySelector('.nr-ip').value.trim() || undefined,
+      })).filter((n) => n.network);
+    };
+    // on-failure exposes the optional max-retries count (0 = unlimited).
+    const syncRestartN = () => $('ccRestartN').classList.toggle('hidden', $('ccRestart').value !== 'on-failure');
+    $('ccRestart').onchange = syncRestartN;
+    const readRestart = () => {
+      const v = $('ccRestart').value;
+      const n = Number($('ccRestartN').value) || 0;
+      return (v === 'on-failure' && n > 0) ? `on-failure:${n}` : v;
+    };
     // Memory unit (MB/GB) toggle.
     let memUnit = 'MB';
     const updMemHint = () => {
@@ -241,7 +267,7 @@ function dkCreateModal(info, networks, opts) {
       const applyImg = () => {
         const sel = $('ccImg');
         if (cfg.image && !Array.from(sel.options).some((o) => o.value === cfg.image)) {
-          const o = document.createElement('option'); o.value = cfg.image; o.textContent = cfg.image; sel.appendChild(o);
+          const o = document.createElement('option'); o.value = cfg.image; o.textContent = dockerShortRef(cfg.image); sel.appendChild(o);
         }
         if (cfg.image) sel.value = cfg.image;
       };
@@ -252,7 +278,12 @@ function dkCreateModal(info, networks, opts) {
       img.disabled = true;
       img.removeAttribute('data-selx-search');
       $('ccName').value = cfg.name || '';
-      $('ccRestart').value = cfg.restart || 'unless-stopped';
+      // "on-failure:3" round-trips into the select + the retries count.
+      const rp = cfg.restart || 'unless-stopped';
+      const rpm = rp.match(/^on-failure(?::(\d+))?$/);
+      $('ccRestart').value = rpm ? 'on-failure' : rp;
+      if (rpm && rpm[1]) $('ccRestartN').value = rpm[1];
+      syncRestartN();
       $('ccCmd').value = cfg.command || '';
       $('ccTty').checked = !!cfg.tty;
       $('ccStdin').checked = !!cfg.interactive;
@@ -260,7 +291,11 @@ function dkCreateModal(info, networks, opts) {
       (cfg.ports || []).forEach((p) => portRow({ ip: p.host_ip, h: p.host, c: p.container, proto: p.proto, ipv6: p.ipv6 }));
       (cfg.env || []).forEach((e) => { const i = e.indexOf('='); envRow({ k: i >= 0 ? e.slice(0, i) : e, v: i >= 0 ? e.slice(i + 1) : '' }); });
       (cfg.volumes || []).forEach((v) => volRow({ host: v.host, container: v.container, readonly: v.readonly }));
-      (cfg.networks || []).forEach((n) => netRow(n));
+      // A host/none first network is the exclusive MODE, not an attachment row.
+      const nets = cfg.networks || [];
+      const exclusive = nets.length === 1 && (nets[0].network === 'host' || nets[0].network === 'none');
+      if (exclusive) { $('ccNetMode').value = nets[0].network; syncNetMode(); }
+      else nets.forEach((n) => netRow(n));
       $('ccHost').value = cfg.hostname || '';
       $('ccDomain').value = cfg.domainname || '';
       $('ccDns').value = (cfg.dns || []).join(' ');
@@ -341,6 +376,9 @@ function dkCreateModal(info, networks, opts) {
       const image = $('ccImg').value.trim(); if (!image) return toast(tr('dk.need_image'), 'err');
       if (!ccValidate()) return;
       const ports = readKv('ccPorts').map((r) => ({ host_ip: (r[0] || '').trim() || undefined, host: Number(r[1]), container: Number(r[2]), proto: r.proto || 'tcp', ipv6: r.ipv6 || undefined })).filter((p) => p.host && p.container);
+      // Mirror the server rule up front: host/none network modes take no port
+      // mappings (host already exposes everything; none has no connectivity).
+      if (ports.length && netMode()) { selTab('ports'); return toast(tr('err.docker.ports_with_host_net'), 'err'); }
       const env = readKv('ccEnv').map((r) => (r[0] ? r[0] + '=' + (r[1] || '') : '')).filter(Boolean);
       const volumes = readVolumes();
       const networks = readNetworks();
@@ -349,7 +387,7 @@ function dkCreateModal(info, networks, opts) {
       const cpusV = Number($('ccCpus').value) || 0;
       const memV = Number($('ccMem').value) || 0;
       const body = {
-        op: 'create_container', image, name: $('ccName').value.trim() || undefined, restart: $('ccRestart').value,
+        op: 'create_container', image, name: $('ccName').value.trim() || undefined, restart: readRestart(),
         ports, env, volumes, command: $('ccCmd').value.trim() || undefined, tty: $('ccTty').checked, interactive: $('ccStdin').checked, start: $('ccStart').checked,
         networks,
         hostname: $('ccHost').value.trim() || undefined, domainname: $('ccDomain').value.trim() || undefined,
@@ -371,7 +409,12 @@ function dkCreateModal(info, networks, opts) {
     // Bind on the modal body so the whole 6-tab form is dirty-tracked — modal()
     // then guards backdrop/X/Escape dismissal behind a discard confirm.
     bindDirty('ccGo', root.querySelector('.modal-b'));
-  }, true);
+  }, {
+    big: true,
+    // Rendered as a flex sibling of .modal-b so the primary button reads as a
+    // true footer flush to the modal bottom (not a sticky row inside the body).
+    foot: `<div id="ccJob" class="mf-job hidden"></div><button class="btn" id="ccGo">${opts.submitLabel || tr('dk.create')}</button>`,
+  });
 }
 
 // Generate a locally-administered random unicast MAC (02:xx:xx:xx:xx:xx).

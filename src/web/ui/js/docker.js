@@ -2,6 +2,18 @@
 // Docker management
 // =========================================================================
 
+// Display form of an image reference: drop the implicit Docker Hub registry
+// (`registry-1.docker.io/` or `docker.io/`) and the official `library/`
+// namespace, matching how `docker images` prints short names — e.g.
+// `registry-1.docker.io/library/alpine:latest` → `alpine:latest`. The full ref
+// is still used for every operation (pull/tag/delete); this is display-only.
+function dockerShortRef(ref) {
+  let s = String(ref == null ? '' : ref);
+  s = s.replace(/^(registry-1\.docker\.io|docker\.io|index\.docker\.io)\//, '');
+  s = s.replace(/^library\//, '');
+  return s;
+}
+
 // Attach a host-path autocomplete dropdown to an input. As the user types an
 // absolute path, we query the (read-only) docker `list_dirs` op for matching
 // subdirectories and show them in a floating panel. Clicking a suggestion fills
@@ -147,7 +159,68 @@ function dkCtnTick() {
   dkLoadContainers();
 }
 
+// A row's change signature: any difference re-renders that row in place.
+function dkCtnRowSig(c) {
+  return [c.state, c.status, c.name, c.image, (c.ips || []).join(';'), c.ports || '',
+    c.description || '', c.uptime || '', c.has_shell ? 1 : 0, c.managed ? 1 : 0,
+    c.oom_killed ? 1 : 0].join('\u0001');
+}
+
+// The <td> cells for one container row (everything inside its <tr>).
+function dkCtnRowCells(c) {
+  const running = c.state === 'running';
+  const ports = (c.ports || '').split(',').map((p) => p.trim()).filter(Boolean);
+  const portCell = ports.length ? ports.map((p) => `<span class="portlbl">${esc(p)}</span>`).join(' ') : '<span class="mut">-</span>';
+  const desc = c.description ? esc(c.description) : '<span class="mut">-</span>';
+  // Uptime column: localized "Up …" while running; exit context ("2 hours
+  // ago") for exited containers — the raw status rides the cell tooltip.
+  const exi = !running ? dkExitInfo(c.status) : null;
+  let uptime = '<span class="mut">-</span>';
+  if (running && c.uptime) uptime = esc(dkUptimeTr(c.uptime));
+  else if (exi && exi.ago) uptime = esc(tr('dk.ago', { t: dkDurTr(exi.ago) }));
+  const builtin = c.managed ? ` <span class="chip">${tr('dk.builtin')}</span>` : '';
+  return `
+      <td data-tip="${esc(c.name)}"><div class="clamp1"><b>${esc(c.name)}</b>${builtin}</div><div class="clamp1 mut mono" style="font-size:11px">${esc(c.id)}</div></td>
+      <td data-tip="${esc(c.image)}"><div class="clamp2 mono" style="font-size:12px">${esc(dockerShortRef(c.image))}</div></td>
+      <td><span class="statuswrap" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}">${ctnStateChip(c.state, c.status, c.oom_killed)}</span></td>
+      <td data-tip="${esc((c.ips || []).join('\n'))}"><div class="clamp2 mono" style="font-size:12px">${(c.ips && c.ips.length) ? c.ips.map((x) => esc(x)).join('<br>') : '<span class="mut">-</span>'}</div></td>
+      <td data-tip="${esc((c.ports || '').replace(/,\s*/g, '\n'))}"><div class="clamp2 portcell">${portCell}</div></td>
+      <td data-tip="${esc(c.description || '')}"><div class="clamp2 mut" style="font-size:12px">${desc}</div></td>
+      <td data-tip="${esc(c.status || '')}"><div class="clamp2 mut" style="font-size:12px">${uptime}</div></td>
+      <td class="act"><div class="actions" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-shell="${c.has_shell ? 1 : 0}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}"></div></td>`;
+}
+
+// Wire the dynamic bits of a freshly-(re)rendered row.
+function dkWireCtnRow(row) {
+  const a = row.querySelector('.actions');
+  if (a) buildContainerActions(a, dkContainers);
+  wireCellTips(row);
+}
+
 function dkRenderCtnList(list) {
+  // Incremental path: same containers in the same order → patch only the rows
+  // whose signature changed. The table (and its scroll position, focus, hover
+  // and tooltip listeners) survives the 2s transitional poll instead of being
+  // torn down — the list no longer jumps to the top mid-restart.
+  const wrap = $('dkCList').querySelector('.tablewrap');
+  const rows = wrap ? Array.from(wrap.querySelectorAll('tr[data-cid]')) : [];
+  if (list.length && rows.length === list.length
+      && list.every((c, i) => rows[i].dataset.cid === c.id)) {
+    list.forEach((c, i) => {
+      const row = rows[i], sig = dkCtnRowSig(c);
+      // A lifecycle op is in flight — keep the optimistic transitional chip and
+      // disabled buttons; the op's own settle callback refreshes when it's done.
+      if (dkPending.has(c.id)) return;
+      if (row.dataset.sig === sig) return;
+      row.dataset.sig = sig;
+      row.dataset.f = (c.name + ' ' + c.image + ' ' + c.state).toLowerCase();
+      row.innerHTML = dkCtnRowCells(c);
+      dkWireCtnRow(row);
+    });
+    dkApplyFilter();
+    return;
+  }
+
   document.querySelectorAll('.dk-pop').forEach((p) => p.remove());
   if (!list.length) { $('dkCList').innerHTML = `<div class="empty">${tr('dk.no_containers')}</div>`; return; }
   let h = `<table class="optable frztbl ctntbl">`
@@ -158,34 +231,12 @@ function dkRenderCtnList(list) {
     + `<th>${tr('dk.col_ip')}</th><th>${tr('dk.col_ports')}</th><th>${tr('dk.col_desc')}</th>`
     + `<th>${tr('dk.col_uptime')}</th><th class="act">${tr('dk.col_actions')}</th></tr>`;
   list.forEach((c) => {
-    const running = c.state === 'running';
-    const ports = (c.ports || '').split(',').map((p) => p.trim()).filter(Boolean);
-    const portCell = ports.length ? ports.map((p) => `<span class="portlbl">${esc(p)}</span>`).join(' ') : '<span class="mut">-</span>';
-    const desc = c.description ? esc(c.description) : '<span class="mut">-</span>';
-    // Uptime column: localized "Up …" while running; exit context ("2 hours
-    // ago") for exited containers — the raw status rides the cell tooltip.
-    const exi = !running ? dkExitInfo(c.status) : null;
-    let uptime = '<span class="mut">-</span>';
-    if (running && c.uptime) uptime = esc(dkUptimeTr(c.uptime));
-    else if (exi && exi.ago) uptime = esc(tr('dk.ago', { t: dkDurTr(exi.ago) }));
-    const builtin = c.managed ? ` <span class="chip">${tr('dk.builtin')}</span>` : '';
-    const caret = c.managed ? '' : '<span class="c-caret" aria-hidden="true">▾</span>';
-    h += `<tr data-f="${esc((c.name + ' ' + c.image + ' ' + c.state).toLowerCase())}">
-      <td data-tip="${esc(c.name)}"><div class="clamp1"><b>${esc(c.name)}</b>${builtin}</div><div class="clamp1 mut mono" style="font-size:11px">${esc(c.id)}</div></td>
-      <td data-tip="${esc(c.image)}"><div class="clamp2 mono" style="font-size:12px">${esc(c.image)}</div></td>
-      <td><span class="statuswrap" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}">${ctnStateChip(c.state, c.status)}${caret}</span></td>
-      <td data-tip="${esc((c.ips || []).join('\n'))}"><div class="clamp2 mono" style="font-size:12px">${(c.ips && c.ips.length) ? c.ips.map((x) => esc(x)).join('<br>') : '<span class="mut">-</span>'}</div></td>
-      <td data-tip="${esc((c.ports || '').replace(/,\s*/g, '\n'))}"><div class="clamp2 portcell">${portCell}</div></td>
-      <td data-tip="${esc(c.description || '')}"><div class="clamp2 mut" style="font-size:12px">${desc}</div></td>
-      <td data-tip="${esc(c.status || '')}"><div class="clamp2 mut" style="font-size:12px">${uptime}</div></td>
-      <td class="act"><div class="actions" data-id="${esc(c.id)}" data-name="${esc(c.name)}" data-shell="${c.has_shell ? 1 : 0}" data-state="${esc(c.state)}" data-managed="${c.managed ? 1 : 0}"></div></td>
+    h += `<tr data-cid="${esc(c.id)}" data-sig="${esc(dkCtnRowSig(c))}" data-f="${esc((c.name + ' ' + c.image + ' ' + c.state).toLowerCase())}">${dkCtnRowCells(c)}
     </tr>`;
   });
   $('dkCList').innerHTML = '<div class="tablewrap">' + h + '</table></div>';
-  document.querySelectorAll('#dkCList .actions').forEach((a) => buildContainerActions(a, dkContainers));
-  document.querySelectorAll('#dkCList .statuswrap').forEach((s) => buildStatusControls(s, dkContainers));
+  document.querySelectorAll('#dkCList tr[data-cid]').forEach((r) => dkWireCtnRow(r));
   wireStickyShadows($('dkCList').querySelector('.tablewrap'));
-  wireCellTips($('dkCList'));
   dkApplyFilter();
 }
 
@@ -291,43 +342,27 @@ function dkExitInfo(status) {
 // A clean state chip (decoupled from the long status text, which now feeds the
 // uptime column). Colour + label reflect the lifecycle state; an exited
 // container shows its exit code, err-tinted for a non-zero (crash) exit.
-function ctnStateChip(state, status) {
+function ctnStateChip(state, status, oom) {
   let cls = 'off', dot = '', label = tr('dk.st_stopped');
   if (state === 'running') { cls = 'on'; dot = ' on'; label = tr('dk.st_running'); }
   else if (state === 'paused') { cls = 'amber'; dot = ' amber'; label = tr('dk.st_paused'); }
   else if (state === 'restarting') { cls = 'amber'; dot = ' init'; label = tr('dk.st_restarting'); }
+  else if (state === 'starting') { cls = 'amber'; dot = ' init'; label = tr('dk.st_starting'); }
+  else if (state === 'stopping') { cls = 'amber'; dot = ' init'; label = tr('dk.st_stopping'); }
+  else if (state === 'removing') { cls = 'amber'; dot = ' init'; label = tr('dk.st_removing'); }
   else if (state === 'created') { cls = ''; label = tr('dk.st_created'); }
   else {
     const exi = dkExitInfo(status);
-    if (exi) { label = tr('dk.st_exited', { code: exi.code }); if (exi.code !== 0) { cls = 'err'; dot = ' err'; } }
+    if (exi) {
+      label = oom ? tr('dk.st_oom', { code: exi.code }) : tr('dk.st_exited', { code: exi.code });
+      if (exi.code !== 0) { cls = 'err'; dot = ' err'; }
+    }
   }
   return `<span class="chip ${cls}"><span class="dot-s${dot}"></span>${esc(label)}</span>`;
 }
 
 // Build the lifecycle controls (start/stop/restart/force/pause/resume) shown on
 // a hover panel under the status chip. Buttons depend on the container state.
-function buildStatusControls(holder, reload) {
-  if (holder.dataset.managed === '1') { holder.title = tr('dk.managed_lifecycle'); return; }
-  const id = holder.dataset.id, state = holder.dataset.state;
-  const items = [];
-  if (state === 'running') {
-    items.push({ label: tr('dk.stop'), fn: () => doStopAction(id, reload) });
-    items.push({ label: tr('dk.restart'), fn: () => doCAction('restart_container', id, reload) });
-    items.push({ label: tr('dk.pause'), fn: () => doCAction('pause_container', id, reload) });
-    items.push({ label: tr('dk.force_stop'), cls: 'danger', fn: async () => { if (await confirmDanger(tr('dk.confirm_force', { name: holder.dataset.name }))) doCAction('kill_container', id, reload); } });
-  } else if (state === 'paused') {
-    items.push({ label: tr('dk.resume'), cls: '', fn: () => doCAction('unpause_container', id, reload) });
-    items.push({ label: tr('dk.stop'), fn: () => doStopAction(id, reload) });
-    items.push({ label: tr('dk.restart'), fn: () => doCAction('restart_container', id, reload) });
-  } else {
-    items.push({ label: tr('dk.start'), cls: '', fn: () => doCAction('start_container', id, reload) });
-    items.push({ label: tr('dk.restart'), fn: () => doCAction('restart_container', id, reload) });
-  }
-  if (!items.length) return;
-  holder.style.cursor = 'pointer';
-  mkHoverPanel(holder, items);
-}
-
 // Resolve the WebSocket path for a container terminal, minting a fresh ticket
 // per (re)connect. For a privileged / host-namespaced container (exec into
 // which grants effective host root) it first runs a step-up re-auth and rides
@@ -360,8 +395,8 @@ function buildContainerActions(holder, reload) {
   // here — Terminal, Files, and an Advanced menu carrying Monitor.
   if (managed) {
     if (running && hasShell) mk(tr('dk.terminal'), '', () => openTerminalModal(tr('dk.ctn_term') + name, () => ctnTermPath(id)));
-    if (running) mk(tr('dk.files'), 'sec', () => openFileBrowser(tr('dk.ctn_files') + name, id));
     const mitems = [];
+    if (running) mitems.push({ label: tr('dk.files'), fn: () => openFileBrowser(tr('dk.ctn_files') + name, id) });
     if (running) mitems.push({ label: tr('dk.monitor'), fn: () => dkMonitor(id, name) });
     if (mitems.length) {
       const advm = el('button', { class: 'btn sm sec' }, tr('dk.advanced') + ' ▾');
@@ -370,18 +405,32 @@ function buildContainerActions(holder, reload) {
     }
     return;
   }
-  // Outermost: terminal, files, advanced (logs/networks moved into Advanced /
-  // the create-edit tabs respectively).
-  if (running && hasShell) mk(tr('dk.terminal'), '', () => openTerminalModal(tr('dk.ctn_term') + name, () => ctnTermPath(id)));
-  if (running) mk(tr('dk.files'), 'sec', () => openFileBrowser(tr('dk.ctn_files') + name, id));
+  // Primary lifecycle control (moved out of the status chip): Stop / Resume /
+  // Start depending on the current state.
+  if (running) mk(tr('dk.stop'), '', () => doStopAction(id, reload));
+  else if (state === 'paused') mk(tr('dk.resume'), '', () => doCAction('unpause_container', id, reload));
+  else mk(tr('dk.start'), '', () => doCAction('start_container', id, reload));
+  if (running && hasShell) mk(tr('dk.terminal'), 'sec', () => openTerminalModal(tr('dk.ctn_term') + name, () => ctnTermPath(id)));
   // Advanced menu (the button itself does nothing; items show on hover).
   const adv = el('button', { class: 'btn sm sec' }, tr('dk.advanced') + ' ▾');
   holder.appendChild(adv);
-  const items = [
-    { label: tr('dk.logs'), fn: () => dkLogs(id, name) },
-    { label: tr('dk.edit'), fn: () => dkEditForm(id, name) },
-    { label: tr('dk.upgrade'), fn: () => dkUpgradeForm(id, name) },
-  ];
+  // Secondary lifecycle controls first, then the rest.
+  const items = [];
+  if (running) {
+    items.push({ label: tr('dk.restart'), fn: () => doCAction('restart_container', id, reload) });
+    items.push({ label: tr('dk.pause'), fn: () => doCAction('pause_container', id, reload) });
+    items.push({ label: tr('dk.force_stop'), cls: 'danger', fn: async () => { if (await confirmDanger(tr('dk.confirm_force', { name }))) doCAction('kill_container', id, reload); } });
+  } else if (state === 'paused') {
+    items.push({ label: tr('dk.stop'), fn: () => doStopAction(id, reload) });
+    items.push({ label: tr('dk.restart'), fn: () => doCAction('restart_container', id, reload) });
+  } else {
+    items.push({ label: tr('dk.restart'), fn: () => doCAction('restart_container', id, reload) });
+  }
+  items.push({ sep: true });
+  items.push({ label: tr('dk.logs'), fn: () => dkLogs(id, name) });
+  if (running) items.push({ label: tr('dk.files'), fn: () => openFileBrowser(tr('dk.ctn_files') + name, id) });
+  items.push({ label: tr('dk.edit'), fn: () => dkEditForm(id, name) });
+  items.push({ label: tr('dk.upgrade'), fn: () => dkUpgradeForm(id, name) });
   if (running) items.push({ label: tr('dk.monitor'), fn: () => dkMonitor(id, name) });
   items.push({ label: tr('dk.backup'), fn: () => dkBackups(id, name) });
   items.push({ label: tr('dk.rename'), fn: () => dkRenameForm(id, name, reload) });
@@ -467,16 +516,92 @@ function mkHoverPanel(trigger, items) {
   panel.addEventListener('keydown', (e) => { if (e.key === 'Escape') { hide(); trigger.focus(); } });
 }
 
-function doCAction(o, id, reload) { op('docker', { op: o, ref: id }).then(() => { toast(tr('dk.op_ok'), 'ok'); reload && reload(); }).catch((e) => toast(e.message, 'err')); }
+// The optimistic transitional state a lifecycle verb puts its row into the
+// moment it is sent (before the server confirms).
+const DK_OP_TRANS = {
+  start_container: 'starting', restart_container: 'restarting',
+  stop_container: 'stopping', kill_container: 'stopping', remove_container: 'removing',
+};
+
+// Containers with a lifecycle op in flight. While an id is here, background
+// polls leave its row alone (keep the optimistic transitional chip) instead of
+// overwriting it with the still-`running` backend state — that overwrite is what
+// made a graceful stop flash running → stopping → running → exited.
+const dkPending = new Set();
+function dkSettle(id, reload) {
+  dkPending.delete(id);
+  if (reload) reload();
+}
+
+// Optimistic row feedback: flip the status chip to the transitional state and
+// disable the row's buttons immediately, then poll for the real state. The
+// cleared signature forces the next poll to redraw the row either way.
+function dkMarkTransient(id, state) {
+  if (!state || !$('dkCList')) return;
+  dkPending.add(id);
+  const sel = (window.CSS && CSS.escape) ? CSS.escape(id) : id;
+  const act = document.querySelector(`#dkCList .actions[data-id="${sel}"]`);
+  const row = act && act.closest('tr');
+  if (!row) return;
+  const wrap = row.querySelector('.statuswrap');
+  if (wrap) { wrap.dataset.state = state; wrap.innerHTML = ctnStateChip(state, ''); }
+  row.querySelectorAll('.actions button').forEach((b) => { b.disabled = true; });
+  row.dataset.sig = '';
+  clearTimeout(dkLoadContainers._t);
+  dkLoadContainers._t = setTimeout(dkCtnTick, 700);
+}
+
+function doCAction(o, id, reload) {
+  dkMarkTransient(id, DK_OP_TRANS[o]);
+  op('docker', { op: o, ref: id }).then(() => { toast(tr('dk.op_ok'), 'ok'); dkSettle(id, reload); })
+    .catch((e) => { toast(e.message, 'err'); dkSettle(id, $('dkCList') ? dkLoadContainers : null); });
+}
 
 // Stopping takes a while (docker waits for the container to exit). Give instant
 // feedback that the command was sent, then confirm completion — but only if the
 // user is still on the Docker page when it finishes.
 function doStopAction(id, reload) {
   toast(tr('dk.stop_sent'));
+  dkMarkTransient(id, 'stopping');
   op('docker', { op: 'stop_container', ref: id }).then(() => {
-    if (UI.tab === 'docker') { toast(tr('dk.stop_done'), 'ok'); reload && reload(); }
-  }).catch((e) => toast(e.message, 'err'));
+    if (UI.tab === 'docker') toast(tr('dk.stop_done'), 'ok');
+    dkSettle(id, UI.tab === 'docker' ? reload : null);
+  }).catch((e) => { toast(e.message, 'err'); dkSettle(id, $('dkCList') ? dkLoadContainers : null); });
+}
+
+// Render log text with ANSI SGR colors as safe HTML. `st.open` carries the
+// active style classes across chunks so a color started in one follow poll
+// continues in the next. Only SGR survives server sanitization, so this only
+// needs the `ESC [ … m` grammar.
+function dkAnsiToHtml(text, st) {
+  const CLS = { 1: 'lg-b', 3: 'lg-i', 4: 'lg-u' };
+  const openSpan = () => (st.open.length ? `<span class="${st.open.join(' ')}">` : '');
+  const parts = String(text).split('\u001b[');
+  // Resume the style carried over from the previous chunk, if any.
+  let html = openSpan() + esc(parts[0]);
+  for (let i = 1; i < parts.length; i++) {
+    const m = parts[i].match(/^([0-9;]*)m/);
+    if (!m) { html += esc(parts[i]); continue; }
+    if (st.open.length) html += '</span>';
+    const codes = (m[1] || '0').split(';').map((n) => parseInt(n, 10) || 0);
+    for (let j = 0; j < codes.length; j++) {
+      const c = codes[j];
+      if (c === 0) st.open = [];
+      else if (CLS[c]) st.open.push(CLS[c]);
+      else if (c === 22 || c === 23 || c === 24) st.open = st.open.filter((k) => k !== CLS[{ 22: 1, 23: 3, 24: 4 }[c]]);
+      else if ((c >= 30 && c <= 37) || (c >= 90 && c <= 97)) { st.open = st.open.filter((k) => !k.startsWith('lg-f')); st.open.push('lg-f' + (c >= 90 ? c - 90 + 8 : c - 30)); }
+      else if ((c >= 40 && c <= 47) || (c >= 100 && c <= 107)) { st.open = st.open.filter((k) => !k.startsWith('lg-g')); st.open.push('lg-g' + (c >= 100 ? c - 100 + 8 : c - 40)); }
+      else if (c === 39) st.open = st.open.filter((k) => !k.startsWith('lg-f'));
+      else if (c === 49) st.open = st.open.filter((k) => !k.startsWith('lg-g'));
+      else if (c === 38 || c === 48) { // 256/truecolor: skip the argument codes, keep default.
+        j += codes[j + 1] === 5 ? 2 : codes[j + 1] === 2 ? 4 : 0;
+      }
+    }
+    st.open = [...new Set(st.open)];
+    html += openSpan() + esc(parts[i].slice(m[0].length));
+  }
+  if (st.open.length) html += '</span>';
+  return html;
 }
 
 function dkLogs(id, name) {
@@ -484,7 +609,7 @@ function dkLogs(id, name) {
   const tails = [400, 1000, 2000];
   modal(tr('dk.logs_title') + name, `
     <div class="row" style="margin-bottom:10px">
-      <label class="tgl"><input type="checkbox" id="dkLogFollow" /><span class="tglbox"></span><span class="tgltxt">${tr('dk.log_follow')}</span></label>
+      <label class="tgl"><input type="checkbox" id="dkLogFollow" checked /><span class="tglbox"></span><span class="tgltxt">${tr('dk.log_follow')}</span></label>
       <span class="sp" style="flex:1"></span>
       <select id="dkLogTail" class="field" style="width:auto">${tails.map((n) => `<option value="${n}">${esc(tr('dk.log_lines', { n }))}</option>`).join('')}</select>
       <button class="btn sec sm" id="dkLogRef">${tr('dk.refresh')}</button>
@@ -492,21 +617,49 @@ function dkLogs(id, name) {
     </div>
     <div id="dkLogWrap">${loading()}</div>`, (close, root) => {
     let timer = null;
+    // Byte offset for incremental follow (dn7 runtime); null = backend doesn't
+    // report offsets (bollard) → follow falls back to full re-tails.
+    let nextOffset = null;
+    const sgr = { open: [] };
+    const ensureOut = () => {
+      if (!$('dkLogOut')) $('dkLogWrap').innerHTML = '<pre class="out" id="dkLogOut" style="max-height:64vh"></pre>';
+      return $('dkLogOut');
+    };
+    const stickBottom = (out) => out.scrollHeight - out.scrollTop - out.clientHeight < 30;
+    const showErr = (e) => { if (document.body.contains(root) && $('dkLogWrap')) $('dkLogWrap').innerHTML = `<p class="err">${esc(e.message)}</p>`; };
     const load = () => op('docker', { op: 'logs', ref: id, tail: parseInt($('dkLogTail').value, 10) || 400 }).then((d) => {
       if (!document.body.contains(root)) return;
-      // Autoscroll only when the user was already at (or near) the bottom.
       const prev = $('dkLogOut');
-      const stick = !prev || (prev.scrollHeight - prev.scrollTop - prev.clientHeight < 30);
-      if (!prev) $('dkLogWrap').innerHTML = '<pre class="out" id="dkLogOut" style="max-height:64vh"></pre>';
-      const out = $('dkLogOut');
-      out.textContent = d.logs || tr('dk.empty_log');
+      const stick = !prev || stickBottom(prev);
+      const out = ensureOut();
+      sgr.open = [];
+      if (d.logs) { out.innerHTML = dkAnsiToHtml(d.logs, sgr); out.dataset.empty = ''; }
+      else { out.textContent = tr('dk.empty_log'); out.dataset.empty = '1'; }
+      nextOffset = typeof d.next_offset === 'number' ? d.next_offset : null;
       if (stick) out.scrollTop = out.scrollHeight;
-    }).catch((e) => { if (document.body.contains(root) && $('dkLogWrap')) $('dkLogWrap').innerHTML = `<p class="err">${esc(e.message)}</p>`; });
-    // Follow: re-tail every 2s while the modal is open (paused while the
-    // browser tab is hidden so a background console doesn't keep polling).
+    }).catch(showErr);
+    // Incremental follow poll: fetch only the bytes appended since the last
+    // poll and append them in place (no flicker, scroll preserved).
+    const poll = () => {
+      if (nextOffset === null) return load();
+      return op('docker', { op: 'logs', ref: id, offset: nextOffset }).then((d) => {
+        if (!document.body.contains(root)) return;
+        nextOffset = typeof d.next_offset === 'number' ? d.next_offset : null;
+        if (!d.logs) return;
+        const out = ensureOut();
+        const stick = stickBottom(out);
+        if (out.dataset.empty === '1') { out.textContent = ''; out.dataset.empty = ''; }
+        out.insertAdjacentHTML('beforeend', dkAnsiToHtml(d.logs, sgr));
+        // Bound the DOM in a long follow session: re-tail from scratch.
+        if (out.innerHTML.length > 3000000) return load();
+        if (stick) out.scrollTop = out.scrollHeight;
+      }).catch(showErr);
+    };
+    // Follow: poll every 2s while the modal is open (paused while the browser
+    // tab is hidden so a background console doesn't keep polling).
     const tick = () => {
       if (!document.body.contains(root) || !$('dkLogFollow').checked) return;
-      (document.hidden ? Promise.resolve() : load()).finally(() => {
+      (document.hidden ? Promise.resolve() : poll()).finally(() => {
         if (document.body.contains(root) && $('dkLogFollow').checked) timer = setTimeout(tick, 2000);
       });
     };
@@ -520,6 +673,6 @@ function dkLogs(id, name) {
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
     };
-    load();
+    load().finally(() => { if (document.body.contains(root) && $('dkLogFollow').checked) timer = setTimeout(tick, 2000); });
   });
 }

@@ -194,6 +194,26 @@ function dn7TsParts(ts) {
 
 // "YYYY-MM-DD HH:MM:SS" in the configured display timezone.
 function fmtTsFull(ts) { const t = dn7TsParts(ts); return `${t.Y}-${t.M}-${t.D} ${t.h}:${t.m}:${t.s}`; }
+
+// Unix seconds for the start (end=false) or end (end=true) of the calendar day
+// `YYYY-MM-DD` as it reads in the configured display timezone. Translates a
+// date-range filter into absolute bounds the server can compare against stored
+// UTC timestamps. Two correction passes settle a DST offset change across the
+// day boundary. Returns null for a malformed date.
+function dn7DayBoundTs(dateStr, end) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr || ''));
+  if (!m) return null;
+  const Y = +m[1], Mo = +m[2], D = +m[3];
+  const hh = end ? 23 : 0, mm = end ? 59 : 0, ss = end ? 59 : 0;
+  const wantUtc = Date.UTC(Y, Mo - 1, D, hh, mm, ss) / 1000;
+  let guess = wantUtc;
+  for (let i = 0; i < 2; i++) {
+    const p = dn7TsParts(guess);
+    const off = Date.UTC(+p.Y, +p.M - 1, +p.D, +p.h, +p.m, +p.s) / 1000 - guess;
+    guess = wantUtc - off;
+  }
+  return Math.floor(guess);
+}
 // Toast notification. `kind`: 'ok' | 'err' | 'warn' | 'info' (default 'info').
 // Each kind gets its own accent colour + icon so success/info/warnings don't
 // all read as errors.
@@ -322,7 +342,13 @@ function modal(title, bodyHtml, onMount, opts) {
   const root = $('modalRoot');
   const prev = document.activeElement;
   const mask = el('div', { class: 'mask' });
-  mask.innerHTML = `<div class="modal ${o.big ? 'big' : ''}" role="dialog" aria-modal="true"><div class="modal-h"><h3>${esc(title)}</h3><button class="x" aria-label="${esc(tr('common.close'))}">&times;</button></div><div class="modal-b">${bodyHtml}</div></div>`;
+  // `o.foot` (optional HTML) renders a .modal-foot as a *sibling* of .modal-b —
+  // a real flex footer pinned to the bottom of the modal, with .modal-b scrolling
+  // between the header and it. (Keeping the footer inside the scrolling body and
+  // faking a footer with position:sticky + negative margins left dead space below
+  // the buttons when the form was short — see the container/site forms.)
+  const footHtml = o.foot ? `<div class="modal-foot">${o.foot}</div>` : '';
+  mask.innerHTML = `<div class="modal ${o.big ? 'big' : ''}" role="dialog" aria-modal="true"><div class="modal-h"><h3>${esc(title)}</h3><button class="x" aria-label="${esc(tr('common.close'))}">&times;</button></div><div class="modal-b">${bodyHtml}</div>${footHtml}</div>`;
   root.appendChild(mask);
   OPEN_MODALS.push(mask);
   const focusables = () => Array.from(mask.querySelectorAll('button,input,select,textarea,a[href],[tabindex]'))

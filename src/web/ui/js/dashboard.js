@@ -81,15 +81,22 @@ function renderDash(v) {
       </div>`;
   };
   const sysRow = (k, id) => `<div class="sysrow" id="${id}Row" style="display:none"><span class="k">${k}</span><span class="v" id="${id}"></span></div>`;
+  // Host identity + inventory — facts the live CPU/内存/磁盘/网络 tiles don't
+  // already show (no disk/mount duplicate): an identity row (host glyph +
+  // hostname / OS), then uptime / IP / processor / memory / environment. The rows
+  // share the tile's height equally so it never looks empty.
   const sysBody = () => `<h3>${tr('dash.sys')}</h3>
     <div class="sysrows">
-      ${sysRow(tr('dash.host'), 'dSysHost')}
-      ${sysRow(tr('dash.os'), 'dSysOs')}
+      <div class="sysrow sysrow-id">
+        <span class="sysid-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="1.6"/><rect x="3" y="13" width="18" height="7" rx="1.6"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></span>
+        <span class="sysid-t"><b id="dSysHost" title="">—</b><span class="sysid-os" id="dSysOs"></span></span>
+      </div>
       ${sysRow(tr('dash.uptime'), 'dSysUp')}
       ${sysRow(tr('dash.ip'), 'dSysIp')}
       ${sysRow(tr('dash.cpu_model'), 'dSysCpu')}
-    </div>
-    <div class="sysmounts" id="dSysMounts"></div>`;
+      ${sysRow(tr('dash.mem'), 'dSysMem')}
+      ${sysRow(tr('dash.env'), 'dSysEnv')}
+    </div>`;
 
   let N = null; // node refs for incremental updates
   const buildCards = () => {
@@ -99,7 +106,7 @@ function renderDash(v) {
     $('dNet').innerHTML = netBody();
     $('dSys').innerHTML = sysBody();
     const pick3 = (id) => { const c = $(id); return { big: c.querySelector('.big'), sub: c.querySelector('.sub'), bar: c.querySelector('.bar>i'), spark: c.querySelector('.cardspark') }; };
-    N = { cpu: pick3('dCpu'), mem: pick3('dMem'), disk: pick3('dDisk'), mountSig: '' };
+    N = { cpu: pick3('dCpu'), mem: pick3('dMem'), disk: pick3('dDisk') };
   };
   const setStat = (n, pct, big, sub, data, kind) => {
     const sev = dashSev(pct || 0);
@@ -118,29 +125,6 @@ function renderDash(v) {
     n.textContent = val || '';
     if (wantTitle) n.title = val || '';
   };
-  // Per-mount disk bars: rebuild rows only when the mount set changes shape;
-  // otherwise just patch used/width per tick.
-  const updMounts = (mounts) => {
-    const box = $('dSysMounts'); if (!box) return;
-    mounts = Array.isArray(mounts) ? mounts : [];
-    const sig = mounts.map((mt) => mt.mount + ':' + mt.total).join('|');
-    if (sig !== N.mountSig) {
-      N.mountSig = sig;
-      box.innerHTML = !mounts.length ? '' : `<div class="mhead">${tr('dash.mounts')}</div>` + mounts.map((mt, i) => `
-        <div class="sysmount" id="dMnt${i}">
-          <div class="mrow"><b title="${esc(mt.mount + (mt.device ? ' · ' + mt.device : ''))}">${esc(mt.mount)}</b><span class="mv"></span></div>
-          <div class="bar"><i></i></div>
-        </div>`).join('');
-    }
-    mounts.forEach((mt, i) => {
-      const row = $('dMnt' + i); if (!row) return;
-      const pct = mt.total ? ((mt.used || 0) / mt.total) * 100 : 0;
-      row.querySelector('.mv').textContent = fmtBytes(mt.used) + ' / ' + fmtBytes(mt.total);
-      const bar = row.querySelector('.bar>i');
-      bar.style.width = Math.min(100, Math.max(0, pct)).toFixed(0) + '%';
-      bar.className = dashSev(pct);
-    });
-  };
   const update = (m) => {
     if (!N) buildCards();
     const sp = DASH.spark;
@@ -155,12 +139,16 @@ function renderDash(v) {
     $('dNetRx').textContent = fmtBytes(m.net_rx || 0);
     $('dNetTxS').innerHTML = areaChart(sp.tx, 'up');
     $('dNetRxS').innerHTML = areaChart(sp.rx, 'dn');
-    sysSet('dSysHost', m.hostname);
-    sysSet('dSysOs', m.os_version);
+    sysSet('dSysHost', m.hostname, true);
+    sysSet('dSysOs', m.os_version, true);
     sysSet('dSysUp', m.uptime ? fmtUptime(m.uptime) : '');
     sysSet('dSysIp', m.ip);
-    sysSet('dSysCpu', m.cpu_model, true);
-    updMounts(m.disk_mounts);
+    // Processor: the model string when known (bare metal), else the core count.
+    sysSet('dSysCpu', m.cpu_model || ((m.cpu_cores || 0) + coreLabel), true);
+    // Memory: total capacity, plus the DIMM description when dmidecode had it.
+    sysSet('dSysMem', m.mem_total ? (fmtBytes(m.mem_total) + (m.mem_model ? ' · ' + m.mem_model : '')) : '', true);
+    // Environment: container / virtual machine / physical host.
+    sysSet('dSysEnv', m.is_container ? tr('dash.env_container') : (m.cpu_virtual ? tr('dash.env_vm') : tr('dash.env_physical')));
   };
 
   // ---- polls (apiInflight coalesces overlapping requests on slow links).

@@ -87,6 +87,7 @@ function stopTab() {
   if (S.timer) { clearInterval(S.timer); S.timer = null; }
   if (S.ws) { try { S.ws.close(); } catch (e) {} S.ws = null; }
   if (window._dashCleanup) { try { window._dashCleanup(); } catch (e) {} window._dashCleanup = null; }
+  if (window._logsCleanup) { try { window._logsCleanup(); } catch (e) {} window._logsCleanup = null; }
   if (window._termCleanup) { try { window._termCleanup(); } catch (e) {} window._termCleanup = null; }
   if (window._modalTermCleanup) { try { window._modalTermCleanup(); } catch (e) {} window._modalTermCleanup = null; }
   // Close any open modal (and its live sockets) when leaving a tab. Route
@@ -119,9 +120,10 @@ function switchTab(k, src) {
     });
     $('title').textContent = tabLabel(TABS.find((x) => x.key === k) || {});
     const v = $('view'); v.innerHTML = '';
-    // The dashboard + terminal + files are fixed one-screen layouts (no body
-    // scroll); other tabs scroll normally.
-    const fill = (k === 'dash' || k === 'term' || k === 'files');
+    // The dashboard + terminal + files + logs are fixed one-screen layouts (no
+    // body scroll); other tabs scroll normally. (Logs fits its table to the
+    // available height and paginates, so it must own the viewport.)
+    const fill = (k === 'dash' || k === 'term' || k === 'files' || k === 'logs');
     v.classList.toggle('fill', fill);
     document.querySelector('.content').classList.toggle('fillmode', fill);
     if (k === 'dash') renderDash(v);

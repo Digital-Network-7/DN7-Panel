@@ -137,12 +137,12 @@
   select.field:disabled { opacity:.65; cursor:not-allowed; color:var(--mut); }
   .err { color:var(--err); font-size:13px; min-height:18px; }
   .ok { color:var(--ok); }
-  .chip { display:inline-flex; align-items:center; gap:5px; padding:0 8px; height:18px; line-height:1; border-radius:99px; font-size:11.5px; border:1px solid var(--line2); color:var(--mut); }
+  .chip { display:inline-flex; align-items:center; gap:5px; padding:0 8px; height:18px; line-height:1; border-radius:99px; font-size:11.5px; border:1px solid var(--line2); color:var(--mut); white-space:nowrap; }
   .chip.on { color:var(--ok); border-color:color-mix(in srgb, var(--ok) 40%, transparent); background:color-mix(in srgb, var(--ok) 10%, transparent); }
   .chip.off { color:var(--mut); }
   .chip.warn { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 40%, transparent); background:color-mix(in srgb, var(--warn) 10%, transparent); }
   .chip.amber { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 40%, transparent); background:color-mix(in srgb, var(--warn) 10%, transparent); }
-  .dot-s { width:7px; height:7px; border-radius:99px; background:var(--mut); display:inline-block; }
+  .dot-s { width:7px; height:7px; min-height:0; flex:0 0 7px; align-self:center; border-radius:99px; background:var(--mut); display:inline-block; }
   .dot-s.on { background:var(--ok); box-shadow:0 0 8px color-mix(in srgb, var(--ok) 70%, transparent); }
   .dot-s.warn { background:var(--warn); }
   .dot-s.amber { background:var(--warn); }
@@ -567,6 +567,16 @@
 .optable.logtbl { table-layout: fixed; width: 100%; }
 .optable.logtbl td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .optable.logtbl td.act { overflow: visible; }
+/* Logs tab is a one-screen (fillmode) layout, no card: a filter/action bar on
+   top, the table filling the middle (its row count fitted to this height by
+   logs.js), and a pinned pager. The middle scrolls only if the fit ever spills. */
+.logspage { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 12px; padding: 16px 22px; box-sizing: border-box; }
+.logspage .logbar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.logspage .logbar .sp { flex: 1 1 auto; }
+.logspage #logBody { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.logspage .logpager { flex: 0 0 auto; display: flex; justify-content: center; align-items: center; gap: 14px; }
+/* Sticky header so it stays put if the fitted page ever needs to scroll. */
+.logtbl th { position: sticky; top: 0; z-index: 1; background: var(--panel-solid); }
 
 /* ---- Inline note (e.g. SSL auto-renew hint) ---- */
 .formnote { font-size: 12px; color: var(--mut); margin-top: 8px; line-height: 1.5; }
@@ -632,8 +642,6 @@ table.kvtbl th { text-align:left; color:var(--mut); font-weight:500; }
 .dk-pop .mi.danger:hover { background: color-mix(in srgb, var(--err) 12%, transparent); color: var(--err); }
 .dk-pop .mi-sep { height: 1px; background: var(--line); margin: 5px 8px; }
 .statuswrap { display: inline-flex; align-items: center; gap: 5px; }
-.statuswrap .c-caret { font-size: 9px; color: var(--mut); transition: color .12s; }
-.statuswrap:hover .c-caret { color: var(--cy); }
 
 /* ---- Frozen-column tables (container + image lists): pinned first column
    (left) + Actions column (right); the middle scrolls horizontally; every cell
@@ -676,6 +684,43 @@ table.nettbl td .clamp1 { display: -webkit-box; -webkit-box-orient: vertical; -w
 /* Image name shown as a label/chip (clamped to 2 lines by its wrapping cell). */
 .imgtag { display: inline-block; max-width: 100%; font-size: 11.5px; color: var(--fg); background: var(--hov); border: 1px solid var(--line2);
   border-radius: 6px; padding: 2px 8px; margin: 0 5px 4px 0; white-space: normal; word-break: break-all; vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* Image list as a responsive card grid (replaces the old imgtbl table). Each
+   card: a title row (image id + in-use chip, ⋯ actions menu), a single tags
+   line ("标签：" + tags, clamped to one line with ellipsis + hover), and a
+   size/created meta line. Actions live behind the ⋯ menu, not as bare buttons. */
+.imgcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.imgcard { display: flex; flex-direction: column; gap: 8px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--panel2); transition: border-color .15s, box-shadow .15s; }
+.imgcard:hover { border-color: var(--line2); box-shadow: 0 2px 12px rgba(0,0,0,.06); }
+/* Title row: image id + in-use chip (left), ⋯ menu (right). */
+.imgcard-top { display: flex; align-items: center; gap: 8px; }
+.imgcard-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.imgcard-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; font-weight: 600; color: var(--fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.imgcard-title .chip { flex: 0 0 auto; }
+/* ⋯ actions menu button — a quiet affordance top-right, lights up on hover. */
+.imgcard-menu { flex: 0 0 auto; width: 26px; height: 26px; margin: 0 -4px 0 0; display: inline-flex; align-items: center;
+  justify-content: center; border: none; background: none; color: var(--mut); border-radius: 7px; cursor: pointer;
+  font-size: 17px; line-height: 1; transition: background .12s, color .12s; }
+.imgcard-menu:hover, .imgcard-menu:focus-visible { background: var(--hov); color: var(--fg); }
+/* Tags line: "标签：" prefix + each tag as a chip, clamped to one line. The chip
+   row (.imgcard-tagchips) shrinks and clips; when it overflows, wireCards adds
+   .truncated, which reveals the trailing … and enables the full-set hover popup. */
+.imgcard-tagline { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }
+.imgcard-taglbl { flex: 0 0 auto; color: var(--mut); }
+.imgcard-tagchips { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
+.imgcard-tagchips .imgtag { flex: 0 0 auto; margin: 0; max-width: none; white-space: nowrap; word-break: normal; }
+.imgcard-tagmore { flex: 0 0 auto; display: none; color: var(--mut); }
+.imgcard-tagline.truncated { cursor: default; }
+.imgcard-tagline.truncated .imgcard-tagmore { display: inline; }
+/* Full-tag-set popup: body-anchored (position:fixed, set by showImgTagPop),
+   wraps chips onto multiple lines. Hidden until a truncated tags row is hovered. */
+.imgtag-pop { position: fixed; z-index: 130; display: none; flex-wrap: wrap; gap: 6px; max-width: min(420px, 80vw);
+  padding: 9px 11px; background: var(--panel-solid); border: 1px solid var(--line2); border-radius: 10px; box-shadow: var(--shadow); }
+.imgtag-pop .imgtag { margin: 0; max-width: none; white-space: nowrap; word-break: normal; }
+/* Meta line: size (left) · created (right). */
+.imgcard-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 11.5px; color: var(--mut);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 /* Tag-input (image tagging modal): chips + an inline text input in one field. */
 .tagchips { display: flex; flex-wrap: wrap; gap: 6px; }
 .taginput { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 42px; padding: 7px 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; cursor: text; }
@@ -878,13 +923,13 @@ html.vt-theme::view-transition-new(root) { animation:vt-reveal .45s ease-out; }
    missing/expired site certificates (website.js). Dot glow matches .dot-s.on. */
 .chip.err { color:var(--err); border-color:color-mix(in srgb, var(--err) 40%, transparent); background:color-mix(in srgb, var(--err) 10%, transparent); }
 .dot-s.err { background:var(--err); box-shadow:0 0 8px color-mix(in srgb, var(--err) 60%, transparent); }
-/* Sticky modal footer shared by the container create/edit wizard
-   (docker-create.js: #ccJob progress via .mf-job) and the add/edit-site form
-   (website.js: #nsJob via an inline width:100% host — hence flex-wrap, so a
-   full-width job row wraps above the buttons). Pins the primary button to the
-   bottom of the scrolling .modal-b on every form tab; negative margins bleed
-   across .modal-b's 18px padding so it reads as a true footer. */
-.modal-foot { position:sticky; bottom:0; z-index:5; display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:14px; margin:18px -18px -18px; padding:12px 18px; border-top:1px solid var(--line); background:var(--panel-solid); }
+/* Modal footer shared by the container create/edit wizard (docker-create.js:
+   #ccJob progress via .mf-job) and the add/edit-site form (website.js: #nsJob
+   via an inline width:100% host — hence flex-wrap, so a full-width job row wraps
+   above the buttons). Rendered by modal() as a flex *sibling* of .modal-b (not a
+   child), so it's a genuine footer flush to the modal's bottom edge with the
+   body scrolling above it — symmetric padding, no sticky/negative-margin hack. */
+.modal-foot { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:14px; padding:14px 18px; border-top:1px solid var(--line); background:var(--panel-solid); }
 .modal-foot .mf-job { flex:1 1 100%; min-width:0; }
 
 /* ==== F3: topbar running-jobs indicator + popup, sidebar help (shell.js) ==== */
@@ -954,17 +999,24 @@ aside .foot .ver { flex:1 1 auto; min-width:0; }
 /* Touch scrubbing on the history canvas: capture horizontal drags for the
    tooltip while vertical page scroll keeps working. */
 .dash .histcard .hist-body canvas { touch-action:pan-y; }
-/* System tile: host identity rows + per-mount disk bars. */
-.dash .sysrows { display:flex; flex-direction:column; gap:7px; font-size:12.5px; }
-.dash .sysrow { display:flex; justify-content:space-between; gap:10px; min-width:0; }
+/* System tile: host identity + inventory (facts the live CPU/内存/磁盘/网络
+   tiles don't show — no disk/mount duplicate). It shares the tall history row on
+   desktop, so the rows share the tile's height equally (flex:1) — a spec sheet
+   that fills edge to edge. On narrow layouts the tile is content-height, so rows
+   fall back to their min-height. */
+.dash .tile-side { display:flex; flex-direction:column; }
+.dash .sysrows { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; font-size:12.5px; }
+.dash .sysrow { flex:1 1 0; min-height:44px; display:flex; align-items:center; justify-content:space-between; gap:10px; min-width:0; border-bottom:1px solid var(--line); }
+.dash .sysrow:last-child { border-bottom:none; }
 .dash .sysrow .k { color:var(--mut); flex:0 0 auto; }
-.dash .sysrow .v { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:right; }
-.dash .sysmounts { margin-top:12px; display:flex; flex-direction:column; gap:9px; }
-.dash .sysmounts .mhead { font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.5px; }
-.dash .sysmount .mrow { display:flex; justify-content:space-between; align-items:baseline; gap:8px; font-size:11.5px; color:var(--mut); margin-bottom:4px; }
-.dash .sysmount .mrow b { color:var(--fg); font-weight:500; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.dash .sysmount .mrow .mv { flex:0 0 auto; font-variant-numeric:tabular-nums; }
-.dash .sysmount .bar { margin-top:0; height:5px; }
+.dash .sysrow .v { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:right; font-weight:500; }
+/* Identity (first) row: a host glyph + hostname / OS, given a little more room. */
+.dash .sysrow-id { flex:1.4 1 0; min-height:56px; gap:12px; justify-content:flex-start; }
+.dash .sysid-ic { flex:0 0 auto; width:38px; height:38px; display:flex; align-items:center; justify-content:center; border-radius:10px; background:var(--hov); color:var(--cy); }
+.dash .sysid-ic svg { width:21px; height:21px; }
+.dash .sysid-t { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.dash .sysid-t b { font-size:15px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dash .sysid-t .sysid-os { font-size:12px; color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 /* ==== terminal: hidden input proxy, term-bar tools, session states (vterm.js/terminal.js) ==== */
 /* The vterm hosts an absolutely-positioned render target + input textarea. */
@@ -993,11 +1045,6 @@ aside .foot .ver { flex:1 1 auto; min-width:0; }
    .term-mask (z 60) — later siblings in #modalRoot win. */
 .term-mask ~ .mask { z-index:61; }
 
-/* ===== docker list plane (docker.js): status-chip caret keyboard parity ===== */
-/* (.chip.err / .dot-s.err for exited-nonzero containers live in the shared
-   section above.) Keyboard parity for the (previously hover-only) caret
-   accent; the focus ring itself comes from the global :focus-visible rule. */
-.statuswrap:focus-visible .c-caret { color:var(--cy); }
 
 /* ---- docker create/edit wizard + networks (docker-forms) ---- */
 /* (.modal-foot / .mf-job shared with the site form — see shared section.)
@@ -1064,8 +1111,6 @@ aside .foot .ver { flex:1 1 auto; min-width:0; }
 /* (.chip.err / .dot-s.err for failed entries live in the shared section.)
    Faint row tint so failures are scannable at page speed. */
 .optable tr.fail td { background:color-mix(in srgb, var(--err) 4%, transparent); }
-/* "Showing the newest N entries" banner above the log table. */
-.log-trunc { color:var(--warn); font-size:12.5px; border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); background:color-mix(in srgb, var(--warn) 8%, transparent); border-radius:8px; padding:7px 12px; margin:0 0 12px; }
 
 /* ==== Command palette (palette.js) ==== */
 /* Own light mask: reuses .mask chrome but pins the panel high like a launcher.
@@ -1099,3 +1144,17 @@ aside .foot .ver { flex:1 1 auto; min-width:0; }
 .pal-tip kbd { font-family:inherit; font-size:11.5px; color:var(--muted); letter-spacing:.4px; }
 .pal-tip:hover kbd { color:var(--fg); }
 @media (max-width:720px) { .pal-tip { display:none; } }
+
+/* ANSI SGR palette for the container log viewer (dkAnsiToHtml). Colors are
+   softened for both themes; bright variants (8–15) lean lighter. */
+.lg-b { font-weight:700; }
+.lg-i { font-style:italic; }
+.lg-u { text-decoration:underline; }
+.lg-f0 { color:#4b5563; } .lg-f1 { color:#dc4d43; } .lg-f2 { color:#3fa554; } .lg-f3 { color:#b58a2e; }
+.lg-f4 { color:#3e7cd6; } .lg-f5 { color:#a35ccc; } .lg-f6 { color:#2fa2a8; } .lg-f7 { color:#9aa3af; }
+.lg-f8 { color:#6b7280; } .lg-f9 { color:#f0655b; } .lg-f10 { color:#51c56a; } .lg-f11 { color:#d3a94a; }
+.lg-f12 { color:#5f96e8; } .lg-f13 { color:#bc7bdf; } .lg-f14 { color:#45bec4; } .lg-f15 { color:#e5e7eb; }
+.lg-g0 { background:#37415122; } .lg-g1 { background:#dc4d4333; } .lg-g2 { background:#3fa55433; } .lg-g3 { background:#b58a2e33; }
+.lg-g4 { background:#3e7cd633; } .lg-g5 { background:#a35ccc33; } .lg-g6 { background:#2fa2a833; } .lg-g7 { background:#9aa3af33; }
+.lg-g8 { background:#6b728033; } .lg-g9 { background:#f0655b33; } .lg-g10 { background:#51c56a33; } .lg-g11 { background:#d3a94a33; }
+.lg-g12 { background:#5f96e833; } .lg-g13 { background:#bc7bdf33; } .lg-g14 { background:#45bec433; } .lg-g15 { background:#e5e7eb33; }
