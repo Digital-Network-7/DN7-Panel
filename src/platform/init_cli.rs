@@ -94,8 +94,11 @@ fn check_environment(cfg: &PanelConfig) -> Result<()> {
             "cgroup v2 unified hierarchy is not mounted (required for containers). Boot with systemd.unified_cgroup_hierarchy=1.".into(),
         ));
     }
-    // overlayfs — container image layers.
-    if !proc_filesystems_has("overlay") {
+    // overlayfs — container image layers. A fresh boot may not have autoloaded
+    // the `overlay` module yet (nothing has mounted one), so load it ourselves
+    // before deciding it's missing — otherwise this is a false negative.
+    crate::platform::kmod::ensure_loaded("overlay");
+    if !crate::platform::kmod::available("overlay") {
         bad.push((
             "内核不支持 overlayfs(容器镜像必需,CONFIG_OVERLAY_FS)。".into(),
             "Kernel lacks overlayfs (required for container images, CONFIG_OVERLAY_FS).".into(),
@@ -108,7 +111,9 @@ fn check_environment(cfg: &PanelConfig) -> Result<()> {
             "Kernel lacks namespaces (required for container isolation, CONFIG_*_NS).".into(),
         ));
     }
-    // nftables — container DNAT/masquerade + the edge firewall features.
+    // nftables — container DNAT/masquerade + the edge firewall features. Same
+    // fresh-boot autoload gap as overlay: load nf_tables before probing.
+    crate::platform::kmod::ensure_loaded("nf_tables");
     if !nftables_ok() {
         bad.push((
             "内核不支持 nf_tables(容器发布端口/出网 NAT 必需,CONFIG_NF_TABLES)。".into(),
@@ -559,12 +564,6 @@ async fn apply(cfg: &PanelConfig, a: Answers) -> Result<()> {
 fn uid() -> u32 {
     // SAFETY: getuid() takes no arguments and cannot fail.
     unsafe { libc::getuid() }
-}
-
-fn proc_filesystems_has(fs: &str) -> bool {
-    read_trim("/proc/filesystems")
-        .map(|c| c.lines().any(|l| l.split_whitespace().last() == Some(fs)))
-        .unwrap_or(false)
 }
 
 /// nf_tables availability — reuses the runtime's own probe (lists tables via the
