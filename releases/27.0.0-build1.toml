@@ -1,28 +1,11 @@
-# ── DN7 Panel version + release notes ───────────────────────────────────────
-# Single source of truth for the release. Display form:
-#   DN7 Panel <codename> <version>          e.g.  Phanes 27.0.0
-#
-#   codename  release codename, one per year (Apple-style). Sequence: Greek
-#             primordials in cosmogonic order — Phanes (creation), then Chaos,
-#             Gaia, Eros, Nyx, Aether, Uranus, Pontus, …  Turns over with the year.
-#   version   <year>.<major>.<minor>. year = Apple-style +1 (the 2026 line is 27);
-#             major resets to 0 each new year; all three are set BY HAND.
-#
-# On every push CI verifies the build, then compares this `version` to the latest
-# released one:
-#   • greater (or no releases yet) → a real release "<codename> <version>",
-#     tagged v<version>, pushed to the dn7.cn stable channel;
-#   • unchanged → a sub-build "<codename> <version> build <YY><Month><NN>"
-#     (month letter A–L from the commit; NN from 00, resets each month), GitHub
-#     only — NOT pushed to dn7.cn.
-# The codename is compiled into the binary by build.rs (DN7_CODENAME); the numeric
-# version rides in via Cargo.toml (CARGO_PKG_VERSION, stamped by CI).
+# Archived snapshot of release.toml for: Phanes 27.0.0 (build 1)
+# Files here back up each published release's version + notes, named
+# <version>-build<build>.toml. This is the first formal release. See the repo-root
+# release.toml (and AGENTS.md "Versioning & releases") for the live scheme.
 codename = "Phanes"
 version = "27.0.0"
+build = 1
 
-# Per-language release notes (locale keys match the panel's i18n). The panel's
-# "What's New" shows the entry for the current UI language; CI puts them all in
-# the GitHub Release body + releases.json.
 [notes]
 "zh-CN" = "DN7 Panel 的首个正式版本。一个纯静态的单文件二进制,在网页控制台里管理整台 Linux 服务器——监控、网页终端、容器、网站、文件五合一,零外部依赖、开箱即用,任意 Linux 发行版皆可运行。代号 Phanes(希腊神话的原初创世之神),标记万物之始。"
 "zh-TW" = "DN7 Panel 的首個正式版本。一個純靜態的單一檔案二進位,在網頁主控台管理整台 Linux 伺服器——監控、網頁終端機、容器、網站、檔案五合一,零外部相依、開箱即用,任意 Linux 發行版皆可執行。代號 Phanes(希臘神話的原初創世之神),標記萬物之始。"

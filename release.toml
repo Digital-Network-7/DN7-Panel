@@ -1,30 +1,31 @@
-# ── DN7 Panel version + release notes ───────────────────────────────────────
-# Single source of truth for the release. Display form:
-#   DN7 Panel <codename> <version>          e.g.  Phanes 27.0.0
+# ── DN7 Panel version + build + release notes ───────────────────────────────
+# Single source of truth for a release. Display form:
+#   DN7 Panel <codename> <version> (build <build>)   e.g.  Phanes 27.0.0 (build 1)
 #
-#   codename  release codename, one per year (Apple-style). Sequence: Greek
-#             primordials in cosmogonic order — Phanes (creation), then Chaos,
-#             Gaia, Eros, Nyx, Aether, Uranus, Pontus, …  Turns over with the year.
+#   codename  release codename, one per year (Apple-style). Greek primordials in
+#             cosmogonic order — Phanes, then Chaos, Gaia, Eros, Nyx, Aether, …
 #   version   <year>.<major>.<minor>. year = Apple-style +1 (the 2026 line is 27);
-#             major resets to 0 each new year; all three are set BY HAND.
+#             major resets to 0 each new year. Bump for a real version.
+#   build     an INDEPENDENT monotonic build number — never resets, unrelated to
+#             the version (so it never has an awkward 27G99→…01 jump). Bump for
+#             any published build; it only ever increases.
 #
-# On every push CI verifies the build, then compares this `version` to the latest
-# released one:
-#   • greater (or no releases yet) → a real release "<codename> <version>",
-#     tagged v<version>, pushed to the dn7.cn stable channel;
-#   • unchanged → a sub-build "<codename> <version> (<YY><Month><NN>)"
-#     (month letter A–L from the commit; NN from 00, resets each month), GitHub
-#     only — NOT pushed to dn7.cn.
-# The codename is compiled into the binary by build.rs (DN7_CODENAME); the numeric
-# version rides in via Cargo.toml (CARGO_PKG_VERSION, stamped by CI).
+# CI on every push ALWAYS verifies the build (gate). It publishes a GitHub Release
+# only when `build` is new (no tag b<build> yet) — otherwise it just gates, no
+# release. On publish: tag v<version>, name "<codename> <version> (build <build>)",
+# always marked Latest (never a prerelease). The dn7.cn stable channel gets it
+# ONLY when `version` is new (no v<version> tag yet) — a pure build bump stays
+# GitHub-only. codename + build compile into the binary (build.rs → DN7_CODENAME /
+# DN7_BUILD); the numeric version rides in via Cargo.toml (CARGO_PKG_VERSION).
 codename = "Phanes"
 version = "27.0.0"
+build = 1
 
 # Per-language release notes (locale keys match the panel's i18n). The panel's
 # "What's New" shows the entry for the current UI language; CI puts them all in
 # the GitHub Release body + releases.json.
 [notes]
-"zh-CN" = "修复:在全新系统上首次初始化时,面板现在会自动加载 overlay / nf_tables 内核模块——此前若模块尚未加载,会误报「内核不支持 overlayfs」而无法启动。"
-"zh-TW" = "修復:在全新系統首次初始化時,面板現在會自動載入 overlay / nf_tables 核心模組——此前若模組尚未載入,會誤報「核心不支援 overlayfs」而無法啟動。"
-"en" = "Fix: on a fresh system, first-run setup now auto-loads the overlay / nf_tables kernel modules — previously it could wrongly abort with \"Kernel lacks overlayfs\" when the module simply wasn't loaded yet."
-"ja" = "修正:新規システムでの初回セットアップ時に overlay / nf_tables カーネルモジュールを自動で読み込むようになりました——これまではモジュール未ロード時に「Kernel lacks overlayfs」と誤って中断することがありました。"
+"zh-CN" = "DN7 Panel 的首个正式版本。一个纯静态的单文件二进制,在网页控制台里管理整台 Linux 服务器——监控、网页终端、容器、网站、文件五合一,零外部依赖、开箱即用,任意 Linux 发行版皆可运行。代号 Phanes(希腊神话的原初创世之神),标记万物之始。"
+"zh-TW" = "DN7 Panel 的首個正式版本。一個純靜態的單一檔案二進位,在網頁主控台管理整台 Linux 伺服器——監控、網頁終端機、容器、網站、檔案五合一,零外部相依、開箱即用,任意 Linux 發行版皆可執行。代號 Phanes(希臘神話的原初創世之神),標記萬物之始。"
+"en" = "The first release of DN7 Panel — a single, fully static binary that manages an entire Linux server from one web console: monitoring, a web terminal, containers, websites, and files, with zero external dependencies, running on any Linux distribution. Codenamed Phanes, the Greek primordial of creation — the beginning of everything."
+"ja" = "DN7 Panel の最初の正式リリース。監視・Web ターミナル・コンテナ・Web サイト・ファイル管理を 1 つの Web コンソールに統合した、完全静的な単一バイナリの Linux サーバー管理パネルです。外部依存はゼロ、あらゆる Linux ディストリビューションで動作します。コードネームは Phanes——ギリシャ神話の原初の創造神、すべての始まりを象徴します。"

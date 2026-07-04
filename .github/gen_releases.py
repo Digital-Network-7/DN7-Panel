@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Generate releases.json — the panel's changelog index.
 
-Built in CI on each release. Each entry is { version, date, codename, notes }
-where `notes` is a per-language map { "en": "...", "zh-CN": "...", … } read from
-release.toml for the version currently being released; past versions carry an
-empty map (their notes lived in their own release at the time). Published as a
+Built in CI on each release. Each entry is { version, date, codename, build,
+notes } where `notes` is a per-language map { "en": "...", "zh-CN": "...", … }
+read from release.toml for the version currently being released; past versions
+carry an empty map (their notes/codename/build lived in their own release at the
+time, and aren't tracked in git). Published as a
 GitHub release asset (releases/latest/download/releases.json, no api.github.com)
 and mirrored by dn7.cn, so the panel can show "what's new" in the UI language.
 
@@ -42,8 +43,9 @@ def main():
         rel = tomllib.load(f)
     cur_notes = rel.get("notes", {})
     cur_codename = rel.get("codename", "")
+    cur_build = str(rel.get("build", ""))
 
-    # Only real version tags (v<x>.<y>.<z>); build-code tags (e.g. 27G00) excluded.
+    # Only real version tags (v<x>.<y>.<z>); build-number tags (b<n>) excluded.
     tags = [t for t in sh("git", "tag", "-l", "v[0-9]*").splitlines()
             if re.match(r"^v\d+\.\d+\.\d+$", t.strip())]
     tags.sort(key=ver_key)
@@ -54,6 +56,7 @@ def main():
             "version": version,
             "date": date_of(ref),
             "codename": cur_codename if cur else "",
+            "build": cur_build if cur else "",
             "notes": cur_notes if cur else {},
         }
 

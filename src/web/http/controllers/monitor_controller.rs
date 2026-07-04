@@ -73,8 +73,10 @@ pub(crate) async fn panel_info(
         "ok": true,
         "data": {
             "version": env!("CARGO_PKG_VERSION"),
-            // Release codename (build.rs → release.toml); "dev" for local builds.
+            // Release codename + independent build number (build.rs → release.toml);
+            // "dev"/"0" for local builds.
             "codename": option_env!("DN7_CODENAME").unwrap_or("dev"),
+            "build": option_env!("DN7_BUILD").unwrap_or("0"),
             "hostname": hostname,
         }
     }))

@@ -171,7 +171,8 @@ pub async fn release_from(cfg: &PanelConfig, source: SourceKind) -> Result<Relea
 
 /// One release's notes, as published in the `releases.json` changelog index.
 /// `notes` is a per-language map (locale → paragraph); the UI shows the entry
-/// for the current language. `codename` is the release codename (e.g. "Phanes").
+/// for the current language. `codename` is the release codename (e.g. "Phanes")
+/// and `build` the independent build number, both shown alongside the version.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ReleaseNote {
     pub version: String,
@@ -179,6 +180,8 @@ pub struct ReleaseNote {
     pub date: String,
     #[serde(default)]
     pub codename: String,
+    #[serde(default)]
+    pub build: String,
     #[serde(default)]
     pub notes: std::collections::HashMap<String, String>,
 }

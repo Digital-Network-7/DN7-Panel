@@ -224,9 +224,13 @@ function loadChangelog() {
     if (!entries.length) { host.innerHTML = ''; return; }
     const failed = UPD.failedVers || [];
     // notes is a per-language map { lang: paragraph }; show the current language
-    // (fall back to English, then any). codename → "Phanes 27.0.0" title, else "v…".
+    // (fall back to English, then any). codename + build → "Phanes 27.0.0 (build 1)"
+    // title, else "v…".
     const noteFor = (e) => { const n = (e.notes && typeof e.notes === 'object') ? e.notes : {}; return n[curLang()] || n.en || Object.values(n)[0] || ''; };
-    const verLabel = (e) => e.codename ? `${esc(e.codename)} ${esc(e.version)}` : `v${esc(e.version)}`;
+    const verLabel = (e) => {
+      const bd = (e.build && String(e.build) !== '0') ? ` (build ${esc(String(e.build))})` : '';
+      return e.codename ? `${esc(e.codename)} ${esc(e.version)}${bd}` : `v${esc(e.version)}`;
+    };
     const entry = (e) => {
       const note = noteFor(e);
       return `<div class="cl-entry"><div class="cl-ver">${verLabel(e)}${e.version === current ? `<span class="cl-cur">${tr('upd.current')}</span>` : ''}${failed.includes(e.version) ? `<span class="cl-cur cl-fail">${tr('upd.failed_badge')}</span>` : ''}${e.date ? '<span class="cl-date">' + esc(e.date) + '</span>' : ''}</div>`

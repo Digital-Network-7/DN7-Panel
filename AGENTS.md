@@ -24,13 +24,39 @@ helper crates under `crates/`. No backend, no panel token, no runtime deps.
 - **Fully static musl binary.** Release builds must stay statically linked (no
   `DT_NEEDED`). Don't pull in C-linked crates.
 
+## Versioning & releases
+
+- **Single source of truth: [`release.toml`](release.toml).** It carries three
+  independent knobs — `codename`, `version` (`<year>.<major>.<minor>`, Apple-style
+  year = calendar + 1, so 2026 → `27`), and `build` — plus per-language `[notes]`.
+  Display form everywhere is `<codename> <version> (build <build>)`, e.g.
+  **`Phanes 27.0.0 (build 1)`**; the build number shows on every release.
+- **`build` is an INDEPENDENT monotonic integer.** Bump it by hand for any
+  published build; it never resets and is never derived from the version (so you
+  never get an awkward `27G99 → …01`). Codenames advance one-per-year through the
+  Greek primordials in cosmogonic order (Phanes → Chaos → Gaia → …).
+- **CI (`.github/workflows/release.yml`) gates every push; publishes only on a
+  build bump.** It reads `release.toml` and:
+  - always runs fmt / clippy / tests (verify the push compiles);
+  - publishes a GitHub Release **only when `build` moved** (no `b<build>` tag yet),
+    tagged `v<version>`, named `<codename> <version> (build <build>)`, **always
+    Latest** (never a prerelease) — a pure build bump moves the `v<version>` tag;
+  - pushes to the **dn7.cn stable channel only when `version` moved** (no
+    `v<version>` tag yet) — a pure build bump stays GitHub-only.
+- To cut a release: edit `release.toml` (bump `build`, and `version` for a real
+  version; refresh `[notes]`) and push. Everything else is automatic. `codename` +
+  `build` compile into the binary via `build.rs`; `version` rides in through
+  `Cargo.toml` (`CARGO_PKG_VERSION`, stamped by CI). Keep the self-update tag
+  format `v<version>` — `infra::support::fetch` parses the version out of it.
+
 ## Build & test workflow
 
 - The Linux build/test runs in a **Lima VM named `dn7`** (`/work/panel` mount) —
   not on the macOS host. Another process may own the build; don't kick off
   `cargo build`/`test` blindly.
-- Gate every change on: `cargo fmt && cargo clippy --all-targets -- -D warnings
-  && cargo test` (CI runs clippy with `-D warnings`; keep it clean).
+- Gate every change on: `cargo fmt && cargo clippy --workspace --all-targets --
+  -D warnings && cargo test --workspace` (the `--workspace` is REQUIRED — without
+  it the helper crates under `crates/` are skipped; CI runs clippy `-D warnings`).
 - Touched the UI? Run `node scripts/check_i18n.js` (4 languages) from the repo
   root.
 - For local foreground runs use `DN7_NO_GUARDIAN=1 dn7-panel panel`; never

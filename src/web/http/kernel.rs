@@ -5,6 +5,11 @@ use super::*;
 /// Web-console UI assets (css + js modules), embedded at compile time so the
 /// binary stays self-contained. `index.html` is served separately (templated
 /// with branding); everything else is served verbatim from here under `/ui/`.
+///
+/// NOTE: `include_dir!` snapshots the tree at compile time and isn't tracked for
+/// content changes, so after editing any file under `src/web/ui/` touch this file
+/// (e.g. bump the marker below) to force a re-embed.
+///   ui-embed-rev: 2  (bumped for the build-number version-line changes)
 pub(crate) static UI_ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/src/web/ui");
 
 /// Shared web-console state.

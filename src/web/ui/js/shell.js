@@ -57,9 +57,10 @@ function showApp() {
     if (window.updateBadge && Auth.me.is_admin) updateBadge();
   }).catch(() => {});
   api('/api/info').then((b) => {
-    // "<codename> <version>", e.g. "Phanes 27.0.0" (codename "dev" on local builds).
+    // "<codename> <version> (build <n>)", e.g. "Phanes 27.0.0 (build 1)".
     const cn = b.data.codename ? b.data.codename + ' ' : '';
-    $('panelVer').textContent = cn + (b.data.version || '?');
+    const bd = (b.data.build && b.data.build !== '0') ? ' (build ' + b.data.build + ')' : '';
+    $('panelVer').textContent = cn + (b.data.version || '?') + bd;
     if (b.data.hostname) $('panelVer').title = b.data.hostname;
   }).catch(() => {});
   if (window.updateJobsBadge) updateJobsBadge();

@@ -1,12 +1,17 @@
 name: Build Linux Release
 
-# Build Linux release binaries on every push. Versioning is the <codename>
-# <year>.<major>.<minor> scheme (see release.toml): codename/year/major are set
-# by hand in release.toml; this workflow reads them and auto-increments the minor
-# from the latest `v<year>.<major>.*` tag (first => .0), so it never skips a
-# number and isn't coupled to the run counter. Binaries are built for the *musl*
-# targets and statically linked, then signed (Ed25519) and published as a GitHub
-# Release named "<codename> <version>" with the binaries + detached `.sig`.
+# Gate the code on every push; publish a release only when the BUILD NUMBER moved
+# (see release.toml). codename / version (<year>.<major>.<minor>) / build are all
+# set by hand in release.toml. This workflow reads them and:
+#   - always runs the gate (fmt / clippy / tests) to verify the push compiles;
+#   - publishes a GitHub Release ONLY when tag b<build> is absent (a new build),
+#     tagged v<version>, named "<codename> <version> (build <build>)", always
+#     marked Latest — a pure build bump moves the v<version> tag to the new commit;
+#   - pushes to the dn7.cn stable channel ONLY when v<version> is absent (a new
+#     semantic version) — a pure build bump stays GitHub-only.
+# The build number is independent and monotonic; it never resets to track the
+# version. Binaries are built for the *musl* targets and statically linked, then
+# signed (Ed25519) and published with detached `.sig` files.
 #
 # Signing: each binary is signed with the release private key (Actions secret
 # DN7_SIGN_KEY, an Ed25519 PKCS8 PEM). Deployed panels verify the signature
@@ -29,50 +34,33 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
       codename: ${{ steps.v.outputs.codename }}
-      is_new: ${{ steps.v.outputs.is_new }}
-      build_code: ${{ steps.v.outputs.build_code }}
+      build: ${{ steps.v.outputs.build }}
+      publish: ${{ steps.v.outputs.publish }}
+      is_version_new: ${{ steps.v.outputs.is_version_new }}
       rel_name: ${{ steps.v.outputs.rel_name }}
-      rel_tag: ${{ steps.v.outputs.rel_tag }}
     steps:
       - name: Checkout (with tags)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Compute version + build code from release.toml
+      - name: Compute version + build from release.toml
         id: v
         run: |
           version=$(python3 -c "import tomllib;print(tomllib.load(open('release.toml','rb'))['version'])")
           codename=$(python3 -c "import tomllib;print(tomllib.load(open('release.toml','rb'))['codename'])")
-          # Build code <year><month-letter><NN>: month letter A–L from the COMMIT's
-          # month (Jan=A…Dec=L); NN is a 2-digit sequence from 00 that resets each
-          # month (max existing <prefix> tag + 1).
-          mon=$(git show -s --format=%cd --date=format:%m HEAD); mon=$((10#$mon))
-          letter=$(printf '%s' "ABCDEFGHIJKL" | cut -c "$mon")
-          prefix="${version%%.*}${letter}"
-          last=$(git tag -l "${prefix}*" | sed "s/^${prefix}//" | grep -E '^[0-9]+$' | sort -n | tail -1)
-          if [ -z "$last" ]; then seq=0; else seq=$((10#$last + 1)); fi
-          build_code=$(printf "%s%02d" "$prefix" "$seq")
-          # A "real" version when release.toml's version is strictly greater than the
-          # latest released one (or none exist) — otherwise it's a sub-build.
-          latest=$(git tag -l 'v[0-9]*' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
-          if [ -z "$latest" ]; then
-            is_new=true
-          elif [ "$version" != "$latest" ] && [ "$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -1)" = "$version" ]; then
-            is_new=true
-          else
-            is_new=false
-          fi
-          if [ "$is_new" = "true" ]; then
-            rel_name="${codename} ${version}"; rel_tag="v${version}"
-          else
-            rel_name="${codename} ${version} (${build_code})"; rel_tag="${build_code}"
-          fi
+          build=$(python3 -c "import tomllib;print(tomllib.load(open('release.toml','rb'))['build'])")
+          # Publish only when this build number is new (its tag b<build> doesn't
+          # exist yet); otherwise CI just gated the code — no release. A pure build
+          # bump vs a version bump is decided by whether v<version> already exists.
+          if git rev-parse -q --verify "refs/tags/b${build}" >/dev/null; then publish=false; else publish=true; fi
+          if git rev-parse -q --verify "refs/tags/v${version}" >/dev/null; then is_version_new=false; else is_version_new=true; fi
+          rel_name="${codename} ${version} (build ${build})"
           {
-            echo "version=$version"; echo "codename=$codename"; echo "is_new=$is_new"
-            echo "build_code=$build_code"; echo "rel_name=$rel_name"; echo "rel_tag=$rel_tag"
+            echo "version=$version"; echo "codename=$codename"; echo "build=$build"
+            echo "publish=$publish"; echo "is_version_new=$is_version_new"; echo "rel_name=$rel_name"
           } >> "$GITHUB_OUTPUT"
-          echo "→ ${rel_name}  (tag ${rel_tag}, prerelease=$([ "$is_new" = true ] && echo no || echo yes))"
+          echo "→ ${rel_name}  publish=${publish}  version_new=${is_version_new}"
 
   # Gate: formatting, lints (warnings = errors), and the test suite must pass
   # before anything is built/signed/released — so regressions and lint failures
@@ -127,6 +115,9 @@ jobs:
 
   build:
     needs: [version, check]
+    # Only build/sign/publish when the build number is new; otherwise the push
+    # was just gated (fmt/clippy/tests) and produces no release.
+    if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -217,6 +208,7 @@ jobs:
 
   release:
     needs: [version, build]
+    if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -248,36 +240,37 @@ jobs:
             echo "DN7EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # The release is tagged v<version> (one release per version — a pure build
+      # bump moves this same tag to the new commit) and is ALWAYS marked Latest,
+      # so the panel's `/releases/latest` self-update check always sees it.
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.version.outputs.rel_tag }}
+          tag_name: v${{ needs.version.outputs.version }}
           name: ${{ needs.version.outputs.rel_name }}
-          # Sub-builds (version unchanged) are prereleases, so the panel's
-          # `/releases/latest` self-update check skips them.
-          prerelease: ${{ needs.version.outputs.is_new != 'true' }}
+          prerelease: false
+          make_latest: 'true'
           body: ${{ steps.body.outputs.body }}
           files: dist/*
 
-      # A real version's tag is v<version>; also drop its build-code tag so the
-      # monthly build-code sequence stays consistent (sub-builds ARE tagged by
-      # their build code, so they advance it on their own).
-      - name: Tag build code (real versions)
-        if: needs.version.outputs.is_new == 'true'
+      # Stamp the independent build number as its own tag b<build>. Its presence
+      # is exactly what makes the NEXT push with the same build a gate-only run
+      # (no duplicate release), so the build sequence is idempotent.
+      - name: Tag build number
         run: |
-          git tag "${{ needs.version.outputs.build_code }}" "${{ github.sha }}" || true
-          git push origin "${{ needs.version.outputs.build_code }}" || true
+          git tag "b${{ needs.version.outputs.build }}" "${{ github.sha }}" || true
+          git push origin "b${{ needs.version.outputs.build }}" || true
 
       # Push the signed binaries to dn7.cn — the domestic "stable channel" — but
-      # ONLY for real version bumps. Sub-builds are GitHub prereleases and never
-      # feed the curated channel. The site authenticates the upload purely by the
-      # appended Ed25519 signature (verified against the same embedded key the
-      # panel trusts), so there is no shared token to manage. The binaries land as
-      # a new (unstable) version; an operator promotes one to "stable" in the
-      # dn7.cn admin backend. Override the target with the repo variable
-      # DN7_INGEST_URL (default https://dn7.cn).
-      - name: Push binaries to dn7.cn (real versions only)
-        if: needs.version.outputs.is_new == 'true'
+      # ONLY when the semantic version is new. A pure build bump (same v<version>)
+      # stays GitHub-only and never feeds the curated channel. The site
+      # authenticates the upload purely by the appended Ed25519 signature
+      # (verified against the same embedded key the panel trusts), so there is no
+      # shared token to manage. The binaries land as a new (unstable) version; an
+      # operator promotes one to "stable" in the dn7.cn admin backend. Override
+      # the target with the repo variable DN7_INGEST_URL (default https://dn7.cn).
+      - name: Push binaries to dn7.cn (new versions only)
+        if: needs.version.outputs.is_version_new == 'true'
         env:
           SITE: ${{ vars.DN7_INGEST_URL || 'https://dn7.cn' }}
           V: ${{ needs.version.outputs.version }}
