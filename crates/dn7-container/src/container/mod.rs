@@ -1230,7 +1230,15 @@ pub(crate) fn enter_namespaces(
                 // `Command::spawn` (and thus a tokio worker, for a pty session)
                 // for the whole session. Dropping fds ≥ 3 here lets spawn return
                 // as soon as the grandchild execs. stdio (0-2) stays for pty/pipe.
-                libc::close_range(3, libc::c_uint::MAX, 0);
+                // libc's close_range wrapper isn't bound for musl, so issue the
+                // syscall directly (async-signal-safe; SYS_close_range exists on
+                // both gnu and musl).
+                libc::syscall(
+                    libc::SYS_close_range,
+                    3 as libc::c_long,
+                    libc::c_uint::MAX as libc::c_long,
+                    0 as libc::c_long,
+                );
                 let mut status: libc::c_int = 0;
                 while libc::waitpid(child, &mut status, 0) < 0 {
                     if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
