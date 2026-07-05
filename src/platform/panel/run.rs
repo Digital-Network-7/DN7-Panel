@@ -28,9 +28,9 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     crate::platform::procfile::write_version(&cfg.data_dir);
     guardian::spawn(cfg.clone());
 
-    // On-box web management console. It seeds `<data>/web.json` on first run
-    // (random high port + safe-entry path), then serves from the persisted
-    // settings in its own tasks.
+    // On-box web management console. It seeds an uninitialized `<data>/web.json`
+    // on first run (the operator bootstraps through the setup wizard), then serves
+    // from the persisted settings in its own tasks.
     crate::web::spawn(cfg.clone());
 
     // In-process edge server (the pure-Rust reverse proxy that serves :80/:443).
@@ -78,8 +78,9 @@ pub async fn run(cfg: PanelConfig) -> Result<()> {
     // cases; this timer is the backstop for a long-running detached container.
     spawn_container_log_janitor();
 
-    // Background self-update checker (GitHub + dn7.cn). Applies automatically
-    // only when auto-update is enabled in settings; otherwise just keeps the
+    // Background self-update checker (signed GitHub releases via the fastest
+    // mirror line). Applies automatically only when auto-update is enabled in
+    // settings; otherwise just keeps the
     // "update available" hint warm.
     crate::platform::update::spawn_periodic(cfg.clone());
 

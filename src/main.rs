@@ -100,8 +100,8 @@ fn main() -> Result<()> {
 
     let role = std::env::args().nth(1);
 
-    // CLI subcommands (version/reset/port/access/entry) short-circuit before any
-    // install side effects.
+    // CLI subcommands (version/reset/help) short-circuit before any install side
+    // effects.
     if let Some(result) = dispatch_subcommand(role.as_deref()) {
         return result;
     }
@@ -208,9 +208,9 @@ fn main() -> Result<()> {
 ///
 /// - `version`: print the compiled version (the running supervisor reads this
 ///   off the on-disk binary to detect a self-update and re-exec itself).
-/// - `reset`: reset the console account + password to a fresh default (root /
-///   the initializing OS user only).
-/// - `port` / `access`|`entry`: change the console port / secret entry path.
+/// - `reset`: reset the console to the UNINITIALIZED state — clears the account +
+///   credentials so the next launch re-runs the first-run wizard (root / the
+///   initializing OS user only).
 /// - `help`/`-h`/`--help`: print usage.
 ///
 /// An *unrecognized* leading argument prints usage and exits non-zero rather

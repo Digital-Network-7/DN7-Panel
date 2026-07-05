@@ -5,8 +5,7 @@
 //! public key(s) are embedded below; the self-updater verifies a downloaded
 //! binary's detached signature against them BEFORE replacing the running
 //! executable. Because the trust anchor is the embedded key — not the download
-//! source — a compromised mirror (GitHub or dn7.cn) cannot serve a binary the
-//! panel will accept.
+//! source — a compromised mirror cannot serve a binary the panel will accept.
 //!
 //! `TRUSTED_KEYS` is a list so a key can be rotated without orphaning
 //! already-deployed panels: publish a build that adds the new key (still signed
