@@ -87,17 +87,41 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     let tls_config = tls::server_config()?;
     let acceptor = TlsAcceptor::from(tls_config);
 
-    // Try to bind both ports. A port held by a foreign process (a host
-    // nginx/Apache bound without SO_REUSEPORT) yields `AddrInUse`; we record the
-    // conflict and return WITHOUT serving, so the UI can offer to force-start
-    // (kill the occupant). Any listener that did bind is dropped here so we never
-    // half-serve — force-start rebinds both cleanly.
-    let http = super::lifecycle::bind(([0, 0, 0, 0], 80).into()).await;
-    let https = super::lifecycle::bind(([0, 0, 0, 0], 443).into()).await;
+    // Assemble the ports to bind, de-duplicated (a BTreeMap keyed by port, so an
+    // accidental overlap collapses to one listener). Port 80 is ALWAYS bound: it
+    // is the website HTTP listener when that port is 80, else an ACME-only
+    // issuance listener. The website HTTPS port terminates TLS. A dedicated
+    // console port (≠ the website ports) gets its own Console listener; a `0` /
+    // merged console rides the website ports by Host (today's behaviour).
+    let ports = super::ports::listen_ports();
+    let mut plan: std::collections::BTreeMap<u16, (ListenerRole, bool)> =
+        std::collections::BTreeMap::new(); // port → (role, terminates-TLS)
+    plan.insert(ports.website_https, (ListenerRole::Website, true));
+    plan.entry(ports.website_http)
+        .or_insert((ListenerRole::Website, false));
+    plan.entry(80).or_insert_with(|| {
+        if ports.website_http == 80 {
+            (ListenerRole::Website, false)
+        } else {
+            (ListenerRole::AcmeOnly, false)
+        }
+    });
+    if ports.console != 0 {
+        plan.insert(ports.console, (ListenerRole::Console, ports.console_tls));
+    }
 
+    // Bind every planned port. A port held by a foreign process yields AddrInUse;
+    // record the conflict. ANY conflict → return WITHOUT serving (dropping the
+    // listeners that did bind, so we never half-serve); the operator resolves it
+    // via force-start, which re-attempts every bind cleanly.
     let mut conflicts = Vec::new();
-    let http = classify_bind(http, 80, &mut conflicts);
-    let https = classify_bind(https, 443, &mut conflicts);
+    let mut bound: Vec<(tokio::net::TcpListener, ListenerRole, bool)> = Vec::new();
+    for (&port, &(role, tls)) in &plan {
+        let res = super::lifecycle::bind(([0, 0, 0, 0], port).into()).await;
+        if let Some(l) = classify_bind(res, port, &mut conflicts) {
+            bound.push((l, role, tls));
+        }
+    }
 
     if !conflicts.is_empty() {
         tracing::warn!(
@@ -108,16 +132,27 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         return Ok(()); // not fatal: the operator resolves it via force-start
     }
 
-    let http = http.expect("no conflict ⇒ :80 bound");
-    let https = https.expect("no conflict ⇒ :443 bound");
     super::status::set(super::status::RunState::Running);
-    tracing::info!("edge: listening on :80 and :443");
+    let listening: Vec<u16> = plan.keys().copied().collect();
+    tracing::info!(ports = ?listening, "edge: listening");
 
-    // Drive both accept loops concurrently on this task; neither returns under
-    // normal operation, so `run` parks here for the process lifetime.
-    tokio::select! {
-        r = serve_plain(http) => r,
-        r = serve_tls(https, acceptor) => r,
+    // Drive every accept loop; none returns under normal operation, so `run`
+    // parks here for the process lifetime. The first loop to exit (an error) ends
+    // `run` and the JoinSet drop aborts the rest — the same all-or-nothing
+    // semantics the two-listener `select!` had, so force-start rebinds them all.
+    let mut set = tokio::task::JoinSet::new();
+    for (listener, role, tls) in bound {
+        if tls {
+            let acc = acceptor.clone();
+            set.spawn(async move { serve_tls(listener, acc, role).await });
+        } else {
+            set.spawn(async move { serve_plain(listener, role).await });
+        }
+    }
+    match set.join_next().await {
+        Some(Ok(r)) => r,
+        Some(Err(e)) => Err(anyhow::anyhow!("edge serve task failed: {e}")),
+        None => Ok(()),
     }
 }
 
@@ -141,9 +176,12 @@ fn classify_bind(
     }
 }
 
-/// Accept loop for the plain-HTTP :80 listener. `pub(crate)` so the integration
-/// tests can drive it on an ephemeral loopback port.
-pub(crate) async fn serve_plain(listener: tokio::net::TcpListener) -> anyhow::Result<()> {
+/// Accept loop for a plain-HTTP listener with the given `role`. `pub(crate)` so
+/// the integration tests can drive it on an ephemeral loopback port.
+pub(crate) async fn serve_plain(
+    listener: tokio::net::TcpListener,
+    role: ListenerRole,
+) -> anyhow::Result<()> {
     let limiter = conn_limiter();
     loop {
         // Acquire a connection slot BEFORE accepting: at the ceiling the loop
@@ -161,7 +199,7 @@ pub(crate) async fn serve_plain(listener: tokio::net::TcpListener) -> anyhow::Re
             // A transient accept error (e.g. fd exhaustion) must not kill the
             // loop; log and keep accepting (the permit drops here, freeing the slot).
             Err(e) => {
-                tracing::warn!("edge :80 accept error: {e}");
+                tracing::warn!("edge plain accept error: {e}");
                 continue;
             }
         };
@@ -180,6 +218,7 @@ pub(crate) async fn serve_plain(listener: tokio::net::TcpListener) -> anyhow::Re
             // free). For a plain request it drops exactly when serve_conn ends.
             let ctx = ConnCtx {
                 tls: false,
+                role,
                 sni: None,
                 peer,
                 conn_permit: Some(Arc::new(permit)),
@@ -195,6 +234,7 @@ pub(crate) async fn serve_plain(listener: tokio::net::TcpListener) -> anyhow::Re
 pub(crate) async fn serve_tls(
     listener: tokio::net::TcpListener,
     acceptor: TlsAcceptor,
+    role: ListenerRole,
 ) -> anyhow::Result<()> {
     let limiter = conn_limiter();
     loop {
@@ -207,7 +247,7 @@ pub(crate) async fn serve_tls(
         let (stream, peer) = match listener.accept().await {
             Ok(pair) => pair,
             Err(e) => {
-                tracing::warn!("edge :443 accept error: {e}");
+                tracing::warn!("edge TLS accept error: {e}");
                 continue;
             }
         };
@@ -242,6 +282,7 @@ pub(crate) async fn serve_tls(
 
             let ctx = ConnCtx {
                 tls: true,
+                role,
                 sni,
                 peer,
                 conn_permit: Some(Arc::new(permit)),
@@ -293,10 +334,26 @@ where
     }
 }
 
+/// What a listener's port is for — drives per-connection routing in the router.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ListenerRole {
+    /// Normal Host-routed hosted websites + ACME HTTP-01 + force-SSL redirect —
+    /// the role of the website HTTP/HTTPS ports (the classic :80/:443).
+    Website,
+    /// ACME HTTP-01 challenges ONLY; every other request 404s. Port 80 stays bound
+    /// in this role purely for Let's Encrypt issuance when the website HTTP port
+    /// was moved off 80.
+    AcmeOnly,
+    /// Always the console, Host ignored — a dedicated console listener.
+    Console,
+}
+
 /// Per-connection context handed to the router: how the request arrived.
 pub(crate) struct ConnCtx {
     /// Arrived over TLS (`https`).
     pub(crate) tls: bool,
+    /// Which listener (and therefore role) accepted this connection.
+    pub(crate) role: ListenerRole,
     /// The SNI hostname the client offered (TLS only).
     pub(crate) sni: Option<String>,
     /// The peer socket address (the immediate TCP client).

@@ -1,30 +1,12 @@
-# ── DN7 Panel version + build + release notes ───────────────────────────────
-# Single source of truth for a release. Display form:
-#   DN7 Panel <codename> <version> (build <build>)   e.g.  Phanes 27.0.0 (build 1)
-#
-#   codename  release codename, one per year (Apple-style). Greek primordials in
-#             cosmogonic order — Phanes, then Chaos, Gaia, Eros, Nyx, Aether, …
-#   version   <year>.<major>.<minor>. year = Apple-style +1 (the 2026 line is 27);
-#             major resets to 0 each new year. Bump for a real version.
-#   build     an INDEPENDENT monotonic build number — never resets, unrelated to
-#             the version (so it never has an awkward 27G99→…01 jump). Bump for
-#             any published build; it only ever increases.
-#
-# CI on every push ALWAYS verifies the build (gate). It publishes a GitHub Release
-# only when `build` is new (no tag b<build> yet) — otherwise it just gates, no
-# release. Each build is its OWN release, tagged b<build>, name "<codename>
-# <version> (build <build>)", always marked Latest (older builds' releases are
-# retained). Deployed panels self-update straight from these releases via the
-# fastest mirror line (src/infra/support/fetch/), comparing by (version, build)
-# so a pure build bump reaches them. codename + build compile into the binary
-# (build.rs → DN7_CODENAME / DN7_BUILD); the version rides in via Cargo.toml.
+# Archived snapshot of release.toml for: Phanes 27.0.1 (build 2)
+# Files here back up each published release's version + notes, named
+# <version>-build<build>.toml. Build 2 (27.0.1) upgrades the init wizard and makes
+# the website + panel ports configurable. See the repo-root release.toml (and
+# AGENTS.md "Versioning & releases") for the live scheme.
 codename = "Phanes"
 version = "27.0.1"
 build = 2
 
-# Per-language release notes (locale keys match the panel's i18n). The panel's
-# "What's New" shows the entry for the current UI language; CI puts them all in
-# the GitHub Release body + releases.json.
 [notes]
 "zh-CN" = "初始化向导升级 + 端口可配置。向导会自动检测内网/公网 IP 并让你选择访问方式,密码放宽到 6 位起,装完直接给出登陆地址与密码。网站的 HTTP/HTTPS 端口和面板端口现在都可自定义——面板可走独立端口,把 80/443 留给托管网站(80 仍会自动用于证书签发)。同时修复了自定义端口下的若干问题。"
 "zh-TW" = "初始化精靈升級 + 連接埠可設定。精靈會自動偵測內網/公網 IP 並讓你選擇存取方式,密碼放寬到 6 位起,裝完直接給出登入位址與密碼。網站的 HTTP/HTTPS 連接埠和面板連接埠現在都可自訂——面板可走獨立連接埠,把 80/443 留給託管網站(80 仍會自動用於憑證簽發)。同時修正了自訂連接埠下的若干問題。"

@@ -24,7 +24,7 @@
 use hyper::body::Incoming;
 
 use super::config::{DefaultRoute, RouteKind, ServerRoute};
-use super::listener::ConnCtx;
+use super::listener::{ConnCtx, ListenerRole};
 use super::response::{self, Resp};
 use super::{acme, conn_limit, limit, proxy, security, static_files, throttle_body};
 
@@ -70,20 +70,40 @@ pub(crate) async fn handle(
         h
     };
 
-    // 2. ACME HTTP-01 — bypasses redirect/auth/route entirely. A token we don't
-    //    hold falls through to normal routing (so a stray probe 404s as usual).
-    if let Some(token) = match_path.strip_prefix(ACME_PREFIX) {
-        if !token.is_empty() {
-            if let Some(resp) = acme::serve(token) {
-                return resp;
+    // 2. ACME HTTP-01 — served on the website / issuance listeners (never the
+    //    dedicated console listener). Bypasses redirect/auth/route entirely; a
+    //    token we don't hold falls through to normal routing (a stray probe 404s).
+    if ctx.role != ListenerRole::Console {
+        if let Some(token) = match_path.strip_prefix(ACME_PREFIX) {
+            if !token.is_empty() {
+                if let Some(resp) = acme::serve(token) {
+                    return resp;
+                }
             }
         }
     }
+    // The ACME-only issuance listener (port 80, kept purely for Let's Encrypt when
+    // the website HTTP port was moved elsewhere) serves NOTHING but challenges.
+    if ctx.role == ListenerRole::AcmeOnly {
+        return response::status(http::StatusCode::NOT_FOUND);
+    }
 
-    // 3. Route selection: managed host, else the default-site behaviour.
-    let route = match cfg.route_for(&host) {
-        Some(r) => r.clone(),
-        None => return default_response(&cfg.default_site, &host, &path, &query),
+    // 3. Route selection. A dedicated console listener serves the console
+    //    regardless of Host; otherwise resolve the managed host (else default).
+    let route = if ctx.role == ListenerRole::Console {
+        match cfg
+            .console_route
+            .clone()
+            .or_else(|| cfg.console_fallback.clone())
+        {
+            Some(r) => r,
+            None => return default_response(&cfg.default_site, &host, &path, &query),
+        }
+    } else {
+        match cfg.route_for(&host) {
+            Some(r) => r.clone(),
+            None => return default_response(&cfg.default_site, &host, &path, &query),
+        }
     };
 
     // 4. The real client IP, recovered through any trusted front proxy.
@@ -307,11 +327,19 @@ fn finish(mut resp: Resp, route: &ServerRoute, tls: bool) -> Resp {
 }
 
 /// Build the 301 to the https form of the same request (`host` + path + query).
+/// Targets the configured website HTTPS port, appending it only when it isn't the
+/// default 443 — so a moved `website_https_port` stays reachable via force-SSL.
 fn https_redirect(host: &str, path: &str, query: &str) -> Resp {
-    let target = if query.is_empty() {
-        format!("https://{host}{path}")
+    let https_port = super::ports::listen_ports().website_https;
+    let authority = if https_port == 443 {
+        host.to_string()
     } else {
-        format!("https://{host}{path}?{query}")
+        format!("{host}:{https_port}")
+    };
+    let target = if query.is_empty() {
+        format!("https://{authority}{path}")
+    } else {
+        format!("https://{authority}{path}?{query}")
     };
     response::redirect(&target)
 }

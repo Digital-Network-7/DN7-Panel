@@ -26,14 +26,15 @@ use std::path::Path;
 use crate::platform::config::PanelConfig;
 use crate::web::settings;
 
-/// Run the first-run CLI wizard if the panel is uninitialized. Returns `Ok(())`
-/// when the panel is (or becomes) initialized so the caller proceeds to serve;
-/// returns `Err` when setup cannot proceed (no TTY, missing prerequisite, the
-/// operator declined the mandatory port takeover, or aborted) so the caller
-/// exits without serving a half-configured panel.
-pub async fn run_if_needed(cfg: &PanelConfig) -> Result<bool> {
+/// Run the first-run CLI wizard if the panel is uninitialized. Returns
+/// `Ok(None)` when the panel was already initialized (proceed to serve),
+/// `Ok(Some(summary))` on a fresh init (the caller registers the service then
+/// prints the login summary), and `Err` when setup cannot proceed (no TTY,
+/// missing prerequisite, the operator declined the mandatory port takeover, or
+/// aborted) so the caller exits without serving a half-configured panel.
+pub async fn run_if_needed(cfg: &PanelConfig) -> Result<Option<LoginSummary>> {
     if settings::load().map(|s| s.initialized).unwrap_or(false) {
-        return Ok(false); // already initialized — proceed to serve.
+        return Ok(None); // already initialized — proceed to serve.
     }
 
     if !stdin_is_tty() {
@@ -55,13 +56,25 @@ pub async fn run_if_needed(cfg: &PanelConfig) -> Result<bool> {
     rule();
 
     check_environment(cfg)?;
-    ensure_ports_available().await?;
+    // Website ports first, so the port check verifies the CONFIGURED set (80 is
+    // always included — it stays bound for Let's Encrypt issuance).
+    let (website_http, website_https) = ask_website_ports()?;
+    let mut check = vec![80u16, website_http, website_https];
+    check.sort_unstable();
+    check.dedup();
+    ensure_ports_available(&check).await?;
     let (language, timezone) = ask_locale()?;
-    let mut answers = ask_questions()?;
+    let mut answers = ask_questions(website_http, website_https)?;
+    // A dedicated console port is chosen AFTER the port check above (it depends on
+    // the SSL answer), so verify its availability now — otherwise the edge would
+    // fail to bind it at startup.
+    if answers.console_port != 0 {
+        ensure_ports_available(&[answers.console_port]).await?;
+    }
     answers.language = language;
     answers.timezone = timezone;
-    apply(cfg, answers).await?;
-    Ok(true)
+    let summary = apply(cfg, answers).await?;
+    Ok(Some(summary))
 }
 
 // --- 1. environment -------------------------------------------------------
@@ -174,15 +187,20 @@ fn check_environment(cfg: &PanelConfig) -> Result<()> {
 
 /// Ensure :80 and :443 are free, offering to take them over. Those ports are
 /// mandatory (the edge serves the console + sites on them), so declining aborts.
-async fn ensure_ports_available() -> Result<()> {
-    section("端口检测 / Port check (80, 443)");
-    let busy = crate::infra::website::ports_with_listener(&[80, 443]).await;
+async fn ensure_ports_available(ports: &[u16]) -> Result<()> {
+    let list = ports
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    section(&format!("端口检测 / Port check ({list})"));
+    let busy = crate::infra::website::ports_with_listener(ports).await;
     if busy.is_empty() {
-        ok("80 / 443 可用。", "80 / 443 are available.");
+        ok(&format!("{list} 可用。"), &format!("{list} are available."));
         return Ok(());
     }
-    println!("  ! 端口 {busy:?} 已被其它进程占用。面板的内置 Web 服务必须使用 80/443。");
-    println!("    Port(s) {busy:?} are in use. The panel's built-in web server must use 80/443.");
+    println!("  ! 端口 {busy:?} 已被其它进程占用。面板的内置 Web 服务必须使用这些端口。");
+    println!("    Port(s) {busy:?} are in use. The panel's built-in web server needs them.");
     for &p in &busy {
         for pid in crate::infra::website::listeners_on(p).await {
             let unit = systemd_unit_of(pid);
@@ -197,14 +215,14 @@ async fn ensure_ports_available() -> Result<()> {
         false,
     )? {
         bilingual(&[(
-            "已取消初始化:80/443 是面板必不可少的功能,无法在不占用这两个端口的情况下运行。",
-            "Initialization cancelled: :80/:443 are mandatory — the panel cannot run without them.",
+            "已取消初始化:这些端口是面板必不可少的,无法在不占用它们的情况下运行。",
+            "Initialization cancelled: these ports are mandatory — the panel cannot run without them.",
         )]);
         return Err(anyhow!("user declined the mandatory port takeover"));
     }
-    let still = crate::infra::website::take_over_ports(&[80, 443]).await;
+    let still = crate::infra::website::take_over_ports(ports).await;
     if still.is_empty() {
-        ok("已接管 80 / 443。", "Took over 80 / 443.");
+        ok(&format!("已接管 {list}。"), &format!("Took over {list}."));
         return Ok(());
     }
     // A respawning systemd service (Restart=) re-grabbed the port. We stay
@@ -221,6 +239,48 @@ async fn ensure_ports_available() -> Result<()> {
         }
     }
     Err(anyhow!("ports still occupied after takeover"))
+}
+
+// --- 2.2 website ports ----------------------------------------------------
+
+/// Prompt for a TCP port with a default; validates 1..=65535.
+fn prompt_port(label: &str, default: u16) -> Result<u16> {
+    loop {
+        let c = prompt_line(&format!("{label} (默认/default {default}): "))?;
+        if c.trim().is_empty() {
+            return Ok(default);
+        }
+        match c.trim().parse::<u16>() {
+            Ok(p) if p >= 1 => return Ok(p),
+            _ => warn("端口需为 1-65535。", "Port must be 1-65535."),
+        }
+    }
+}
+
+/// Ask the public website HTTP + HTTPS ports (before the port check), defaults
+/// 80/443, requiring the two to differ. Warns that moving the HTTP port off 80
+/// breaks Let's Encrypt HTTP-01 (the CA reaches only public :80); the edge still
+/// keeps :80 bound purely for issuance.
+fn ask_website_ports() -> Result<(u16, u16)> {
+    section("网站端口 / Website ports");
+    let http = prompt_port("网站 HTTP 端口 / Website HTTP port", 80)?;
+    let https = loop {
+        let p = prompt_port("网站 HTTPS 端口 / Website HTTPS port", 443)?;
+        if p != http {
+            break p;
+        }
+        warn(
+            "HTTPS 端口不能与 HTTP 端口相同。",
+            "The HTTPS port must differ from the HTTP port.",
+        );
+    };
+    if http != 80 {
+        warn(
+            "网站 HTTP 端口非 80:Let's Encrypt 签发需公网 80 可达。面板会始终保留 80 仅用于证书签发;若 80 外部不可达,签发会失败。",
+            "Website HTTP port isn't 80: Let's Encrypt issuance needs public :80 reachable. The panel always keeps :80 bound solely for cert issuance; if :80 is unreachable, issuance fails.",
+        );
+    }
+    Ok((http, https))
 }
 
 // --- 2.5 language & timezone ---------------------------------------------
@@ -366,10 +426,18 @@ struct Answers {
     timezone: String, // IANA name, e.g. Asia/Shanghai
     external_address: String,
     https_mode: String, // none | selfsigned | le
+    website_http_port: u16,
+    website_https_port: u16,
+    /// Console listen port. `0` = merged (console on a website port by Host); a
+    /// distinct value opens a dedicated console listener.
+    console_port: u16,
     username: String,
     salt: String,
     stored: String, // Argon2id(verifier)
     kdf: String,
+    /// The plaintext password, kept only to echo it in the final login summary at
+    /// the operator's request (they just typed it). Never persisted.
+    password_plain: String,
 }
 
 /// Whether `s` is a usable panel host: a single canonical DNS hostname OR a
@@ -408,53 +476,106 @@ fn valid_host_address(s: &str) -> bool {
     labels >= 1
 }
 
-fn ask_questions() -> Result<Answers> {
-    section("配置 / Configuration");
+fn ask_questions(website_http: u16, website_https: u16) -> Result<Answers> {
+    section("面板配置 / Configuration");
 
-    // 1. UI address. This value becomes the edge's host key, so it must be a
-    // single canonical hostname or IP literal — reject a scheme/port/path,
-    // wildcards, whitespace, or multiple hosts (any of which would break the
-    // host match) and re-prompt instead of accepting it.
+    // 1. UI address. First show the host's own addresses, then let the operator
+    // pick HOW the panel is reached: public IP (default), LAN IP, or a domain. An
+    // IP choice auto-fills the address; a domain is typed and validated. The value
+    // becomes the edge's host key, so a domain must be a single canonical hostname
+    // (no scheme/port/path/wildcard).
+    let lan = crate::platform::netinfo::internal_ip();
+    println!("  本机地址 / Detected addresses:");
+    println!("    内网 IP / LAN IP    : {lan}");
+    print!("    公网 IP / Public IP : ");
+    io::stdout().flush().ok();
+    let pubip = crate::platform::netinfo::public_ip();
+    match &pubip {
+        Some(ip) => println!("{ip}"),
+        None => println!("未检测到 / not detected"),
+    }
+    // Default to public IP when detected, else LAN IP.
+    let def = if pubip.is_some() { "1" } else { "2" };
     let external_address = loop {
-        let a = prompt_line("1) 面板访问地址(域名或 IP) / Panel address (domain or IP): ")?;
-        if !valid_host_address(&a) {
-            warn(
-                "请输入单个域名或 IP(不含 http://、端口、路径、通配符或空格)。",
-                "Enter a single hostname or IP (no http://, port, path, wildcard, or spaces).",
-            );
-            continue;
+        let c = prompt_line(&format!(
+            "  面板访问方式 / Access method [1] 公网 IP / public [2] 内网 IP / LAN [3] 域名 / domain (默认/default {def}): "
+        ))?;
+        let choice = if c.is_empty() { def } else { c.as_str() };
+        match choice {
+            "1" | "公网" | "public" => match &pubip {
+                Some(ip) => break ip.clone(),
+                None => warn(
+                    "未能检测到公网 IP,请选内网 IP 或域名。",
+                    "Public IP not detected; choose LAN IP or a domain.",
+                ),
+            },
+            "2" | "内网" | "lan" => break lan.clone(),
+            "3" | "域名" | "domain" => {
+                let a = prompt_line("    面板访问地址(域名) / Panel address (domain): ")?;
+                if valid_host_address(&a) && a.parse::<std::net::IpAddr>().is_err() {
+                    break a;
+                }
+                warn(
+                    "请输入单个有效域名(不含 http://、端口、路径、通配符或空格)。",
+                    "Enter a single valid domain (no http://, port, path, wildcard, or spaces).",
+                );
+            }
+            _ => warn("请输入 1-3。", "Please enter 1-3."),
         }
-        break a;
     };
+    println!("  1) 面板访问地址 / Panel address: {external_address}");
 
-    // 2. SSL on/off → 2.1 LE vs self-signed.
+    // 2. SSL on/off → 2.1 LE vs self-signed. Let's Encrypt needs a public domain,
+    // so when the address is an IP there is nothing to choose: SSL is self-signed
+    // and the cert-type question is skipped entirely.
     let ssl = prompt_yes_no(
         "2) 是否开启 SSL(在 443 上提供 HTTPS)? / Enable SSL (HTTPS on 443)?",
         false,
     )?;
+    let is_ip = external_address.parse::<std::net::IpAddr>().is_ok();
     let https_mode = if !ssl {
         "none".to_string()
+    } else if is_ip {
+        ok(
+            "IP 访问,SSL 使用自签名证书。",
+            "IP address — SSL uses a self-signed certificate.",
+        );
+        "selfsigned".to_string()
     } else {
         loop {
             let c = prompt_line(
                 "2.1) 证书类型 [1] Let's Encrypt(需域名+公网可达) [2] 自签名 / Cert type [1] Let's Encrypt (needs a public domain) [2] self-signed: ",
             )?;
             match c.as_str() {
-                "1" | "le" => {
-                    if external_address.parse::<std::net::IpAddr>().is_ok() {
-                        warn(
-                            "Let's Encrypt 需要域名,不能用 IP。请选自签名或返回改用域名。",
-                            "Let's Encrypt needs a domain, not an IP. Choose self-signed, or restart and use a domain.",
-                        );
-                        continue;
-                    }
-                    break "le".to_string();
-                }
+                "1" | "le" => break "le".to_string(),
                 "2" | "self" | "selfsigned" => break "selfsigned".to_string(),
                 _ => warn("请输入 1 或 2。", "Please enter 1 or 2."),
             }
         }
     };
+
+    // 2.5. Console (panel) port. Default = the website port matching the SSL
+    // choice, so the console shares it by Host (today's behaviour). A DISTINCT
+    // port opens a dedicated console listener — the console is served ONLY there
+    // (plus loopback for SSH tunnels), keeping the website ports purely for sites.
+    let console_default = if https_mode == "none" {
+        website_http
+    } else {
+        website_https
+    };
+    let console_pick = prompt_port("2.5) 面板端口 / Panel (console) port", console_default)?;
+    // Merged (equals a website port) → the `0` sentinel; a distinct port is dedicated.
+    let console_port = if console_pick == website_http || console_pick == website_https {
+        0
+    } else {
+        console_pick
+    };
+    if console_port != 0 {
+        ok(
+            &format!("控制台将独占端口 {console_port}(网站端口不受影响)。"),
+            &format!("Console gets its own port {console_port} (website ports unaffected)."),
+        );
+    }
 
     // 3. Admin username.
     let username = loop {
@@ -469,10 +590,10 @@ fn ask_questions() -> Result<Answers> {
     };
 
     // 4 + 4.1. Admin password, entered twice (no echo).
-    let (salt, stored, kdf) = loop {
+    let (salt, stored, kdf, password_plain) = loop {
         let p1 = read_password("4) 管理员密码 / Admin password: ")?;
-        if p1.len() < 8 {
-            warn("密码至少 8 位。", "Password must be at least 8 characters.");
+        if p1.chars().count() < 6 {
+            warn("密码至少 6 位。", "Password must be at least 6 characters.");
             continue;
         }
         let p2 = read_password("4.1) 再次输入密码 / Confirm password: ")?;
@@ -487,7 +608,7 @@ fn ask_questions() -> Result<Answers> {
         let verifier = dn7_cred::derive_verifier_s256(&salt, &p1, dn7_cred::KDF_ITERS);
         let stored = crate::infra::auth::hash_verifier(&verifier)
             .ok_or_else(|| anyhow!("密码哈希失败 / password hashing failed"))?;
-        break (salt, stored, dn7_cred::kdf_string());
+        break (salt, stored, dn7_cred::kdf_string(), p1);
     };
 
     Ok(Answers {
@@ -497,16 +618,20 @@ fn ask_questions() -> Result<Answers> {
         timezone: String::new(),
         external_address,
         https_mode,
+        website_http_port: website_http,
+        website_https_port: website_https,
+        console_port,
         username,
         salt,
         stored,
         kdf,
+        password_plain,
     })
 }
 
 // --- 4. apply -------------------------------------------------------------
 
-async fn apply(cfg: &PanelConfig, a: Answers) -> Result<()> {
+async fn apply(cfg: &PanelConfig, a: Answers) -> Result<LoginSummary> {
     section("应用 / Applying");
     // Self-signed issues immediately (no network). "none" clears any stale cert.
     // Let's Encrypt is DEFERRED: it needs the edge serving :80 to answer the
@@ -520,6 +645,9 @@ async fn apply(cfg: &PanelConfig, a: Answers) -> Result<()> {
     let (mut s, _) = settings::load_or_init(cfg.web_port);
     s.external_address = a.external_address.clone();
     s.https_mode = a.https_mode.clone();
+    s.website_http_port = a.website_http_port;
+    s.website_https_port = a.website_https_port;
+    s.console_port = a.console_port;
     s.language = a.language.clone();
     s.timezone = a.timezone.clone();
     s.username = a.username.clone();
@@ -545,8 +673,6 @@ async fn apply(cfg: &PanelConfig, a: Answers) -> Result<()> {
 
     rule();
     ok("初始化完成。", "Initialization complete.");
-    println!("    管理员 / admin : {}", a.username);
-    println!("    地址 / address  : {}", a.external_address);
     let mode = match a.https_mode.as_str() {
         "le" => "Let's Encrypt (将在服务启动后签发 / issued on first serve)",
         "selfsigned" => "self-signed",
@@ -556,7 +682,65 @@ async fn apply(cfg: &PanelConfig, a: Answers) -> Result<()> {
     println!("    语言 / language : {}", a.language);
     println!("    时区 / timezone : {}", a.timezone);
     rule();
-    Ok(())
+
+    // The console login summary is printed later (by `print_login_summary`, after
+    // the service is registered/started) so it's the last thing on screen. The
+    // console port is its dedicated port if set, else the website port matching
+    // the SSL choice; it's shown in the URL only when non-default for the scheme.
+    let scheme = if a.https_mode == "none" {
+        "http"
+    } else {
+        "https"
+    };
+    let console_port = if a.console_port != 0 {
+        a.console_port
+    } else if a.https_mode == "none" {
+        a.website_http_port
+    } else {
+        a.website_https_port
+    };
+    let default_port = if scheme == "https" { 443 } else { 80 };
+    let host = bracket_if_ipv6(&a.external_address);
+    let authority = if console_port == default_port {
+        host
+    } else {
+        format!("{host}:{console_port}")
+    };
+    Ok(LoginSummary {
+        url: format!("{scheme}://{authority}/"),
+        username: a.username,
+        password: a.password_plain,
+    })
+}
+
+/// The console login info shown to the operator AFTER the service starts. The
+/// password is echoed in plaintext at the operator's request (they just typed it
+/// during setup); it is never persisted.
+pub struct LoginSummary {
+    pub url: String,
+    pub username: String,
+    pub password: String,
+}
+
+/// Print the console login summary (address + admin + password) — called once on a
+/// fresh init, AFTER the service is registered/started, so it's the final thing
+/// the operator sees.
+pub fn print_login_summary(login: &LoginSummary) {
+    println!();
+    println!("    地址 / address    : {}", login.url);
+    println!("    管理员 / admin     : {}", login.username);
+    println!("    登陆密码 / Password : {}", login.password);
+    println!();
+}
+
+/// Bracket a bare IPv6 literal for a URL authority (`2001:db8::1` →
+/// `[2001:db8::1]`); a hostname or IPv4 is returned unchanged.
+fn bracket_if_ipv6(host: &str) -> String {
+    if !host.starts_with('[') && host.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
 }
 
 // --- env probes -----------------------------------------------------------

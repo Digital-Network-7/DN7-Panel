@@ -161,10 +161,12 @@ fn main() -> Result<()> {
     autostart::install_all();
 
     // Fresh init: register + START the panel via the host service manager
-    // (systemd/service), print the management commands, then EXIT — the service
-    // now runs the panel (so `systemctl status` is truthful + no double instance).
-    if did_init {
+    // (systemd/service), print the management commands + the login summary (address
+    // / admin / password), then EXIT — the service now runs the panel (so
+    // `systemctl status` is truthful + no double instance).
+    if let Some(login) = &did_init {
         crate::platform::init_cli::register_and_start_service();
+        crate::platform::init_cli::print_login_summary(login);
         return Ok(());
     }
 

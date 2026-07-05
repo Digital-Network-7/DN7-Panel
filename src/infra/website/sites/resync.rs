@@ -12,12 +12,44 @@ pub(crate) fn server_name_taken(server_name: &str, exclude_id: &str) -> bool {
     if wanted.is_empty() {
         return false;
     }
+    // Reserved by the panel's OWN console — its external address + the loopback
+    // names. A hosted site claiming one of these would be silently shadowed by
+    // the console route on the edge (the console wins), so treat it as taken
+    // instead of letting the site quietly break.
+    if console_reserved(&wanted) {
+        return true;
+    }
     load_sites().iter().any(|s| {
         s.id != exclude_id
             && host_tokens(&s.server_name)
                 .iter()
                 .any(|h| wanted.contains(h))
     })
+}
+
+/// Whether any wanted host is reserved by the console (its `external_address` or
+/// the loopback names the console route always claims).
+fn console_reserved(wanted: &std::collections::HashSet<String>) -> bool {
+    if wanted.contains("localhost") || wanted.contains("127.0.0.1") {
+        return true;
+    }
+    crate::infra::store::settings::load()
+        .map(|ws| {
+            let ext = ws.external_address.trim().to_ascii_lowercase();
+            if ext.is_empty() {
+                return false;
+            }
+            // Reserve BOTH the bare and the bracketed IPv6 form: the edge keys the
+            // console route by the bracketed host, but the address may be stored /
+            // entered bare, so match either. (Identical for a hostname / IPv4.)
+            let bracketed = if !ext.starts_with('[') && ext.parse::<std::net::Ipv6Addr>().is_ok() {
+                format!("[{ext}]")
+            } else {
+                ext.clone()
+            };
+            wanted.contains(&ext) || wanted.contains(&bracketed)
+        })
+        .unwrap_or(false)
 }
 
 /// Split a `server_name` field into its individual lowercase hostnames.

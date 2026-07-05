@@ -96,6 +96,31 @@ pub(crate) async fn edge_reload() -> Result<()> {
         crate::infra::website::resolve_container_upstream(&name, port).await
     });
 
+    // Listen ports (bound ONCE by the edge — a change needs a panel restart). The
+    // console gets a DEDICATED listener only when its port is set AND differs from
+    // both website ports; otherwise it's merged onto a website listener by Host
+    // (today's behaviour). `set_listen_ports` is set-once, so the first reload
+    // (edge_autostart, before spawn) wins.
+    let http_port = ws
+        .as_ref()
+        .map(|w| w.website_http_port)
+        .filter(|p| *p != 0)
+        .unwrap_or(80);
+    let https_port = ws
+        .as_ref()
+        .map(|w| w.website_https_port)
+        .filter(|p| *p != 0)
+        .unwrap_or(443);
+    let console_raw = ws.as_ref().map(|w| w.console_port).unwrap_or(0);
+    let console_tls = ws.as_ref().map(|w| w.https_mode != "none").unwrap_or(false);
+    let dedicated = console_raw != 0 && console_raw != http_port && console_raw != https_port;
+    dn7_edge::set_listen_ports(dn7_edge::ListenPorts {
+        website_http: http_port,
+        website_https: https_port,
+        console: if dedicated { console_raw } else { 0 },
+        console_tls,
+    });
+
     let console = dn7_edge::ConsoleParams {
         external_address: ws
             .as_ref()
@@ -106,6 +131,7 @@ pub(crate) async fn edge_reload() -> Result<()> {
             .map(|w| w.https_mode.clone())
             .unwrap_or_else(|| "none".to_string()),
         initialized: ws.as_ref().map(|w| w.initialized).unwrap_or(false),
+        dedicated_console: dedicated,
     };
     let input = dn7_edge::ReloadInput {
         sites: if setup {
@@ -181,8 +207,8 @@ pub(crate) async fn force_start() -> Result<Value> {
     if !is_root() {
         return Err(website_err(WebsiteError::NeedRoot));
     }
-    // The ports currently in conflict (fall back to the well-known pair).
-    let ports = dn7_edge::port_conflict().unwrap_or_else(|| vec![80, 443]);
+    // The ports currently in conflict (fall back to the configured edge ports).
+    let ports = dn7_edge::port_conflict().unwrap_or_else(configured_edge_ports);
     let killed = kill_port_holders(&ports).await;
 
     // Re-attempt the bind now the occupants are gone. `spawn()` re-attempts
@@ -204,8 +230,34 @@ pub(crate) async fn force_start() -> Result<Value> {
     }
 }
 
+/// The edge's configured public ports: 80 (always bound for ACME issuance) + the
+/// website HTTP/HTTPS ports + a dedicated console port (if any), de-duplicated.
+/// Used for the force-start fallback.
+pub(crate) fn configured_edge_ports() -> Vec<u16> {
+    let ws = crate::infra::store::settings::load();
+    let http = ws
+        .as_ref()
+        .map(|w| w.website_http_port)
+        .filter(|p| *p != 0)
+        .unwrap_or(80);
+    let https = ws
+        .as_ref()
+        .map(|w| w.website_https_port)
+        .filter(|p| *p != 0)
+        .unwrap_or(443);
+    let mut v = vec![80, http, https];
+    if let Some(c) = ws.as_ref().map(|w| w.console_port) {
+        if c != 0 && c != http && c != https {
+            v.push(c);
+        }
+    }
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 /// Which of `ports` currently have a listener — a pre-serve check used by the
-/// CLI first-run wizard before it offers to take :80/:443 over.
+/// CLI first-run wizard before it offers to take the edge ports over.
 pub(crate) async fn ports_with_listener(ports: &[u16]) -> Vec<u16> {
     let mut out = Vec::new();
     for &p in ports {

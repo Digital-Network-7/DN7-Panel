@@ -43,6 +43,9 @@ pub(crate) struct RuntimeConfig {
     /// its named route (`external_address`), with unmatched hosts hitting
     /// `default_site`.
     pub(crate) console_fallback: Option<Arc<ServerRoute>>,
+    /// The synthesized console route (proxy to the loopback console). A DEDICATED
+    /// console listener serves this regardless of Host; `None` before it's built.
+    pub(crate) console_route: Option<Arc<ServerRoute>>,
     /// http/server tuning knobs (gzip, body-size cap, keepalive…).
     pub(crate) tuning: Tuning,
     /// SNI → certificate material for TLS termination.

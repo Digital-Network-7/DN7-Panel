@@ -46,6 +46,10 @@ pub struct ConsoleParams {
     /// When false (uninitialized), the console is ALSO the catch-all so the
     /// wizard answers any host on a fresh box.
     pub initialized: bool,
+    /// A dedicated console listen port is configured — the console is served ONLY
+    /// there (plus loopback), so its named route is NOT added to the website
+    /// listeners' host table (`:80`/`:443` stay purely for hosted websites).
+    pub dedicated_console: bool,
 }
 
 /// Build (and structurally de-duplicate) the route table. Returns an
@@ -219,6 +223,10 @@ fn inject_console_route(cfg: &mut RuntimeConfig, input: &ReloadInput) {
     );
     cfg.hosts.insert("localhost".to_string(), loopback.clone());
     cfg.hosts.insert("127.0.0.1".to_string(), loopback.clone());
+    // A DEDICATED console listener serves the console regardless of Host via this
+    // route (a plain proxy to the loopback console — no force-SSL, the listener's
+    // protocol is fixed).
+    cfg.console_route = Some(loopback.clone());
 
     // The named, TLS-capable console route at the operator's external address
     // (skipped when there's no address, or it IS a loopback name). The cert is
@@ -243,11 +251,22 @@ fn inject_console_route(cfg: &mut RuntimeConfig, input: &ReloadInput) {
             .flatten();
         let ssl = cert.is_some();
         let enforce_ssl = ssl && input.console.initialized;
+        // Always index the cert: a dedicated console TLS listener presents it by
+        // SNI too, so it must resolve regardless. SNI never brackets an IPv6
+        // literal (RFC 6066), so index under the UNbracketed host — the route key
+        // stays bracketed for Host matching. (Identical for a hostname / IPv4.)
         if let Some(ck) = cert {
-            index_cert(&mut cfg.certs, &ext, ck);
+            let sni_key = ext.trim_start_matches('[').trim_end_matches(']');
+            index_cert(&mut cfg.certs, sni_key, ck);
         }
-        let named = console_route(ssl, enforce_ssl, vec![ext.clone()]);
-        cfg.hosts.insert(ext, named);
+        // With a dedicated console port the console is served ONLY there (its own
+        // listener), so DON'T add the named route to the website listeners — the
+        // address 404s on :80/:443, keeping them purely for hosted websites. The
+        // loopback routes above (localhost/127.0.0.1) always stay for SSH tunnels.
+        if !input.console.dedicated_console {
+            let named = console_route(ssl, enforce_ssl, vec![ext.clone()]);
+            cfg.hosts.insert(ext, named);
+        }
     }
 
     // While UNINITIALIZED the console is the catch-all (the plain loopback route)

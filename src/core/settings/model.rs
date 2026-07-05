@@ -74,6 +74,21 @@ pub(crate) struct WebSettings {
     /// (Let's Encrypt — only when `external_address` is a domain).
     #[serde(default = "default_https_mode")]
     pub(crate) https_mode: String,
+    /// Public HTTP port the edge serves hosted websites on (plain), default 80.
+    /// Port 80 is ALSO always bound for ACME HTTP-01 issuance even when this
+    /// differs — Let's Encrypt keeps working (see the edge listener).
+    #[serde(default = "default_website_http_port")]
+    pub(crate) website_http_port: u16,
+    /// Public HTTPS port the edge serves hosted websites on (TLS), default 443.
+    #[serde(default = "default_website_https_port")]
+    pub(crate) website_https_port: u16,
+    /// Client-facing port the console is reached on. `0` = "merged": the console
+    /// shares a website listener by Host (today's behaviour) — used for a legacy
+    /// file or when the operator keeps the console on a website port. A distinct
+    /// non-zero value opens a DEDICATED console listener (the console is served
+    /// ONLY there, plus loopback for SSH tunnels).
+    #[serde(default)]
+    pub(crate) console_port: u16,
     /// Default console UI language for browsers that haven't chosen one: one of
     /// "zh-CN" | "zh-TW" | "en" | "ja". Empty = follow the browser (legacy).
     #[serde(default)]
@@ -112,6 +127,14 @@ fn default_true() -> bool {
 /// Default console HTTPS mode: plain HTTP until the wizard configures a cert.
 fn default_https_mode() -> String {
     "none".to_string()
+}
+
+/// Default public website HTTP / HTTPS ports (the well-known web ports).
+pub(crate) fn default_website_http_port() -> u16 {
+    80
+}
+pub(crate) fn default_website_https_port() -> u16 {
+    443
 }
 
 /// Default session inactivity timeout in minutes (24h).

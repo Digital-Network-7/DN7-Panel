@@ -102,6 +102,7 @@ mod edge_tests {
             external_address: String::new(),
             https_mode: "none".to_string(),
             initialized: true,
+            dedicated_console: false,
         }
     }
 
@@ -238,6 +239,7 @@ mod edge_tests {
             external_address: "2001:DB8::1".to_string(),
             https_mode: "none".to_string(),
             initialized: true,
+            dedicated_console: false,
         };
         let cfg = build::build_runtime(&input).expect("console-only build succeeds");
         let console = cfg
@@ -470,6 +472,7 @@ mod edge_tests {
                 external_address: "panel.example.test".to_string(),
                 https_mode: "selfsigned".to_string(),
                 initialized: true,
+                dedicated_console: false,
             },
         };
         let cfg = build::build_runtime(&input).expect("console-TLS config builds");
@@ -575,7 +578,7 @@ mod edge_tests {
 
     #[test]
     fn security_real_ip_returns_peer_when_trust_is_none() {
-        use super::super::listener::ConnCtx;
+        use super::super::listener::{ConnCtx, ListenerRole};
         use super::super::security;
         use http::HeaderMap;
 
@@ -584,6 +587,7 @@ mod edge_tests {
         let peer: std::net::SocketAddr = "198.51.100.42:50000".parse().unwrap();
         let ctx = ConnCtx {
             tls: false,
+            role: ListenerRole::Website,
             sni: None,
             peer,
             conn_permit: None,
@@ -1052,7 +1056,10 @@ mod edge_tests {
     async fn spawn_edge() -> std::net::SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(super::super::listener::serve_plain(listener));
+        tokio::spawn(super::super::listener::serve_plain(
+            listener,
+            super::super::listener::ListenerRole::Website,
+        ));
         addr
     }
 
@@ -1552,7 +1559,11 @@ mod edge_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let acceptor = tokio_rustls::TlsAcceptor::from(super::super::tls::server_config().unwrap());
-        tokio::spawn(super::super::listener::serve_tls(listener, acceptor));
+        tokio::spawn(super::super::listener::serve_tls(
+            listener,
+            acceptor,
+            super::super::listener::ListenerRole::Website,
+        ));
         addr
     }
 

@@ -15,6 +15,7 @@ pub(crate) mod guardian;
 pub(crate) mod init_cli;
 pub(crate) mod kmod;
 pub(crate) mod logrotate;
+pub(crate) mod netinfo;
 pub(crate) mod panel;
 pub(crate) mod paths;
 pub(crate) mod privilege;

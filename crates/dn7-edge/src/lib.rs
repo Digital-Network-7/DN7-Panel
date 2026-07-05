@@ -28,6 +28,7 @@ mod limit;
 mod limit_body;
 mod listener;
 pub mod model;
+mod ports;
 mod proxy;
 mod reload;
 mod response;
@@ -48,6 +49,7 @@ mod tests;
 pub use build::{ConsoleParams, ReloadInput};
 pub use config::CONSOLE_LOOPBACK_PORT;
 pub use htpasswd::{apr1_with_salt, htpasswd_hash};
+pub use ports::{set_listen_ports, ListenPorts};
 pub use reload::reload;
 pub use status::port_conflict;
 
