@@ -1,30 +1,13 @@
-# ── DN7 Panel version + build + release notes ───────────────────────────────
-# Single source of truth for a release. Display form:
-#   DN7 Panel <codename> <version> (build <build>)   e.g.  Phanes 27.0.0 (build 1)
-#
-#   codename  release codename, one per year (Apple-style). Greek primordials in
-#             cosmogonic order — Phanes, then Chaos, Gaia, Eros, Nyx, Aether, …
-#   version   <year>.<major>.<minor>. year = Apple-style +1 (the 2026 line is 27);
-#             major resets to 0 each new year. Bump for a real version.
-#   build     an INDEPENDENT monotonic build number — never resets, unrelated to
-#             the version (so it never has an awkward 27G99→…01 jump). Bump for
-#             any published build; it only ever increases.
-#
-# CI on every push ALWAYS verifies the build (gate). It publishes a GitHub Release
-# only when `build` is new (no tag b<build> yet) — otherwise it just gates, no
-# release. Each build is its OWN release, tagged b<build>, name "<codename>
-# <version> (build <build>)", always marked Latest (older builds' releases are
-# retained). Deployed panels self-update straight from these releases via the
-# fastest mirror line (src/infra/support/fetch/), comparing by (version, build)
-# so a pure build bump reaches them. codename + build compile into the binary
-# (build.rs → DN7_CODENAME / DN7_BUILD); the version rides in via Cargo.toml.
+# Archived snapshot of release.toml for: Phanes 27.0.1 (build 3)
+# Files here back up each published release's version + notes, named
+# <version>-build<build>.toml. Build 3 (27.0.1) adds three first-run deployment
+# modes after the environment check — Quick (default), CLI custom, and a
+# token-gated UI-custom web wizard. See the repo-root release.toml (and AGENTS.md
+# "Versioning & releases") for the live scheme.
 codename = "Phanes"
 version = "27.0.1"
 build = 3
 
-# Per-language release notes (locale keys match the panel's i18n). The panel's
-# "What's New" shows the entry for the current UI language; CI puts them all in
-# the GitHub Release body + releases.json.
 [notes]
 "zh-CN" = "首次部署新增三种方式。环境检测后可以选择:**快速部署**(默认)按服务器时区自动选语言,以公网 IP 直接起面板,账号 admin + 随机密码——首次登录会强制你改成自己的用户名和密码;**命令行自定义**是原来的终端交互向导;**网页自定义**会打印一条一次性安全链接,让你在浏览器里完成全部配置(访问地址、HTTPS、端口、管理员账号)。网页初始化由一次性令牌保护,完成前不暴露任何其他内容。"
 "zh-TW" = "首次部署新增三種方式。環境偵測後可以選擇:**快速部署**(預設)依伺服器時區自動選語言,以公網 IP 直接啟動面板,帳號 admin + 隨機密碼——首次登入會強制你改成自己的使用者名稱與密碼;**命令列自訂**是原本的終端互動精靈;**網頁自訂**會印出一條一次性安全連結,讓你在瀏覽器中完成全部設定(存取位址、HTTPS、連接埠、管理員帳號)。網頁初始化由一次性權杖保護,完成前不會暴露任何其他內容。"

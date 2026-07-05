@@ -114,11 +114,18 @@ pub(crate) async fn edge_reload() -> Result<()> {
     let console_raw = ws.as_ref().map(|w| w.console_port).unwrap_or(0);
     let console_tls = ws.as_ref().map(|w| w.https_mode != "none").unwrap_or(false);
     let dedicated = console_raw != 0 && console_raw != http_port && console_raw != https_port;
+    // Load user sites once (reused for the route table below). :80 must stay bound
+    // for ACME HTTP-01 when any Let's Encrypt cert exists (the console's, or any LE
+    // site) even if the website HTTP port moved off 80.
+    let panel_sites = if setup { load_sites() } else { Vec::new() };
+    let need_acme_80 = ws.as_ref().map(|w| w.https_mode == "le").unwrap_or(false)
+        || panel_sites.iter().any(|s| s.ssl && s.cert_mode == "le");
     dn7_edge::set_listen_ports(dn7_edge::ListenPorts {
         website_http: http_port,
         website_https: https_port,
         console: if dedicated { console_raw } else { 0 },
         console_tls,
+        need_acme_80,
     });
 
     let console = dn7_edge::ConsoleParams {
@@ -134,11 +141,7 @@ pub(crate) async fn edge_reload() -> Result<()> {
         dedicated_console: dedicated,
     };
     let input = dn7_edge::ReloadInput {
-        sites: if setup {
-            to_edge(load_sites())?
-        } else {
-            Vec::new()
-        },
+        sites: to_edge(panel_sites)?,
         access: if setup {
             to_edge(load_access())?
         } else {

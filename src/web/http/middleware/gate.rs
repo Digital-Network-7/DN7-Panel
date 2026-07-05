@@ -48,8 +48,8 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
         .get::<axum::extract::ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip());
     // Resolve all security decisions under one brief settings lock via the
-    // policy view (allow-list verdict + initialized state).
-    let (allow_active, ip_ok, initialized) = {
+    // policy view (allow-list verdict + initialized state + init token).
+    let (allow_active, ip_ok, initialized, init_token) = {
         // A poisoned lock means a thread panicked while holding it. The settings
         // it guards are only ever *read* here (a snapshot for security
         // decisions) and aren't left half-written by a panic, so recovering the
@@ -69,6 +69,7 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
             pol.allow_list_active(),
             eff.map(|ip| pol.ip_allowed(ip)),
             pol.initialized(),
+            s.init_token.clone(),
         )
     };
     // Authorized-IP allow list (when configured). Loopback is always allowed.
@@ -84,13 +85,80 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
             return (StatusCode::FORBIDDEN, "Forbidden").into_response();
         }
     }
-    // First-run setup runs via the CLI BEFORE the panel ever serves (see
-    // platform::init_cli), so a serving panel is always initialized. Defensively
-    // refuse to serve if it somehow isn't, rather than expose anything pre-init.
+    // First-run setup normally runs via the CLI BEFORE the panel ever serves (see
+    // platform::init_cli). The one exception is the "UI custom" deploy mode: it
+    // arms an `init_token` and lets the panel serve a token-gated web wizard while
+    // still uninitialized. Without a token, nothing is served pre-init (a plain
+    // pre-init panel, or one initialized by the CLI, shows a bare 404).
     if !initialized {
-        return (StatusCode::NOT_FOUND, "Not Found").into_response();
+        if init_token.is_empty() {
+            return (StatusCode::NOT_FOUND, "Not Found").into_response();
+        }
+        return serve_init_surface(&init_token, req, next).await;
     }
     next.run(req).await
+}
+
+/// While uninitialized-but-armed (the "UI custom" deploy mode), serve ONLY the
+/// first-run wizard surface — the SPA (`/`, `/init`), its assets (`/ui/*`), and
+/// the init API (`/api/init/*`) — and ONLY to a request that presents the
+/// matching init token. The token arrives as `?init_token=` on the first
+/// navigation and is echoed back as a `dn7_init` cookie (set here) so the SPA's
+/// asset + API fetches (which carry no query) also pass. The compare is
+/// constant-time. Everything else 404s, so an unarmed or wrong-token visitor sees
+/// exactly what a fully pre-init panel shows: nothing.
+async fn serve_init_surface(init_token: &str, req: Request, next: Next) -> Response {
+    let path = req.uri().path();
+    let on_surface = path == "/"
+        || path == "/init"
+        || path.starts_with("/ui/")
+        || path.starts_with("/api/init/");
+    if !on_surface {
+        return (StatusCode::NOT_FOUND, "Not Found").into_response();
+    }
+    let from_query = query_value(req.uri().query(), "init_token");
+    let presented = from_query
+        .clone()
+        .or_else(|| cookie_value(req.headers(), "dn7_init"));
+    let ok = presented
+        .as_deref()
+        .map(|p| ct_eq(p.as_bytes(), init_token.as_bytes()))
+        .unwrap_or(false);
+    if !ok {
+        return (StatusCode::NOT_FOUND, "Not Found").into_response();
+    }
+    let set_cookie = from_query.is_some();
+    let mut resp = next.run(req).await;
+    if set_cookie {
+        // Bind the token to this browser for the rest of the wizard: a session
+        // cookie (no Max-Age → dropped on browser close), HttpOnly (JS can't read
+        // it), SameSite=Strict, Path=/ so every wizard fetch carries it. No
+        // `Secure` — the printed init URL may be plain HTTP on first run.
+        if let Ok(v) = header::HeaderValue::from_str(&format!(
+            "dn7_init={init_token}; Path=/; HttpOnly; SameSite=Strict"
+        )) {
+            resp.headers_mut().append(header::SET_COOKIE, v);
+        }
+    }
+    resp
+}
+
+/// Extract a parameter's value from a raw query string. The init token is hex, so
+/// there's nothing to percent-decode; match the exact key.
+fn query_value(query: Option<&str>, key: &str) -> Option<String> {
+    query?.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == key).then(|| v.to_string())
+    })
+}
+
+/// Extract a cookie value by name from the `Cookie` request header.
+fn cookie_value(headers: &header::HeaderMap, name: &str) -> Option<String> {
+    let raw = headers.get(header::COOKIE)?.to_str().ok()?;
+    raw.split(';').find_map(|pair| {
+        let (k, v) = pair.trim().split_once('=')?;
+        (k == name).then(|| v.to_string())
+    })
 }
 
 /// Serialize request headers to a "Name: value" block for the audit log,

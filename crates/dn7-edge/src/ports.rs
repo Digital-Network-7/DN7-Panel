@@ -17,6 +17,10 @@ pub struct ListenPorts {
     pub console: u16,
     /// The dedicated console listener terminates TLS (console SSL is on).
     pub console_tls: bool,
+    /// Bind :80 for ACME HTTP-01 issuance even when the website HTTP port isn't 80
+    /// (some route uses Let's Encrypt). When false AND the website HTTP port moved
+    /// off 80, :80 is left free — so an HTTP-only deploy can vacate an occupied :80.
+    pub need_acme_80: bool,
 }
 
 impl Default for ListenPorts {
@@ -26,6 +30,7 @@ impl Default for ListenPorts {
             website_https: 443,
             console: 0,
             console_tls: false,
+            need_acme_80: true,
         }
     }
 }

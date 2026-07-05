@@ -38,7 +38,12 @@ $('themeBtn').addEventListener('click', cycleTheme);
 $('verLine').addEventListener('click', openUpdate);
 $('userBox').addEventListener('click', toggleAccountMenu);
 
-// First-run setup is done via the CLI before the panel ever serves, so the
-// console always shows login (or the app, when a session token is present).
+// A live session → straight to the app. Otherwise ask the server whether setup
+// is still pending: the UI-custom deploy mode serves a token-gated first-run
+// wizard (bootInit renders it), and every other case just shows the login form.
 if (Auth.token) showApp();
-else if ($('user')) $('user').focus();
+else {
+  bootInit().then((wizard) => {
+    if (!wizard && $('user')) $('user').focus();
+  });
+}

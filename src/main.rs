@@ -161,13 +161,23 @@ fn main() -> Result<()> {
     autostart::install_all();
 
     // Fresh init: register + START the panel via the host service manager
-    // (systemd/service), print the management commands + the login summary (address
-    // / admin / password), then EXIT — the service now runs the panel (so
-    // `systemctl status` is truthful + no double instance).
-    if let Some(login) = &did_init {
-        crate::platform::init_cli::register_and_start_service();
-        crate::platform::init_cli::print_login_summary(login);
-        return Ok(());
+    // (systemd/service), print the management commands + either the login summary
+    // (CLI/quick deploy) or the token-gated web init URLs (UI-custom deploy), then
+    // EXIT — the service now runs the panel (so `systemctl status` is truthful + no
+    // double instance). `AlreadyInitialized` falls through to serve inline.
+    use crate::platform::init_cli::FirstRun;
+    match did_init {
+        FirstRun::AlreadyInitialized => {}
+        FirstRun::Completed(login) => {
+            crate::platform::init_cli::register_and_start_service();
+            crate::platform::init_cli::print_login_summary(&login);
+            return Ok(());
+        }
+        FirstRun::UiPending(ui) => {
+            crate::platform::init_cli::register_and_start_service();
+            crate::platform::init_cli::print_init_urls(&ui);
+            return Ok(());
+        }
     }
 
     // Single-instance guard (with newer-build takeover). Exit early if another
@@ -323,14 +333,15 @@ fn init_tracing() {
 }
 
 async fn run_panel(cfg: PanelConfig) -> Result<()> {
-    // Never serve while UNINITIALIZED. First-run setup runs via the CLI wizard in
-    // the TTY-attached top-level process (platform::init_cli), never here — the
-    // panel role can only reach this point uninitialized after `dn7-panel reset`
-    // clears the account. If we served anyway the entry gate would 404 every
-    // request (gate.rs) — a silently-bricked console. Instead fail loudly and
-    // exit non-zero so the service shows failed and the journal tells the operator
-    // exactly how to re-initialize, rather than respawning a 404-serving role.
-    if !web::console_info(cfg.web_port).initialized {
+    // Serving while UNINITIALIZED is allowed in exactly ONE case: the operator
+    // chose the UI-custom deploy mode, which armed an `init_token`. The panel then
+    // serves the token-gated web wizard (gate.rs opens the init surface only to a
+    // matching token; everything else still 404s) until the browser finishes setup.
+    // Without a token, an uninitialized panel would 404 every request (a silently
+    // bricked console), so fail loudly + exit non-zero: the service shows failed
+    // and the journal tells the operator to re-run `dn7-panel` to initialize.
+    let info = web::console_info(cfg.web_port);
+    if !info.initialized && info.init_token.is_empty() {
         tracing::error!(
             "DN7 面板尚未初始化，拒绝以未初始化状态提供服务 — 请在终端中运行 `dn7-panel` 重新初始化。 \
              DN7 Panel is UNINITIALIZED; refusing to serve. Run `dn7-panel` in a terminal to re-initialize."
@@ -338,6 +349,9 @@ async fn run_panel(cfg: PanelConfig) -> Result<()> {
         return Err(anyhow::anyhow!(
             "panel is uninitialized — run `dn7-panel` in a terminal to initialize"
         ));
+    }
+    if !info.initialized {
+        tracing::info!("panel serving the token-gated web init wizard (UI-custom deploy)");
     }
     tracing::info!(web_port = cfg.web_port, "panel role starting");
     // Restart-policy boot reconcile: bring back containers whose policy
@@ -374,10 +388,12 @@ async fn run_panel(cfg: PanelConfig) -> Result<()> {
 /// credentials, so the next launch re-runs the first-run CLI wizard. Restricted
 /// to the OS user that first initialized the console, or root.
 ///
-/// There is no web init token any more (first-run setup is CLI-only), so we must
-/// NOT leave a running panel behind: a serving-but-uninitialized panel 404s every
-/// request (the entry gate refuses to expose anything pre-init). Instead we STOP
-/// the running instance and tell the operator to re-run `dn7-panel` in a terminal.
+/// Reset deliberately leaves NO web init token armed (re-init goes back through
+/// the CLI mode menu, which can re-arm one for UI-custom mode), so we must NOT
+/// leave a running panel behind: a serving-but-uninitialized panel with no token
+/// 404s every request (the entry gate refuses to expose anything pre-init).
+/// Instead we STOP the running instance and tell the operator to re-run
+/// `dn7-panel` in a terminal.
 fn run_reset() -> Result<()> {
     let uid = current_uid();
     match web::console_owner_uid() {

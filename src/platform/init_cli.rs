@@ -27,14 +27,16 @@ use crate::platform::config::PanelConfig;
 use crate::web::settings;
 
 /// Run the first-run CLI wizard if the panel is uninitialized. Returns
-/// `Ok(None)` when the panel was already initialized (proceed to serve),
-/// `Ok(Some(summary))` on a fresh init (the caller registers the service then
-/// prints the login summary), and `Err` when setup cannot proceed (no TTY,
-/// missing prerequisite, the operator declined the mandatory port takeover, or
+/// `FirstRun::AlreadyInitialized` when setup is complete (proceed to serve),
+/// `Completed(summary)` on a fresh CLI/quick init (the caller registers the
+/// service then prints the login summary), `UiPending(urls)` when the operator
+/// chose the UI-custom mode (the caller registers the service — which serves the
+/// token-gated web wizard — then prints the init URLs), and `Err` when setup
+/// cannot proceed (no TTY, missing prerequisite, declined port takeover, or
 /// aborted) so the caller exits without serving a half-configured panel.
-pub async fn run_if_needed(cfg: &PanelConfig) -> Result<Option<LoginSummary>> {
+pub async fn run_if_needed(cfg: &PanelConfig) -> Result<FirstRun> {
     if settings::load().map(|s| s.initialized).unwrap_or(false) {
-        return Ok(None); // already initialized — proceed to serve.
+        return Ok(FirstRun::AlreadyInitialized); // already initialized — proceed to serve.
     }
 
     if !stdin_is_tty() {
@@ -56,6 +58,69 @@ pub async fn run_if_needed(cfg: &PanelConfig) -> Result<Option<LoginSummary>> {
     rule();
 
     check_environment(cfg)?;
+
+    // Deployment mode. Quick is the default; Quick's and UI's port steps can
+    // `exit` back to this menu, so loop until a mode completes.
+    loop {
+        match ask_deploy_mode()? {
+            DeployMode::Quick => {
+                if let Some(s) = quick_deploy(cfg).await? {
+                    return Ok(FirstRun::Completed(s));
+                }
+            }
+            DeployMode::Cli => return Ok(FirstRun::Completed(cli_deploy(cfg).await?)),
+            DeployMode::Ui => {
+                if let Some(u) = ui_deploy(cfg).await? {
+                    return Ok(FirstRun::UiPending(u));
+                }
+            }
+        }
+    }
+}
+
+/// The outcome of first-run setup, driving what the crate root does next.
+pub enum FirstRun {
+    /// Panel is already set up — proceed to serve normally.
+    AlreadyInitialized,
+    /// A fresh CLI/quick init completed — register + start the service, print the
+    /// login summary, then exit (the service now runs the panel).
+    Completed(LoginSummary),
+    /// The operator chose UI-custom — an init token is armed and persisted;
+    /// register + start the service (which serves the token-gated web wizard while
+    /// still uninitialized), print the init URLs, then exit.
+    UiPending(UiInit),
+}
+
+/// Deployment mode chosen at the start of first-run setup.
+enum DeployMode {
+    /// Auto: system-timezone language, public IP on the website HTTP port (no SSL),
+    /// admin + a random password, force-reset on first login.
+    Quick,
+    /// Interactive CLI wizard — every setting asked here.
+    Cli,
+    /// Same config set as CLI custom, but collected in a browser: arm a token-gated
+    /// web wizard reachable at the printed init URL.
+    Ui,
+}
+
+/// Ask which deployment mode to use (default Quick).
+fn ask_deploy_mode() -> Result<DeployMode> {
+    section("部署方式 / Deployment mode");
+    println!("    [1] 快速部署 / Quick — 自动:公网 IP + 80 端口 · 随机密码(首登强制改)");
+    println!("    [2] 命令行自定义 / CLI custom — 在终端逐项配置");
+    println!("    [3] 网页自定义 / UI custom — 在浏览器逐项配置(打印初始化网址)");
+    loop {
+        match prompt_line("  选择 / choose (默认/default 1): ")?.trim() {
+            "" | "1" => break Ok(DeployMode::Quick),
+            "2" => break Ok(DeployMode::Cli),
+            "3" => break Ok(DeployMode::Ui),
+            _ => warn("请输入 1、2 或 3。", "Please enter 1, 2, or 3."),
+        }
+    }
+}
+
+/// The CLI custom wizard: ask every setting interactively.
+async fn cli_deploy(cfg: &PanelConfig) -> Result<LoginSummary> {
     // Website ports first, so the port check verifies the CONFIGURED set (80 is
     // always included — it stays bound for Let's Encrypt issuance).
     let (website_http, website_https) = ask_website_ports()?;
@@ -66,15 +131,173 @@ pub async fn run_if_needed(cfg: &PanelConfig) -> Result<Option<LoginSummary>> {
     let (language, timezone) = ask_locale()?;
     let mut answers = ask_questions(website_http, website_https)?;
     // A dedicated console port is chosen AFTER the port check above (it depends on
-    // the SSL answer), so verify its availability now — otherwise the edge would
-    // fail to bind it at startup.
+    // the SSL answer), so verify its availability now — else the edge fails to bind.
     if answers.console_port != 0 {
         ensure_ports_available(&[answers.console_port]).await?;
     }
     answers.language = language;
     answers.timezone = timezone;
-    let summary = apply(cfg, answers).await?;
-    Ok(Some(summary))
+    apply(cfg, answers).await
+}
+
+/// Quick deploy: minimal-prompt automatic setup. Language from the host timezone,
+/// public IP (fallback LAN) on the website HTTP port, no SSL, admin + a random
+/// 8-char password that first login FORCES a reset of. Returns `Ok(None)` when the
+/// operator typed `exit` at the port step (go back to the mode menu).
+async fn quick_deploy(cfg: &PanelConfig) -> Result<Option<LoginSummary>> {
+    section("快速部署 / Quick deploy");
+    let timezone = detect_system_tz().unwrap_or_else(|| "UTC".to_string());
+    let language = lang_from_tz(&timezone)
+        .unwrap_or_else(detect_lang)
+        .to_string();
+    let address =
+        crate::platform::netinfo::public_ip().unwrap_or_else(crate::platform::netinfo::internal_ip);
+    let (website_http, website_https) = match quick_ports().await? {
+        Some(p) => p,
+        None => return Ok(None), // `exit` → back to the mode menu
+    };
+    // admin + a random 8-char password; force-reset on first login (`force_reset`
+    // keeps pw_default=true so the existing must_setup path fires).
+    let password = dn7_cred::random_password(8);
+    let salt = dn7_cred::random_salt_hex();
+    let verifier = dn7_cred::derive_verifier_s256(&salt, &password, dn7_cred::KDF_ITERS);
+    let stored = crate::infra::auth::hash_verifier(&verifier)
+        .ok_or_else(|| anyhow!("密码哈希失败 / password hashing failed"))?;
+    ok(
+        &format!("语言 {language} · 地址 {address} · HTTP 端口 {website_http} · 账号 admin(随机密码,首登强制改)"),
+        &format!("language {language} · address {address} · HTTP port {website_http} · admin (random password, forced reset on first login)"),
+    );
+    let answers = Answers {
+        language,
+        timezone,
+        external_address: address,
+        https_mode: "none".to_string(),
+        website_http_port: website_http,
+        website_https_port: website_https,
+        console_port: 0,
+        username: "admin".to_string(),
+        salt,
+        stored,
+        kdf: dn7_cred::kdf_string(),
+        password_plain: password,
+        force_reset: true,
+    };
+    Ok(Some(apply(cfg, answers).await?))
+}
+
+/// Quick-deploy port handling for the website ports (start 80/443). If free, use
+/// them; if busy, offer takeover, and on decline let the operator move the busy
+/// port to a free one (re-input) or type `exit` to go back to the mode menu.
+async fn quick_ports() -> Result<Option<(u16, u16)>> {
+    let mut http = 80u16;
+    let mut https = 443u16;
+    loop {
+        // Quick deploy is HTTP-only (no LE), so :80 is needed only when it's the
+        // HTTP port — a moved HTTP port frees :80. Just check the two website ports.
+        let mut check = vec![http, https];
+        check.sort_unstable();
+        check.dedup();
+        let busy = crate::infra::website::ports_with_listener(&check).await;
+        if busy.is_empty() {
+            ok(
+                &format!("端口 {check:?} 可用。"),
+                &format!("Port(s) {check:?} are available."),
+            );
+            return Ok(Some((http, https)));
+        }
+        section(&format!("端口检测 / Port check ({busy:?})"));
+        println!("  ! 端口 {busy:?} 已被占用。/ Port(s) {busy:?} are in use.");
+        if prompt_yes_no(
+            "是否接管(停止占用进程)? / Take over (stop the occupying processes)?",
+            true,
+        )? && crate::infra::website::take_over_ports(&busy)
+            .await
+            .is_empty()
+        {
+            continue; // re-check after a successful takeover
+        }
+        // Declined (or takeover failed): move each busy port, or exit.
+        println!("  输入新端口替换被占用的端口,或输入 exit 返回上一步。");
+        println!("  Enter a new port to replace the occupied one, or type `exit` to go back.");
+        for &p in &busy {
+            let c = prompt_line(&format!("  端口 {p} 的替代 / replacement for {p}: "))?;
+            if c.trim().eq_ignore_ascii_case("exit") {
+                return Ok(None);
+            }
+            match c.trim().parse::<u16>() {
+                Ok(np) if np >= 1 && np != http && np != https => {
+                    if p == https {
+                        https = np;
+                    } else {
+                        http = np;
+                    }
+                }
+                _ => warn(
+                    "端口需为 1-65535 且不与另一个端口相同。",
+                    "Port must be 1-65535 and differ from the other port.",
+                ),
+            }
+        }
+    }
+}
+
+/// UI custom deploy: arm a one-time init token and hand the operator a
+/// token-gated web wizard (served over plain HTTP while uninitialized). Only the
+/// serving ports are settled here — via the same `quick_ports` takeover flow, so
+/// BOTH website ports are free before the edge binds them (any conflict aborts the
+/// whole edge, wizard included). Every other setting — address, SSL, final ports,
+/// admin account — is chosen in the browser. `Ok(None)` if the operator `exit`s.
+async fn ui_deploy(cfg: &PanelConfig) -> Result<Option<UiInit>> {
+    section("网页自定义部署 / UI custom deploy");
+    // The edge binds both website ports unconditionally at start, and ANY occupied
+    // port stops it from serving at all — so settle both now (default 80/443),
+    // exactly like quick deploy. The wizard is served on the HTTP port.
+    let (http_port, https_port) = match quick_ports().await? {
+        Some(p) => p,
+        None => return Ok(None), // `exit` → back to the mode menu
+    };
+    // Arm a fresh one-time init token on an UNINITIALIZED record. The gate then
+    // serves ONLY the token-bearing wizard surface until step 2 flips
+    // `initialized` and clears the token. The ports are persisted so the edge binds
+    // them (the console_fallback route serves the wizard on the HTTP port).
+    let token = dn7_cred::random_token();
+    {
+        let (mut s, _) = settings::load_or_init(cfg.web_port);
+        s.initialized = false;
+        s.init_token = token.clone();
+        s.website_http_port = http_port;
+        s.website_https_port = https_port;
+        settings::save(&s).map_err(|e| anyhow!("保存设置失败 / failed to save settings: {e}"))?;
+    }
+    // Build the init URLs (public + internal). Each carries the token as a query
+    // param; opening either sets the dn7_init cookie and reveals the wizard.
+    let suffix = if http_port == 80 {
+        String::new()
+    } else {
+        format!(":{http_port}")
+    };
+    let lan = crate::platform::netinfo::internal_ip();
+    let mut urls = Vec::new();
+    if let Some(pubip) = crate::platform::netinfo::public_ip() {
+        urls.push(format!("http://{pubip}{suffix}/init?init_token={token}"));
+    }
+    urls.push(format!("http://{lan}{suffix}/init?init_token={token}"));
+    ok(
+        "已生成网页初始化地址(见下),请在浏览器中打开完成配置。",
+        "Generated the web init URL(s) below — open one in a browser to finish setup.",
+    );
+    Ok(Some(UiInit { urls }))
+}
+
+/// Map an IANA timezone to a UI language for quick deploy (server-side, from the
+/// host clock). `None` → fall back to the $LANG guess.
+fn lang_from_tz(tz: &str) -> Option<&'static str> {
+    match tz {
+        "Asia/Shanghai" | "Asia/Urumqi" | "Asia/Chongqing" | "PRC" => Some("zh-CN"),
+        "Asia/Taipei" | "Asia/Hong_Kong" | "Asia/Macau" => Some("zh-TW"),
+        "Asia/Tokyo" | "Japan" => Some("ja"),
+        _ => None,
+    }
 }
 
 // --- 1. environment -------------------------------------------------------
@@ -438,6 +661,9 @@ struct Answers {
     /// The plaintext password, kept only to echo it in the final login summary at
     /// the operator's request (they just typed it). Never persisted.
     password_plain: String,
+    /// Force an account+password reset on first login (quick deploy's random
+    /// password). Keeps `pw_default=true` so the existing `must_setup` gate fires.
+    force_reset: bool,
 }
 
 /// Whether `s` is a usable panel host: a single canonical DNS hostname OR a
@@ -626,6 +852,7 @@ fn ask_questions(website_http: u16, website_https: u16) -> Result<Answers> {
         stored,
         kdf,
         password_plain,
+        force_reset: false,
     })
 }
 
@@ -652,6 +879,12 @@ async fn apply(cfg: &PanelConfig, a: Answers) -> Result<LoginSummary> {
     s.timezone = a.timezone.clone();
     s.username = a.username.clone();
     s.set_password_hashed(&a.salt, &a.stored, &a.kdf);
+    // Quick deploy: force a first-login account+password reset by keeping the
+    // "password is default" flag (set_password_hashed cleared it), which drives the
+    // existing must_setup gate → the forced-setup screen.
+    if a.force_reset {
+        s.pw_default = true;
+    }
     s.initialized = true;
     s.init_token = String::new();
     settings::save(&s).map_err(|e| anyhow!("保存设置失败 / failed to save settings: {e}"))?;
@@ -730,6 +963,27 @@ pub fn print_login_summary(login: &LoginSummary) {
     println!("    地址 / address    : {}", login.url);
     println!("    管理员 / admin     : {}", login.username);
     println!("    登陆密码 / Password : {}", login.password);
+    println!();
+}
+
+/// The token-gated web init URLs shown to the operator AFTER the service starts
+/// (UI-custom deploy). The token is embedded in each URL and is single-use — it's
+/// cleared the moment the browser wizard completes step 2.
+pub struct UiInit {
+    pub urls: Vec<String>,
+}
+
+/// Print the web init URLs (public + internal), AFTER the service is started, so
+/// they're the final thing the operator sees.
+pub fn print_init_urls(init: &UiInit) {
+    println!();
+    println!("    在浏览器中打开以下任一地址完成初始化 / Open either address to finish setup:");
+    for u in &init.urls {
+        println!("      {u}");
+    }
+    println!();
+    println!("    地址内含一次性初始化令牌,请勿外传;初始化完成后自动失效。");
+    println!("    The URL carries a one-time init token — keep it private; it expires once setup completes.");
     println!();
 }
 

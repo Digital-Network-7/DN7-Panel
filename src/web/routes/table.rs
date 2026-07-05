@@ -19,8 +19,14 @@ pub(crate) fn build_router(state: Shared) -> Router {
         .route("/ui/*path", get(ui_asset))
         .route("/api/login/challenge", get(login_challenge))
         .route("/api/login", post(login))
-        // First-run setup is done via the interactive CLI wizard (platform::
-        // init_cli) before the panel ever serves — there are no web init routes.
+        // First-run web wizard (UI-custom deploy mode). Pre-auth, reachable ONLY
+        // while UNINITIALIZED and behind the init-token gate (middleware::gate);
+        // `/init` serves the SPA which renders the wizard. Once initialized these
+        // stop being served (the gate + status flip).
+        .route("/init", get(index_page))
+        .route("/api/init/status", get(init_status))
+        .route("/api/init/step1", post(init_step1))
+        .route("/api/init/step2", post(init_step2))
         // Authenticated API.
         .route("/api/logout", post(logout))
         .route("/api/ticket", post(mint_ticket))

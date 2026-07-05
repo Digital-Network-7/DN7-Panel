@@ -77,9 +77,11 @@ impl WebSettings {
     }
 
     /// Reset to the UNINITIALIZED state: clear the account/credentials + the
-    /// external-address/HTTPS choice, and re-arm a fresh one-time init token
-    /// (returned so `dn7 panel reset` can print it and the operator can re-run
-    /// the wizard). `owner_uid` is preserved (the reset-authorization anchor).
+    /// external-address/HTTPS choice. `owner_uid` is preserved (the
+    /// reset-authorization anchor). The web init token is left EMPTY: re-init runs
+    /// through the CLI mode menu on the next launch, which re-arms a token itself
+    /// only if the operator picks UI-custom mode. Returns "" (kept so the caller's
+    /// signature is stable).
     pub fn reset(&mut self) -> String {
         self.username = String::new();
         self.pw_hash = String::new();
@@ -91,8 +93,8 @@ impl WebSettings {
         self.initialized = false;
         self.external_address = String::new();
         self.https_mode = "none".to_string();
-        // First-run setup re-runs via the interactive CLI wizard on the next
-        // launch — there's no web init token any more.
+        // Leave no token armed: the next launch re-enters the CLI mode menu, which
+        // re-arms one only if the operator chooses UI-custom mode.
         self.init_token = String::new();
         String::new()
     }
@@ -227,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_clears_creds_and_rearms_token() {
+    fn reset_clears_creds_and_token() {
         let mut s = WebSettings {
             port: 1080,
             username: "bob".into(),

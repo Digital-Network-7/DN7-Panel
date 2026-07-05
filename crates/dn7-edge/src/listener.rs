@@ -99,13 +99,15 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     plan.insert(ports.website_https, (ListenerRole::Website, true));
     plan.entry(ports.website_http)
         .or_insert((ListenerRole::Website, false));
-    plan.entry(80).or_insert_with(|| {
-        if ports.website_http == 80 {
-            (ListenerRole::Website, false)
-        } else {
-            (ListenerRole::AcmeOnly, false)
-        }
-    });
+    // Port 80: the website HTTP listener when that port IS 80; otherwise an
+    // ACME-only issuance listener — but only when ACME needs it. When no LE cert
+    // exists AND the website HTTP port moved off 80, leave :80 free (an HTTP-only
+    // deploy can then vacate an occupied :80).
+    if ports.website_http == 80 {
+        plan.entry(80).or_insert((ListenerRole::Website, false));
+    } else if ports.need_acme_80 {
+        plan.entry(80).or_insert((ListenerRole::AcmeOnly, false));
+    }
     if ports.console != 0 {
         plan.insert(ports.console, (ListenerRole::Console, ports.console_tls));
     }

@@ -9,7 +9,7 @@ use super::*;
 /// NOTE: `include_dir!` snapshots the tree at compile time and isn't tracked for
 /// content changes, so after editing any file under `src/web/ui/` touch this file
 /// (e.g. bump the marker below) to force a re-embed.
-///   ui-embed-rev: 4  (bumped for build-aware update labels in the version modal)
+///   ui-embed-rev: 5  (bumped for the UI-custom first-run init wizard: init.js + init.* i18n)
 pub(crate) static UI_ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/src/web/ui");
 
 /// Shared web-console state.
@@ -144,8 +144,9 @@ fn is_direct_loopback(headers: &header::HeaderMap) -> bool {
         && headers.get("x-real-ip").is_none()
 }
 
-/// Constant-time byte-slice equality (length-aware) for the control token.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+/// Constant-time byte-slice equality (length-aware) for the control token and the
+/// init-token gate (middleware::gate).
+pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

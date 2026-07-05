@@ -47,6 +47,32 @@ pub fn random_token() -> String {
     random_hex(32)
 }
 
+/// A random `len`-char human-friendly password from an unambiguous alphanumeric
+/// alphabet (no `0/O/1/l/I`). Uniform via rejection sampling over the byte range.
+/// Used for the quick-deploy admin password, which is force-reset on first login.
+pub fn random_password(len: usize) -> String {
+    use rand::RngCore;
+    const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyzACDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let mut rng = rand::thread_rng();
+    let mut out = String::with_capacity(len);
+    let mut buf = [0u8; 64];
+    while out.len() < len {
+        rng.fill_bytes(&mut buf);
+        for &b in &buf {
+            if out.len() == len {
+                break;
+            }
+            // Reject the top of the byte range so every alphabet index is equally
+            // likely (no modulo bias).
+            let cap = (256 / ALPHABET.len()) * ALPHABET.len();
+            if (b as usize) < cap {
+                out.push(ALPHABET[b as usize % ALPHABET.len()] as char);
+            }
+        }
+    }
+    out
+}
+
 /// `n` random bytes as `2*n` lowercase hex chars.
 fn random_hex(n: usize) -> String {
     use rand::RngCore;
