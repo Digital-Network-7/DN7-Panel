@@ -1,5 +1,7 @@
 // =========================================================================
-// Self-update — version modal (manual / auto), dual-source (GitHub + dn7.cn).
+// Self-update — version modal (manual / auto). The download source is chosen
+// automatically (the panel races the mirror lines and uses the fastest), so
+// there is no source picker — just an optional auto-update toggle.
 // Opened from the sidebar version line; talks to /api/update/*. Every
 // /api/update/* endpoint is admin-gated (config writes + apply are super),
 // so the entry point is role-gated too.
@@ -54,7 +56,7 @@ function openUpdate() {
           <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
         </div>
         <div class="upd-ver" id="uCur">…</div>
-        <div class="upd-state" id="uState">${tr('upd.checking')}</div>
+        <div class="upd-state" id="uState">${tr('upd.selecting')}</div>
         <div class="upd-cta" id="uCta"></div>
         <button class="upd-recheck" id="uCheck">${tr('upd.check')}</button>
       </div>
@@ -72,29 +74,20 @@ function openUpdate() {
             <div class="upd-row-t"><b>${tr('upd.auto')}</b><span>${tr('upd.auto_d')}</span></div>
             <label class="switch" style="padding:0"><input type="checkbox" id="uAuto"/><span class="swbox"></span></label>
           </div>
-          <div class="upd-row">
-            <div class="upd-row-t"><b>${tr('upd.source')}</b><span>${tr('upd.source_d')}</span></div>
-            <div class="segbtns" id="uSrc"><button type="button" data-v="dn7">${tr('upd.src_dn7')}</button><button type="button" data-v="github">${tr('upd.src_github')}</button></div>
-          </div>
         </div>
       </div>` : ''}
     </div>`;
   modal(tr('upd.title'), body, (close) => {
     UPD.close = close;
     if (isSuper) {
-      const setSrc = (val) => $('uSrc').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.v === val));
-      UPD.setSrc = setSrc;
-      // Last-persisted config: powers the optimistic revert + the step-up
-      // decision (enabling auto or changing source needs re-auth server-side).
-      UPD.cfg = { auto: false, source: 'dn7' };
-      setSrc('dn7');
+      // Last-persisted config powers the optimistic revert + the step-up decision
+      // (enabling auto needs re-auth server-side).
+      UPD.cfg = { auto: false };
       api('/api/update/config').then((b) => {
-        UPD.cfg = { auto: !!b.data.auto, source: b.data.source_pref === 'github' ? 'github' : 'dn7' };
+        UPD.cfg = { auto: !!b.data.auto };
         $('uAuto').checked = UPD.cfg.auto;
-        setSrc(UPD.cfg.source);
       }).catch(() => {});
       $('uAuto').onchange = () => saveUpdCfg();
-      $('uSrc').querySelectorAll('button').forEach((x) => x.onclick = () => { setSrc(x.dataset.v); saveUpdCfg().then((ok) => { if (ok) runUpdCheck(); }); });
     }
     $('uCheck').onclick = runUpdCheck;
     // Decide the initial view from whether an update is already running, so
@@ -136,38 +129,26 @@ function renderUpdNotice(d) {
   } else host.innerHTML = '';
 }
 
-// Persist the auto/source config. The backend requires a step-up re-auth when
-// enabling auto (auto:true) or switching source, so grab a token first for
-// those transitions — otherwise the POST 403s and the segmented control (which
-// flipped optimistically) desyncs from the server. On step-up cancel or a
-// failed POST we revert the control back to the last-persisted state (UPD.cfg).
-// Returns a promise that resolves true only when the save succeeds.
+// Persist the auto-update toggle. The backend requires a step-up re-auth when
+// ENABLING auto (auto:true), since from then on the host applies new binaries
+// with no further prompt; turning it off (or a no-op re-save) is session-only.
+// On step-up cancel or a failed POST we revert the toggle (which flipped
+// optimistically) back to the last-persisted state. Returns a promise that
+// resolves true only when the save succeeds.
 async function saveUpdCfg() {
-  const on = $('uSrc') && $('uSrc').querySelector('button.on');
-  const source = on ? on.dataset.v : 'dn7';
   const auto = !!($('uAuto') && $('uAuto').checked);
-  const prev = UPD.cfg || { auto: false, source: 'dn7' };
-  const autoChanged = auto !== prev.auto;
-  const sourceChanged = source !== prev.source;
-  if (!autoChanged && !sourceChanged) return true; // no-op
-  const revert = () => {
-    if ($('uAuto')) $('uAuto').checked = prev.auto;
-    if (UPD.setSrc) UPD.setSrc(prev.source);
-  };
-  // Send `auto` only when it actually changed so a source-only save with auto
-  // already on doesn't trip the backend's enables_auto step-up gate.
-  const body = { source_pref: source };
-  if (autoChanged) body.auto = auto;
-  const needsStepup = (autoChanged && auto) || sourceChanged;
+  const prev = UPD.cfg || { auto: false };
+  if (auto === prev.auto) return true; // no-op
+  const revert = () => { if ($('uAuto')) $('uAuto').checked = prev.auto; };
   const headers = {};
-  if (needsStepup) {
+  if (auto) {
     const tok = await stepUp(tr('stepup.msg_update'));
     if (!tok) { revert(); return false; }
     headers['X-DN7-Stepup'] = tok;
   }
   try {
-    await api('/api/update/config', { method: 'POST', headers, body: JSON.stringify(body) });
-    UPD.cfg = { auto, source };
+    await api('/api/update/config', { method: 'POST', headers, body: JSON.stringify({ auto }) });
+    UPD.cfg = { auto };
     toast(tr('upd.saved'));
     return true;
   } catch (e) {
@@ -180,7 +161,7 @@ async function saveUpdCfg() {
 function runUpdCheck() {
   const state = $('uState'); if (!state) return;
   const cur = $('uCur'), cta = $('uCta');
-  state.textContent = tr('upd.checking'); state.className = 'upd-state';
+  state.textContent = tr('upd.selecting'); state.className = 'upd-state';
   if (cta) cta.innerHTML = '';
   api('/api/update/check', { method: 'POST' }).then((b) => {
     const d = b.data, dot = $('verDot');

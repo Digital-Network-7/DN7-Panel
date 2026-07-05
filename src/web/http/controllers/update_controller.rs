@@ -1,8 +1,8 @@
-//! Self-update API (GitHub + dn7.cn) (split from web/server.rs).
+//! Self-update API (GitHub via the fastest mirror line) (split from web/server.rs).
 use super::super::*;
 
 // ---------------------------------------------------------------------------
-// Self-update (GitHub + dn7.cn)
+// Self-update (GitHub via the fastest reachable mirror line)
 // ---------------------------------------------------------------------------
 
 /// GET /api/update/status — live phase/progress + current version (polled by
@@ -52,9 +52,6 @@ pub(crate) async fn update_config_get(
 pub(crate) struct UpdateConfigReq {
     #[serde(default)]
     auto: Option<bool>,
-    /// "github" (preview channel) | "dn7" (default mirror)
-    #[serde(default)]
-    source_pref: Option<String>,
 }
 
 pub(crate) async fn update_config_put(
@@ -62,33 +59,19 @@ pub(crate) async fn update_config_put(
     headers: header::HeaderMap,
     Json(req): Json<UpdateConfigReq>,
 ) -> Response {
-    // Changing the update channel / auto-update toggle steers what binary the
-    // host will run — super-admin only (matches the apply blast radius).
+    // Toggling auto-update steers what binary the host will run — super-admin
+    // only (matches the apply blast radius). The download source is chosen
+    // automatically (fastest reachable line), so there is nothing else to set.
     let acct = match require_super(&state, &headers) {
         Ok(a) => a,
         Err(r) => return r,
     };
     let mut st = crate::platform::update::UpdateState::load();
-    // Normalise the requested source (if any) up-front so we can both validate
-    // it and detect a real change against the stored value.
-    let new_pref = match req.source_pref {
-        Some(p) => {
-            // Legacy "auto" maps to the default mirror; otherwise github/dn7 only.
-            let p = if p == "auto" { "dn7".to_string() } else { p };
-            if !matches!(p.as_str(), "github" | "dn7") {
-                return api_err(StatusCode::BAD_REQUEST, "update.source_invalid");
-            }
-            Some(p)
-        }
-        None => None,
-    };
-    // Enabling auto-update or switching the source lets a session steer which
-    // binary the host will run (auto-update applies with no further step-up) —
-    // so require a fresh step-up for those, exactly like `update_apply`. Turning
-    // auto OFF or a no-op re-save stays session-only.
-    let enables_auto = req.auto == Some(true);
-    let changes_source = new_pref.as_ref().is_some_and(|p| *p != st.source_pref);
-    if enables_auto || changes_source {
+    // Enabling auto-update lets a session steer which binary the host will run
+    // (auto-update applies with no further step-up) — so require a fresh step-up,
+    // exactly like `update_apply`. Turning auto OFF or a no-op re-save stays
+    // session-only.
+    if req.auto == Some(true) {
         if let Some(r) = require_stepup(&state, &headers, &acct.username) {
             return r;
         }
@@ -96,17 +79,14 @@ pub(crate) async fn update_config_put(
     if let Some(a) = req.auto {
         st.auto = a;
     }
-    if let Some(p) = new_pref {
-        st.source_pref = p;
-    }
     if let Err(e) = st.save() {
         return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
     }
     Json(json!({ "ok": true, "data": st })).into_response()
 }
 
-/// POST /api/update/check — probe both sources + report whether a newer build
-/// is available. Auth required.
+/// POST /api/update/check — race the mirror lines for the release index + report
+/// whether a newer build is available. Auth required.
 pub(crate) async fn update_check(
     State(state): State<Shared>,
     headers: header::HeaderMap,

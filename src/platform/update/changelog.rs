@@ -43,21 +43,13 @@ pub async fn changelog(cfg: &PanelConfig) -> ChangelogResult {
     let need_fetch = !have || !fresh || (blank && now.saturating_sub(last) >= RETRY_TTL);
 
     if need_fetch {
-        let st = UpdateState::load();
-        let prefer = SourceKind::from_str(&st.source_pref)
-            .or_else(|| st.chosen.as_deref().and_then(SourceKind::from_str))
-            .unwrap_or(SourceKind::Github);
+        // One raced fetch across every line (github direct + proxies); whichever
+        // answers fastest wins. `releases.json` carries all versions' notes, so a
+        // single successful fetch backfills the whole changelog.
         let mut got_any = false;
-        if let Ok(list) = fetch::releases_index_from(cfg, prefer).await {
+        if let Ok(list) = fetch::releases_index_raced(cfg).await {
             got_any |= !list.is_empty();
             merge_changelog(list);
-        }
-        // If any version still lacks notes, try the other source to backfill.
-        if changelog_has_blank() {
-            if let Ok(list) = fetch::releases_index_from(cfg, prefer.other()).await {
-                got_any |= !list.is_empty();
-                merge_changelog(list);
-            }
         }
         if got_any {
             changelog_cache()
@@ -120,14 +112,4 @@ pub(crate) fn merge_changelog(list: Vec<fetch::ReleaseNote>) {
             }
         }
     }
-}
-
-/// Whether any cached version still has empty notes (cache incomplete).
-pub(crate) fn changelog_has_blank() -> bool {
-    changelog_cache()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .by_version
-        .values()
-        .any(|n| n.notes.is_empty())
 }

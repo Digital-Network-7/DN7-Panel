@@ -40,9 +40,11 @@ helper crates under `crates/`. No backend, no panel token, no runtime deps.
   - always runs fmt / clippy / tests (verify the push compiles);
   - publishes a GitHub Release **only when `build` moved** (no `b<build>` tag yet),
     tagged `v<version>`, named `<codename> <version> (build <build>)`, **always
-    Latest** (never a prerelease) — a pure build bump moves the `v<version>` tag;
-  - pushes to the **dn7.cn stable channel only when `version` moved** (no
-    `v<version>` tag yet) — a pure build bump stays GitHub-only.
+    Latest** (never a prerelease) — a pure build bump moves the `v<version>` tag.
+- **Self-update pulls straight from GitHub releases**, racing several mirror
+  "lines" (github direct + proxies, in `src/infra/support/fetch.rs`) and using the
+  fastest reachable one. There is no separate distribution channel and no
+  user-visible source picker.
 - To cut a release: edit `release.toml` (bump `build`, and `version` for a real
   version; refresh `[notes]`) and push. Everything else is automatic. `codename` +
   `build` compile into the binary via `build.rs`; `version` rides in through

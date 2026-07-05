@@ -23,13 +23,10 @@ pub struct PanelConfig {
     /// Local web management fallback port. Fresh web settings currently generate
     /// and persist a random high port; after that `<data>/web.json` wins.
     pub web_port: u16,
-    /// GitHub `owner/repo` that publishes the release binaries. Used by the
-    /// self-update GitHub source (release assets are addressed deterministically
-    /// — no api.github.com call, so no rate limit).
+    /// GitHub `owner/repo` that publishes the release binaries. Self-update
+    /// addresses release assets deterministically off this (no api.github.com,
+    /// so no rate limit) and reaches them via the fastest mirror line (`fetch`).
     pub github_repo: String,
-    /// Base URL of the dn7.cn site that mirrors the release binaries + manifest.
-    /// Used by the self-update DN7 source.
-    pub dn7_base: String,
 }
 
 impl PanelConfig {
@@ -64,7 +61,6 @@ impl PanelConfig {
             .unwrap_or(1080);
         let github_repo = env::var("DN7_GITHUB_REPO")
             .unwrap_or_else(|_| "Digital-Network-7/DN7-Panel".to_string());
-        let dn7_base = env::var("DN7_SITE_URL").unwrap_or_else(|_| "https://dn7.cn".to_string());
 
         PanelConfig {
             runtime_dir,
@@ -75,7 +71,6 @@ impl PanelConfig {
             restart_backoff_secs,
             web_port,
             github_repo: github_repo.trim().trim_end_matches('/').to_string(),
-            dn7_base: dn7_base.trim().trim_end_matches('/').to_string(),
         }
     }
 }

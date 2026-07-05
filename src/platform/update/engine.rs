@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::infra::support::fetch::{self, Release, SourceKind};
+use crate::infra::support::fetch;
 use crate::platform::config::PanelConfig;
 
 use super::skiplist::{is_version_skipped, record_attempted_version};
@@ -99,15 +99,11 @@ pub fn try_begin_guard() -> Option<InProgressGuard> {
 // Persisted update preferences (`<data>/update.json`).
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateState {
     /// Apply updates automatically when a newer version is found.
     #[serde(default)]
     pub auto: bool,
-    /// Update source: `dn7` (default; Digital Network 7 mirror) or `github`
-    /// (the "preview experience" channel). No auto speed-probe.
-    #[serde(default = "default_pref")]
-    pub source_pref: String,
     /// Version last swapped in but whose boot the supervisor hasn't confirmed —
     /// persisted before the swap so a rollback can learn which version failed even
     /// across the re-exec. See the [`skiplist`](super::skiplist) module.
@@ -123,23 +119,6 @@ pub struct UpdateState {
     pub chosen: Option<String>,
     #[serde(default)]
     pub probed_at: u64,
-}
-
-fn default_pref() -> String {
-    "dn7".to_string()
-}
-
-impl Default for UpdateState {
-    fn default() -> Self {
-        UpdateState {
-            auto: false,
-            source_pref: default_pref(),
-            attempted_version: None,
-            failed_versions: Vec::new(),
-            chosen: None,
-            probed_at: 0,
-        }
-    }
 }
 
 fn state_path() -> PathBuf {
@@ -185,16 +164,19 @@ pub fn is_newer(current: &str, latest: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Source resolution
+// Latest-version resolution
 // ---------------------------------------------------------------------------
 
-/// Pick the release to use per the persisted preference. No speed probing: the
-/// "preview" toggle maps to `github`; default is the Digital Network 7 mirror
-/// (`dn7`), which is reliable from mainland China.
-async fn resolve_release(cfg: &PanelConfig) -> Result<Release> {
-    let st = UpdateState::load();
-    let k = SourceKind::from_str(&st.source_pref).unwrap_or(SourceKind::Dn7);
-    fetch::release_from(cfg, k).await
+/// The latest published version, from the `releases.json` index raced across all
+/// mirror lines (whichever answers fastest wins). The index lists every release;
+/// the newest by semver is the latest. `None` if no line served a valid index.
+async fn latest_version(cfg: &PanelConfig) -> Option<String> {
+    let index = fetch::releases_index_raced(cfg).await.ok()?;
+    index
+        .iter()
+        .filter_map(|e| parse_semver(&e.version).map(|s| (s, e.version.clone())))
+        .max_by_key(|(s, _)| *s)
+        .map(|(_, v)| v)
 }
 
 /// Result of an update check, surfaced to the UI.
@@ -203,19 +185,16 @@ pub struct CheckResult {
     pub current: String,
     pub latest: Option<String>,
     pub has_update: bool,
-    pub source: Option<String>,
     pub auto: bool,
-    pub source_pref: String,
 }
 
-/// Resolve the latest version from the selected source (no probing) and report
-/// whether a newer build is available.
+/// Resolve the latest version (fastest reachable line) and report whether a
+/// newer build is available.
 pub async fn check(cfg: &PanelConfig) -> CheckResult {
     set_phase(PHASE_CHECKING);
     let st = UpdateState::load();
-    let k = SourceKind::from_str(&st.source_pref).unwrap_or(SourceKind::Dn7);
     let current = env!("CARGO_PKG_VERSION").to_string();
-    let latest = fetch::release_from(cfg, k).await.ok().map(|r| r.version);
+    let latest = latest_version(cfg).await;
     // A version we already rolled back isn't offered (don't nag to re-install a
     // build known to fail to boot).
     let has_update = latest
@@ -229,9 +208,7 @@ pub async fn check(cfg: &PanelConfig) -> CheckResult {
         current,
         latest,
         has_update,
-        source: Some(k.as_str().to_string()),
         auto: st.auto,
-        source_pref: st.source_pref,
     }
 }
 
@@ -360,28 +337,19 @@ pub async fn self_update(cfg: &PanelConfig) -> Result<PathBuf> {
     set_phase(PHASE_DOWNLOADING);
     set_progress(0);
     set_bytes(0, 0);
-    let primary = resolve_release(cfg).await?;
-    tracing::info!(
-        source = primary.source.as_str(),
-        version = %primary.version,
-        ?target,
-        "self-update: downloading"
-    );
-    let bytes = match fetch::download_release(&primary, set_progress).await {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!(
-                "self-update: source {} failed ({e}); failing over",
-                primary.source.as_str()
-            );
-            // Try the other source now — `release_from` below selects it
-            // directly; there is no probe cache to reset.
-            set_progress(0);
-            set_bytes(0, 0);
-            let fb = fetch::release_from(cfg, primary.source.other()).await?;
-            fetch::download_release(&fb, set_progress).await?
-        }
-    };
+    let version = latest_version(cfg)
+        .await
+        .ok_or_else(|| anyhow!("could not resolve the latest version from any line"))?;
+    let current = env!("CARGO_PKG_VERSION");
+    if !is_newer(current, &version) {
+        return Err(anyhow!(
+            "latest version {version} is not newer than {current} — nothing to do"
+        ));
+    }
+    tracing::info!(%version, ?target, "self-update: downloading");
+    // `download_binary_raced` probes every line, downloads from the fastest, and
+    // fails over to the next on any error — so there is no outer failover here.
+    let bytes = fetch::download_binary_raced(cfg, &version, set_progress).await?;
     set_phase(PHASE_INSTALLING);
     install_verified(&bytes, &target).await?;
     tracing::info!(
@@ -444,20 +412,15 @@ pub fn spawn_periodic(cfg: PanelConfig) {
             let st = UpdateState::load();
             let interval = if st.auto { 60 } else { 3600 };
             if !in_progress() {
-                // A cheap version check (no speed probe): resolve the source and
-                // read its latest version.
-                if let Ok(rel) = resolve_release(&cfg).await {
+                // A cheap version check: race the lines for the release index and
+                // read the newest version.
+                if let Some(version) = latest_version(&cfg).await {
                     let current = env!("CARGO_PKG_VERSION");
                     // Skip a version we already tried and rolled back: re-offering
                     // it would just loop the same failed boot (see `skiplist`).
-                    let skipped = is_version_skipped(&st.failed_versions, &rel.version);
-                    if is_newer(current, &rel.version) && !skipped {
-                        tracing::info!(
-                            latest = %rel.version,
-                            source = rel.source.as_str(),
-                            auto = st.auto,
-                            "update available"
-                        );
+                    let skipped = is_version_skipped(&st.failed_versions, &version);
+                    if is_newer(current, &version) && !skipped {
+                        tracing::info!(%version, auto = st.auto, "update available");
                         if st.auto {
                             run_self_update(&cfg).await;
                         }

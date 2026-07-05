@@ -9,7 +9,7 @@ use super::*;
 /// NOTE: `include_dir!` snapshots the tree at compile time and isn't tracked for
 /// content changes, so after editing any file under `src/web/ui/` touch this file
 /// (e.g. bump the marker below) to force a re-embed.
-///   ui-embed-rev: 2  (bumped for the build-number version-line changes)
+///   ui-embed-rev: 3  (bumped for the update-source redesign — no source picker)
 pub(crate) static UI_ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/src/web/ui");
 
 /// Shared web-console state.
