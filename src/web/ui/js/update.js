@@ -8,13 +8,27 @@
 // =========================================================================
 const UPD = { polling: null, active: false, failedVers: [] };
 
+// The "latest" display for the update-available state. A version bump shows just
+// the version (e.g. "27.1.0"); a pure BUILD bump (same version, higher build)
+// appends "(build N)" so it doesn't read as "update to the version you're on".
+function updLatestLabel(d) {
+  if (!d || !d.latest) return '';
+  const sameVer = d.latest === d.current;
+  return d.latest + (sameVer && d.latest_build != null ? ' (build ' + d.latest_build + ')' : '');
+}
+// A skiplist entry is "<version>+<build>"; match it against a version-keyed
+// changelog row (badge the row whose version had a rolled-back build).
+function updFailedMatch(failed, ver) {
+  return (failed || []).some((f) => { const s = String(f); return s === ver || s.split('+')[0] === ver; });
+}
+
 // Passive check on login: light up the sidebar dot when a newer build exists.
 // Invoked by the shell for admins only (the endpoint 403s everyone else).
 function updateBadge() {
   api('/api/update/check', { method: 'POST' }).then((b) => {
     const d = b.data, dot = $('verDot');
     if (dot) dot.classList.toggle('hidden', !d.has_update);
-    if (d.has_update && $('verLine')) $('verLine').title = tr('upd.has_update', { latest: d.latest });
+    if (d.has_update && $('verLine')) $('verLine').title = tr('upd.has_update', { latest: updLatestLabel(d) });
   }).catch(() => {});
 }
 
@@ -177,9 +191,10 @@ function runUpdCheck() {
       return;
     }
     if (d.has_update) {
+      const latestDisp = updLatestLabel(d);
       state.className = 'upd-state avail';
-      state.textContent = tr('upd.avail', { latest: d.latest });
-      cta.innerHTML = `<button class="btn" id="uApply">${tr('upd.apply_to', { latest: esc(d.latest) })}</button>`;
+      state.textContent = tr('upd.avail', { latest: latestDisp });
+      cta.innerHTML = `<button class="btn" id="uApply">${tr('upd.apply_to', { latest: esc(latestDisp) })}</button>`;
       $('uApply').onclick = applyUpdate;
     } else if (d.latest) {
       state.className = 'upd-state ok';
@@ -214,7 +229,7 @@ function loadChangelog() {
     };
     const entry = (e) => {
       const note = noteFor(e);
-      return `<div class="cl-entry"><div class="cl-ver">${verLabel(e)}${e.version === current ? `<span class="cl-cur">${tr('upd.current')}</span>` : ''}${failed.includes(e.version) ? `<span class="cl-cur cl-fail">${tr('upd.failed_badge')}</span>` : ''}${e.date ? '<span class="cl-date">' + esc(e.date) + '</span>' : ''}</div>`
+      return `<div class="cl-entry"><div class="cl-ver">${verLabel(e)}${e.version === current ? `<span class="cl-cur">${tr('upd.current')}</span>` : ''}${updFailedMatch(failed, e.version) ? `<span class="cl-cur cl-fail">${tr('upd.failed_badge')}</span>` : ''}${e.date ? '<span class="cl-date">' + esc(e.date) + '</span>' : ''}</div>`
         + (note ? `<div class="cl-note">${esc(note)}</div>` : `<div class="cl-empty mut">${tr('upd.no_notes')}</div>`)
         + '</div>';
     };

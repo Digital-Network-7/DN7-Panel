@@ -75,7 +75,13 @@ fn main() -> Result<()> {
             args.first().map(String::as_str),
             Some("version") | Some("-V") | Some("--version")
         ) {
-            println!("{}", env!("CARGO_PKG_VERSION"));
+            // "<version> (build <N>)" — the version stays the first token so the
+            // self-updater's anti-rollback gate can parse (version, build).
+            println!(
+                "{} (build {})",
+                env!("CARGO_PKG_VERSION"),
+                option_env!("DN7_BUILD").unwrap_or("0")
+            );
             return Ok(());
         }
         std::process::exit(dn7_cli::run(&args));
@@ -204,7 +210,13 @@ fn dispatch_subcommand(role: Option<&str>) -> Option<Result<()>> {
         // No arg or a foreground flag → real supervisor launch (handled by main).
         None | Some("-f") | Some("--foreground") | Some("panel") => None,
         Some("version") => {
-            println!("{}", env!("CARGO_PKG_VERSION"));
+            // "<version> (build <N>)" — version first so the self-updater's
+            // anti-rollback gate (read_binary_release) can parse (version, build).
+            println!(
+                "{} (build {})",
+                env!("CARGO_PKG_VERSION"),
+                option_env!("DN7_BUILD").unwrap_or("0")
+            );
             Some(Ok(()))
         }
         Some("reset") => Some(run_reset()),

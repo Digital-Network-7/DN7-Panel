@@ -1,11 +1,13 @@
 //! Failed-version isolation for the self-updater.
 //!
 //! After a self-update whose new build fails to boot, the supervisor rolls the
-//! binary back to the previous version. But the anti-rollback gate in the update
-//! engine compares a downloaded binary against the *running* (now old) version,
-//! so the SAME bad version still passes `is_newer` on the next auto-check —
-//! producing a download → swap → fail → rollback → re-download loop that repeats
-//! forever until upstream happens to ship a different version.
+//! binary back to the previous build. But the anti-rollback gate in the update
+//! engine compares a downloaded binary against the *running* (now old) build, so
+//! the SAME bad build still passes the (version, build) gate on the next
+//! auto-check — producing a download → swap → fail → rollback → re-download loop
+//! that repeats forever until upstream ships a different build. Entries are keyed
+//! by (version, build) so a bad build 2 is skipped without blacklisting a later
+//! good build 3 of the same version.
 //!
 //! This module persists a small skiplist (`update.json`) that breaks the loop:
 //!   * before a swap, the engine records the target as the pending
@@ -19,32 +21,54 @@
 //! Once a new build boots healthy the pending marker is cleared, so a later,
 //! unrelated event can never move a good version onto the skiplist.
 
-use super::{is_newer, parse_semver, UpdateState};
+use super::{current_build, is_newer_build, parse_semver, UpdateState};
 
-/// Pure skip decision (unit-testable without touching the filesystem): a version
-/// is refused if it is in the failed-boot skiplist. Comparison is on the parsed
-/// semver so a `v`-prefix or trailing-zero difference (`1.2` vs `1.2.0`) between
-/// the recorded and offered strings still matches; unparseable entries fall back
-/// to an exact string match so a weird tag can still be skiplisted.
-pub(crate) fn is_version_skipped(failed: &[String], version: &str) -> bool {
+/// Skiplist identity for a release: `"<version>+<build>"` (e.g. `"27.0.0+2"`).
+/// Persisted in `attempted_version` / `failed_versions` so the loop-breaker is
+/// build-specific — a failed build 2 must NOT blacklist a future good build 3 of
+/// the same version.
+pub(crate) fn release_ident(version: &str, build: u64) -> String {
+    format!("{}+{build}", version.trim())
+}
+
+/// Split a stored identity back into `(version, build)`. A legacy bare-version
+/// entry (no `+build` suffix, from before builds were tracked) reads as build 0.
+fn split_ident(s: &str) -> (&str, u64) {
+    match s.trim().rsplit_once('+') {
+        Some((v, b)) => (v.trim(), b.trim().parse().unwrap_or(0)),
+        None => (s.trim(), 0),
+    }
+}
+
+/// Pure skip decision (unit-testable without touching the filesystem): the release
+/// `(version, build)` is refused if it matches an entry in the failed-boot
+/// skiplist. The version is compared on the parsed semver (so a `v`-prefix or
+/// `1.2` vs `1.2.0` still matches) AND the build number must be equal; an
+/// unparseable version falls back to an exact string match.
+pub(crate) fn is_version_skipped(failed: &[String], version: &str, build: u64) -> bool {
     let target = parse_semver(version);
-    failed.iter().any(|f| match (parse_semver(f), target) {
-        (Some(a), Some(b)) => a == b,
-        _ => f.trim() == version.trim(),
+    failed.iter().any(|f| {
+        let (fv, fb) = split_ident(f);
+        fb == build
+            && match (parse_semver(fv), target) {
+                (Some(a), Some(b)) => a == b,
+                _ => fv == version.trim(),
+            }
     })
 }
 
-/// Record the version we're about to swap in as the pending attempt, persisting
+/// Record the release we're about to swap in as the pending attempt, persisting
 /// it *before* the rename so a rollback (which re-execs the supervisor) can still
-/// learn which version failed even though nothing in memory survives the re-exec.
-/// The caller (`install_verified`) has already refused any skiplisted version, so
+/// learn which build failed even though nothing in memory survives the re-exec.
+/// The caller (`install_verified`) has already refused any skiplisted build, so
 /// this never records a known-bad one. Best-effort: a save failure only loses the
 /// skiplist net, never blocks the update.
-pub(crate) fn record_attempted_version(version: &str) {
+pub(crate) fn record_attempted_release(version: &str, build: u64) {
+    let ident = release_ident(version, build);
     let mut st = UpdateState::load();
-    st.attempted_version = Some(version.to_string());
+    st.attempted_version = Some(ident.clone());
     if let Err(e) = st.save() {
-        tracing::warn!("could not persist attempted update version {version}: {e}");
+        tracing::warn!("could not persist attempted update {ident}: {e}");
     }
 }
 
@@ -55,8 +79,9 @@ pub(crate) fn record_attempted_version(version: &str) {
 /// de-duplicating. Returns the version that was skiplisted, if any.
 pub fn skiplist_failed_update() -> Option<String> {
     let mut st = UpdateState::load();
-    let v = st.attempted_version.take()?;
-    if !is_version_skipped(&st.failed_versions, &v) {
+    let v = st.attempted_version.take()?; // an identity "<version>+<build>"
+    let (ver, build) = split_ident(&v);
+    if !is_version_skipped(&st.failed_versions, ver, build) {
         st.failed_versions.push(v.clone());
     }
     if let Err(e) = st.save() {
@@ -91,12 +116,20 @@ pub fn clear_attempted_version() {
 /// so the UI banner clears itself without extra state.
 pub fn rolled_back_from() -> Option<String> {
     let current = env!("CARGO_PKG_VERSION");
+    let cur_build = current_build();
     UpdateState::load()
         .failed_versions
         .iter()
         .rev()
-        .find(|v| is_newer(current, v.as_str()))
-        .cloned()
+        .map(|f| split_ident(f))
+        .find(|(v, b)| is_newer_build(current, cur_build, v, *b))
+        .map(|(v, b)| {
+            if b > 0 {
+                format!("{v} (build {b})")
+            } else {
+                v.to_string()
+            }
+        })
 }
 
 /// Whether a just-installed update is still awaiting its boot confirmation:
@@ -115,35 +148,38 @@ pub fn failed_versions() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_version_skipped;
+    use super::{is_version_skipped, release_ident};
 
-    // The failed-version skiplist is the loop-breaker: after a rollback the same
-    // bad build still passes `is_newer` against the running old version on every
-    // check, so it MUST be refused by version, not by the exact tag string.
+    // The skiplist is the loop-breaker: after a rollback the same bad build still
+    // passes the (version, build) gate against the running old build on every
+    // check, so it MUST be refused by (version, build) — matching the version by
+    // semver (not exact string) but requiring the build to be equal.
     #[test]
-    fn skiplist_matches_by_semver_not_exact_string() {
-        let failed = vec!["1.2.3".to_string()];
-        // Exact match is skipped.
-        assert!(is_version_skipped(&failed, "1.2.3"));
-        // A `v` prefix or trailing-zero spelling of the same version is skipped
-        // too (both parse to the same semver), so a cosmetic tag difference in
-        // the offered version can't sneak the broken build back in.
-        assert!(is_version_skipped(&failed, "v1.2.3"));
-        assert!(is_version_skipped(&["1.2".to_string()], "1.2.0"));
-        // A different version is NOT skipped — a genuine upstream fix installs.
-        assert!(!is_version_skipped(&failed, "1.2.4"));
-        assert!(!is_version_skipped(&failed, "1.3.0"));
+    fn skiplist_matches_by_semver_and_build() {
+        let failed = vec![release_ident("1.2.3", 5)]; // "1.2.3+5"
+                                                      // Same version + same build is skipped, tolerant of a `v` prefix / spelling.
+        assert!(is_version_skipped(&failed, "1.2.3", 5));
+        assert!(is_version_skipped(&failed, "v1.2.3", 5));
+        assert!(is_version_skipped(&[release_ident("1.2", 5)], "1.2.0", 5));
+        // Same version, DIFFERENT build is NOT skipped — a fixed build installs.
+        assert!(!is_version_skipped(&failed, "1.2.3", 6));
+        // A different version is NOT skipped.
+        assert!(!is_version_skipped(&failed, "1.2.4", 5));
+        assert!(!is_version_skipped(&failed, "1.3.0", 5));
+        // A legacy bare-version entry (pre-build era) reads as build 0.
+        assert!(is_version_skipped(&["1.2.3".to_string()], "1.2.3", 0));
+        assert!(!is_version_skipped(&["1.2.3".to_string()], "1.2.3", 2));
         // An empty skiplist skips nothing.
-        assert!(!is_version_skipped(&[], "1.2.3"));
+        assert!(!is_version_skipped(&[], "1.2.3", 1));
     }
 
-    // A weird/unparseable tag must still be skiplistable by exact string, so a
-    // non-semver release that failed to boot doesn't loop either.
+    // A weird/unparseable version must still be skiplistable by exact string (+
+    // build), so a non-semver release that failed to boot doesn't loop either.
     #[test]
-    fn skiplist_falls_back_to_exact_match_for_unparseable_tags() {
-        let failed = vec!["nightly-broken".to_string()];
-        assert!(is_version_skipped(&failed, "nightly-broken"));
-        assert!(is_version_skipped(&failed, "  nightly-broken  "));
-        assert!(!is_version_skipped(&failed, "nightly-fixed"));
+    fn skiplist_falls_back_to_exact_match_for_unparseable_versions() {
+        let failed = vec![release_ident("nightly-broken", 0)];
+        assert!(is_version_skipped(&failed, "nightly-broken", 0));
+        assert!(is_version_skipped(&failed, "  nightly-broken  ", 0));
+        assert!(!is_version_skipped(&failed, "nightly-fixed", 0));
     }
 }

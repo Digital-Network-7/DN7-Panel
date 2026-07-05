@@ -1,6 +1,6 @@
 //! Self-update engine: download/verify/install, version state, periodic checker.
+//! The progress-state atomics + in-progress guard live in [`super::progress`].
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -8,92 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::infra::support::fetch;
 use crate::platform::config::PanelConfig;
 
-use super::skiplist::{is_version_skipped, record_attempted_version};
-
-// ---------------------------------------------------------------------------
-// Global self-update progress state (read by the UI via /api/update/status).
-// ---------------------------------------------------------------------------
-
-pub const PHASE_IDLE: u8 = 0;
-pub const PHASE_CHECKING: u8 = 1;
-pub const PHASE_DOWNLOADING: u8 = 2;
-pub const PHASE_INSTALLING: u8 = 3;
-pub const PHASE_ERROR: u8 = 4;
-
-/// Exit code the panel uses after a successful self-update, signalling the
-/// supervisor to re-exec itself immediately (single combined restart) instead
-/// of respawning the panel and re-exec'ing a version_check interval later.
-pub const EXIT_UPDATED: i32 = 77;
-
-static PHASE: AtomicU8 = AtomicU8::new(PHASE_IDLE);
-static PROGRESS: AtomicU64 = AtomicU64::new(0);
-static TOTAL_BYTES: AtomicU64 = AtomicU64::new(0);
-static DONE_BYTES: AtomicU64 = AtomicU64::new(0);
-static IN_PROGRESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-pub fn phase() -> u8 {
-    PHASE.load(Ordering::Relaxed)
-}
-pub fn progress() -> u64 {
-    PROGRESS.load(Ordering::Relaxed)
-}
-pub fn total_bytes() -> u64 {
-    TOTAL_BYTES.load(Ordering::Relaxed)
-}
-pub fn done_bytes() -> u64 {
-    DONE_BYTES.load(Ordering::Relaxed)
-}
-pub fn phase_str() -> &'static str {
-    match phase() {
-        PHASE_CHECKING => "checking",
-        PHASE_DOWNLOADING => "downloading",
-        PHASE_INSTALLING => "installing",
-        PHASE_ERROR => "error",
-        _ => "idle",
-    }
-}
-fn set_phase(p: u8) {
-    PHASE.store(p, Ordering::Relaxed);
-}
-fn set_progress(pct: u64) {
-    PROGRESS.store(pct.min(100), Ordering::Relaxed);
-}
-pub fn set_bytes(done: u64, total: u64) {
-    DONE_BYTES.store(done, Ordering::Relaxed);
-    TOTAL_BYTES.store(total, Ordering::Relaxed);
-}
-fn end() {
-    IN_PROGRESS.store(false, Ordering::SeqCst);
-}
-pub fn in_progress() -> bool {
-    IN_PROGRESS.load(Ordering::SeqCst)
-}
-
-/// RAII guard proving this task holds the single in-progress slot. Obtained via
-/// [`try_begin_guard`]; its `Drop` releases the slot on **every** exit path
-/// (success, error, panic), so an owned runner can never leak the flag. The
-/// success path `std::process::exit`s before Drop runs, which is fine — the
-/// process is going away, so the slot doesn't need releasing.
-pub struct InProgressGuard {
-    _private: (),
-}
-
-impl Drop for InProgressGuard {
-    fn drop(&mut self) {
-        end();
-    }
-}
-
-/// Atomically claim the in-progress slot, returning an RAII guard on success or
-/// `None` if an update is already running. This is the single point of mutual
-/// exclusion: callers must hold the returned guard for the whole update and let
-/// it drop to release the slot.
-pub fn try_begin_guard() -> Option<InProgressGuard> {
-    IN_PROGRESS
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
-        .then_some(InProgressGuard { _private: () })
-}
+use super::progress::*;
+use super::skiplist::{is_version_skipped, record_attempted_release};
 
 // ---------------------------------------------------------------------------
 // Persisted update preferences (`<data>/update.json`).
@@ -155,58 +71,86 @@ pub(crate) fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
     Some((a, b, c))
 }
 
-/// True if `latest` is a strictly newer semver than `current`.
-pub fn is_newer(current: &str, latest: &str) -> bool {
-    match (parse_semver(current), parse_semver(latest)) {
-        (Some(cur), Some(lat)) => lat > cur,
+/// This build's independent build number (compiled in via build.rs → DN7_BUILD;
+/// "0" for local/dev builds where the env isn't set).
+pub(crate) fn current_build() -> u64 {
+    option_env!("DN7_BUILD")
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// True if release `(new_ver, new_build)` is strictly newer than `(cur_ver,
+/// cur_build)`: versions are compared by semver first, then the build number.
+/// This is what lets a pure build bump (same version, higher build) count as an
+/// update.
+pub fn is_newer_build(cur_ver: &str, cur_build: u64, new_ver: &str, new_build: u64) -> bool {
+    match (parse_semver(cur_ver), parse_semver(new_ver)) {
+        (Some(c), Some(n)) => (n, new_build) > (c, cur_build),
         _ => false,
     }
 }
 
 // ---------------------------------------------------------------------------
-// Latest-version resolution
+// Latest-release resolution
 // ---------------------------------------------------------------------------
 
-/// The latest published version, from the `releases.json` index raced across all
-/// mirror lines (whichever answers fastest wins). The index lists every release;
-/// the newest by semver is the latest. `None` if no line served a valid index.
-async fn latest_version(cfg: &PanelConfig) -> Option<String> {
+/// The latest published `(version, build)`, from the `releases.json` index raced
+/// across all mirror lines (whichever answers fastest wins). The index lists every
+/// release; the newest by (semver, build) wins. `None` if no line served a valid
+/// index.
+async fn latest_release(cfg: &PanelConfig) -> Option<(String, u64)> {
     let index = fetch::releases_index_raced(cfg).await.ok()?;
     index
         .iter()
-        .filter_map(|e| parse_semver(&e.version).map(|s| (s, e.version.clone())))
-        .max_by_key(|(s, _)| *s)
-        .map(|(_, v)| v)
+        .filter_map(|e| {
+            parse_semver(&e.version).map(|s| {
+                (
+                    s,
+                    e.build.trim().parse::<u64>().unwrap_or(0),
+                    e.version.clone(),
+                )
+            })
+        })
+        .max_by_key(|(s, b, _)| (*s, *b))
+        .map(|(_, b, v)| (v, b))
 }
 
 /// Result of an update check, surfaced to the UI.
 #[derive(Debug, Serialize)]
 pub struct CheckResult {
     pub current: String,
+    pub build: u64,
     pub latest: Option<String>,
+    pub latest_build: Option<u64>,
     pub has_update: bool,
     pub auto: bool,
 }
 
-/// Resolve the latest version (fastest reachable line) and report whether a
-/// newer build is available.
+/// Resolve the latest release (fastest reachable line) and report whether a newer
+/// build — by (version, build) — is available.
 pub async fn check(cfg: &PanelConfig) -> CheckResult {
     set_phase(PHASE_CHECKING);
     let st = UpdateState::load();
     let current = env!("CARGO_PKG_VERSION").to_string();
-    let latest = latest_version(cfg).await;
-    // A version we already rolled back isn't offered (don't nag to re-install a
+    let cur_build = current_build();
+    let latest = latest_release(cfg).await;
+    // A build we already rolled back isn't offered (don't nag to re-install a
     // build known to fail to boot).
     let has_update = latest
-        .as_deref()
-        .map(|l| is_newer(&current, l) && !is_version_skipped(&st.failed_versions, l))
+        .as_ref()
+        .map(|(lv, lb)| {
+            is_newer_build(&current, cur_build, lv, *lb)
+                && !is_version_skipped(&st.failed_versions, lv, *lb)
+        })
         .unwrap_or(false);
     if phase() == PHASE_CHECKING {
         set_phase(PHASE_IDLE);
     }
     CheckResult {
         current,
-        latest,
+        build: cur_build,
+        latest: latest.as_ref().map(|(v, _)| v.clone()),
+        latest_build: latest.as_ref().map(|(_, b)| *b),
         has_update,
         auto: st.auto,
     }
@@ -250,16 +194,19 @@ pub async fn install_verified(bytes: &[u8], target: &Path) -> Result<()> {
         f.write_all(bytes).context("write temp binary")?;
         f.flush().context("flush temp binary")?;
     }
-    // Anti-rollback: refuse anything not strictly newer than us, and refuse a
-    // version we already tried and rolled back (the `skiplist`) — without it the
-    // same bad build passes `is_newer` against the old running version forever.
+    // Anti-rollback: refuse anything not strictly newer than us by (version,
+    // build) — read the DOWNLOADED binary's own reported build, never the mirror's
+    // claim, so a hostile line can't downgrade us to an older signed build of the
+    // same version. Also refuse a build we already tried and rolled back (the
+    // `skiplist`), else the same bad build passes the gate forever.
     let current = env!("CARGO_PKG_VERSION");
-    let new_version = match read_binary_version(&tmp).await {
-        Ok(v) if is_newer(current, &v) => v,
-        Ok(v) => {
+    let cur_build = current_build();
+    let (new_version, new_build) = match read_binary_release(&tmp).await {
+        Ok((v, b)) if is_newer_build(current, cur_build, &v, b) => (v, b),
+        Ok((v, b)) => {
             let _ = tokio::fs::remove_file(&tmp).await;
             return Err(anyhow!(
-                "downloaded version {v} is not newer than {current} — refusing (rollback?)"
+                "downloaded {v} (build {b}) is not newer than {current} (build {cur_build}) — refusing (rollback?)"
             ));
         }
         Err(e) => {
@@ -267,17 +214,21 @@ pub async fn install_verified(bytes: &[u8], target: &Path) -> Result<()> {
             return Err(anyhow!("could not read downloaded binary version: {e}"));
         }
     };
-    if is_version_skipped(&UpdateState::load().failed_versions, &new_version) {
+    if is_version_skipped(
+        &UpdateState::load().failed_versions,
+        &new_version,
+        new_build,
+    ) {
         let _ = tokio::fs::remove_file(&tmp).await;
         return Err(anyhow!(
-            "downloaded version {new_version} previously failed to boot and was rolled back — refusing"
+            "downloaded {new_version} (build {new_build}) previously failed to boot and was rolled back — refusing"
         ));
     }
-    tracing::info!(from = current, to = %new_version, "self-update: version gate passed");
-    // Persist the attempted version *before* the swap so a rollback (which
+    tracing::info!(from = current, from_build = cur_build, to = %new_version, to_build = new_build, "self-update: version gate passed");
+    // Persist the attempted release *before* the swap so a rollback (which
     // re-execs the supervisor) can still move it onto the failed-boot skiplist
     // even though nothing in memory survives the re-exec.
-    record_attempted_version(&new_version);
+    record_attempted_release(&new_version, new_build);
     // Preserve the outgoing binary as a `.prev` sibling of the target (0755) so
     // the supervisor can restore it (one-shot) if the new build fails to come up.
     // Best-effort: a copy failure must never block a legitimate update — the
@@ -313,8 +264,10 @@ pub async fn install_verified(bytes: &[u8], target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Run `<path> version` and return its reported compiled version.
-async fn read_binary_version(path: &Path) -> Result<String> {
+/// Run `<path> version` and parse its reported `(version, build)`. The subcommand
+/// prints `"<version> (build <N>)"`; older binaries print just `"<version>"`, in
+/// which case the build reads as 0.
+async fn read_binary_release(path: &Path) -> Result<(String, u64)> {
     let out = tokio::process::Command::new(path)
         .arg("version")
         .output()
@@ -322,11 +275,24 @@ async fn read_binary_version(path: &Path) -> Result<String> {
     if !out.status.success() {
         return Err(anyhow!("version subcommand exited with {}", out.status));
     }
-    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if v.is_empty() {
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let version = s.split_whitespace().next().unwrap_or("").to_string();
+    if version.is_empty() {
         return Err(anyhow!("empty version output"));
     }
-    Ok(v)
+    // Build number = the first run of digits after the word "build"; absent → 0.
+    let build = s
+        .split_once("build")
+        .and_then(|(_, rest)| {
+            let digits: String = rest
+                .trim_start_matches(|c: char| !c.is_ascii_digit())
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            digits.parse().ok()
+        })
+        .unwrap_or(0);
+    Ok((version, build))
 }
 
 /// Fetch the latest binary (resolved source, failing over on download error)
@@ -337,19 +303,20 @@ pub async fn self_update(cfg: &PanelConfig) -> Result<PathBuf> {
     set_phase(PHASE_DOWNLOADING);
     set_progress(0);
     set_bytes(0, 0);
-    let version = latest_version(cfg)
+    let (version, build) = latest_release(cfg)
         .await
-        .ok_or_else(|| anyhow!("could not resolve the latest version from any line"))?;
+        .ok_or_else(|| anyhow!("could not resolve the latest release from any line"))?;
     let current = env!("CARGO_PKG_VERSION");
-    if !is_newer(current, &version) {
+    let cur_build = current_build();
+    if !is_newer_build(current, cur_build, &version, build) {
         return Err(anyhow!(
-            "latest version {version} is not newer than {current} — nothing to do"
+            "latest {version} (build {build}) is not newer than {current} (build {cur_build}) — nothing to do"
         ));
     }
-    tracing::info!(%version, ?target, "self-update: downloading");
+    tracing::info!(%version, build, ?target, "self-update: downloading");
     // `download_binary_raced` probes every line, downloads from the fastest, and
     // fails over to the next on any error — so there is no outer failover here.
-    let bytes = fetch::download_binary_raced(cfg, &version, set_progress).await?;
+    let bytes = fetch::download_binary_raced(cfg, &version, build, set_progress).await?;
     set_phase(PHASE_INSTALLING);
     install_verified(&bytes, &target).await?;
     tracing::info!(
@@ -412,15 +379,16 @@ pub fn spawn_periodic(cfg: PanelConfig) {
             let st = UpdateState::load();
             let interval = if st.auto { 60 } else { 3600 };
             if !in_progress() {
-                // A cheap version check: race the lines for the release index and
-                // read the newest version.
-                if let Some(version) = latest_version(&cfg).await {
+                // A cheap check: race the lines for the release index and read the
+                // newest (version, build).
+                if let Some((version, build)) = latest_release(&cfg).await {
                     let current = env!("CARGO_PKG_VERSION");
-                    // Skip a version we already tried and rolled back: re-offering
-                    // it would just loop the same failed boot (see `skiplist`).
-                    let skipped = is_version_skipped(&st.failed_versions, &version);
-                    if is_newer(current, &version) && !skipped {
-                        tracing::info!(%version, auto = st.auto, "update available");
+                    let cur_build = current_build();
+                    // Skip a build we already tried and rolled back: re-offering it
+                    // would just loop the same failed boot (see `skiplist`).
+                    let skipped = is_version_skipped(&st.failed_versions, &version, build);
+                    if is_newer_build(current, cur_build, &version, build) && !skipped {
+                        tracing::info!(%version, build, auto = st.auto, "update available");
                         if st.auto {
                             run_self_update(&cfg).await;
                         }
@@ -430,33 +398,4 @@ pub fn spawn_periodic(cfg: PanelConfig) {
             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // The apply handler relies on `try_begin_guard` being the single point of
-    // mutual exclusion: exactly one caller may hold the slot, and dropping the
-    // guard must release it (RAII) so a later attempt can succeed. This is the
-    // invariant that stops two concurrent /api/update/apply requests from both
-    // reporting `started: true`.
-    #[test]
-    fn guard_is_exclusive_and_released_on_drop() {
-        // NOTE: touches the process-global IN_PROGRESS flag; keep this the only
-        // test that does so to avoid cross-test interference.
-        let g = try_begin_guard().expect("first claim succeeds");
-        assert!(in_progress(), "slot is held while the guard is alive");
-        assert!(
-            try_begin_guard().is_none(),
-            "a second claim is rejected while the guard is held"
-        );
-        drop(g);
-        assert!(!in_progress(), "dropping the guard releases the slot");
-
-        // A fresh claim works again now that the slot is free.
-        let g2 = try_begin_guard().expect("re-claim after release succeeds");
-        drop(g2);
-        assert!(!in_progress());
-    }
 }

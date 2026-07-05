@@ -38,10 +38,11 @@ fn canonical_index(repo: &str) -> String {
     format!("https://github.com/{repo}/releases/latest/download/releases.json")
 }
 
-/// The signed binary asset for a specific version.
-fn canonical_asset(repo: &str, version: &str) -> String {
+/// The signed binary asset for a specific build. Each build is its own release,
+/// tagged `b<build>`; the asset name still carries the semver for readability.
+fn canonical_asset(repo: &str, version: &str, build: u64) -> String {
     format!(
-        "https://github.com/{repo}/releases/download/v{version}/dn7-panel-linux-{}-v{version}",
+        "https://github.com/{repo}/releases/download/b{build}/dn7-panel-linux-{}-v{version}",
         arch()
     )
 }
@@ -242,12 +243,15 @@ async fn rank_lines(canonical: &str) -> Vec<Mirror> {
 pub async fn download_binary_raced<F: Fn(u64) + Copy>(
     cfg: &PanelConfig,
     version: &str,
+    build: u64,
     on_progress: F,
 ) -> Result<Vec<u8>> {
-    let canonical = canonical_asset(&cfg.github_repo, version);
+    let canonical = canonical_asset(&cfg.github_repo, version, build);
     let ranked = rank_lines(&canonical).await;
     if ranked.is_empty() {
-        return Err(anyhow!("no reachable download line for v{version}"));
+        return Err(anyhow!(
+            "no reachable download line for v{version} (build {build})"
+        ));
     }
     tracing::info!(
         lines = ranked.len(),
@@ -358,8 +362,8 @@ mod tests {
             canonical_index("o/r"),
             "https://github.com/o/r/releases/latest/download/releases.json"
         );
-        let a = canonical_asset("o/r", "27.0.0");
-        assert!(a.starts_with("https://github.com/o/r/releases/download/v27.0.0/dn7-panel-linux-"));
+        let a = canonical_asset("o/r", "27.0.0", 2);
+        assert!(a.starts_with("https://github.com/o/r/releases/download/b2/dn7-panel-linux-"));
         assert!(a.ends_with("-v27.0.0"));
     }
 

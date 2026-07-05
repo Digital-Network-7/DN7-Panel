@@ -38,13 +38,18 @@ helper crates under `crates/`. No backend, no panel token, no runtime deps.
 - **CI (`.github/workflows/release.yml`) gates every push; publishes only on a
   build bump.** It reads `release.toml` and:
   - always runs fmt / clippy / tests (verify the push compiles);
-  - publishes a GitHub Release **only when `build` moved** (no `b<build>` tag yet),
-    tagged `v<version>`, named `<codename> <version> (build <build>)`, **always
-    Latest** (never a prerelease) — a pure build bump moves the `v<version>` tag.
+  - publishes a GitHub Release **only when `build` moved** (no `b<build>` tag yet):
+    **each build is its own release**, tagged `b<build>`, named `<codename>
+    <version> (build <build>)`, **always Latest** (never a prerelease). Older
+    builds' releases are retained (just no longer Latest), so every build stays
+    downloadable.
 - **Self-update pulls straight from GitHub releases**, racing several mirror
-  "lines" (github direct + proxies, in `src/infra/support/fetch.rs`) and using the
-  fastest reachable one. There is no separate distribution channel and no
-  user-visible source picker.
+  "lines" (github direct + proxies, in `src/infra/support/fetch/`) and using the
+  fastest reachable one. The panel reads the latest `(version, build)` from
+  `releases.json` and pins the binary to that build's `b<build>` release; updates
+  are compared by **(version, build)**, so a pure build bump reaches deployed
+  panels. There is no separate distribution channel and no user-visible source
+  picker.
 - To cut a release: edit `release.toml` (bump `build`, and `version` for a real
   version; refresh `[notes]`) and push. Everything else is automatic. `codename` +
   `build` compile into the binary via `build.rs`; `version` rides in through

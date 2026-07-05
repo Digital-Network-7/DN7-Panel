@@ -4,12 +4,14 @@ name: Build Linux Release
 # (see release.toml). codename / version (<year>.<major>.<minor>) / build are all
 # set by hand in release.toml. This workflow reads them and:
 #   - always runs the gate (fmt / clippy / tests) to verify the push compiles;
-#   - publishes a GitHub Release ONLY when tag b<build> is absent (a new build),
-#     tagged v<version>, named "<codename> <version> (build <build>)", always
-#     marked Latest — a pure build bump moves the v<version> tag to the new commit.
+#   - publishes a GitHub Release ONLY when tag b<build> is absent (a new build):
+#     each build is its OWN release, tagged b<build>, named "<codename> <version>
+#     (build <build>)", always marked Latest. Older builds' releases are retained
+#     (just no longer Latest), so every build stays downloadable.
 # Deployed panels self-update straight from these GitHub releases, reaching them
-# via the fastest mirror line (see src/infra/support/fetch.rs), so there is no
-# separate distribution channel to publish to.
+# via the fastest mirror line (see src/infra/support/fetch/); the panel reads the
+# latest (version, build) from releases.json and pins the binary to that build's
+# b<build> release. There is no separate distribution channel.
 # The build number is independent and monotonic; it never resets to track the
 # version. Binaries are built for the *musl* targets and statically linked, then
 # signed (Ed25519) and published with detached `.sig` files.
@@ -222,8 +224,6 @@ jobs:
           merge-multiple: true
 
       - name: Generate changelog index (releases.json)
-        env:
-          NEW_VERSION: ${{ needs.version.outputs.version }}
         run: python3 .github/gen_releases.py dist/releases.json
 
       - name: Compose release body (per-language notes from release.toml)
@@ -238,23 +238,19 @@ jobs:
             echo "DN7EOF"
           } >> "$GITHUB_OUTPUT"
 
-      # The release is tagged v<version> (one release per version — a pure build
-      # bump moves this same tag to the new commit) and is ALWAYS marked Latest,
-      # so the panel's `/releases/latest` self-update check always sees it.
+      # Each build is its OWN release, tagged b<build> at this commit (the tag's
+      # existence is also what makes a re-push of the same build a gate-only run,
+      # so the sequence is idempotent). Every release is marked Latest, so the
+      # panel's `/releases/latest` self-update check always sees the newest build;
+      # older builds' releases are retained (just no longer Latest). softprops
+      # creates the b<build> tag itself, so there's no separate tag step.
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.version.outputs.version }}
+          tag_name: b${{ needs.version.outputs.build }}
+          target_commitish: ${{ github.sha }}
           name: ${{ needs.version.outputs.rel_name }}
           prerelease: false
           make_latest: 'true'
           body: ${{ steps.body.outputs.body }}
           files: dist/*
-
-      # Stamp the independent build number as its own tag b<build>. Its presence
-      # is exactly what makes the NEXT push with the same build a gate-only run
-      # (no duplicate release), so the build sequence is idempotent.
-      - name: Tag build number
-        run: |
-          git tag "b${{ needs.version.outputs.build }}" "${{ github.sha }}" || true
-          git push origin "b${{ needs.version.outputs.build }}" || true

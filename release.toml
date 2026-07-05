@@ -12,20 +12,21 @@
 #
 # CI on every push ALWAYS verifies the build (gate). It publishes a GitHub Release
 # only when `build` is new (no tag b<build> yet) — otherwise it just gates, no
-# release. On publish: tag v<version>, name "<codename> <version> (build <build>)",
-# always marked Latest (never a prerelease). Deployed panels self-update straight
-# from these GitHub releases via the fastest mirror line (src/infra/support/
-# fetch.rs). codename + build compile into the binary (build.rs → DN7_CODENAME /
-# DN7_BUILD); the numeric version rides in via Cargo.toml (CARGO_PKG_VERSION).
+# release. Each build is its OWN release, tagged b<build>, name "<codename>
+# <version> (build <build>)", always marked Latest (older builds' releases are
+# retained). Deployed panels self-update straight from these releases via the
+# fastest mirror line (src/infra/support/fetch/), comparing by (version, build)
+# so a pure build bump reaches them. codename + build compile into the binary
+# (build.rs → DN7_CODENAME / DN7_BUILD); the version rides in via Cargo.toml.
 codename = "Phanes"
 version = "27.0.0"
-build = 2
+build = 1
 
 # Per-language release notes (locale keys match the panel's i18n). The panel's
 # "What's New" shows the entry for the current UI language; CI puts them all in
 # the GitHub Release body + releases.json.
 [notes]
-"zh-CN" = "更新系统优化:面板现在会在 GitHub 直连与多个加速镜像之间自动竞速,用最快的一条线路下载更新,慢的或不通的线路自动跳过。不再需要手动选择下载源——更新更快、也更省心。"
-"zh-TW" = "更新系統最佳化:面板現在會在 GitHub 直連與多個加速鏡像之間自動競速,用最快的一條線路下載更新,慢的或不通的線路自動跳過。不再需要手動選擇下載來源——更新更快、也更省心。"
-"en" = "Faster updates: the panel now automatically races GitHub direct against several mirror lines and downloads from the fastest one, skipping any that are slow or unreachable. The manual download-source picker is gone — updating just works."
-"ja" = "アップデートの高速化:パネルは GitHub 直結と複数のミラー回線を自動で競わせ、最速の回線から更新をダウンロードします(遅い・不通の回線は自動でスキップ)。ダウンロード元の手動切り替えは廃止され、より簡単になりました。"
+"zh-CN" = "DN7 Panel 的首个正式版本。一个纯静态的单文件二进制,在网页控制台里管理整台 Linux 服务器——监控、网页终端、容器、网站、文件五合一,零外部依赖、开箱即用,任意 Linux 发行版皆可运行。代号 Phanes(希腊神话的原初创世之神),标记万物之始。"
+"zh-TW" = "DN7 Panel 的首個正式版本。一個純靜態的單一檔案二進位,在網頁主控台管理整台 Linux 伺服器——監控、網頁終端機、容器、網站、檔案五合一,零外部相依、開箱即用,任意 Linux 發行版皆可執行。代號 Phanes(希臘神話的原初創世之神),標記萬物之始。"
+"en" = "The first release of DN7 Panel — a single, fully static binary that manages an entire Linux server from one web console: monitoring, a web terminal, containers, websites, and files, with zero external dependencies, running on any Linux distribution. Codenamed Phanes, the Greek primordial of creation — the beginning of everything."
+"ja" = "DN7 Panel の最初の正式リリース。監視・Web ターミナル・コンテナ・Web サイト・ファイル管理を 1 つの Web コンソールに統合した、完全静的な単一バイナリの Linux サーバー管理パネルです。外部依存はゼロ、あらゆる Linux ディストリビューションで動作します。コードネームは Phanes——ギリシャ神話の原初の創造神、すべての始まりを象徴します。"
