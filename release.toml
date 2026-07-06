@@ -20,13 +20,13 @@
 # (build.rs → DN7_CODENAME / DN7_BUILD); the version rides in via Cargo.toml.
 codename = "Phanes"
 version = "27.0.1"
-build = 4
+build = 5
 
 # Per-language release notes (locale keys match the panel's i18n). The panel's
 # "What's New" shows the entry for the current UI language; CI puts them all in
 # the GitHub Release body + releases.json.
 [notes]
-"zh-CN" = "新增安全访问路径与可编辑的控制台访问。现在可以把控制台隐藏在一个秘密路径之后——面板只在 `https://主机/<路径>` 上响应,其余请求一律 404——可在初始化或设置里配置。控制台标签页还支持在装完之后修改面板的访问地址、HTTPS 模式与端口(保存后重启生效)。另修复:左下角版本号不再显示 build 号(改在更新对话框里显示)、最快下载线路缓存一天而非每次检查都重新竞速、快速部署首次登录现在会正确进入账号设置页而不再报错。"
-"zh-TW" = "新增安全存取路徑與可編輯的主控台存取。現在可以把主控台隱藏在一個祕密路徑之後——面板只在 `https://主機/<路徑>` 上回應,其餘請求一律 404——可在初始化或設定裡設定。主控台分頁還支援在安裝完成後修改面板的存取位址、HTTPS 模式與連接埠(儲存後重啟生效)。另修正:左下角版本號不再顯示 build 號(改在更新對話框裡顯示)、最快下載線路快取一天而非每次檢查都重新競速、快速部署首次登入現在會正確進入帳號設定頁而不再報錯。"
-"en" = "A security entry path, plus editable console access. You can now hide the console behind a secret path — the panel only answers at `https://host/<path>` and returns 404 to everyone else — set during first-run or in Settings. The Console settings tab also lets you change the panel's access address, HTTPS mode, and ports after setup (applied with a restart). Also fixes: the sidebar version omits the build number (it's shown in the update dialog instead), the fastest download mirror is cached for a day instead of re-raced on every check, and quick-deploy's first login now shows the account-setup screen correctly instead of a stray error."
-"ja" = "セキュリティアクセスパスと、編集可能なコンソールアクセスを追加。コンソールを秘密のパスの後ろに隠せるようになりました——パネルは `https://host/<path>` でのみ応答し、それ以外には 404 を返します——初回セットアップまたは設定で構成できます。設定のコンソールタブでは、セットアップ後にパネルのアクセス先アドレス・HTTPS モード・ポートも変更できます(再起動して適用)。修正:サイドバーのバージョンから build 番号を省略(更新ダイアログに表示)、最速のダウンロードミラーを毎回の確認で競わせず 1 日キャッシュ、クイックデプロイの初回ログインでエラーではなくアカウント設定画面が正しく表示されるように。"
+"zh-CN" = "修复快速部署后首次登录的强制账号设置:不再卡在「需要重新验证身份」的提示上、现在可以正常完成;并且改为一个独立页面,而不是弹出的拟态框。"
+"zh-TW" = "修正快速部署後首次登入的強制帳號設定:不再卡在「需要重新驗證身分」的提示上、現在可以正常完成;並且改為一個獨立頁面,而不是彈出的對話框。"
+"en" = "Fixes the forced first-login account setup (after a quick deploy): it no longer loops on a \"re-verify your identity\" prompt and can now be completed, and it's shown as its own full page instead of a modal dialog."
+"ja" = "クイックデプロイ後の初回ログインでの強制アカウント設定を修正:「本人確認が必要」の表示でループせず完了できるようになり、モーダルではなく独立したページとして表示されます。"

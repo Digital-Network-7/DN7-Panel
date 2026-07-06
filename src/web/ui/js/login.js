@@ -103,30 +103,34 @@ function logout() {
   $('user').focus();
 }
 
-// Legacy post-login credential nag: shown after logging in while the account is
-// still named "admin" (the residual `must_setup` heuristic). A non-dismissible
-// overlay that requires a new account name (not "admin") and a new password,
-// then saves both via /api/settings. The token-gated first-run wizard now sets a
-// real account + password at init, so this rarely triggers.
+// Forced first-run account setup: shown after logging in while the account is
+// still on the default password (or named "admin"). A standalone full-screen
+// PAGE (not a modal) that requires a new account name (not "admin") and a new
+// password, then saves both via /api/settings. Because the account is still on
+// the default password, /api/settings skips step-up here (pw_check proves the new
+// password differs from the default).
 function forceAccountSetup(currentUser, onDone) {
-  const root = $('modalRoot');
   if (document.getElementById('suGo')) return; // already open
-  const mask = el('div', { class: 'mask' });
-  mask.innerHTML = `<div class="modal" style="width:460px">
-    <div class="modal-h"><h3>${tr('setup.title')}</h3></div>
-    <div class="modal-b">
-      <p class="mut" style="margin:0 0 16px;font-size:13px;line-height:1.6">${tr('setup.intro')}</p>
+  // Full-screen page: hide the login + console and mount the setup page over a
+  // solid background (reusing the login-card styling).
+  if ($('login')) $('login').classList.add('hidden');
+  if ($('app')) $('app').classList.add('hidden');
+  const page = el('div', { id: 'setupPage' });
+  page.innerHTML = `
+    <div class="login-bg" aria-hidden="true"><span class="orb o1"></span><span class="orb o2"></span><span class="orb o3"></span></div>
+    <div class="login-card" style="width:440px">
+      <div class="login-title">${tr('setup.title')}</div>
+      <div class="sub">${tr('setup.intro')}</div>
       <label class="lbl">${tr('set.account')}</label>
       <input id="suUser" class="field" style="margin-bottom:12px" autocomplete="username" placeholder="${tr('setup.account_ph')}" />
       <label class="lbl">${tr('setup.new_pw')}</label>
       <input id="suPw" class="field" type="password" autocomplete="new-password" style="margin-bottom:12px" />
       <label class="lbl">${tr('setup.confirm_pw')}</label>
-      <input id="suPw2" class="field" type="password" autocomplete="new-password" />
-      <button class="btn" id="suGo" style="margin-top:18px;width:100%">${tr('setup.submit')}</button>
+      <input id="suPw2" class="field" type="password" autocomplete="new-password" style="margin-bottom:18px" />
+      <button class="btn" id="suGo" style="width:100%">${tr('setup.submit')}</button>
       <div class="err" id="suErr" style="margin-top:10px"></div>
-    </div>
-  </div>`;
-  root.appendChild(mask);
+    </div>`;
+  document.body.appendChild(page);
   if (currentUser && currentUser.toLowerCase() !== 'admin') $('suUser').value = currentUser;
   const submit = () => {
     const err = $('suErr'); err.textContent = '';
@@ -152,13 +156,11 @@ function forceAccountSetup(currentUser, onDone) {
             return api('/api/settings', { method: 'POST', body: JSON.stringify(body) });
           }));
       })
-      .then(() => { mask.remove(); toast(tr('setup.done'), 'ok'); if (onDone) onDone(un); })
+      .then(() => { page.remove(); toast(tr('setup.done'), 'ok'); if (onDone) onDone(un); })
       .catch((e) => { err.textContent = e.message; go.disabled = false; });
   };
   $('suGo').onclick = submit;
   $('suPw2').addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
-  // Null-safe: the overlay could be gone by the time this fires (a tab switch
-  // clears #modalRoot); never let a stray focus() crash the page.
   setTimeout(() => { const u = $('suUser'); if (u) u.focus(); }, 30);
 }
 

@@ -77,16 +77,24 @@ pub(crate) async fn put_settings(
     headers: header::HeaderMap,
     Json(req): Json<SettingsReq>,
 ) -> Response {
-    // Console settings include the panel's network exposure (public-access
-    // bind, port, HTTPS, entry path, authorized IPs) and the owner credentials
-    // — super only, plus a fresh step-up re-auth so a stolen session can't
-    // quietly widen access or change the password.
+    // Console settings include the panel's network exposure (entry path,
+    // authorized IPs, trusted proxies) and the owner credentials — super only,
+    // plus a fresh step-up re-auth so a stolen session can't quietly widen access
+    // or change the password.
     let acct = match require_super(&state, &headers) {
         Ok(a) => a,
         Err(r) => return r,
     };
-    if let Some(r) = require_stepup(&state, &headers, &acct.username) {
-        return r;
+    // The FORCED first-run setup (account still on the default password) can't do
+    // a step-up: the operator hasn't chosen a password yet and the setup screen
+    // never prompts for one. `apply_password_change` still requires `pw_check`
+    // there (proving the new password differs from the default), and once a real
+    // password is set (`pw_default` clears) every later change requires step-up.
+    let first_setup = state.settings_guard().pw_default;
+    if !first_setup {
+        if let Some(r) = require_stepup(&state, &headers, &acct.username) {
+            return r;
+        }
     }
     let actor = acct.username;
     let (saved, outcome) = {

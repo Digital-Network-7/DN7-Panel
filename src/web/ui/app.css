@@ -156,6 +156,9 @@
 
   /* ---- Login ---- */
   #login { position:relative; min-height:100vh; min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:24px; overflow:hidden; }
+  /* Forced first-run account setup: a standalone full-screen PAGE (not a modal),
+     reusing the login-card styling over a solid background so nothing shows behind. */
+  #setupPage { position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center; padding:24px; overflow:auto; background:var(--bg); }
   /* Decorative tech background: a faint grid + slowly drifting gradient orbs
      (grid/orb colors are theme tokens — see --grid-line/--orb1..3). */
   .login-bg { position:absolute; inset:0; z-index:0; pointer-events:none; overflow:hidden;
