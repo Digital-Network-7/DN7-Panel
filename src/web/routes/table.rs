@@ -44,6 +44,7 @@ pub(crate) fn build_router(state: Shared) -> Router {
         .route("/api/metrics", get(metrics))
         .route("/api/metrics/history", get(metrics_history))
         .route("/api/settings", get(get_settings).post(put_settings))
+        .route("/api/console/access", post(put_console_access))
         .route("/api/restart", post(restart_panel))
         .route("/api/logs", get(logs_list))
         .route("/api/branding", get(get_branding).post(put_branding))

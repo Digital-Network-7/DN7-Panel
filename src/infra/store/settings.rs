@@ -103,6 +103,7 @@ mod tests {
             website_http_port: 80,
             website_https_port: 443,
             console_port: 0,
+            entry_path: String::new(),
             language: String::new(),
             timezone: String::new(),
             session_timeout: 1440,

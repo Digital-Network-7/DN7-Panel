@@ -73,6 +73,30 @@ pub fn random_password(len: usize) -> String {
     out
 }
 
+/// A random `len`-char string of lowercase ASCII letters (`a`–`z`). Uniform via
+/// rejection sampling. Used for the default security entry path (e.g. `/ab12cd`
+/// → letters only, unambiguous in a URL).
+pub fn random_alpha_lower(len: usize) -> String {
+    use rand::RngCore;
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
+    let mut rng = rand::thread_rng();
+    let mut out = String::with_capacity(len);
+    let mut buf = [0u8; 64];
+    while out.len() < len {
+        rng.fill_bytes(&mut buf);
+        for &b in &buf {
+            if out.len() == len {
+                break;
+            }
+            let cap = (256 / ALPHABET.len()) * ALPHABET.len();
+            if (b as usize) < cap {
+                out.push(ALPHABET[b as usize % ALPHABET.len()] as char);
+            }
+        }
+    }
+    out
+}
+
 /// `n` random bytes as `2*n` lowercase hex chars.
 fn random_hex(n: usize) -> String {
     use rand::RngCore;

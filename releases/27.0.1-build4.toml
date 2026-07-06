@@ -1,30 +1,13 @@
-# ── DN7 Panel version + build + release notes ───────────────────────────────
-# Single source of truth for a release. Display form:
-#   DN7 Panel <codename> <version> (build <build>)   e.g.  Phanes 27.0.0 (build 1)
-#
-#   codename  release codename, one per year (Apple-style). Greek primordials in
-#             cosmogonic order — Phanes, then Chaos, Gaia, Eros, Nyx, Aether, …
-#   version   <year>.<major>.<minor>. year = Apple-style +1 (the 2026 line is 27);
-#             major resets to 0 each new year. Bump for a real version.
-#   build     an INDEPENDENT monotonic build number — never resets, unrelated to
-#             the version (so it never has an awkward 27G99→…01 jump). Bump for
-#             any published build; it only ever increases.
-#
-# CI on every push ALWAYS verifies the build (gate). It publishes a GitHub Release
-# only when `build` is new (no tag b<build> yet) — otherwise it just gates, no
-# release. Each build is its OWN release, tagged b<build>, name "<codename>
-# <version> (build <build>)", always marked Latest (older builds' releases are
-# retained). Deployed panels self-update straight from these releases via the
-# fastest mirror line (src/infra/support/fetch/), comparing by (version, build)
-# so a pure build bump reaches them. codename + build compile into the binary
-# (build.rs → DN7_CODENAME / DN7_BUILD); the version rides in via Cargo.toml.
+# Archived snapshot of release.toml for: Phanes 27.0.1 (build 4)
+# Files here back up each published release's version + notes, named
+# <version>-build<build>.toml. Build 4 (27.0.1) adds a security entry path
+# (obscurity front door) and an editable console-access section in Settings,
+# plus three fixes. See the repo-root release.toml (and AGENTS.md
+# "Versioning & releases") for the live scheme.
 codename = "Phanes"
 version = "27.0.1"
 build = 4
 
-# Per-language release notes (locale keys match the panel's i18n). The panel's
-# "What's New" shows the entry for the current UI language; CI puts them all in
-# the GitHub Release body + releases.json.
 [notes]
 "zh-CN" = "新增安全访问路径与可编辑的控制台访问。现在可以把控制台隐藏在一个秘密路径之后——面板只在 `https://主机/<路径>` 上响应,其余请求一律 404——可在初始化或设置里配置。控制台标签页还支持在装完之后修改面板的访问地址、HTTPS 模式与端口(保存后重启生效)。另修复:左下角版本号不再显示 build 号(改在更新对话框里显示)、最快下载线路缓存一天而非每次检查都重新竞速、快速部署首次登录现在会正确进入账号设置页而不再报错。"
 "zh-TW" = "新增安全存取路徑與可編輯的主控台存取。現在可以把主控台隱藏在一個祕密路徑之後——面板只在 `https://主機/<路徑>` 上回應,其餘請求一律 404——可在初始化或設定裡設定。主控台分頁還支援在安裝完成後修改面板的存取位址、HTTPS 模式與連接埠(儲存後重啟生效)。另修正:左下角版本號不再顯示 build 號(改在更新對話框裡顯示)、最快下載線路快取一天而非每次檢查都重新競速、快速部署首次登入現在會正確進入帳號設定頁而不再報錯。"

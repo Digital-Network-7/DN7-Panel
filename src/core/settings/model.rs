@@ -89,6 +89,13 @@ pub(crate) struct WebSettings {
     /// ONLY there, plus loopback for SSH tunnels).
     #[serde(default)]
     pub(crate) console_port: u16,
+    /// Security entry path (obscurity front door). When non-empty, the console is
+    /// hidden: only a request that hits `/<entry_path>` (which returns the login
+    /// page + sets a `dn7_entry` cookie) or carries the matching `X-DN7-Entry`
+    /// header / `dn7_entry` cookie is served — everything else 404s. Empty =
+    /// disabled (the console is served at `/`). A short string of letters/digits.
+    #[serde(default)]
+    pub(crate) entry_path: String,
     /// Default console UI language for browsers that haven't chosen one: one of
     /// "zh-CN" | "zh-TW" | "en" | "ja". Empty = follow the browser (legacy).
     #[serde(default)]

@@ -180,7 +180,9 @@ function runUpdCheck() {
   api('/api/update/check', { method: 'POST' }).then((b) => {
     const d = b.data, dot = $('verDot');
     if (dot) dot.classList.toggle('hidden', !d.has_update);
-    if (cur) cur.textContent = 'v' + d.current;
+    // The update modal shows the running version WITH its build number (the
+    // sidebar version line omits the build; this is where operators see it).
+    if (cur) cur.textContent = 'v' + d.current + (d.build ? ' (build ' + d.build + ')' : '');
     // While an update is actually running, the progress UI is the live state:
     // show the running version + changelog, but never the "update now" CTA
     // (re-opening the modal mid-update used to show a misleading "update now").

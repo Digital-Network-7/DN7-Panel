@@ -29,5 +29,6 @@ const AccountApi = {
 const SettingsApi = {
   get() { return api('/api/settings'); },
   save(body, headers) { return api('/api/settings', { method: 'POST', body: JSON.stringify(body), headers: headers || {} }); },
+  consoleAccess(body, headers) { return api('/api/console/access', { method: 'POST', body: JSON.stringify(body), headers: headers || {} }); },
   saveBranding(body) { return api('/api/branding', { method: 'POST', body: JSON.stringify(body) }); },
 };

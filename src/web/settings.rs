@@ -55,6 +55,39 @@ fn valid_ip_or_cidr(s: &str) -> bool {
     }
 }
 
+/// Whether `s` is a usable security entry path: 1–64 chars of ASCII letters,
+/// digits, `-` or `_` — no slashes, dots, or spaces (it becomes a single URL path
+/// segment). Empty is "disabled" and is the caller's concern; this returns false
+/// for empty. A leading `/` the operator may type is tolerated by the caller
+/// (which trims it) — this validator sees the bare segment.
+pub fn valid_entry_path(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// A fresh 6-letter security entry path — the default when the operator turns the
+/// entry gate on without choosing one.
+pub fn random_entry_path() -> String {
+    dn7_cred::random_alpha_lower(6)
+}
+
+/// Normalize an operator-typed entry path to the stored bare segment: trim, drop
+/// a leading `/`. Returns `None` if the result is non-empty but invalid (so the
+/// caller can reject it); `Some("")` means "disable the gate".
+pub fn normalize_entry_path(raw: &str) -> Option<String> {
+    let s = raw.trim().trim_start_matches('/').trim();
+    if s.is_empty() {
+        return Some(String::new());
+    }
+    if valid_entry_path(s) {
+        Some(s.to_string())
+    } else {
+        None
+    }
+}
+
 /// Current real uid (for the reset owner check).
 fn current_uid() -> u32 {
     // SAFETY: getuid() is always safe; it just reads the process's real uid.
@@ -93,6 +126,7 @@ impl WebSettings {
         self.initialized = false;
         self.external_address = String::new();
         self.https_mode = "none".to_string();
+        self.entry_path = String::new();
         // Leave no token armed: the next launch re-enters the CLI mode menu, which
         // re-arms one only if the operator chooses UI-custom mode.
         self.init_token = String::new();
@@ -161,6 +195,7 @@ pub fn load_or_init(default_port: u16) -> (WebSettings, Option<String>) {
         website_http_port: crate::core::settings::default_website_http_port(),
         website_https_port: crate::core::settings::default_website_https_port(),
         console_port: 0,
+        entry_path: String::new(),
         language: String::new(),
         timezone: String::new(),
         session_timeout: default_timeout(),
@@ -209,6 +244,7 @@ mod tests {
             website_http_port: 80,
             website_https_port: 443,
             console_port: 0,
+            entry_path: String::new(),
             language: String::new(),
             timezone: String::new(),
             session_timeout: 1440,
@@ -250,6 +286,7 @@ mod tests {
             website_http_port: 80,
             website_https_port: 443,
             console_port: 0,
+            entry_path: String::new(),
             language: String::new(),
             timezone: String::new(),
             session_timeout: 1440,

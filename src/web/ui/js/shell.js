@@ -43,9 +43,14 @@ function showApp() {
   $('app').classList.remove('hidden');
   api('/api/me').then((b) => {
     Auth.me = b.data || {};
+    // Mandatory first-run credential setup (super-admin still on the default
+    // password or the seeded `admin` name, e.g. after quick deploy): show ONLY the
+    // non-dismissible overlay and stop. Do NOT render the console — switchTab()
+    // runs stopTab(), which clears #modalRoot and would wipe the overlay out from
+    // under the operator (leaving an orphaned focus() timeout to crash the page).
+    if (Auth.me.must_setup) { forceAccountSetup(Auth.me.username, () => { logout(); }); return; }
     renderNav();
     setUser(Auth.me.nickname || Auth.me.username || 'admin', Auth.me.avatar);
-    if (Auth.me.must_setup) forceAccountSetup(Auth.me.username, () => { logout(); });
     // Deep link: an initial #tab in the URL wins over the saved tab.
     const hk = location.hash.slice(1);
     if (hk && TABS.some((x) => x.key === hk)) UI.setTab(hk);
@@ -57,10 +62,10 @@ function showApp() {
     if (window.updateBadge && Auth.me.is_admin) updateBadge();
   }).catch(() => {});
   api('/api/info').then((b) => {
-    // "<codename> <version> (build <n>)", e.g. "Phanes 27.0.0 (build 1)".
+    // Sidebar version line shows just "<codename> <version>", e.g. "Phanes 27.0.1"
+    // (the build number lives in the update modal, opened by clicking this line).
     const cn = b.data.codename ? b.data.codename + ' ' : '';
-    const bd = (b.data.build && b.data.build !== '0') ? ' (build ' + b.data.build + ')' : '';
-    $('panelVer').textContent = cn + (b.data.version || '?') + bd;
+    $('panelVer').textContent = cn + (b.data.version || '?');
     if (b.data.hostname) $('panelVer').title = b.data.hostname;
   }).catch(() => {});
   if (window.updateJobsBadge) updateJobsBadge();

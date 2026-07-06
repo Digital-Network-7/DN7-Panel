@@ -63,11 +63,24 @@ function iwStep1() {
       <label class="lbl" style="margin-top:10px;display:block">${esc(tr('init.console_port'))}</label>
       <input id="iwConsole" class="field" type="number" min="0" max="65535" placeholder="0" />
       <div class="mut" style="font-size:12px;margin-top:4px">${esc(tr('init.console_port_hint'))}</div>
+      <label class="lbl" style="margin-top:10px;display:block">${esc(tr('init.entry_path'))}</label>
+      <input id="iwEntry" class="field" placeholder="${esc(tr('init.entry_path_ph'))}" autocapitalize="none" spellcheck="false" />
+      <div class="mut" style="font-size:12px;margin-top:4px">${esc(tr('init.entry_path_hint'))}</div>
     </details>
     <button class="btn" id="iwNext" style="width:100%">${esc(tr('init.next'))}</button>
     <div class="err" id="iwErr" style="margin-top:10px"></div>`;
   $('iwAddr').value = location.hostname;
+  $('iwEntry').value = iwRandPath();
   $('iwNext').addEventListener('click', iwSubmit1);
+}
+
+// A random 6-lowercase-letter default for the security entry path (matches the
+// server's random_entry_path). Empty the field to disable the entry gate.
+function iwRandPath() {
+  let s = '';
+  const a = 'abcdefghijklmnopqrstuvwxyz';
+  for (let i = 0; i < 6; i++) s += a[Math.floor(Math.random() * a.length)];
+  return s;
 }
 
 function iwMode() {
@@ -88,8 +101,13 @@ function iwSubmit1() {
   const httpPort = parseInt($('iwHttp').value, 10) || 80;
   const httpsPort = parseInt($('iwHttps').value, 10) || 443;
   const consolePort = parseInt($('iwConsole').value, 10) || 0;
+  const entryPath = $('iwEntry').value.trim().replace(/^\/+/, '');
   if (!addr) {
     err.textContent = tr('init.err_addr');
+    return;
+  }
+  if (entryPath && !/^[A-Za-z0-9_-]{1,64}$/.test(entryPath)) {
+    err.textContent = tr('init.err_entry_path');
     return;
   }
   if (mode === 'le' && iwIsIp(addr)) {
@@ -122,6 +140,7 @@ function iwSubmit1() {
       website_http_port: httpPort,
       website_https_port: httpsPort,
       console_port: consolePort,
+      entry_path: entryPath,
     }),
   })
     .then(async (r) => {
@@ -129,7 +148,7 @@ function iwSubmit1() {
       if (!r.ok || !b.ok) throw new Error(b.msg || tr('init.err_generic'));
     })
     .then(() => {
-      iwState = { addr, mode, httpPort, httpsPort, consolePort };
+      iwState = { addr, mode, httpPort, httpsPort, consolePort, entryPath };
       iwStep2();
     })
     .catch((e) => {
@@ -210,7 +229,8 @@ function iwLoginUrl() {
         : iwState.httpsPort;
   const dflt = scheme === 'https' ? 443 : 80;
   const host = iwState.addr.indexOf(':') >= 0 && iwState.addr[0] !== '[' ? '[' + iwState.addr + ']' : iwState.addr;
-  return scheme + '://' + host + (port === dflt ? '' : ':' + port) + '/';
+  const path = iwState.entryPath ? '/' + iwState.entryPath : '/';
+  return scheme + '://' + host + (port === dflt ? '' : ':' + port) + path;
 }
 
 function iwFinish() {

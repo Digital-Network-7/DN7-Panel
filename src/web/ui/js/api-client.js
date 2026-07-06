@@ -21,8 +21,16 @@ function sessionExpired() {
     { onDismiss: done });
 }
 
+// The security entry path (obscurity front door) is echoed as `X-DN7-Entry` on
+// every request so the server's entry gate passes even for non-navigation fetches.
+// Visiting the front door set a readable `dn7_entry` cookie; mirror it here.
+function entryHeaders() {
+  const m = document.cookie.match(/(?:^|;\s*)dn7_entry=([^;]+)/);
+  return m ? { 'X-DN7-Entry': decodeURIComponent(m[1]) } : {};
+}
+
 function api(path, opts = {}) {
-  opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+  opts.headers = Object.assign({ 'Content-Type': 'application/json' }, entryHeaders(), opts.headers || {});
   if (Auth.token) opts.headers['Authorization'] = 'Bearer ' + Auth.token;
   return fetch(path, opts).then(async (r) => {
     if (r.status === 401) { sessionExpired(); throw new Error(tr('common.unauthorized')); }
@@ -56,4 +64,4 @@ function ticket(purpose) { return api('/api/ticket?purpose=' + encodeURIComponen
 
 // Authorization header object for raw fetch() calls (file/image/static uploads
 // that send a body the api() JSON wrapper can't). Empty when not signed in.
-function authHeaders() { return Auth.token ? { Authorization: 'Bearer ' + Auth.token } : {}; }
+function authHeaders() { return Object.assign(entryHeaders(), Auth.token ? { Authorization: 'Bearer ' + Auth.token } : {}); }

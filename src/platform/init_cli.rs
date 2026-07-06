@@ -175,6 +175,9 @@ async fn quick_deploy(cfg: &PanelConfig) -> Result<Option<LoginSummary>> {
         website_http_port: website_http,
         website_https_port: website_https,
         console_port: 0,
+        // Quick deploy hides the console behind a random 6-letter entry path by
+        // default (printed in the login summary).
+        entry_path: settings::random_entry_path(),
         username: "admin".to_string(),
         salt,
         stored,
@@ -654,6 +657,9 @@ struct Answers {
     /// Console listen port. `0` = merged (console on a website port by Host); a
     /// distinct value opens a dedicated console listener.
     console_port: u16,
+    /// Security entry path (obscurity front door). Empty = disabled; otherwise the
+    /// console is reached at `<scheme>://<address>/<entry_path>`.
+    entry_path: String,
     username: String,
     salt: String,
     stored: String, // Argon2id(verifier)
@@ -803,6 +809,35 @@ fn ask_questions(website_http: u16, website_https: u16) -> Result<Answers> {
         );
     }
 
+    // 2.6. Security entry path (obscurity front door). Default = a random 6-letter
+    // path; the operator can type their own, or `-` to disable (console at `/`).
+    let entry_default = settings::random_entry_path();
+    let entry_path = loop {
+        let e = prompt_line(&format!(
+            "2.6) 安全访问路径 / Security entry path (回车=随机 {entry_default}, 输入 - 关闭 / Enter=random, `-`=off): "
+        ))?;
+        let e = e.trim();
+        if e == "-" || e.eq_ignore_ascii_case("off") || e.eq_ignore_ascii_case("none") {
+            break String::new();
+        }
+        if e.is_empty() {
+            break entry_default.clone();
+        }
+        match settings::normalize_entry_path(e) {
+            Some(p) if !p.is_empty() => break p,
+            _ => warn(
+                "路径格式不正确(字母/数字/-/_,1-64 位)。",
+                "Invalid path (letters/digits/-/_, 1-64 chars).",
+            ),
+        }
+    };
+    if !entry_path.is_empty() {
+        ok(
+            &format!("控制台将隐藏在 /{entry_path} 之后。"),
+            &format!("Console will be hidden behind /{entry_path}."),
+        );
+    }
+
     // 3. Admin username.
     let username = loop {
         let u = prompt_line("3) 管理员用户名 / Admin username: ")?;
@@ -847,6 +882,7 @@ fn ask_questions(website_http: u16, website_https: u16) -> Result<Answers> {
         website_http_port: website_http,
         website_https_port: website_https,
         console_port,
+        entry_path,
         username,
         salt,
         stored,
@@ -875,6 +911,7 @@ async fn apply(cfg: &PanelConfig, a: Answers) -> Result<LoginSummary> {
     s.website_http_port = a.website_http_port;
     s.website_https_port = a.website_https_port;
     s.console_port = a.console_port;
+    s.entry_path = a.entry_path.clone();
     s.language = a.language.clone();
     s.timezone = a.timezone.clone();
     s.username = a.username.clone();
@@ -939,8 +976,14 @@ async fn apply(cfg: &PanelConfig, a: Answers) -> Result<LoginSummary> {
     } else {
         format!("{host}:{console_port}")
     };
+    // The console is reached at the security entry path when one is set, else `/`.
+    let path = if a.entry_path.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", a.entry_path)
+    };
     Ok(LoginSummary {
-        url: format!("{scheme}://{authority}/"),
+        url: format!("{scheme}://{authority}{path}"),
         username: a.username,
         password: a.password_plain,
     })

@@ -85,6 +85,39 @@ fn download_http() -> reqwest::Result<reqwest::Client> {
 }
 
 // ---------------------------------------------------------------------------
+// Fastest-line cache
+// ---------------------------------------------------------------------------
+//
+// Racing every line on every check is wasteful once a winner is known. After a
+// race picks a line, remember it and reuse it directly for a day instead of
+// re-racing; a request FAILURE on the cached line clears it so the next call
+// re-races. So we race at most once a day (or immediately after a failure).
+
+/// How long a raced winner is trusted before the next call re-races.
+const LINE_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+static FASTEST_LINE: std::sync::Mutex<Option<(Mirror, std::time::Instant)>> =
+    std::sync::Mutex::new(None);
+
+/// The remembered fastest line, if one was raced within the last day.
+fn cached_line() -> Option<Mirror> {
+    let g = FASTEST_LINE.lock().unwrap_or_else(|p| p.into_inner());
+    g.as_ref()
+        .filter(|(_, at)| at.elapsed() < LINE_CACHE_TTL)
+        .map(|(m, _)| *m)
+}
+
+/// Remember `m` as the fastest line (called after a successful race/use).
+fn remember_line(m: Mirror) {
+    *FASTEST_LINE.lock().unwrap_or_else(|p| p.into_inner()) = Some((m, std::time::Instant::now()));
+}
+
+/// Forget the cached line (called when it fails), forcing the next call to race.
+fn forget_line() {
+    *FASTEST_LINE.lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
+// ---------------------------------------------------------------------------
 // Changelog index (release notes + latest version), raced across lines
 // ---------------------------------------------------------------------------
 
@@ -149,23 +182,35 @@ pub async fn releases_index_raced(cfg: &PanelConfig) -> Result<Vec<ReleaseNote>>
     use futures::stream::{FuturesUnordered, StreamExt};
     let canonical = canonical_index(&cfg.github_repo);
     let client = http()?;
+    // Reuse the recently-raced fastest line (no re-race for a day); if it fails,
+    // clear it and fall through to a full race.
+    if let Some(m) = cached_line() {
+        match fetch_index_one(&client, &m.rewrite(&canonical)).await {
+            Ok(list) if !list.is_empty() => {
+                tracing::debug!(mirror = m.name, "release index fetched (cached line)");
+                return Ok(list);
+            }
+            _ => forget_line(),
+        }
+    }
     let mut futs: FuturesUnordered<_> = mirrors()
         .iter()
         .map(|m| {
             let url = m.rewrite(&canonical);
             let client = client.clone();
-            let name = m.name;
-            async move { (name, fetch_index_one(&client, &url).await) }
+            let mm = *m;
+            async move { (mm, fetch_index_one(&client, &url).await) }
         })
         .collect();
-    while let Some((name, res)) = futs.next().await {
+    while let Some((m, res)) = futs.next().await {
         match res {
             Ok(list) if !list.is_empty() => {
-                tracing::debug!(mirror = name, count = list.len(), "release index fetched");
+                tracing::debug!(mirror = m.name, count = list.len(), "release index fetched");
+                remember_line(m);
                 return Ok(list);
             }
             Ok(_) => {}
-            Err(e) => tracing::debug!(mirror = name, "index fetch failed: {e}"),
+            Err(e) => tracing::debug!(mirror = m.name, "index fetch failed: {e}"),
         }
     }
     Err(anyhow!("no line returned a valid release index"))
@@ -247,6 +292,28 @@ pub async fn download_binary_raced<F: Fn(u64) + Copy>(
     on_progress: F,
 ) -> Result<Vec<u8>> {
     let canonical = canonical_asset(&cfg.github_repo, version, build);
+    // Reuse the recently-raced fastest line for the download too; on failure,
+    // clear it and fall back to a full probe-and-rank.
+    if let Some(m) = cached_line() {
+        on_progress(0);
+        match download_and_verify(&m.rewrite(&canonical), on_progress).await {
+            Ok(bytes) => {
+                tracing::info!(
+                    mirror = m.name,
+                    bytes = bytes.len(),
+                    "fetched panel binary (cached line); signature verified"
+                );
+                return Ok(bytes);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    mirror = m.name,
+                    "cached line download failed ({e}); re-ranking"
+                );
+                forget_line();
+            }
+        }
+    }
     let ranked = rank_lines(&canonical).await;
     if ranked.is_empty() {
         return Err(anyhow!(
@@ -269,6 +336,7 @@ pub async fn download_binary_raced<F: Fn(u64) + Copy>(
                     bytes = bytes.len(),
                     "fetched panel binary; signature verified"
                 );
+                remember_line(m);
                 return Ok(bytes);
             }
             Err(e) => {
@@ -355,6 +423,21 @@ async fn download_streaming<F: Fn(u64)>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_cache_remembers_and_forgets() {
+        let m = mirrors()[0];
+        forget_line();
+        assert!(cached_line().is_none(), "starts empty");
+        remember_line(m);
+        assert_eq!(
+            cached_line().map(|x| x.name),
+            Some(m.name),
+            "reused after remember"
+        );
+        forget_line();
+        assert!(cached_line().is_none(), "cleared after a failure");
+    }
 
     #[test]
     fn canonical_urls_shape() {

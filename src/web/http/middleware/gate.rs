@@ -48,8 +48,8 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
         .get::<axum::extract::ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip());
     // Resolve all security decisions under one brief settings lock via the
-    // policy view (allow-list verdict + initialized state + init token).
-    let (allow_active, ip_ok, initialized, init_token) = {
+    // policy view (allow-list verdict + initialized state + init token + entry path).
+    let (allow_active, ip_ok, initialized, init_token, entry_path) = {
         // A poisoned lock means a thread panicked while holding it. The settings
         // it guards are only ever *read* here (a snapshot for security
         // decisions) and aren't left half-written by a panic, so recovering the
@@ -70,6 +70,7 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
             eff.map(|ip| pol.ip_allowed(ip)),
             pol.initialized(),
             s.init_token.clone(),
+            s.entry_path.clone(),
         )
     };
     // Authorized-IP allow list (when configured). Loopback is always allowed.
@@ -95,6 +96,52 @@ pub(crate) async fn entry_gate_inner(state: Shared, req: Request, next: Next) ->
             return (StatusCode::NOT_FOUND, "Not Found").into_response();
         }
         return serve_init_surface(&init_token, req, next).await;
+    }
+    // Security entry path (obscurity front door). When set, the console is hidden:
+    // only the front door `/<entry_path>` (or a request bearing the matching
+    // header/cookie) is served; everything else 404s.
+    if !entry_path.is_empty() {
+        return serve_entry_gated(&entry_path, req, next).await;
+    }
+    next.run(req).await
+}
+
+/// Hide the initialized console behind a secret entry path. Hitting
+/// `/<entry_path>` returns the login SPA and sets a readable `dn7_entry` cookie;
+/// the SPA then sends `X-DN7-Entry: <entry_path>` on every request (the header is
+/// the primary check), and the cookie covers browser-initiated asset loads that
+/// can't carry a custom header. Both are constant-time compared. Any request that
+/// presents neither — a scanner hitting `/` or `/api/login` — gets a bare 404, so
+/// the panel is invisible without the secret path.
+async fn serve_entry_gated(entry_path: &str, req: Request, next: Next) -> Response {
+    let door = format!("/{entry_path}");
+    let path = req.uri().path();
+    if path == door || path == format!("{door}/") {
+        // Set the cookie and redirect to `/`; the browser re-requests `/` carrying
+        // the cookie, which the gate then allows (so the SPA + its assets load).
+        // Readable (NOT HttpOnly) so the SPA can echo it as the X-DN7-Entry header;
+        // SameSite=Strict; 30-day Max-Age so the operator isn't re-prompted every
+        // visit. No `Secure` — the console may be plain HTTP.
+        let mut resp = axum::response::Redirect::to("/").into_response();
+        if let Ok(v) = header::HeaderValue::from_str(&format!(
+            "dn7_entry={entry_path}; Path=/; SameSite=Strict; Max-Age=2592000"
+        )) {
+            resp.headers_mut().append(header::SET_COOKIE, v);
+        }
+        return resp;
+    }
+    let presented = req
+        .headers()
+        .get("x-dn7-entry")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .or_else(|| cookie_value(req.headers(), "dn7_entry"));
+    let ok = presented
+        .as_deref()
+        .map(|p| ct_eq(p.as_bytes(), entry_path.as_bytes()))
+        .unwrap_or(false);
+    if !ok {
+        return (StatusCode::NOT_FOUND, "Not Found").into_response();
     }
     next.run(req).await
 }

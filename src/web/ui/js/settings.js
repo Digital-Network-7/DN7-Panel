@@ -88,6 +88,30 @@ function renderSettings(v) {
       <button data-s="appear">${tr('set.tab_appearance')}</button>
     </div>
     <div id="setGeneral">
+      <div style="max-width:480px;margin-bottom:8px">
+        <label class="lbl" style="font-size:15px;font-weight:600">${tr('set.access_title')}</label>
+        <p class="formnote" style="margin:2px 0 12px">${tr('set.access_hint')}</p>
+        <label class="lbl">${tr('init.addr')}</label>
+        <input id="setAddr" class="field" value="${esc(s.external_address || '')}" placeholder="${tr('init.addr_ph')}" autocapitalize="none" spellcheck="false" />
+        <label class="lbl" style="margin-top:14px">${tr('init.https')}</label>
+        <div style="margin:6px 0 12px;display:flex;flex-direction:column;gap:8px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="radio" name="setHttps" value="none"> ${tr('init.https_none')}</label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="radio" name="setHttps" value="selfsigned"> ${tr('init.https_self')}</label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="radio" name="setHttps" value="le"> ${tr('init.https_le')}</label>
+        </div>
+        <details style="margin-bottom:8px">
+          <summary style="cursor:pointer;font-size:13px" class="mut">${tr('init.adv')}</summary>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+            <div><label class="lbl">${tr('init.http_port')}</label><input id="setHttpPort" class="field" type="number" min="1" max="65535" value="${esc(String(s.website_http_port || 80))}" /></div>
+            <div><label class="lbl">${tr('init.https_port')}</label><input id="setHttpsPort" class="field" type="number" min="1" max="65535" value="${esc(String(s.website_https_port || 443))}" /></div>
+          </div>
+          <label class="lbl" style="margin-top:10px;display:block">${tr('init.console_port')}</label>
+          <input id="setConsolePort" class="field" type="number" min="0" max="65535" value="${esc(String(s.console_port || 0))}" />
+          <p class="formnote" style="margin-top:4px">${tr('init.console_port_hint')}</p>
+        </details>
+        <div class="row" style="align-items:center;gap:12px;margin-top:6px"><button class="btn" id="setAccessSave">${tr('set.save_restart')}</button><span class="err ok" id="setAccessMsg"></span></div>
+      </div>
+      <hr style="border:none;border-top:1px solid rgba(128,128,128,.2);margin:22px 0" />
       <div style="max-width:480px">
         <label class="lbl">${tr('set.timeout')}</label>
         <input id="setTimeout" class="field" type="number" min="1" max="43200" step="1" value="${esc(String(s.session_timeout || 1440))}" style="max-width:160px" />
@@ -100,6 +124,9 @@ function renderSettings(v) {
         <div class="field-suffix"><input id="setTrustProx" class="field" readonly /><button type="button" class="suffix-btn" id="setTrustProxBtn">${tr('set.allow_ip_set')}</button></div>
         <input id="setTrustProxFull" type="hidden" />
         <p class="formnote" style="margin-top:6px">${tr('set.tp_hint')}</p>
+        <label class="lbl" style="margin-top:16px">${tr('set.entry')}</label>
+        <div class="field-suffix"><input id="setEntry" class="field" value="${esc(s.entry_path || '')}" placeholder="${tr('set.entry_ph')}" autocapitalize="none" spellcheck="false" /><button type="button" class="suffix-btn" id="setEntryGen">${tr('set.generate')}</button></div>
+        <p class="formnote" style="margin-top:6px">${tr('set.entry_hint')}</p>
       </div>
       <div class="row" style="align-items:center;gap:12px;margin-top:18px"><button class="btn" id="setSave">${tr('set.save')}</button><span class="err ok" id="setMsg"></span></div>
     </div>
@@ -214,30 +241,62 @@ function renderSettings(v) {
       // request already known to fail (server range: 1..=43200 minutes).
       const tv = String($('setTimeout').value).trim();
       if (!/^\d+$/.test(tv) || +tv < 1 || +tv > 43200) { m.className = 'err'; m.textContent = tr('err.settings.timeout_range'); return; }
+      const ep = $('setEntry').value.trim().replace(/^\/+/, '');
+      if (ep && !/^[A-Za-z0-9_-]{1,64}$/.test(ep)) { m.className = 'err'; m.textContent = tr('err.settings.bad_entry_path'); return; }
       m.textContent = '';
       // Step-up re-auth doubles as the confirmation here: changing the panel's
       // access/security settings requires re-entering the password.
       const tok = await stepUp(tr('stepup.msg_settings'));
       if (!tok) return;
-      const body = { session_timeout: +tv, allow_ips: allowIps, trusted_proxies: trustedProxies };
+      const body = { session_timeout: +tv, allow_ips: allowIps, trusted_proxies: trustedProxies, entry_path: ep };
       try {
-        const rb = await SettingsApi.save(body, { 'X-DN7-Stepup': tok });
+        await SettingsApi.save(body, { 'X-DN7-Stepup': tok });
         if ($('setSave')._dirtyReset) $('setSave')._dirtyReset();
-        if (rb && rb.needs_restart) {
-          // Future-only path: today every exposed setting hot-applies and the
-          // backend always answers needs_restart:false. If a restart-requiring
-          // setting ever appears, restart and mask the dead UI while waiting
-          // (waitForRestart shows the blocking overlay).
-          m.className = 'err ok'; m.textContent = tr('set.restarting');
-          await api('/api/restart', { method: 'POST' });
-          waitForRestart(tr('set.restarting'));
-        } else {
-          m.className = 'err ok'; m.textContent = '';
-          toast(tr('common.saved'), 'ok');
-        }
+        // The entry path applies live; if it changed, the current session's
+        // `dn7_entry` cookie is now stale — reload to the new front door so a fresh
+        // cookie is set (else the next request 404s). Disabled → back to `/`.
+        if (ep !== (s.entry_path || '')) { location.href = ep ? '/' + ep : '/'; return; }
+        m.className = 'err ok'; m.textContent = '';
+        toast(tr('common.saved'), 'ok');
       } catch (e) { m.className = 'err'; m.textContent = e.message; }
     };
     bindDirty('setSave', 'setGeneral');
+
+    // Security entry path: Generate a fresh random 6-letter path into the field.
+    $('setEntryGen').onclick = () => {
+      const a = 'abcdefghijklmnopqrstuvwxyz'; let x = '';
+      for (let k = 0; k < 6; k++) x += a[Math.floor(Math.random() * a.length)];
+      const i = $('setEntry'); i.value = x; i.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+
+    // ---- Console access (address / HTTPS / ports) — applied by a restart ----
+    const httpsPick = document.querySelector(`input[name="setHttps"][value="${s.https_mode || 'none'}"]`);
+    if (httpsPick) httpsPick.checked = true; else document.querySelector('input[name="setHttps"][value="none"]').checked = true;
+    $('setAccessSave').onclick = async () => {
+      const m = $('setAccessMsg');
+      const addr = $('setAddr').value.trim();
+      const mode = (document.querySelector('input[name="setHttps"]:checked') || {}).value || 'none';
+      const httpPort = parseInt($('setHttpPort').value, 10) || 80;
+      const httpsPort = parseInt($('setHttpsPort').value, 10) || 443;
+      const consolePort = parseInt($('setConsolePort').value, 10) || 0;
+      if (!addr || !/^[A-Za-z0-9._\-:[\]]{1,253}$/.test(addr)) { m.className = 'err'; m.textContent = tr('err.settings.bad_address'); return; }
+      if (mode === 'le' && /^[0-9.]+$/.test(addr)) { m.className = 'err'; m.textContent = tr('err.settings.le_needs_domain'); return; }
+      if (httpPort === httpsPort) { m.className = 'err'; m.textContent = tr('err.settings.ports_same'); return; }
+      m.textContent = '';
+      const tok = await stepUp(tr('stepup.msg_settings'));
+      if (!tok) return;
+      m.className = 'err ok'; m.textContent = mode === 'le' ? tr('init.issuing') : tr('set.applying');
+      try {
+        const rb = await SettingsApi.consoleAccess({ external_address: addr, https_mode: mode, website_http_port: httpPort, website_https_port: httpsPort, console_port: consolePort }, { 'X-DN7-Stepup': tok });
+        const url = (rb && rb.data && rb.data.url) || '';
+        // The panel is restarting to bind the new ports/TLS and may move to a new
+        // address; show the new login URL in a non-dismissible dialog.
+        modal(tr('set.access_saved_title'),
+          `<p style="margin:0 0 16px;line-height:1.7">${esc(tr('set.access_saved_intro'))}</p>` +
+          (url ? `<a class="btn" style="width:100%;display:block;text-align:center;box-sizing:border-box;text-decoration:none" href="${esc(url)}">${esc(url)}</a>` : ''),
+          () => {}, { noClose: true });
+      } catch (e) { m.className = 'err'; m.textContent = e.message; }
+    };
 
     // ---- Appearance / branding ----
     // The language select is a per-browser personal preference and applies

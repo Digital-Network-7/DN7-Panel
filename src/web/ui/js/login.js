@@ -157,7 +157,9 @@ function forceAccountSetup(currentUser, onDone) {
   };
   $('suGo').onclick = submit;
   $('suPw2').addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
-  setTimeout(() => $('suUser').focus(), 30);
+  // Null-safe: the overlay could be gone by the time this fires (a tab switch
+  // clears #modalRoot); never let a stray focus() crash the page.
+  setTimeout(() => { const u = $('suUser'); if (u) u.focus(); }, 30);
 }
 
 // ---- Static login markup wiring (scripts load at the end of <body>, so the

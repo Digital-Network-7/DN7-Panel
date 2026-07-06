@@ -27,6 +27,12 @@ pub(crate) async fn get_settings(
         "data": { "username": s.username, "pw_default": s.pw_default,
                   "session_timeout": s.session_timeout, "allow_ips": s.allow_ips,
                   "trusted_proxies": s.trusted_proxies, "client_ip": client_ip,
+                  "entry_path": s.entry_path,
+                  // Console access config (edited in the Access section, applied by
+                  // a restart) — surfaced so the form can show the current values.
+                  "external_address": s.external_address, "https_mode": s.https_mode,
+                  "website_http_port": s.website_http_port, "website_https_port": s.website_https_port,
+                  "console_port": s.console_port,
                   "must_setup": s.pw_default || s.username.eq_ignore_ascii_case("admin") }
     }))
     .into_response()
@@ -60,6 +66,10 @@ pub(crate) struct SettingsReq {
     /// Trusted front-proxy IPs / CIDRs. Empty = trust only the direct peer.
     #[serde(default)]
     trusted_proxies: Option<Vec<String>>,
+    /// Security entry path (obscurity front door). Applied LIVE (the gate reads it
+    /// each request). Empty = disable; a bare segment of letters/digits/`-`/`_`.
+    #[serde(default)]
+    entry_path: Option<String>,
 }
 
 pub(crate) async fn put_settings(
@@ -102,6 +112,117 @@ pub(crate) async fn put_settings(
     }
     audit::record(&actor, "settings.update", "", true, "");
     Json(json!({ "ok": true, "needs_restart": outcome.needs_restart })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ConsoleAccessReq {
+    external_address: String,
+    https_mode: String,
+    #[serde(default)]
+    website_http_port: u16,
+    #[serde(default)]
+    website_https_port: u16,
+    #[serde(default)]
+    console_port: u16,
+}
+
+/// POST /api/console/access — change the console's external address + HTTPS mode +
+/// serving ports, then RESTART the panel so the new listeners/TLS bind (they're
+/// set-once at process start). Super-admin + a fresh step-up (host-level
+/// exposure). Returns the new login URL so the UI can point the operator at it.
+pub(crate) async fn put_console_access(
+    State(state): State<Shared>,
+    headers: header::HeaderMap,
+    Json(req): Json<ConsoleAccessReq>,
+) -> Response {
+    let acct = match require_super(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    if let Some(r) = require_stepup(&state, &headers, &acct.username) {
+        return r;
+    }
+    let addr = req.external_address.trim().to_string();
+    let mode = req.https_mode.trim();
+    if addr.is_empty() || addr.len() > 253 || !crate::core::website::valid_host_token(&addr) {
+        return api_err(StatusCode::BAD_REQUEST, "settings.bad_address");
+    }
+    if !matches!(mode, "none" | "selfsigned" | "le") {
+        return api_err(StatusCode::BAD_REQUEST, "settings.bad_https_mode");
+    }
+    if mode == "le" && addr.parse::<std::net::IpAddr>().is_ok() {
+        return api_err(StatusCode::BAD_REQUEST, "settings.le_needs_domain");
+    }
+    let http_port = if req.website_http_port == 0 {
+        80
+    } else {
+        req.website_http_port
+    };
+    let https_port = if req.website_https_port == 0 {
+        443
+    } else {
+        req.website_https_port
+    };
+    if http_port == https_port {
+        return api_err(StatusCode::BAD_REQUEST, "settings.ports_same");
+    }
+    let console_port =
+        if req.console_port == 0 || req.console_port == http_port || req.console_port == https_port
+        {
+            0
+        } else {
+            req.console_port
+        };
+    // Issue the cert first (selfsigned/none apply immediately; LE awaits). Only
+    // persist once it's on disk, so a failed issuance leaves the mode unchanged.
+    if let Err(e) = crate::infra::website::console_apply_tls(mode, &addr).await {
+        return api_err_detail(StatusCode::BAD_REQUEST, "settings.cert_failed", e);
+    }
+    let saved = {
+        let mut s = state.settings_guard();
+        s.external_address = addr.clone();
+        s.https_mode = mode.to_string();
+        s.website_http_port = http_port;
+        s.website_https_port = https_port;
+        s.console_port = console_port;
+        s.clone()
+    };
+    if let Err(e) = settings::save(&saved) {
+        return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "common.save_failed", e);
+    }
+    if let Err(e) = crate::infra::website::edge_reload().await {
+        return api_err_detail(StatusCode::INTERNAL_SERVER_ERROR, "settings.edge_failed", e);
+    }
+    audit::record(&acct.username, "settings.console_access", &addr, true, "");
+    // Restart so the chosen ports + console TLS bind (set-once at start). Deferred
+    // exit → this response flushes; the UI shows the new URL then waits for revive.
+    crate::platform::panel::request_restart();
+    let scheme = if mode == "none" { "http" } else { "https" };
+    let port = if console_port != 0 {
+        console_port
+    } else if mode == "none" {
+        http_port
+    } else {
+        https_port
+    };
+    let dflt: u16 = if scheme == "https" { 443 } else { 80 };
+    let host = if addr.contains(':') && !addr.starts_with('[') {
+        format!("[{addr}]")
+    } else {
+        addr
+    };
+    let authority = if port == dflt {
+        host
+    } else {
+        format!("{host}:{port}")
+    };
+    let path = if saved.entry_path.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", saved.entry_path)
+    };
+    Json(json!({ "ok": true, "data": { "url": format!("{scheme}://{authority}{path}"), "restarting": true } }))
+        .into_response()
 }
 
 /// What the caller must still do after a settings update is applied in place.
@@ -171,6 +292,14 @@ fn apply_settings_update(
         match settings::normalize_allow_ips(px) {
             Some(list) => s.trusted_proxies = list,
             None => return Err(api_err(StatusCode::BAD_REQUEST, "settings.bad_allow_ip")),
+        }
+    }
+    // Security entry path — applied LIVE (the gate reads settings each request, so
+    // no restart). Empty disables the gate; otherwise a validated bare segment.
+    if let Some(ep) = &req.entry_path {
+        match settings::normalize_entry_path(ep) {
+            Some(p) => s.entry_path = p,
+            None => return Err(api_err(StatusCode::BAD_REQUEST, "settings.bad_entry_path")),
         }
     }
     Ok(SettingsOutcome {

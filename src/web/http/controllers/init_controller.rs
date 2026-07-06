@@ -30,6 +30,8 @@ pub(crate) struct Step1Req {
     website_https_port: u16,
     #[serde(default)]
     console_port: u16,
+    #[serde(default)]
+    entry_path: String,
 }
 
 /// POST `/api/init/step1` — set the full access config and issue the console cert
@@ -83,6 +85,11 @@ pub(crate) async fn init_step1(State(state): State<Shared>, Json(req): Json<Step
         } else {
             req.console_port
         };
+    // Security entry path (obscurity front door). Empty = disabled; else validate.
+    let entry_path = match settings::normalize_entry_path(&req.entry_path) {
+        Some(p) => p,
+        None => return init_err("安全访问路径格式不正确 / invalid security entry path"),
+    };
     // Issue the cert FIRST (LE awaits + self-checks); only persist once it's on
     // disk, so a failed issuance leaves the chosen mode unset (the wizard retries).
     if let Err(e) = crate::infra::website::console_apply_tls(mode, &addr).await {
@@ -101,6 +108,7 @@ pub(crate) async fn init_step1(State(state): State<Shared>, Json(req): Json<Step
         s.website_http_port = http_port;
         s.website_https_port = https_port;
         s.console_port = console_port;
+        s.entry_path = entry_path;
         if let Err(e) = settings::save(&s) {
             return init_err(&format!("保存设置失败 / save failed: {e}"));
         }
