@@ -50,3 +50,19 @@ helper crates under `crates/`. No backend, no panel token, no runtime deps.
   root.
 - For local foreground runs use `DN7_NO_GUARDIAN=1 dn7-panel panel`; never
   hand-run the top-level `dn7-panel` (it performs a real system install).
+- **Gate-green is NOT ship-ready for a user-facing flow.** fmt/clippy/tests + a
+  curl/API check can all pass while the *browser* flow is broken. The forced
+  first-run "Set Up Your Account" flow shipped completely non-functional TWICE —
+  build 3: a JS crash (`switchTab`'s `stopTab()` wiped the modal, orphaning a
+  `focus()` timeout); build 4: `/api/settings` demanded a step-up the screen has
+  no password to provide — both because only the backend was verified. Before
+  releasing anything touching login / first-run / setup / auth or any interactive
+  screen, drive the ACTUAL flow in a real browser (puppeteer-core + system Chrome
+  against a VM instance over an SSH tunnel to `127.0.0.1:<port>` — the dev-VM
+  memory has the recipe) and confirm it completes end-to-end with zero console
+  errors. Never release a UI flow you only curl-tested.
+- **`release.toml` must parse as TOML before pushing**
+  (`python3 -c "import tomllib; tomllib.load(open('release.toml','rb'))"`). CI and
+  `.github/gen_releases.py` read it with `tomllib`; a raw `"` inside a `"…"` notes
+  string silently breaks the build/release — use 「」 for inner quotes in
+  zh-CN/zh-TW, and `\"` in `en`.

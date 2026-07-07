@@ -1,0 +1,15 @@
+# Archived snapshot of release.toml for: Phanes 27.0.1 (build 6)
+# Files here back up each published release's version + notes, named
+# <version>-build<build>.toml. Build 6 (27.0.1) picks the download mirror by
+# measured throughput (~5s sample) instead of first-byte latency, and the install
+# script shows per-source speed + a progress bar. See the repo-root release.toml
+# (and AGENTS.md "Versioning & releases") for the live scheme.
+codename = "Phanes"
+version = "27.0.1"
+build = 6
+
+[notes]
+"zh-CN" = "更聪明的下载源选择。自更新与安装脚本现在按约 5 秒的实测吞吐来挑选最快的镜像(GitHub / ghfast.top / ghproxy.net),不再只看首字节延迟,慢但低延迟的代理不会再被误选。一行安装脚本还会显示每个源的实测速度和下载进度条。"
+"zh-TW" = "更聰明的下載源選擇。自更新與安裝指令稿現在依約 5 秒的實測吞吐挑選最快的鏡像(GitHub / ghfast.top / ghproxy.net),不再只看首位元組延遲,慢但低延遲的代理不會再被誤選。一行安裝指令稿還會顯示每個源的實測速度與下載進度條。"
+"en" = "Smarter download-source selection. The self-updater and the install script now pick the fastest mirror (GitHub / ghfast.top / ghproxy.net) by measured throughput over a ~5s sample instead of first-byte latency, so a slow-but-low-latency proxy no longer wins. The one-line installer also prints each source's measured speed and shows a download progress bar."
+"ja" = "より賢いダウンロード元の選択。自動更新とインストールスクリプトは、最初のバイトの遅延ではなく約 5 秒の実測スループットで最速のミラー(GitHub / ghfast.top / ghproxy.net)を選ぶようになりました。低遅延でも遅いプロキシが誤って選ばれることはありません。ワンライナーのインストーラーは各ソースの実測速度とダウンロード進捗バーも表示します。"

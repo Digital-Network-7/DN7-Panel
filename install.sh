@@ -2,13 +2,15 @@
 #
 # DN7 Panel — quick installer.
 #
-# Downloads the latest static binary, racing GitHub / ghfast.top / ghproxy.net for
-# the fastest source, then launches first-run setup. One-line install:
+# Downloads the latest static binary, SPEED-TESTING GitHub / ghfast.top /
+# ghproxy.net (~5s each, by average throughput — not first-byte latency) to pick
+# the fastest source, shows a download progress bar, then launches first-run
+# setup. One-line install:
 #
 #   curl -fsSL https://github.com/Digital-Network-7/DN7-Panel/raw/main/install.sh | sudo bash
 #
 # Behind a restrictive network, fetch the script through a mirror (the binary is
-# raced across all three regardless of which mirror served the script):
+# still speed-raced across all three regardless of which mirror served the script):
 #
 #   curl -fsSL https://ghfast.top/https://github.com/Digital-Network-7/DN7-Panel/raw/main/install.sh | sudo bash
 #
@@ -18,9 +20,8 @@ REPO="Digital-Network-7/DN7-Panel"
 BASE_PATH="/$REPO"
 REL_PATH="$BASE_PATH/releases/latest/download/releases.json"
 
-# Download lines, raced fastest-first: GitHub direct + two URL-prefix proxies.
-# A proxy prefixes the whole https://github.com/… URL — the same scheme the
-# panel's own self-updater uses (src/infra/support/fetch/mirror.rs).
+# Download lines: GitHub direct + two URL-prefix proxies (a proxy prefixes the
+# whole https://github.com/… URL — the scheme the panel's self-updater uses).
 S1="https://github.com"
 S2="https://ghfast.top/https://github.com"
 S3="https://ghproxy.net/https://github.com"
@@ -31,23 +32,27 @@ say()  { printf '%s\n' "  $*"; }
 ok()   { printf '%s\n' "  ${c_g}✓${c_d} $*"; }
 die()  { printf '%s\n' "${c_r}DN7 安装失败 / install failed:${c_d} $*" >&2; exit 1; }
 rule() { printf '  --------------------------------------------------------\n'; }
+hostof() { printf '%s' "$1" | sed 's#https://##; s#/https:.*##'; }
+# bytes/sec → human-readable transfer speed.
+hspeed() { awk -v b="$1" 'BEGIN{ if(b>=1048576) printf "%.1f MiB/s", b/1048576; else if(b>=1024) printf "%.0f KiB/s", b/1024; else printf "%d B/s", b }'; }
 
 # --- downloader (curl preferred, wget fallback) ----------------------------
 if command -v curl >/dev/null 2>&1; then
-  probe() {
-    if t=$(curl -o /dev/null -sL -w '%{time_total}' --connect-timeout 4 --max-time 15 "$1" 2>/dev/null); then
-      awk "BEGIN{printf \"%d\", $t*1000}"
-    else printf '%s' 999000; fi
-  }
-  fetch() { curl -fSL --connect-timeout 8 --max-time 1800 "$1" -o "$2"; }
+  USE_CURL=1
+  qfetch()      { curl -fsSL --connect-timeout 6 --max-time 60 "$1" -o "$2"; }
+  # Sustained-throughput probe: pull up to ~10 MiB (or 5s, whichever first) and
+  # report the AVERAGE speed curl measured (bytes/sec) + the HTTP status — a far
+  # better predictor of real download time than first-byte latency. curl prints
+  # the -w line even when `--max-time` trips (a slow-but-working source keeps its
+  # partial-transfer speed) or on a connect failure (speed 0, code 000), so no
+  # `|| echo` fallback is needed — that would double the output and corrupt it.
+  speed_probe() { curl -sL --connect-timeout 5 --max-time 5 -r 0-10485759 -o /dev/null -w '%{speed_download} %{http_code}' "$1" 2>/dev/null; }
+  dl_progress() { curl -fL --connect-timeout 8 --max-time 1800 --progress-bar "$1" -o "$2"; }
 elif command -v wget >/dev/null 2>&1; then
-  probe() {
-    s=$(date +%s%N 2>/dev/null || echo 0)
-    if wget -q -O /dev/null --timeout=15 --tries=1 "$1" 2>/dev/null; then
-      e=$(date +%s%N 2>/dev/null || echo 0); echo $(( (e - s) / 1000000 ))
-    else echo 999000; fi
-  }
-  fetch() { wget -q -O "$2" --timeout=1800 --tries=2 "$1"; }
+  USE_CURL=''
+  qfetch()      { wget -q -O "$2" --timeout=60 --tries=2 "$1"; }
+  speed_probe() { echo '0 000'; }   # wget can't cheaply report throughput → skip the race
+  dl_progress() { wget -q --show-progress -O "$2" --timeout=1800 --tries=2 "$1"; }
 else
   die "需要 curl 或 wget / need curl or wget"
 fi
@@ -64,28 +69,10 @@ rule
 printf '  %sDN7 Panel%s · 快速安装 / quick install\n' "$c_b" "$c_d"
 rule
 
-# --- race the sources, fastest-first ---------------------------------------
-say "正在竞速选择下载源 / racing sources: github · ghfast.top · ghproxy.net …"
-d=$(mktemp -d)
-i=0
+# --- resolve the latest version + build (tiny index; first working source) --
+REL=$(mktemp); have=''
 for base in "$S1" "$S2" "$S3"; do
-  ( printf '%s %s\n' "$(probe "$base$REL_PATH")" "$base" >"$d/$i" ) &
-  i=$((i + 1))
-done
-wait
-ORDER=$(sort -n "$d"/* 2>/dev/null | awk '{print $2}')
-rm -rf "$d"
-[ -n "$ORDER" ] || ORDER="$S1
-$S2
-$S3"
-fastest=$(printf '%s\n' "$ORDER" | head -1)
-ok "最快源 / fastest: $(printf '%s' "$fastest" | sed 's#https://##; s#/https:.*##')"
-
-# --- resolve the latest version + build ------------------------------------
-REL=$(mktemp)
-have=''
-for base in $ORDER; do
-  if fetch "$base$REL_PATH" "$REL" 2>/dev/null && grep -q '"product"' "$REL" 2>/dev/null; then have="$base"; break; fi
+  if qfetch "$base$REL_PATH" "$REL" 2>/dev/null && grep -q '"product"' "$REL" 2>/dev/null; then have=1; break; fi
 done
 [ -n "$have" ] || die "无法获取版本信息 / could not fetch the release index"
 VERSION=$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$REL" | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
@@ -96,14 +83,41 @@ ASSET="dn7-panel-linux-${ARCH}-v${VERSION}"
 BIN_PATH="$BASE_PATH/releases/download/b${BUILD}/${ASSET}"
 ok "版本 / version: Phanes ${VERSION} (build ${BUILD}) · ${ARCH}"
 
-# --- download the binary (fastest-first, with fallback) --------------------
-OUT=$(mktemp)
-got=''
+# --- speed race: measure each source's ~5s average throughput --------------
+d=$(mktemp -d)
+if [ -n "$USE_CURL" ]; then
+  say "正在测速选择最快下载源(每个源约 5 秒)/ speed-testing each source (~5s avg) …"
+  i=0
+  for base in "$S1" "$S2" "$S3"; do
+    host=$(hostof "$base")
+    res=$(speed_probe "$base$BIN_PATH")
+    spd=$(printf '%s' "$res" | awk '{printf "%d", $1}')
+    code=$(printf '%s' "$res" | awk '{print $2}')
+    case "$code" in
+      200 | 206) ok "  ${host}: $(hspeed "$spd")"; printf '%s %s\n' "$spd" "$base" >"$d/$i" ;;
+      *) say "  ${host}: 不可达 / unreachable (HTTP ${code})" ;;
+    esac
+    i=$((i + 1))
+  done
+  # Fastest throughput first; ties/failures fall through to the next source.
+  ORDER=$(sort -rn "$d"/* 2>/dev/null | awk '{print $2}')
+else
+  ORDER="$S1
+$S2
+$S3"   # wget path: no throughput probe, just try in order
+fi
+rm -rf "$d"
+[ -n "$ORDER" ] || die "所有源测速失败 / no source passed the speed test"
+best=$(printf '%s\n' "$ORDER" | head -1)
+ok "最快源 / fastest: $(hostof "$best")"
+
+# --- download from the fastest (with a progress bar; fallback by speed) -----
+OUT=$(mktemp); got=''
 for base in $ORDER; do
-  host=$(printf '%s' "$base" | sed 's#https://##; s#/https:.*##')
+  host=$(hostof "$base")
   say "下载中 / downloading via ${host} …"
-  if fetch "$base$BIN_PATH" "$OUT" 2>/dev/null && [ -s "$OUT" ]; then got="$base"; break; fi
-  say "  ${host} 不可用,尝试下一个 / unavailable, trying the next source"
+  if dl_progress "$base$BIN_PATH" "$OUT" && [ -s "$OUT" ]; then got=1; break; fi
+  say "  ${host} 下载失败,换下一个源 / download failed, trying the next source"
 done
 [ -n "$got" ] || die "所有源下载失败 / download failed from every source"
 chmod +x "$OUT" 2>/dev/null || true

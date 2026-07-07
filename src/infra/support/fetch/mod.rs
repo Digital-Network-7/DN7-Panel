@@ -228,38 +228,52 @@ const SIG_LEN: usize = 64;
 /// line could OOM-DoS the host via an oversized or unbounded response.
 const MAX_BINARY_BYTES: u64 = 256 * 1024 * 1024; // 256 MiB
 
-/// Probe one already-rewritten asset URL: succeed if a small ranged GET returns
-/// bytes within the budget. Reads only the first chunk (then drops the stream)
-/// so a proxy that ignores `Range` and streams the whole binary is not fully
-/// downloaded during probing.
-async fn probe_line(client: &reqwest::Client, url: &str) -> bool {
+/// How much of the asset to sample when measuring a line's throughput, and the
+/// time budget for that sample. First-byte latency is a poor predictor of
+/// download time (a low-latency proxy can be slow-throughput), so we measure
+/// sustained bytes/sec over a short window instead.
+const PROBE_BYTES: u64 = 4 * 1024 * 1024; // 4 MiB
+const PROBE_SECS: u64 = 5;
+
+/// Sustained-throughput probe of one already-rewritten asset URL: pull up to
+/// `PROBE_BYTES` (or `PROBE_SECS`, whichever comes first) and return the AVERAGE
+/// bytes/sec observed. `None` if the line is unreachable, errors, or delivers
+/// nothing. The ranged prefix bounds how much a fast line downloads while
+/// probing; the stream is dropped once we've sampled enough.
+async fn probe_line(client: &reqwest::Client, url: &str) -> Option<u64> {
     use futures::StreamExt;
-    let attempt = async {
-        let resp = client
-            .get(url)
-            .header(reqwest::header::RANGE, "bytes=0-65535")
-            .send()
-            .await
-            .ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
-        let mut stream = resp.bytes_stream();
-        match stream.next().await {
-            Some(Ok(chunk)) if !chunk.is_empty() => Some(()),
-            _ => None,
-        }
-        // `stream`/`resp` drop here → the transfer is aborted after one chunk.
-    };
-    tokio::time::timeout(Duration::from_secs(8), attempt)
+    let resp = client
+        .get(url)
+        .header(
+            reqwest::header::RANGE,
+            format!("bytes=0-{}", PROBE_BYTES - 1),
+        )
+        .send()
         .await
-        .ok()
-        .flatten()
-        .is_some()
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let start = std::time::Instant::now();
+    let mut got: u64 = 0;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.ok()?;
+        got += chunk.len() as u64;
+        if got >= PROBE_BYTES || start.elapsed().as_secs() >= PROBE_SECS {
+            break;
+        }
+    }
+    let secs = start.elapsed().as_secs_f64().max(0.05);
+    (got > 0).then_some((got as f64 / secs) as u64)
 }
 
-/// Rank the lines fastest-first for `canonical`, dropping unreachable ones.
-/// Probes every line concurrently and orders survivors by response time.
+/// Rank the lines fastest-first for `canonical` by measured THROUGHPUT, dropping
+/// unreachable ones. Probes every line concurrently within one ~5s window (so
+/// wall-time stays bounded regardless of line count) and orders survivors by
+/// average bytes/sec, highest first. The probes contend for bandwidth, so the
+/// absolute numbers run low — but the relative ranking (which line is fastest)
+/// is what selects the download source.
 async fn rank_lines(canonical: &str) -> Vec<Mirror> {
     let Ok(client) = probe_http() else {
         return Vec::new();
@@ -267,17 +281,14 @@ async fn rank_lines(canonical: &str) -> Vec<Mirror> {
     let probes = mirrors().iter().map(|m| {
         let url = m.rewrite(canonical);
         let client = client.clone();
-        async move {
-            let t = tokio::time::Instant::now();
-            probe_line(&client, &url).await.then(|| (*m, t.elapsed()))
-        }
+        async move { probe_line(&client, &url).await.map(|bps| (*m, bps)) }
     });
-    let mut ok: Vec<(Mirror, Duration)> = futures::future::join_all(probes)
+    let mut ok: Vec<(Mirror, u64)> = futures::future::join_all(probes)
         .await
         .into_iter()
         .flatten()
         .collect();
-    ok.sort_by_key(|(_, d)| *d);
+    ok.sort_by_key(|m| std::cmp::Reverse(m.1)); // highest throughput first
     ok.into_iter().map(|(m, _)| m).collect()
 }
 
